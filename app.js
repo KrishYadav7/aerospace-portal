@@ -574,6 +574,10 @@ function renderCourseDetail(courseId) {
         ${isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
       </div>
       <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
+      ${currentUser.role === 'admin' ? `
+            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
+            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
+          ` : ''}
     </div>
   `;
 
@@ -653,7 +657,7 @@ function renderCourseDetail(courseId) {
       html += `
         <div class="material-item">
           ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
+            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${m.id}', '${m.title}', '${m.description || ''}')" title="Edit"><i class="fas fa-edit"></i></button>
             <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
           ` : ''}
           <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
