@@ -1,0 +1,230 @@
+// Zaroori packages import kar rahe hain
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+require('dotenv').config();
+const nodemailer = require('nodemailer');
+// App initialize karna
+const app = express();
+
+// Middlewares
+app.use(cors()); // Frontend ko access dene ke liye
+// Middlewares (Ab hum 50MB tak ki files allow kar rahe hain)
+app.use(cors());
+app.use(express.json({ limit: '50mb' })); 
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// Database (MongoDB) se connect karna
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('🚀 MongoDB Database Successfully Connected!'))
+  .catch((err) => console.log('Database Connection Error:', err));
+  const bcrypt = require('bcrypt');
+const User = require('./models/User'); 
+
+// Pehla admin banane ka temporary rasta
+app.get('/setup-admin', async (req, res) => {
+  try {
+    const adminExists = await User.findOne({ role: 'admin' });
+    if (adminExists) {
+      return res.send('Admin already exists in database!');
+    }
+
+    // Password ko mathematically secure (hash) kar rahe hain
+    const hashedPassword = await bcrypt.hash('AeroAdmin123', 10); 
+
+    // Naya admin bana rahe hain
+    const newAdmin = new User({
+      username: 'admin',
+      password: hashedPassword,
+      role: 'admin',
+      fullName: 'Aerospace Admin' 
+    });
+
+    await newAdmin.save(); // Data MongoDB mein save ho jayega
+    res.send('✅ Admin user successfully created! Username: admin | Password: AeroAdmin123');
+  } catch (error) {
+    res.status(500).send('Error: ' + error.message);
+  }
+});
+
+// Ek chhota sa test route
+app.get('/', (req, res) => {
+  res.send('Aerospace EdTech Backend is Running!');
+});
+const jwt = require('jsonwebtoken'); // Secure login session ke liye
+
+// API: User Login
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    // 1. Check karte hain ki user database mein hai ya nahi
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(400).json({ success: false, message: 'Invalid username or password.' });
+    }
+
+    // 2. Password match karte hain (Bcrypt ke zariye)
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: 'Invalid username or password.' });
+    }
+
+    // 3. Agar sab sahi hai, toh ek secure Token (Ticket) banate hain
+    const token = jwt.sign(
+      { id: user._id, role: user.role }, 
+      'SuperSecretAeroKey', // Real project mein isey .env mein rakhte hain
+      { expiresIn: '1d' }
+    );
+
+    // 4. Frontend ko token aur user data bhejte hain
+    res.json({ 
+      success: true, 
+      message: 'Login successful!',
+      token: token,
+      user: { username: user.username, role: user.role, fullName: user.fullName } 
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+});
+// API: Student Registration
+// =========================================================
+// OTP VERIFICATION SETUP
+// =========================================================
+const otpStore = {}; // Temporary memory jahan hum OTP yaad rakhenge
+
+// Email bhejne ka setup (Apna Email aur App Password yahan dalein)
+// Email bhejne ka setup
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER, // Ab password yahan nahi dikhega!
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// API 1: Email par OTP bhejna
+app.post('/api/send-otp', async (req, res) => {
+  try {
+    const { email, username } = req.body;
+
+    // Check karein ki user pehle se toh nahi hai
+    const existingUser = await User.findOne({ $or: [{ username }, { email }] });
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: 'Username or Email already exists!' });
+    }
+
+    // 6-digit ka random OTP generate karna
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    otpStore[email] = otp; // OTP ko email ke naam se memory mein save kiya
+
+    // Student ko Email bhejna
+    const mailOptions = {
+   from: process.env.EMAIL_USER,
+  to: email,
+      subject: 'Aerospace Portal - Registration OTP',
+      text: `Welcome to Aerospace Dept!\n\nYour OTP for registration is: ${otp}\n\nPlease do not share this code with anyone.`
+    };
+
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true, message: 'OTP sent successfully to your email!' });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error sending email. Check credentials.' });
+  }
+});
+
+// API 2: OTP Verify karke User ko Save karna
+app.post('/api/register', async (req, res) => {
+  try {
+    const { fullName, username, email, password, otp } = req.body;
+
+    // OTP Check karna
+    if (!otpStore[email] || otpStore[email] !== otp) {
+      return res.status(400).json({ success: false, message: 'Invalid or Expired OTP. Please try again.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newStudent = new User({
+      fullName,
+      username,
+      email,
+      password: hashedPassword,
+      role: 'student'
+    });
+
+    await newStudent.save();
+    
+    delete otpStore[email]; // Kaam hone ke baad OTP ko memory se delete kar diya
+
+    res.json({ success: true, message: 'Verification successful! You can now log in.' });
+
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+});
+const Course = require('./models/Course'); // Course model ko import kiya
+
+// API: Saare courses mangwane ke liye (Get Courses)
+app.get('/api/courses', async (req, res) => {
+  try {
+    const courses = await Course.find(); // Database se saare courses fetch karega
+    res.json(courses);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error: ' + error.message });
+  }
+});
+
+// API: Naya course banane ke liye (Add Course - Admin only)
+app.post('/api/courses', async (req, res) => {
+  try {
+    const newCourse = new Course(req.body);
+    await newCourse.save(); // Database mein naya course save karega
+    res.json({ success: true, message: 'Course created successfully!', course: newCourse });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+});
+// API: Course ke andar naya Material (PDF/Video) add karna
+app.post('/api/courses/:courseId/materials', async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ message: 'Course not found' });
+
+    // Naya material course ke materials list mein daal rahe hain
+    course.materials.push(req.body);
+    await course.save();
+    
+    res.json({ success: true, message: 'Material added successfully!', course });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+});
+// API: Course ko database se Delete karna
+app.delete('/api/courses/:id', async (req, res) => {
+  try {
+    // Database mein ID dhoondh kar delete karna
+    await Course.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Course deleted successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+});
+// API: Admin ke liye saare Registered Students mangwana
+app.get('/api/students', async (req, res) => {
+  try {
+    // Database se sirf un users ko nikalna jinka role 'student' hai (password hide kar denge)
+    const students = await User.find({ role: 'student' }).select('-password');
+    res.json({ success: true, students });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+});
+
+// Server ko start karna
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`✅ Server is running on port ${PORT}`);
+});
