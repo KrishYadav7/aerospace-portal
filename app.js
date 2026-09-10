@@ -52,7 +52,7 @@ function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 
 async function fetchCoursesFromDB() {
   try {
-    const response = await fetch('http://localhost:5001/api/courses');
+    const response = await fetch('https://aerospace-portal.onrender.com/api/courses');
     const data = await response.json();
     liveCourses = data.map(course => {
       const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
@@ -117,7 +117,7 @@ async function handleLogin(e) {
   }
 
   try {
-    const response = await fetch('http://localhost:5001/api/login', {
+    const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -191,7 +191,7 @@ async function registerStudent(e) {
 
   try {
     // 1. Backend ko OTP bhejne ka order dena
-    const response = await fetch('http://localhost:5001/api/send-otp', {
+    const response = await fetch('https://aerospace-portal.onrender.com/api/send-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, username })
@@ -224,7 +224,7 @@ async function verifyAndCompleteRegistration(otp) {
   try {
     const finalData = { ...tempRegisterData, otp: otp };
     
-    const response = await fetch('http://localhost:5001/api/register', {
+    const response = await fetch('https://aerospace-portal.onrender.com/api/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(finalData)
@@ -418,7 +418,7 @@ async function renderAdminCourses() {
 
   // NAYA CODE: Database se total students gin kar yahan dikhana
   try {
-    const res = await fetch('http://localhost:5001/api/students');
+    const res = await fetch('https://aerospace-portal.onrender.com/api/students');
     const data = await res.json();
     if (data.success) {
       $('statStudents').textContent = data.students.length;
@@ -468,7 +468,7 @@ async function renderAdminStudents() {
   container.innerHTML = `<div class="empty-state"><p>Loading students from database...</p></div>`;
   
   try {
-    const response = await fetch('http://localhost:5001/api/students');
+    const response = await fetch('https://aerospace-portal.onrender.com/api/students');
     const data = await response.json();
     
     if (data.success) {
@@ -696,7 +696,7 @@ async function saveCourse(e) {
       showToast('Edit feature coming soon!', 'info');
       closeModal('courseModal');
     } else {
-      const response = await fetch('http://localhost:5001/api/courses', {
+      const response = await fetch('https://aerospace-portal.onrender.com/api/courses', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(courseData)
       });
       const data = await response.json();
@@ -712,7 +712,7 @@ async function saveCourse(e) {
 async function deleteCourse(courseId) {
   if (!confirm('Are you sure you want to delete this course and all its materials?')) return;
   try {
-    const response = await fetch(`http://localhost:5001/api/courses/${courseId}`, { method: 'DELETE' });
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, { method: 'DELETE' });
     const data = await response.json();
     if (data.success) {
       if (currentCourseId === courseId) currentCourseId = null;
@@ -753,7 +753,7 @@ async function saveMaterial(e) {
       showToast('Edit feature coming soon!', 'info'); closeModal('materialModal');
     } else {
       try {
-        const response = await fetch(`http://localhost:5001/api/courses/${courseId}/materials`, {
+        const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(materialData)
         });
         const data = await response.json();
@@ -776,7 +776,7 @@ async function saveMaterial(e) {
 async function deleteMaterial(courseId, materialId) {
   if (!confirm('Are you sure you want to delete this material?')) return;
   try {
-    const response = await fetch(`http://localhost:5001/api/courses/${courseId}/materials/${materialId}`, { method: 'DELETE' });
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, { method: 'DELETE' });
     const data = await response.json();
     if (data.success) { showToast('Material deleted.', 'info'); fetchCoursesFromDB(); }
   } catch (error) { showToast('Server error.', 'error'); }
