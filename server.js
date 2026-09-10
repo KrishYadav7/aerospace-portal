@@ -4,6 +4,8 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
+const Razorpay = require('razorpay');
+const crypto = require('crypto'); // Ye security/verification ke liye hai
 // App initialize karna
 const app = express();
 
@@ -238,6 +240,54 @@ app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
     res.json({ success: true, message: 'Material updated successfully!' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error updating material.' });
+  }
+});
+// =========================================================
+// RAZORPAY PAYMENT APIs
+// =========================================================
+
+// 1. Razorpay Setup (Passwords .env se aayenge)
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+// 2. Naya Order Banane ki API
+app.post('/api/create-order', async (req, res) => {
+  try {
+    const { amount } = req.body; 
+    const options = {
+      amount: amount * 100, // Razorpay paise mein amount leta hai (100 paise = 1 INR)
+      currency: "INR",
+      receipt: "aero_receipt_" + Math.random().toString(36).substring(7),
+    };
+    const order = await razorpay.orders.create(options);
+    res.json({ success: true, order });
+  } catch (error) {
+    console.error("Order Error:", error);
+    res.status(500).json({ success: false, message: 'Server error creating order' });
+  }
+});
+
+// 3. Payment Verify karne ki API
+app.post('/api/verify-payment', async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, courseId, userId } = req.body;
+    
+    // Security check: Match signature to ensure payment is original
+    const sign = razorpay_order_id + "|" + razorpay_payment_id;
+    const expectedSign = crypto.createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+                               .update(sign.toString())
+                               .digest("hex");
+
+    if (razorpay_signature === expectedSign) {
+      // Payment 100% real hai! Yahan hum aage chal kar user ke account mein course unlock karenge
+      res.json({ success: true, message: "Payment verified successfully!" });
+    } else {
+      res.status(400).json({ success: false, message: "Invalid payment signature!" });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Verification error' });
   }
 });
 
