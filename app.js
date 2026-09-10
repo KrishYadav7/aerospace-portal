@@ -593,8 +593,9 @@ function renderCourseDetail(courseId) {
 
   const materials = course.materials || [];
   const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
-  const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'other'];
-  const typeLabels = { all: 'All', video: '🎬 Video', pyq: '📄 PYQ', tutorial: '📝 Tutorial', slides: '📊 Slides', other: '📁 Other' };
+  // Purani line dhoondhiye aur usko is se replace kijiye:
+  const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
+  const typeLabels = { all: 'All', video: '🎬 Video', pyq: '📄 PYQ', tutorial: '📝 Tutorial', slides: '📊 Slides', qa: '❓ Q&A', other: '📁 Other' };
   
   html += `<div class="material-tabs">`;
   types.forEach(t => {
@@ -602,7 +603,38 @@ function renderCourseDetail(courseId) {
     html += `<button class="${currentMaterialFilter === t ? 'active' : ''}" onclick="setMaterialFilter('${t}')">${typeLabels[t]} (${count})</button>`;
   });
   html += `</div>`;
-
+// =========================================================
+  // Q&A SECTION LOGIC
+  // =========================================================
+  if (currentMaterialFilter === 'qa') {
+    const doubts = course.doubts || [];
+    html += `<div class="qa-section" style="padding: 15px; background: #f8fafc; border-radius: 8px;">
+               <div style="margin-bottom: 20px;">
+                 <textarea id="newDoubtText" placeholder="Eg: Sir, specific impulse ka formula samajh nahi aaya..." style="width:100%; padding:10px; border-radius:5px; border:1px solid #cbd5e1;"></textarea>
+                 <button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="askDoubt('${course.id}')"><i class="fas fa-paper-plane"></i> Ask Doubt</button>
+               </div>`;
+               
+    if (doubts.length === 0) {
+      html += `<p style="color:#64748b;">No doubts asked yet. Be the first to ask!</p>`;
+    } else {
+      doubts.forEach(d => {
+        html += `<div style="background:#fff; padding:15px; margin-bottom:10px; border-left: 4px solid #3b82f6; border-radius:5px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                   <strong><i class="fas fa-user-graduate"></i> ${d.studentName}</strong> 
+                   <p style="margin:8px 0; color:#333;">Q: ${d.question}</p>
+                   
+                   ${d.answer 
+                     ? `<div style="background:#f1f5f9; padding:10px; border-radius:5px; color:#0f172a;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin:</strong> ${d.answer}</div>` 
+                     : currentUser.role === 'admin' 
+                        ? `<button class="btn btn-success btn-sm" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Reply</button>`
+                        : `<span style="font-size:12px; color:#f59e0b;"><i class="fas fa-clock"></i> Waiting for reply...</span>`
+                   }
+                 </div>`;
+      });
+    }
+    html += `</div>`;
+    courseDetailContent.innerHTML = html;
+    return; // Q&A dikhane ke baad material list render na ho isliye yahan se wapas bhej dein
+  }
   if (filtered.length === 0) {
     html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No materials found.</p></div>`;
   } else {
@@ -1006,4 +1038,42 @@ async function editMaterial(courseId, materialId) {
       fetchCoursesFromDB();
     } else showToast(data.message, 'error');
   } catch (error) { showToast('Error connecting to server.', 'error'); }
+}
+// =========================================================
+// Q&A API CALLS
+// =========================================================
+async function askDoubt(courseId) {
+  const text = $('newDoubtText').value.trim();
+  if (!text) return showToast('Please type your doubt first!', 'error');
+
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentName: currentUser.username, question: text })
+    });
+    const data = await response.json();
+    if (data.success) {
+      showToast('Doubt asked successfully!', 'success');
+      fetchCoursesFromDB(); // Screen refresh karne ke liye
+    }
+  } catch (error) { showToast('Error connecting to server', 'error'); }
+}
+
+async function replyDoubt(courseId, doubtId) {
+  const answer = prompt("Enter your reply to this student:");
+  if (!answer) return;
+
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer: answer })
+    });
+    const data = await response.json();
+    if (data.success) {
+      showToast('Reply posted!', 'success');
+      fetchCoursesFromDB();
+    }
+  } catch (error) { showToast('Error connecting to server', 'error'); }
 }

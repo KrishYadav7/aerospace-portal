@@ -307,6 +307,36 @@ app.get('/api/students', async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 });
+// =========================================================
+// DOUBT & Q&A APIs
+// =========================================================
+
+// 1. Student ka naya doubt save karna
+app.post('/api/courses/:id/doubts', async (req, res) => {
+  try {
+    const { studentName, question } = req.body;
+    await Course.findByIdAndUpdate(req.params.id, {
+      $push: { doubts: { studentName, question } }
+    });
+    res.json({ success: true, message: 'Doubt submitted successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error submitting doubt' });
+  }
+});
+
+// 2. Admin ka jawaab save karna
+app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
+  try {
+    const { answer } = req.body;
+    await Course.updateOne(
+      { _id: req.params.courseId, "doubts._id": req.params.doubtId },
+      { $set: { "doubts.$.answer": answer } }
+    );
+    res.json({ success: true, message: 'Answer posted!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error posting answer' });
+  }
+});
 
 // Server ko start karna
 const PORT = process.env.PORT || 5000;

@@ -22,5 +22,12 @@ const courseSchema = new mongoose.Schema({
   price: { type: Number, default: 0 },
   materials: [materialSchema] // Course ke andar uske saare materials ki list
 }, { timestamps: true });
+// Purana materials array yahan hoga...
+  doubts: [{
+    studentName: String,
+    question: String,
+    answer: { type: String, default: "" }, // Admin ka jawaab
+    date: { type: Date, default: Date.now }
+  }]
 
 module.exports = mongoose.model('Course', courseSchema);
