@@ -411,22 +411,15 @@ async function renderAdminCourses() {
   const filtered = courses.filter(c => c.name.toLowerCase().includes(searchTerm) || (c.code && c.code.toLowerCase().includes(searchTerm)));
 
   const totalMaterials = courses.reduce((sum, c) => sum + (c.materials ? c.materials.length : 0), 0);
-  
-  // Basic stats update karna
   $('statCourses').textContent = courses.length;
   $('statMaterials').textContent = totalMaterials;
-  $('statStudents').textContent = '...'; // Loading dikhane ke liye
+  $('statStudents').textContent = '...'; 
 
-  // NAYA CODE: Database se total students gin kar yahan dikhana
   try {
     const res = await fetch('https://aerospace-portal.onrender.com/api/students');
     const data = await res.json();
-    if (data.success) {
-      $('statStudents').textContent = data.students.length;
-    }
-  } catch (e) {
-    $('statStudents').textContent = 'Error';
-  }
+    if (data.success) $('statStudents').textContent = data.students.length;
+  } catch (e) { $('statStudents').textContent = 'Error'; }
 
   if (filtered.length === 0) {
     adminCourseList.innerHTML = `<div class="empty-state"><i class="fas fa-search"></i><p>No courses found.</p></div>`;
@@ -448,12 +441,12 @@ async function renderAdminCourses() {
           ${c.isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>` : ''}
         </div>
         <div class="material-count"><i class="fas fa-file-alt"></i> ${matCount} materials</div>
-       <div class="card-actions">
-  <!-- NAYA EDIT BUTTON YAHAN HAI -->
-  <button class="btn btn-warning btn-sm" style="background-color: #f59e0b; color: white;" onclick="editCourse('${c.id}', '${c.name}', '${c.description || ''}', '${c.price || 0}')"><i class="fas fa-edit"></i> Edit</button>
-  <button class="btn btn-primary btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
-  <button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
-</div>
+        <div class="card-actions">
+          <!-- YE RAHA NAYA SAFE EDIT BUTTON -->
+          <button class="btn btn-warning btn-sm" style="background-color: #f59e0b; color: white;" onclick="editCourse('${c.id}')"><i class="fas fa-edit"></i> Edit</button>
+          <button class="btn btn-primary btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
+          <button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
+        </div>
       </div>
     `;
   });
@@ -581,7 +574,10 @@ function renderCourseDetail(courseId) {
         ${isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
       </div>
       <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
-      ${currentUser.role === 'admin' ? `<div style="margin-top:12px;"><button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${course.id}')"><i class="fas fa-plus"></i> Add Material</button></div>` : ''}
+      ${currentUser.role === 'admin' ? `
+            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
+            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
+          ` : ''}
     </div>
   `;
 
@@ -890,60 +886,54 @@ initApp();
 // EDIT COURSE & MATERIAL FUNCTIONS (ADMIN)
 // =========================================================
 
-async function editCourse(courseId, oldTitle, oldDesc, oldPrice) {
-  // Admin se naya data mangna (purana data pehle se likha aayega)
-  const newTitle = prompt("Update Course Title:", oldTitle);
-  if (newTitle === null) return; // Agar admin cancel kar de
-  
-  const newDesc = prompt("Update Course Description:", oldDesc);
+// =========================================================
+// SAFE EDIT FUNCTIONS
+// =========================================================
+
+async function editCourse(courseId) {
+  const course = findCourse(courseId);
+  if (!course) return;
+
+  const newTitle = prompt("Update Course Name:", course.name);
+  if (newTitle === null) return;
+  const newDesc = prompt("Update Course Description:", course.description || '');
   if (newDesc === null) return;
-  
-  const newPrice = prompt("Update Course Price (₹):", oldPrice);
+  const newPrice = prompt("Update Course Price (₹):", course.price || 0);
   if (newPrice === null) return;
 
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: newTitle, description: newDesc, price: newPrice })
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newTitle, description: newDesc, price: newPrice })
     });
-    
     const data = await response.json();
     if (data.success) {
       showToast('✏️ ' + data.message, 'success');
-      // Screen ko refresh karke naye changes dikhana (Apna load function yahan call karein)
       fetchCoursesFromDB();
-    } else {
-      showToast(data.message, 'error');
-    }
-  } catch (error) {
-    showToast('Error connecting to server.', 'error');
-  }
+    } else showToast(data.message, 'error');
+  } catch (error) { showToast('Error connecting to server.', 'error'); }
 }
 
-async function editMaterial(materialId, oldTitle, oldDesc) {
-  const newTitle = prompt("Update Material Title:", oldTitle);
+async function editMaterial(courseId, materialId) {
+  const course = findCourse(courseId);
+  if (!course) return;
+  const mat = course.materials.find(m => m.id === materialId);
+  if (!mat) return;
+
+  const newTitle = prompt("Update Material Title:", mat.title);
   if (newTitle === null) return;
-  
-  const newDesc = prompt("Update Material Description:", oldDesc);
+  const newDesc = prompt("Update Material Description:", mat.description || '');
   if (newDesc === null) return;
 
   try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/materials/${materialId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: newTitle, description: newDesc })
     });
-    
     const data = await response.json();
     if (data.success) {
       showToast('✏️ ' + data.message, 'success');
-      // Screen ko refresh karna
       fetchCoursesFromDB();
-    } else {
-      showToast(data.message, 'error');
-    }
-  } catch (error) {
-    showToast('Error connecting to server.', 'error');
-  }
+    } else showToast(data.message, 'error');
+  } catch (error) { showToast('Error connecting to server.', 'error'); }
 }
