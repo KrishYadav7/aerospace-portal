@@ -880,4 +880,67 @@ async function initApp() {
 }
 
 initApp();
+// =========================================================
+// EDIT COURSE & MATERIAL FUNCTIONS (ADMIN)
+// =========================================================
+
+async function editCourse(courseId, oldTitle, oldDesc, oldPrice) {
+  // Admin se naya data mangna (purana data pehle se likha aayega)
+  const newTitle = prompt("Update Course Title:", oldTitle);
+  if (newTitle === null) return; // Agar admin cancel kar de
+  
+  const newDesc = prompt("Update Course Description:", oldDesc);
+  if (newDesc === null) return;
+  
+  const newPrice = prompt("Update Course Price (₹):", oldPrice);
+  if (newPrice === null) return;
+
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: newTitle, description: newDesc, price: newPrice })
+    });
+    
+    const data = await response.json();
+    if (data.success) {
+      showToast('✏️ ' + data.message, 'success');
+      // Screen ko refresh karke naye changes dikhana (Apna load function yahan call karein)
+      fetchAdminCourses(); 
+    } else {
+      showToast(data.message, 'error');
+    }
+  } catch (error) {
+    showToast('Error connecting to server.', 'error');
+  }
+}
+
+async function editMaterial(materialId, oldTitle, oldDesc) {
+  const newTitle = prompt("Update Material Title:", oldTitle);
+  if (newTitle === null) return;
+  
+  const newDesc = prompt("Update Material Description:", oldDesc);
+  if (newDesc === null) return;
+
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/materials/${materialId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: newTitle, description: newDesc })
+    });
+    
+    const data = await response.json();
+    if (data.success) {
+      showToast('✏️ ' + data.message, 'success');
+      // Screen ko refresh karna
+      fetchAdminMaterials(); 
+    } else {
+      showToast(data.message, 'error');
+    }
+  } catch (error) {
+    showToast('Error connecting to server.', 'error');
+  }
+}
+<button onclick="editCourse('${course._id}', '${course.title}', '${course.description}', '${course.price}')" class="btn-edit">✏️ Edit</button>
+<button onclick="editMaterial('${material._id}', '${material.title}', '${material.description}')" class="btn-edit">✏️ Edit</button>
 console.log('🚀 Aerospace Portal is completely synced with MongoDB!');

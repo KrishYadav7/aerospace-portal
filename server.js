@@ -212,6 +212,31 @@ app.delete('/api/courses/:id', async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 });
+// =========================================================
+// EDIT APIs (COURSES & MATERIALS)
+// =========================================================
+
+// 1. Course Edit karne ki API
+app.put('/api/courses/:id', async (req, res) => {
+  try {
+    const { title, description, price } = req.body;
+    await Course.findByIdAndUpdate(req.params.id, { title, description, price });
+    res.json({ success: true, message: 'Course updated successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error updating course.' });
+  }
+});
+
+// 2. Material Edit karne ki API (Agar aapka Material ka alag model hai)
+app.put('/api/materials/:id', async (req, res) => {
+  try {
+    const { title, description, fileUrl } = req.body;
+    await Material.findByIdAndUpdate(req.params.id, { title, description, fileUrl });
+    res.json({ success: true, message: 'Material updated successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error updating material.' });
+  }
+});
 // API: Admin ke liye saare Registered Students mangwana
 app.get('/api/students', async (req, res) => {
   try {
