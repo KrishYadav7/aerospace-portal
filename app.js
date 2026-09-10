@@ -866,7 +866,8 @@ async function showPaymentModal(courseId) {
             razorpay_order_id: response.razorpay_order_id,
             razorpay_payment_id: response.razorpay_payment_id,
             razorpay_signature: response.razorpay_signature,
-            courseId: courseId
+            courseId: courseId,
+            userId: currentUser._id // <--- Humne ye nayi line jodi hai
           })
         });
         

@@ -270,23 +270,29 @@ app.post('/api/create-order', async (req, res) => {
 });
 
 // 3. Payment Verify karne ki API
+// 3. Payment Verify & Database mein Save karne ki API
 app.post('/api/verify-payment', async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, courseId, userId } = req.body;
     
-    // Security check: Match signature to ensure payment is original
+    // Security check
     const sign = razorpay_order_id + "|" + razorpay_payment_id;
     const expectedSign = crypto.createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
                                .update(sign.toString())
                                .digest("hex");
 
     if (razorpay_signature === expectedSign) {
-      // Payment 100% real hai! Yahan hum aage chal kar user ke account mein course unlock karenge
-      res.json({ success: true, message: "Payment verified successfully!" });
+      // Payment Asli hai! Ab course ko MongoDB mein student ke account mein save karein
+      await User.findByIdAndUpdate(userId, { 
+        $addToSet: { purchases: courseId } 
+      });
+
+      res.json({ success: true, message: "Payment verified & Course saved to DB!" });
     } else {
       res.status(400).json({ success: false, message: "Invalid payment signature!" });
     }
   } catch (error) {
+    console.error(error);
     res.status(500).json({ success: false, message: 'Verification error' });
   }
 });

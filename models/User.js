@@ -7,7 +7,10 @@ const userSchema = new mongoose.Schema({
   role: { type: String, enum: ['student', 'admin'], default: 'student' },
   fullName: { type: String },
   email: { type: String },
-  purchases: [{ type: String }] // Student ne jo premium courses kharide hain
+  purchases: {
+    type: [String],
+    default: []
+  } // Student ne jo premium courses kharide hain
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);
