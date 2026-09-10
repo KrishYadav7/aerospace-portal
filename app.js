@@ -365,6 +365,7 @@ function renderAdminCourses() {
         </div>
         <div class="material-count"><i class="fas fa-file-alt"></i> ${matCount} materials</div>
         <div class="card-actions">
+          <button class="btn btn-warning btn-sm" style="background-color: #f59e0b; color: white;" onclick="editCourse('${c.id}', '${c.name}', '${c.description || ''}', '${c.price || 0}')"><i class="fas fa-edit"></i> Edit</button>
           <button class="btn btn-primary btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
           <button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
         </div>
@@ -625,7 +626,10 @@ function renderCourseDetail(courseId) {
 
       html += `
         <div class="material-item">
-          ${currentUser.role === 'admin' ? `<button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>` : ''}
+          ${currentUser.role === 'admin' ? `
+            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${m.id}', '${m.title}', '${m.description || ''}')" title="Edit"><i class="fas fa-edit"></i></button>
+            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
+          ` : ''}
           <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
           <h4>${m.title}</h4>
           <div class="mat-desc">${m.description || ''}</div>
@@ -906,7 +910,7 @@ async function editCourse(courseId, oldTitle, oldDesc, oldPrice) {
     if (data.success) {
       showToast('✏️ ' + data.message, 'success');
       // Screen ko refresh karke naye changes dikhana (Apna load function yahan call karein)
-      fetchAdminCourses(); 
+      fetchCoursesFromDB();
     } else {
       showToast(data.message, 'error');
     }
@@ -933,7 +937,7 @@ async function editMaterial(materialId, oldTitle, oldDesc) {
     if (data.success) {
       showToast('✏️ ' + data.message, 'success');
       // Screen ko refresh karna
-      fetchAdminMaterials(); 
+      fetchCoursesFromDB();
     } else {
       showToast(data.message, 'error');
     }
@@ -941,6 +945,3 @@ async function editMaterial(materialId, oldTitle, oldDesc) {
     showToast('Error connecting to server.', 'error');
   }
 }
-<button onclick="editCourse('${course._id}', '${course.title}', '${course.description}', '${course.price}')" class="btn-edit">✏️ Edit</button>
-<button onclick="editMaterial('${material._id}', '${material.title}', '${material.description}')" class="btn-edit">✏️ Edit</button>
-console.log('🚀 Aerospace Portal is completely synced with MongoDB!');
