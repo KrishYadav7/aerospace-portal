@@ -448,10 +448,12 @@ async function renderAdminCourses() {
           ${c.isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>` : ''}
         </div>
         <div class="material-count"><i class="fas fa-file-alt"></i> ${matCount} materials</div>
-        <div class="card-actions">
-          <button class="btn btn-primary btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
-          <button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
-        </div>
+       <div class="card-actions">
+  <!-- NAYA EDIT BUTTON YAHAN HAI -->
+  <button class="btn btn-warning btn-sm" style="background-color: #f59e0b; color: white;" onclick="editCourse('${c.id}', '${c.name}', '${c.description || ''}', '${c.price || 0}')"><i class="fas fa-edit"></i> Edit</button>
+  <button class="btn btn-primary btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
+  <button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
+</div>
       </div>
     `;
   });
