@@ -559,7 +559,7 @@ function renderStudentCourses() {
   studentCourseList.innerHTML = html;
 }
 
-function viewCourseDetail(courseId) { currentCourseId = courseId; renderApp(); }
+
 function goBackFromDetail() { currentCourseId = null; renderApp(); }
 function setMaterialFilter(type) { currentMaterialFilter = type; if (currentCourseId) renderCourseDetail(currentCourseId); }
 
