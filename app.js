@@ -48,12 +48,7 @@ function generateId() { return Date.now().toString(36) + Math.random().toString(
 
 let liveCourses = [];
 function getCourses() { return liveCourses; }
-function findCourse(courseId) {
-  const courses = getCourses();
-  if (!courses) return null;
-  // Yeh id aur _id dono check karega taaki MongoDB ke sath match ho jaye
-  return courses.find(c => c.id === courseId || c._id === courseId || c.id == courseId);
-}
+function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 
 async function fetchCoursesFromDB() {
   try {
@@ -559,7 +554,7 @@ function renderStudentCourses() {
   studentCourseList.innerHTML = html;
 }
 
-
+function viewCourseDetail(courseId) { currentCourseId = courseId; renderApp(); }
 function goBackFromDetail() { currentCourseId = null; renderApp(); }
 function setMaterialFilter(type) { currentMaterialFilter = type; if (currentCourseId) renderCourseDetail(currentCourseId); }
 
@@ -579,10 +574,6 @@ function renderCourseDetail(courseId) {
         ${isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
       </div>
       <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
-      ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
-            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
-          ` : ''}
     </div>
   `;
 
@@ -662,7 +653,7 @@ function renderCourseDetail(courseId) {
       html += `
         <div class="material-item">
           ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${m.id}', '${m.title}', '${m.description || ''}')" title="Edit"><i class="fas fa-edit"></i></button>
+            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
             <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
           ` : ''}
           <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
@@ -1043,42 +1034,4 @@ async function editMaterial(courseId, materialId) {
       fetchCoursesFromDB();
     } else showToast(data.message, 'error');
   } catch (error) { showToast('Error connecting to server.', 'error'); }
-}
-// =========================================================
-// Q&A API CALLS
-// =========================================================
-async function askDoubt(courseId) {
-  const text = $('newDoubtText').value.trim();
-  if (!text) return showToast('Please type your doubt first!', 'error');
-
-  try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ studentName: currentUser.username, question: text })
-    });
-    const data = await response.json();
-    if (data.success) {
-      showToast('Doubt asked successfully!', 'success');
-      fetchCoursesFromDB(); // Screen refresh karne ke liye
-    }
-  } catch (error) { showToast('Error connecting to server', 'error'); }
-}
-
-async function replyDoubt(courseId, doubtId) {
-  const answer = prompt("Enter your reply to this student:");
-  if (!answer) return;
-
-  try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answer: answer })
-    });
-    const data = await response.json();
-    if (data.success) {
-      showToast('Reply posted!', 'success');
-      fetchCoursesFromDB();
-    }
-  } catch (error) { showToast('Error connecting to server', 'error'); }
 }
