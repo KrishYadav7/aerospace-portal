@@ -823,15 +823,84 @@ function deleteProfessor(professorId) {
 // PAYMENT (Dummy Verification - Prep for Razorpay)
 // ================================================================
 
-function showPaymentModal(courseId) {
+// ================================================================
+// ASLI RAZORPAY PAYMENT INTEGRATION
+// ================================================================
+
+async function showPaymentModal(courseId) {
   const course = findCourse(courseId);
   if (!course) return;
-  $('paymentQrContainer').style.display = 'block'; $('paymentVerification').style.display = 'none';
-  $('paymentActions').style.display = 'flex'; $('paymentCourseName').textContent = course.name;
-  $('paymentCoursePrice').textContent = `Price: ₹${course.price || 0}`;
-  const upiLink = `upi://pay?pa=${UPI_CONFIG.upiId}&pn=${encodeURIComponent(UPI_CONFIG.merchantName)}&am=${course.price || 0}&cu=${UPI_CONFIG.currency}&tn=${encodeURIComponent('Course: ' + course.name)}`;
-  $('paymentQRCode').src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(upiLink)}`;
-  $('paymentModal').dataset.courseId = courseId; openModal('paymentModal');
+
+  showToast('Initiating secure payment...', 'info');
+
+  try {
+    // 1. Backend se Order create karwana
+    const response = await fetch('https://aerospace-portal.onrender.com/api/create-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: course.price })
+    });
+    const data = await response.json();
+
+    if (!data.success) {
+      showToast('Error creating order. Is server running?', 'error');
+      return;
+    }
+
+    // 2. Razorpay Popup ki Settings
+    const options = {
+      "key": rzp_test_TaPfJOdu1PgUed, // ⚠️ Apna Test Key ID yahan paste karein
+      "amount": data.order.amount,
+      "currency": "INR",
+      "name": "Aerospace EdTech",
+      "description": `Purchase: ${course.name}`,
+      "order_id": data.order.id,
+      "handler": async function (response) {
+        // 3. Payment hone ke baad Backend se Verify karna
+        showToast('Verifying payment...', 'info');
+        
+        const verifyRes = await fetch('https://aerospace-portal.onrender.com/api/verify-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            razorpay_order_id: response.razorpay_order_id,
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_signature: response.razorpay_signature,
+            courseId: courseId
+          })
+        });
+        
+        const verifyData = await verifyRes.json();
+        
+        if (verifyData.success) {
+          // Payment Success! Course ko user ki list mein add karna
+          if (!currentUser.purchases) currentUser.purchases = [];
+          if (!currentUser.purchases.includes(courseId)) currentUser.purchases.push(courseId);
+          localStorage.setItem('aero_user', JSON.stringify(currentUser));
+          
+          showToast('🎉 Payment Successful! Course Unlocked.', 'success');
+          renderApp(); // Screen refresh karke lock hata dega
+        } else {
+          showToast('Payment verification failed!', 'error');
+        }
+      },
+      "prefill": {
+        "name": currentUser.username,
+        "email": currentUser.email || "student@aerospace.com",
+        "contact": "9999999999" // Test mode mein koi bhi number chalta hai
+      },
+      "theme": {
+        "color": "#2563eb" // Aapke portal ka blue color
+      }
+    };
+
+    // 4. Razorpay Popup Open Karna
+    const rzp1 = new Razorpay(options);
+    rzp1.open();
+
+  } catch (error) {
+    showToast('Server error during payment initialization.', 'error');
+  }
 }
 
 function confirmPayment() {
