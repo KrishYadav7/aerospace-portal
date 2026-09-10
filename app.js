@@ -48,7 +48,12 @@ function generateId() { return Date.now().toString(36) + Math.random().toString(
 
 let liveCourses = [];
 function getCourses() { return liveCourses; }
-function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
+function findCourse(courseId) {
+  const courses = getCourses();
+  if (!courses) return null;
+  // Yeh id aur _id dono check karega taaki MongoDB ke sath match ho jaye
+  return courses.find(c => c.id === courseId || c._id === courseId || c.id == courseId);
+}
 
 async function fetchCoursesFromDB() {
   try {
