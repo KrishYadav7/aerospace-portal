@@ -1022,7 +1022,7 @@ function renderCourseDetail(courseId) {
   });
   html += `</div>`;
 
-  /* ===== Q&A section (Sprint 4 — Peer Q&A) ===== */
+  /* ===== Q&A section ===== */
   if (currentMaterialFilter === 'qa') {
     const doubts = [...(course.doubts || [])];
     html += `<div class="qa-section">
@@ -1137,6 +1137,7 @@ function renderCourseDetail(courseId) {
       const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
       const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || !isMatPremium;
       const viewed = isMaterialViewed(course.id, m.id);
+      const quizCount = (m.quiz || []).length;
 
       let fileActionHtml = '';
       if (!canAccess) {
@@ -1158,7 +1159,6 @@ function renderCourseDetail(courseId) {
           <i class="fas ${viewed ? 'fa-check-circle' : 'fa-circle'}"></i> ${viewed ? 'Completed' : 'Mark done'}
         </button>`;
 
-        const quizCount = (m.quiz || []).length;
         if (quizCount > 0) {
           const qr = (currentUser.quizResults || {})[m.id];
           const label = qr ? `Retake Quiz (${qr.score}/${qr.total})` : `Take Quiz (${quizCount})`;
@@ -1172,20 +1172,33 @@ function renderCourseDetail(courseId) {
         ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`
         : `<span class="mat-badge free">FREE</span>`;
 
+      const quizBadge = quizCount > 0
+        ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount} question${quizCount > 1 ? 's' : ''}</span>`
+        : '';
+
       html += `
         <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
-          ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn quiz" onclick="openQuizModal('${course.id}', '${m.id}')" title="Manage Quiz"><i class="fas fa-question-circle"></i></button>
-            <button class="delete-mat-btn edit" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
-            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
-          ` : ''}
           <div class="mat-head">
             <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
             ${badgeHtml}
+            ${quizBadge}
           </div>
           <h4>${escapeHtml(m.title)}</h4>
           <div class="mat-desc">${escapeHtml(m.description) || ''}</div>
           <div class="mat-actions">${fileActionHtml}${progressBtnHtml}</div>
+          ${currentUser.role === 'admin' ? `
+            <div class="mat-admin-row">
+              <button type="button" class="mat-admin-btn quiz" onclick="openQuizModal('${course.id}', '${m.id}')" title="Manage Quiz">
+                <i class="fas fa-question-circle"></i> Quiz${quizCount > 0 ? ` (${quizCount})` : ''}
+              </button>
+              <button type="button" class="mat-admin-btn edit" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit Material">
+                <i class="fas fa-edit"></i> Edit
+              </button>
+              <button type="button" class="mat-admin-btn delete" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete Material">
+                <i class="fas fa-trash-alt"></i> Delete
+              </button>
+            </div>
+          ` : ''}
         </div>
       `;
     });
@@ -1325,25 +1338,60 @@ function generateCertificate(courseId) {
 }
 
 /* ============================================================
-   QUIZ — ADMIN
+   QUIZ — ADMIN (with defensive checks)
    ============================================================ */
 let quizDraft = [];
 
 function openQuizModal(courseId, materialId) {
-  const course = findCourse(courseId);
-  if (!course) return;
-  const mat = course.materials.find(m => m.id === materialId);
-  if (!mat) return;
+  console.log('[Quiz] Opening quiz modal for course:', courseId, 'material:', materialId);
 
-  $('quizCourseId').value = courseId;
-  $('quizMaterialId').value = materialId;
+  // Defensive: check modal exists
+  const modal = document.getElementById('quizModal');
+  if (!modal) {
+    console.error('[Quiz] #quizModal HTML element is MISSING from index.html!');
+    showToast('Quiz modal missing. Please refresh the page.', 'error');
+    return;
+  }
+
+  const course = findCourse(courseId);
+  if (!course) {
+    console.error('[Quiz] Course not found:', courseId);
+    showToast('Course not found.', 'error');
+    return;
+  }
+
+  const mat = course.materials.find(m => m.id === materialId);
+  if (!mat) {
+    console.error('[Quiz] Material not found:', materialId);
+    showToast('Material not found.', 'error');
+    return;
+  }
+
+  const cidInput = document.getElementById('quizCourseId');
+  const midInput = document.getElementById('quizMaterialId');
+  if (!cidInput || !midInput) {
+    console.error('[Quiz] Hidden inputs missing from modal!');
+    showToast('Quiz modal is incomplete. Please refresh.', 'error');
+    return;
+  }
+
+  cidInput.value = courseId;
+  midInput.value = materialId;
   quizDraft = JSON.parse(JSON.stringify(mat.quiz || []));
+
+  console.log('[Quiz] Loaded', quizDraft.length, 'existing questions');
+
   renderQuizDraft();
   openModal('quizModal');
 }
 
 function renderQuizDraft() {
-  const list = $('quizQuestionsList');
+  const list = document.getElementById('quizQuestionsList');
+  if (!list) {
+    console.error('[Quiz] #quizQuestionsList missing!');
+    return;
+  }
+
   if (quizDraft.length === 0) {
     list.innerHTML = `<div class="empty-state" style="padding:20px;margin-bottom:14px;"><i class="fas fa-question-circle"></i><p>No questions yet. Click "Add Question" below.</p></div>`;
     return;
@@ -1424,8 +1472,8 @@ async function saveQuiz() {
     if (q.options.some(o => !o.trim())) return showToast(`Question ${i + 1} has empty options.`, 'error');
   }
 
-  const courseId = $('quizCourseId').value;
-  const materialId = $('quizMaterialId').value;
+  const courseId = document.getElementById('quizCourseId').value;
+  const materialId = document.getElementById('quizMaterialId').value;
 
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}/quiz`, {
@@ -1460,6 +1508,12 @@ function openQuizPlayer(courseId, materialId) {
   const quiz = mat.quiz || [];
   if (quiz.length === 0) return showToast('This material has no quiz.', 'info');
 
+  const modal = document.getElementById('quizPlayerModal');
+  if (!modal) {
+    showToast('Quiz player modal missing. Please refresh.', 'error');
+    return;
+  }
+
   quizPlayerState = {
     courseId,
     materialId,
@@ -1478,11 +1532,11 @@ function renderQuizPlayer() {
   const st = quizPlayerState;
   if (!st) return;
 
-  $('quizPlayerTitle').innerHTML = `<i class="fas fa-question-circle"></i> ${escapeHtml(st.materialTitle)}`;
+  document.getElementById('quizPlayerTitle').innerHTML = `<i class="fas fa-question-circle"></i> ${escapeHtml(st.materialTitle)}`;
 
   if (!st.submitted) {
-    $('quizPlayerSub').textContent = `${st.quiz.length} question${st.quiz.length > 1 ? 's' : ''} · Choose one option per question`;
-    $('quizPlayerActions').innerHTML = `
+    document.getElementById('quizPlayerSub').textContent = `${st.quiz.length} question${st.quiz.length > 1 ? 's' : ''} · Choose one option per question`;
+    document.getElementById('quizPlayerActions').innerHTML = `
       <button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">Cancel</button>
       <button type="button" class="btn btn-primary" id="quizSubmitBtn" onclick="submitQuiz()">
         <i class="fas fa-paper-plane"></i> Submit Answers
@@ -1505,7 +1559,7 @@ function renderQuizPlayer() {
           </div>
         </div>`;
     });
-    $('quizPlayerBody').innerHTML = html;
+    document.getElementById('quizPlayerBody').innerHTML = html;
   } else {
     const { score, total, percent, results, attempts } = st.response;
     const isPerfect = score === total;
@@ -1513,8 +1567,8 @@ function renderQuizPlayer() {
     const emoji = isPerfect ? '🏆' : isPass ? '🎉' : '📚';
     const headline = isPerfect ? 'Perfect Score!' : isPass ? 'Well done!' : 'Keep practicing!';
 
-    $('quizPlayerSub').textContent = `Attempt #${attempts}`;
-    $('quizPlayerActions').innerHTML = `
+    document.getElementById('quizPlayerSub').textContent = `Attempt #${attempts}`;
+    document.getElementById('quizPlayerActions').innerHTML = `
       <button type="button" class="btn btn-outline" onclick="openQuizPlayer('${st.courseId}', '${st.materialId}')">
         <i class="fas fa-redo"></i> Retake
       </button>
@@ -1556,7 +1610,7 @@ function renderQuizPlayer() {
           </div>
         </div>`;
     });
-    $('quizPlayerBody').innerHTML = html;
+    document.getElementById('quizPlayerBody').innerHTML = html;
   }
 }
 
@@ -1698,36 +1752,36 @@ async function refreshUserData() {
    COURSE CRUD (admin)
    ============================================================ */
 function openAddCourseModal() {
-  $('courseModalTitle').textContent = '📚 New Course';
-  $('editCourseId').value = '';
-  $('courseName').value = '';
-  $('courseCode').value = '';
-  $('courseSemester').value = '';
-  $('courseInstructor').value = '';
-  $('courseDescription').value = '';
-  const pc = $('courseIsPremium'); if (pc) pc.checked = false;
-  const pi = $('coursePrice'); if (pi) pi.value = '';
-  const pg = $('priceGroup'); if (pg) pg.style.display = 'none';
+  document.getElementById('courseModalTitle').textContent = '📚 New Course';
+  document.getElementById('editCourseId').value = '';
+  document.getElementById('courseName').value = '';
+  document.getElementById('courseCode').value = '';
+  document.getElementById('courseSemester').value = '';
+  document.getElementById('courseInstructor').value = '';
+  document.getElementById('courseDescription').value = '';
+  const pc = document.getElementById('courseIsPremium'); if (pc) pc.checked = false;
+  const pi = document.getElementById('coursePrice'); if (pi) pi.value = '';
+  const pg = document.getElementById('priceGroup'); if (pg) pg.style.display = 'none';
   openModal('courseModal');
 }
 
 function togglePriceInput() {
-  const pg = $('priceGroup');
-  const pc = $('courseIsPremium');
+  const pg = document.getElementById('priceGroup');
+  const pc = document.getElementById('courseIsPremium');
   if (pg && pc) pg.style.display = pc.checked ? 'block' : 'none';
 }
 
 async function saveCourse(e) {
   e.preventDefault();
-  const id = $('editCourseId').value;
+  const id = document.getElementById('editCourseId').value;
   const courseData = {
-    name: $('courseName').value.trim(),
-    code: $('courseCode').value.trim(),
-    semester: $('courseSemester').value.trim(),
-    instructor: $('courseInstructor').value.trim(),
-    description: $('courseDescription').value.trim(),
-    isPremium: $('courseIsPremium').checked,
-    price: parseFloat($('coursePrice').value) || 0
+    name: document.getElementById('courseName').value.trim(),
+    code: document.getElementById('courseCode').value.trim(),
+    semester: document.getElementById('courseSemester').value.trim(),
+    instructor: document.getElementById('courseInstructor').value.trim(),
+    description: document.getElementById('courseDescription').value.trim(),
+    isPremium: document.getElementById('courseIsPremium').checked,
+    price: parseFloat(document.getElementById('coursePrice').value) || 0
   };
   if (!courseData.name || !courseData.code) return showToast('Name and code required.', 'error');
 
@@ -1806,40 +1860,40 @@ async function editCourse(courseId) {
    MATERIAL CRUD (admin)
    ============================================================ */
 window.toggleMaterialPriceInput = function () {
-  const isPremium = $('materialIsPremium').checked;
-  const priceGrp = $('materialPriceGroup');
+  const isPremium = document.getElementById('materialIsPremium').checked;
+  const priceGrp = document.getElementById('materialPriceGroup');
   if (priceGrp) priceGrp.style.display = isPremium ? 'block' : 'none';
 };
 
 function openAddMaterialModal(courseId) {
-  $('materialModalTitle').textContent = '📎 Add Material';
-  $('editMaterialId').value = '';
-  $('materialCourseId').value = courseId;
-  $('materialTitle').value = '';
-  $('materialType').value = 'video';
-  $('materialDescription').value = '';
-  $('materialUrl').value = '';
-  $('materialFile').value = '';
-  if ($('materialIsPremium')) $('materialIsPremium').checked = false;
-  if ($('materialPrice')) $('materialPrice').value = '';
+  document.getElementById('materialModalTitle').textContent = '📎 Add Material';
+  document.getElementById('editMaterialId').value = '';
+  document.getElementById('materialCourseId').value = courseId;
+  document.getElementById('materialTitle').value = '';
+  document.getElementById('materialType').value = 'video';
+  document.getElementById('materialDescription').value = '';
+  document.getElementById('materialUrl').value = '';
+  document.getElementById('materialFile').value = '';
+  if (document.getElementById('materialIsPremium')) document.getElementById('materialIsPremium').checked = false;
+  if (document.getElementById('materialPrice')) document.getElementById('materialPrice').value = '';
   toggleMaterialPriceInput();
   openModal('materialModal');
 }
 
 async function saveMaterial(e) {
   e.preventDefault();
-  const courseId = $('materialCourseId').value;
-  const materialId = $('editMaterialId').value;
-  const file = $('materialFile').files ? $('materialFile').files[0] : null;
+  const courseId = document.getElementById('materialCourseId').value;
+  const materialId = document.getElementById('editMaterialId').value;
+  const file = document.getElementById('materialFile').files ? document.getElementById('materialFile').files[0] : null;
 
   const processSave = async (fileData, fileName) => {
-    const isPremiumMat = $('materialIsPremium') ? $('materialIsPremium').checked : false;
-    const matPrice = $('materialPrice') ? (parseFloat($('materialPrice').value) || 0) : 0;
+    const isPremiumMat = document.getElementById('materialIsPremium') ? document.getElementById('materialIsPremium').checked : false;
+    const matPrice = document.getElementById('materialPrice') ? (parseFloat(document.getElementById('materialPrice').value) || 0) : 0;
     const materialData = {
-      title: $('materialTitle').value.trim(),
-      type: $('materialType').value,
-      description: $('materialDescription').value.trim(),
-      url: $('materialUrl').value.trim(),
+      title: document.getElementById('materialTitle').value.trim(),
+      type: document.getElementById('materialType').value,
+      description: document.getElementById('materialDescription').value.trim(),
+      url: document.getElementById('materialUrl').value.trim(),
       isPremium: isPremiumMat,
       price: matPrice,
       fileData,
@@ -1927,25 +1981,25 @@ async function deleteMaterial(courseId, materialId) {
    PROFESSORS (admin — localStorage)
    ============================================================ */
 function openAddProfessorModal() {
-  $('editProfessorId').value = '';
-  $('professorName').value = '';
-  $('professorTitle').value = '';
-  $('professorDescription').value = '';
-  $('professorPhoto').value = '';
+  document.getElementById('editProfessorId').value = '';
+  document.getElementById('professorName').value = '';
+  document.getElementById('professorTitle').value = '';
+  document.getElementById('professorDescription').value = '';
+  document.getElementById('professorPhoto').value = '';
   openModal('professorModal');
 }
 
 function saveProfessor(e) {
   e.preventDefault();
   const data = loadData();
-  const name = $('professorName').value.trim();
+  const name = document.getElementById('professorName').value.trim();
 
   const processSave = (photoData) => {
     data.professors.push({
       id: generateId(),
       name,
-      title: $('professorTitle').value.trim(),
-      description: $('professorDescription').value.trim(),
+      title: document.getElementById('professorTitle').value.trim(),
+      description: document.getElementById('professorDescription').value.trim(),
       photo: photoData || ''
     });
     saveData(data);
@@ -1954,7 +2008,7 @@ function saveProfessor(e) {
     renderApp();
   };
 
-  const photoFile = $('professorPhoto').files ? $('professorPhoto').files[0] : null;
+  const photoFile = document.getElementById('professorPhoto').files ? document.getElementById('professorPhoto').files[0] : null;
   if (photoFile) {
     const reader = new FileReader();
     reader.onload = ev => processSave(ev.target.result);
@@ -1977,7 +2031,7 @@ function deleteProfessor(professorId) {
    Q&A ACTIONS
    ============================================================ */
 async function askDoubt(courseId) {
-  const textarea = $('newDoubtText'); if (!textarea) return;
+  const textarea = document.getElementById('newDoubtText'); if (!textarea) return;
   const question = textarea.value.trim();
   if (!question) return showToast('Please type your doubt or question first.', 'error');
 
@@ -2147,17 +2201,34 @@ async function showPaymentModal(courseId, materialId = null) {
 }
 
 /* ============================================================
-   MODAL + TOAST
+   MODAL + TOAST (with defensive checks)
    ============================================================ */
 function exportData() { showToast('Export feature is coming soon!', 'info'); }
-function openModal(id) { document.getElementById(id).classList.add('active'); }
-function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+function openModal(id) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.error('[Modal] NOT FOUND in HTML:', id);
+    showToast(`Modal "${id}" is missing. Please refresh the page.`, 'error');
+    return;
+  }
+  el.classList.add('active');
+}
+
+function closeModal(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('active');
+}
+
 document.querySelectorAll('.modal-overlay').forEach(overlay => {
   overlay.addEventListener('click', function (e) { if (e.target === this) this.classList.remove('active'); });
 });
 
 function showToast(message, type = 'info') {
-  const container = $('toastContainer');
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
 

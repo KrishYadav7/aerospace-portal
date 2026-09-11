@@ -1073,19 +1073,109 @@ a { color: inherit; }
   display: flex; gap: 8px; flex-wrap: wrap;
   padding-top: 10px;
 }
-.delete-mat-btn {
-  position: absolute; top: 12px; right: 14px;
-  background: transparent; border: none;
-  color: var(--text-tertiary);
-  cursor: pointer; font-size: 14px;
-  transition: .2s var(--ease);
-  width: 26px; height: 26px;
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
+/* ============================================================
+   ADMIN MATERIAL ACTION ROW (Sprint 4 fix)
+   ============================================================ */
+.mat-admin-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-subtle);
 }
-.delete-mat-btn.edit { right: 44px; color: var(--gold-500); }
-.delete-mat-btn:hover { color: #fff; background: var(--rose-500); }
-.delete-mat-btn.edit:hover { background: var(--gold-500); color: #422006; }
+
+.mat-admin-btn {
+  flex: 1 1 auto;
+  min-width: 80px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: .15s var(--ease);
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-default);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.mat-admin-btn i { font-size: 12px; }
+
+.mat-admin-btn.quiz {
+  color: var(--brand-600);
+  border-color: rgba(99,102,241,.35);
+  background: rgba(99,102,241,.06);
+}
+.mat-admin-btn.quiz:hover {
+  background: var(--brand-500);
+  color: #fff;
+  border-color: var(--brand-500);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99,102,241,.3);
+}
+
+.mat-admin-btn.edit {
+  color: var(--gold-600);
+  border-color: rgba(245,158,11,.35);
+  background: rgba(245,158,11,.06);
+}
+.mat-admin-btn.edit:hover {
+  background: var(--gold-500);
+  color: #fff;
+  border-color: var(--gold-500);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245,158,11,.3);
+}
+
+.mat-admin-btn.delete {
+  color: var(--rose-600);
+  border-color: rgba(239,68,68,.35);
+  background: rgba(239,68,68,.06);
+}
+.mat-admin-btn.delete:hover {
+  background: var(--rose-500);
+  color: #fff;
+  border-color: var(--rose-500);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239,68,68,.3);
+}
+
+.mat-admin-btn:active { transform: translateY(0); }
+
+/* Quiz count badge on material cards */
+.mat-quiz-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: rgba(99,102,241,.12);
+  color: var(--brand-600);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  letter-spacing: .3px;
+}
+[data-theme="dark"] .mat-quiz-badge {
+  background: rgba(99,102,241,.22);
+  color: var(--brand-300);
+}
+
+/* Mobile responsiveness */
+@media (max-width: 640px) {
+  .mat-admin-row { gap: 4px; }
+  .mat-admin-btn {
+    font-size: 11px;
+    padding: 7px 8px;
+    min-width: 60px;
+  }
+  .mat-admin-btn i { font-size: 11px; }
+}
 
 /* ============================================================
    17. Q&A SECTION
@@ -2476,8 +2566,109 @@ a { color: inherit; }
 /* ============================================================
    32. QUIZ MODAL (admin) + QUIZ PLAYER (student)
    ============================================================ */
-.delete-mat-btn.quiz { right: 74px; color: var(--brand-500); }
-.delete-mat-btn.quiz:hover { background: var(--brand-500); color: #fff; }
+/* ============================================================
+   ADMIN MATERIAL ACTION ROW (Sprint 4 fix)
+   ============================================================ */
+.mat-admin-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.mat-admin-btn {
+  flex: 1 1 auto;
+  min-width: 80px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: .15s var(--ease);
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-default);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.mat-admin-btn i { font-size: 12px; }
+
+.mat-admin-btn.quiz {
+  color: var(--brand-600);
+  border-color: rgba(99,102,241,.35);
+  background: rgba(99,102,241,.06);
+}
+.mat-admin-btn.quiz:hover {
+  background: var(--brand-500);
+  color: #fff;
+  border-color: var(--brand-500);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99,102,241,.3);
+}
+
+.mat-admin-btn.edit {
+  color: var(--gold-600);
+  border-color: rgba(245,158,11,.35);
+  background: rgba(245,158,11,.06);
+}
+.mat-admin-btn.edit:hover {
+  background: var(--gold-500);
+  color: #fff;
+  border-color: var(--gold-500);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245,158,11,.3);
+}
+
+.mat-admin-btn.delete {
+  color: var(--rose-600);
+  border-color: rgba(239,68,68,.35);
+  background: rgba(239,68,68,.06);
+}
+.mat-admin-btn.delete:hover {
+  background: var(--rose-500);
+  color: #fff;
+  border-color: var(--rose-500);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(239,68,68,.3);
+}
+
+.mat-admin-btn:active { transform: translateY(0); }
+
+/* Quiz count badge on material cards */
+.mat-quiz-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: rgba(99,102,241,.12);
+  color: var(--brand-600);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  letter-spacing: .3px;
+}
+[data-theme="dark"] .mat-quiz-badge {
+  background: rgba(99,102,241,.22);
+  color: var(--brand-300);
+}
+
+/* Mobile responsiveness */
+@media (max-width: 640px) {
+  .mat-admin-row { gap: 4px; }
+  .mat-admin-btn {
+    font-size: 11px;
+    padding: 7px 8px;
+    min-width: 60px;
+  }
+  .mat-admin-btn i { font-size: 11px; }
+}
 
 .quiz-edit-card {
   background: var(--bg-surface-2);

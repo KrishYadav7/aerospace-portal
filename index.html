@@ -452,7 +452,36 @@
   </div>
 
   <div class="toast-container" id="toastContainer"></div>
+  <!-- Quiz Modal (admin) -->
+  <div class="modal-overlay" id="quizModal">
+    <div class="modal-box" style="max-width: 700px;">
+      <h3 id="quizModalTitle"><i class="fas fa-question-circle"></i> Manage Quiz</h3>
+      <p class="modal-sub">Add multiple-choice questions for this material. Students will answer them and get instant feedback.</p>
+      <input type="hidden" id="quizCourseId">
+      <input type="hidden" id="quizMaterialId">
 
+      <div id="quizQuestionsList"></div>
+
+      <button type="button" class="btn btn-outline" id="quizAddQuestionBtn" style="width:100%;justify-content:center;">
+        <i class="fas fa-plus"></i> Add Question
+      </button>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="closeModal('quizModal')">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="saveQuiz()"><i class="fas fa-save"></i> Save Quiz</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quiz Player Modal (student) -->
+  <div class="modal-overlay" id="quizPlayerModal">
+    <div class="modal-box" style="max-width: 640px;">
+      <h3 id="quizPlayerTitle"><i class="fas fa-question-circle"></i> Quiz</h3>
+      <p class="modal-sub" id="quizPlayerSub"></p>
+      <div id="quizPlayerBody"></div>
+      <div class="modal-actions" id="quizPlayerActions"></div>
+    </div>
+  </div>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <script src="app.js"></script>
 </body>
