@@ -1662,10 +1662,10 @@ function renderMaterialCard(course, m, isPurchased) {
       fileActionHtml += ` <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
     }
 
-    // File → custom PDF viewer (or download for admins)
+    // File → PDF viewer (or download for admins on non-PDFs)
     if (hasFile) {
       const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
-                    (m.fileData || '').startsWith('data:application/pdf');
+                    String(m.fileData || '').startsWith('data:application/pdf');
       if (isPdf) {
         fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
       } else if (currentUser.role === 'admin') {
@@ -2031,7 +2031,7 @@ async function viewFileOnline(courseId, materialId) {
   const fileName = (mat.fileName || '').toLowerCase();
   const isPdf =
     fileName.endsWith('.pdf') ||
-    mat.fileData.startsWith('data:application/pdf');
+    String(mat.fileData).startsWith('data:application/pdf');
 
   if (isPdf) {
     window.PDFViewer.open({
@@ -2043,8 +2043,22 @@ async function viewFileOnline(courseId, materialId) {
       username: currentUser.fullName || currentUser.username || 'Student'
     });
   } else {
-    showToast('Inline preview is only available for PDFs. Other formats are not shown here.', 'info');
+    showToast('Inline preview is only available for PDFs.', 'info');
   }
+}
+
+/* NEW — opens video materials in the custom player */
+function openMaterialVideo(courseId, materialId) {
+  const course = findCourse(courseId); if (!course) return;
+  const mat = course.materials.find(m => m.id === materialId);
+  if (!mat || !mat.url) return showToast('No video URL set for this material.', 'error');
+  window.VideoPlayer.open({
+    src: mat.url,
+    materialId: mat.id,
+    courseId: course.id,
+    title: mat.title,
+    username: currentUser.fullName || currentUser.username || 'Student'
+  });
 }
 
 /* NEW: open video material in the custom player */
