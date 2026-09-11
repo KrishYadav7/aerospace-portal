@@ -711,9 +711,23 @@ async function viewFileOnline(courseId, materialId) {
 
 function openAddCourseModal() {
   $('courseModalTitle').textContent = '📚 New Course';
-  $('editCourseId').value = ''; $('courseName').value = ''; $('courseCode').value = '';
-  $('courseSemester').value = ''; $('courseInstructor').value = ''; $('courseDescription').value = '';
-  $('courseIsPremium').checked = false; $('coursePrice').value = ''; $('priceGroup').style.display = 'none';
+  $('editCourseId').value = ''; 
+  $('courseName').value = ''; 
+  $('courseCode').value = '';
+  $('courseSemester').value = ''; 
+  $('courseInstructor').value = ''; 
+  $('courseDescription').value = '';
+  
+  // Safe checks - Agar checkbox/price box milega tabhi reset karega
+  const premiumCheck = document.getElementById('courseIsPremium');
+  if (premiumCheck) premiumCheck.checked = false; 
+  
+  const priceInput = document.getElementById('coursePrice');
+  if (priceInput) priceInput.value = ''; 
+  
+  const priceGroup = document.getElementById('priceGroup');
+  if (priceGroup) priceGroup.style.display = 'none';
+  
   openModal('courseModal');
 }
 
@@ -1110,4 +1124,46 @@ window.toggleMaterialPriceInput = function() {
   
   // Return your card template appending the actionsHTML
   // ...
+}
+function exportData() {
+  showToast('Export feature is coming soon!', 'info');
+}
+
+// ================================================================
+// NEW COURSE MODAL & EXPORT FIXES
+// ================================================================
+
+function openAddCourseModal() {
+  $('courseModalTitle').textContent = '📚 New Course';
+  $('editCourseId').value = ''; 
+  $('courseName').value = ''; 
+  $('courseCode').value = '';
+  $('courseSemester').value = ''; 
+  $('courseInstructor').value = ''; 
+  $('courseDescription').value = '';
+  
+  // Safe checks - Agar checkbox/price box milega tabhi reset karega
+  const premiumCheck = document.getElementById('courseIsPremium');
+  if (premiumCheck) premiumCheck.checked = false; 
+  
+  const priceInput = document.getElementById('coursePrice');
+  if (priceInput) priceInput.value = ''; 
+  
+  const priceGroup = document.getElementById('priceGroup');
+  if (priceGroup) priceGroup.style.display = 'none';
+  
+  openModal('courseModal');
+}
+
+function togglePriceInput() { 
+  const priceGroup = document.getElementById('priceGroup');
+  const premiumCheck = document.getElementById('courseIsPremium');
+  if (priceGroup && premiumCheck) {
+    priceGroup.style.display = premiumCheck.checked ? 'block' : 'none'; 
+  }
+}
+
+// Export button ki lal error hatane ke liye
+function exportData() {
+  showToast('Export feature is coming soon!', 'info');
 }
