@@ -1651,18 +1651,26 @@ function renderMaterialCard(course, m, isPurchased) {
   const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || !isMatPremium;
   const viewed = isMaterialViewed(course.id, m.id);
   const quizCount = (m.quiz || []).length;
-
   let fileActionHtml = '';
   if (!canAccess) {
     fileActionHtml = `<button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock ₹${matPrice}</button>`;
   } else {
-    if (hasFile) {
-      fileActionHtml += currentUser.role === 'admin'
-        ? `<a href="${m.fileData}" download="${escapeHtml(m.fileName) || 'download'}" class="btn btn-primary btn-sm"><i class="fas fa-download"></i> Download</a> <button class="btn btn-outline btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View</button>`
-        : `<button class="btn btn-primary btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View Content</button>`;
-    }
-    if (hasUrl) {
+    // Video → custom player (no download, custom controls)
+    if (m.type === 'video' && hasUrl) {
+      fileActionHtml += `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')"><i class="fas fa-play"></i> Watch</button>`;
+    } else if (hasUrl) {
       fileActionHtml += ` <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
+    }
+
+    // File → custom PDF viewer (or download for admins)
+    if (hasFile) {
+      const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
+                    (m.fileData || '').startsWith('data:application/pdf');
+      if (isPdf) {
+        fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
+      } else if (currentUser.role === 'admin') {
+        fileActionHtml += ` <a href="${m.fileData}" download="${escapeHtml(m.fileName) || 'download'}" class="btn btn-outline btn-sm"><i class="fas fa-download"></i> Download</a>`;
+      }
     }
   }
 
@@ -2018,13 +2026,39 @@ async function submitQuiz() {
 async function viewFileOnline(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
   const mat = course.materials.find(m => m.id === materialId);
-  if (mat && mat.fileData) {
-    try {
-      const response = await fetch(mat.fileData);
-      const blob = await response.blob();
-      window.open(URL.createObjectURL(blob), '_blank');
-    } catch { showToast('Error opening file.', 'error'); }
-  } else showToast('No file attached.', 'info');
+  if (!mat || !mat.fileData) return showToast('No file attached.', 'info');
+
+  const fileName = (mat.fileName || '').toLowerCase();
+  const isPdf =
+    fileName.endsWith('.pdf') ||
+    mat.fileData.startsWith('data:application/pdf');
+
+  if (isPdf) {
+    window.PDFViewer.open({
+      data: mat.fileData,
+      materialId: mat.id,
+      courseId: course.id,
+      fileName: mat.fileName,
+      title: mat.title,
+      username: currentUser.fullName || currentUser.username || 'Student'
+    });
+  } else {
+    showToast('Inline preview is only available for PDFs. Other formats are not shown here.', 'info');
+  }
+}
+
+/* NEW: open video material in the custom player */
+function openMaterialVideo(courseId, materialId) {
+  const course = findCourse(courseId); if (!course) return;
+  const mat = course.materials.find(m => m.id === materialId);
+  if (!mat || !mat.url) return showToast('No video URL set for this material.', 'error');
+  window.VideoPlayer.open({
+    src: mat.url,
+    materialId: mat.id,
+    courseId: course.id,
+    title: mat.title,
+    username: currentUser.fullName || currentUser.username || 'Student'
+  });
 }
 
 async function toggleBookmark(e, courseId) {
