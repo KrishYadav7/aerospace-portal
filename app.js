@@ -555,9 +555,15 @@ function renderStudentCourses() {
   studentCourseList.innerHTML = html;
 }
 
-function viewCourseDetail(courseId) { currentCourseId = courseId; renderApp(); }
+function viewCourseDetail(courseId) { currentCourseId = courseId; renderApp();window.currentSelectedCourseId = courseId; }
 function goBackFromDetail() { currentCourseId = null; renderApp(); }
-function setMaterialFilter(type) { currentMaterialFilter = type; if (currentCourseId) renderCourseDetail(currentCourseId); }
+function setMaterialFilter(type) {
+  currentMaterialFilter = type;
+  // Jis course ki detail khuli hai, usko dobara render kar do taaki naya tab dikhe
+  if (window.currentSelectedCourseId) {
+    renderCourseDetail(window.currentSelectedCourseId);
+  }
+}
 
 function renderCourseDetail(courseId) {
   const course = findCourse(courseId);
