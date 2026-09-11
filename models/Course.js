@@ -20,10 +20,13 @@ const courseSchema = new mongoose.Schema({
   isPremium: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
   materials: [materialSchema],
-  doubts: [{
+doubts: [{
     studentName: String,
+    studentUsername: String, // Naya: Student ka username
+    studentEmail: String,    // Naya: Student ki email id
     question: String,
-    answer: String
+    answer: String,
+    date: { type: Date, default: Date.now } // Naya: Jis din doubt pucha
   }]
 }, { timestamps: true });
 

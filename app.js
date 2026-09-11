@@ -335,7 +335,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'students') renderAdminStudents();
 }
 
-function renderAdminCourses() {
+async function renderAdminCourses() {
   const courses = getCourses();
   const searchTerm = ($('adminCourseSearch').value || '').toLowerCase().trim();
   const filtered = courses.filter(c => c.name.toLowerCase().includes(searchTerm) || (c.code && c.code.toLowerCase().includes(searchTerm)));
@@ -343,7 +343,13 @@ function renderAdminCourses() {
   const totalMaterials = courses.reduce((sum, c) => sum + (c.materials ? c.materials.length : 0), 0);
   $('statCourses').textContent = courses.length;
   $('statMaterials').textContent = totalMaterials;
-  $('statStudents').textContent = 0; 
+  $('statStudents').textContent = '...'; 
+
+  try {
+    const res = await fetch('https://aerospace-portal.onrender.com/api/students');
+    const data = await res.json();
+    if (data.success) $('statStudents').textContent = data.students.length;
+  } catch (e) { $('statStudents').textContent = 'Error'; }
 
   if (filtered.length === 0) {
     adminCourseList.innerHTML = `<div class="empty-state"><i class="fas fa-search"></i><p>No courses found.</p></div>`;
@@ -354,11 +360,22 @@ function renderAdminCourses() {
   filtered.forEach(c => {
     const matCount = c.materials ? c.materials.length : 0;
     const premiumLabel = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` : '';
+    
+    // NAYA FEATURE: Pending Doubts ka Alert aur Reply Button
+    const pendingDoubtsCount = (c.doubts || []).filter(d => !d.answer).length;
+    const doubtAlertHtml = pendingDoubtsCount > 0 
+      ? `<div style="background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; padding:8px 12px; border-radius:8px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
+           <span style="font-size:13px; font-weight:600;"><i class="fas fa-bell"></i> ${pendingDoubtsCount} Pending Doubt(s)</span>
+           <button onclick="event.stopPropagation(); viewCourseDetail('${c.id}'); setTimeout(()=>setMaterialFilter('qa'), 100);" style="background:#ef4444; color:#fff; border:none; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:bold; box-shadow:0 2px 4px rgba(239,68,68,0.3);">Reply Now <i class="fas fa-arrow-right"></i></button>
+         </div>` 
+      : '';
+
     html += `
       <div class="course-card">
         <button class="delete-course-btn" onclick="deleteCourse('${c.id}')" title="Delete course"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${c.code || 'N/A'} ${premiumLabel}</div>
         <h3>${c.name}</h3>
+        ${doubtAlertHtml}
         <div class="course-meta">
           <span><i class="fas fa-user"></i> ${c.instructor || '—'}</span>
           <span><i class="fas fa-calendar-alt"></i> ${c.semester || '—'}</span>
@@ -366,7 +383,7 @@ function renderAdminCourses() {
         </div>
         <div class="material-count"><i class="fas fa-file-alt"></i> ${matCount} materials</div>
         <div class="card-actions">
-          <button class="btn btn-warning btn-sm" style="background-color: #f59e0b; color: white;" onclick="editCourse('${c.id}', '${c.name}', '${c.description || ''}', '${c.price || 0}')"><i class="fas fa-edit"></i> Edit</button>
+          <button class="btn btn-warning btn-sm" style="background-color: #f59e0b; color: white;" onclick="editCourse('${c.id}')"><i class="fas fa-edit"></i> Edit</button>
           <button class="btn btn-primary btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
           <button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
         </div>
@@ -610,32 +627,58 @@ function renderCourseDetail(courseId) {
   html += `</div>`;
 
   // === Q&A SECTION LOGIC (FIXED) ===
+// === Q&A SECTION LOGIC (ADVANCED UI) ===
   if (currentMaterialFilter === 'qa') {
     const doubts = course.doubts || [];
-    html += `
-      <div class="qa-section" style="padding: 20px; background: #fff; border-radius: 12px; border: 1px solid #e9edf2;">
-        <h3 style="margin-bottom: 15px; color: #0b1a33;"><i class="fas fa-question-circle"></i> Student Doubts & Discussion</h3>
-        <div style="margin-bottom: 25px;">
-          <textarea id="newDoubtText" placeholder="Apna sawal yahan type karein (e.g. Sir, is formula ka derivation kaise hoga?)..." style="width:100%; padding:12px; border: 1.5px solid #dce1e8; border-radius:8px; min-height:90px; font-family:inherit;"></textarea>
-          <button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="askDoubt('${course.id}')"><i class="fas fa-paper-plane"></i> Ask Doubt</button>
-        </div>`;
+    
+    html += `<div class="qa-section" style="padding: 20px; background: #fff; border-radius: 12px; border: 1px solid #e9edf2;">
+               <h3 style="margin-bottom: 15px; color: #0b1a33;"><i class="fas fa-comments"></i> Course Q&A / Doubts</h3>`;
+
+    // Sirf student ko sawal puchne ka box dikhega
+    if (currentUser.role === 'student') {
+      html += `<div style="margin-bottom: 25px; background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                 <label style="font-weight:600; color:#1e293b; display:block; margin-bottom:8px;">Ask a New Doubt</label>
+                 <textarea id="newDoubtText" placeholder="Type your doubt here (e.g. Sir, derivation samajh nahi aaya...)" style="width:100%; padding:12px; border: 1px solid #cbd5e1; border-radius:8px; min-height:80px; font-family:inherit; margin-bottom:10px;"></textarea>
+                 <button class="btn btn-primary" onclick="askDoubt('${course.id}')"><i class="fas fa-paper-plane"></i> Submit Doubt</button>
+               </div>`;
+    }
         
     if (doubts.length === 0) {
-      html += `<div class="empty-state" style="padding: 20px;"><i class="fas fa-comments"></i><p>Abhi tak koi doubt nahi pucha gaya hai. Sabse pehle aap sawal puchiye!</p></div>`;
+      html += `<div class="empty-state" style="padding: 20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet.</p></div>`;
     } else {
-      doubts.forEach(d => {
+      // Sort: Unanswered doubts upar dikhenge, aur answered neeche
+      const sortedDoubts = doubts.sort((a, b) => {
+         if (!a.answer && b.answer) return -1;
+         if (a.answer && !b.answer) return 1;
+         return 0;
+      });
+
+      sortedDoubts.forEach(d => {
+        const isAnswered = !!d.answer;
+        const statusBadge = isAnswered 
+          ? `<span style="background:#10b981; color:#fff; font-size:10px; padding:3px 8px; border-radius:12px; font-weight:bold;">SOLVED</span>` 
+          : `<span style="background:#f59e0b; color:#fff; font-size:10px; padding:3px 8px; border-radius:12px; font-weight:bold;">PENDING</span>`;
+        
+        const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
+        const emailText = d.studentEmail ? d.studentEmail : 'No Email provided';
+        const usernameText = d.studentUsername ? `@${d.studentUsername}` : '';
+
         html += `
-          <div style="background:#f8fafc; padding:16px; margin-bottom:14px; border-left: 4px solid #2563eb; border-radius:8px; border: 1px solid #e9edf2;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-              <strong style="color:#0b1a33;"><i class="fas fa-user-graduate"></i> ${d.studentName}</strong>
+          <div style="background:#fff; padding:16px; margin-bottom:14px; border-left: 4px solid ${isAnswered ? '#10b981' : '#f59e0b'}; border-radius:8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); border: 1px solid #f1f5f9;">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; flex-wrap:wrap; gap:10px;">
+              <div>
+                <strong style="color:#0b1a33; font-size:15px;"><i class="fas fa-user-circle"></i> ${d.studentName} <span style="color:#64748b; font-size:13px; font-weight:normal;">${usernameText}</span></strong>
+                ${currentUser.role === 'admin' ? `<div style="font-size:12px; color:#64748b; margin-top:2px;"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
+              </div>
+              <div>${statusBadge} <span style="font-size:11px; color:#94a3b8; margin-left:8px;">${dateText}</span></div>
             </div>
-            <p style="margin:6px 0; color:#334155; font-size:15px;"><strong>Q:</strong> ${d.question}</p>
+            <p style="margin:8px 0; color:#334155; font-size:14px; background:#f8fafc; padding:10px; border-radius:6px;"><strong>Q:</strong> ${d.question}</p>
             
-            ${d.answer 
-              ? `<div style="background:#eef3fa; padding:12px; border-radius:6px; color:#1a3a6b; margin-top:10px; border: 1px solid #d0e1f9;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${d.answer}</div>` 
+            ${isAnswered 
+              ? `<div style="background:#eff6ff; padding:12px; border-radius:6px; color:#1e3a8a; margin-top:10px; font-size:14px; border-left: 3px solid #3b82f6;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${d.answer}</div>` 
               : (currentUser.role === 'admin' 
-                 ? `<button class="btn btn-success btn-sm" style="margin-top:10px;" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Reply to Student</button>` 
-                 : `<span style="font-size:12px; color:#d97706; display:inline-block; margin-top:6px;"><i class="fas fa-clock"></i> Waiting for admin reply...</span>`)
+                 ? `<button class="btn btn-success btn-sm" style="margin-top:10px;" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Give Reply</button>` 
+                 : `<div style="font-size:13px; color:#d97706; margin-top:10px; font-weight:500;"><i class="fas fa-clock"></i> Waiting for admin's reply...</div>`)
             }
           </div>`;
       });
@@ -1382,14 +1425,16 @@ async function askDoubt(courseId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         studentName: currentUser.fullName || currentUser.username,
+        studentUsername: currentUser.username, // Extra Detail
+        studentEmail: currentUser.email || '', // Extra Detail
         question: question
       })
     });
     const data = await response.json();
     if (data.success) {
       showToast('❓ Doubt submitted successfully!', 'success');
-      textarea.value = ''; // Box clear kar do
-      renderCourseDetail(courseId); // Screen refresh karke doubt dikhane ke liye
+      textarea.value = ''; 
+      fetchCoursesFromDB(); // UI ko refresh karne ke liye taaki doubt turant dikhe
     } else {
       showToast(data.message || 'Error submitting doubt', 'error');
     }
@@ -1411,7 +1456,7 @@ async function replyDoubt(courseId, doubtId) {
     const data = await response.json();
     if (data.success) {
       showToast('💡 Answer posted successfully!', 'success');
-      renderCourseDetail(courseId); // Refresh karke admin ka jawab dikhane ke liye
+      fetchCoursesFromDB(); // UI ko refresh karne ke liye
     } else {
       showToast(data.message || 'Error posting answer', 'error');
     }

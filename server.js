@@ -325,12 +325,20 @@ app.get('/api/students', async (req, res) => {
 // DOUBT & Q&A APIs
 // =========================================================
 
-// 1. Student ka naya doubt save karna
+// 1. Student ka naya doubt save karna (Extra details ke sath)
 app.post('/api/courses/:id/doubts', async (req, res) => {
   try {
-    const { studentName, question } = req.body;
+    const { studentName, studentUsername, studentEmail, question } = req.body;
     await Course.findByIdAndUpdate(req.params.id, {
-      $push: { doubts: { studentName, question } }
+      $push: { 
+        doubts: { 
+          studentName, 
+          studentUsername, 
+          studentEmail, 
+          question,
+          date: new Date() // Date save karne ke liye
+        } 
+      }
     });
     res.json({ success: true, message: 'Doubt submitted successfully!' });
   } catch (error) {
