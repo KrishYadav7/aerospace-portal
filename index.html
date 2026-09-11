@@ -1,10 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <meta name="theme-color" content="#0b1a33">
+  <meta name="theme-color" content="#0b1226">
   <title>Aerospace Department – Course Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -13,21 +16,27 @@
     <!-- HEADER -->
     <header id="appHeader" style="display:none;">
       <div class="brand">
-        <i class="fas fa-rocket"></i>
-        <div>
+        <div class="brand-icon"><i class="fas fa-rocket"></i></div>
+        <div class="brand-text">
           <h1>AeroSpace Dept.</h1>
           <span>Course Materials Hub</span>
         </div>
       </div>
+
       <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">
         <i class="fas fa-bars"></i>
       </button>
+
       <nav class="main-nav" id="mainNav"></nav>
+
       <div class="user-info">
+        <button class="icon-btn theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
+          <i class="fas fa-moon"></i>
+        </button>
         <span id="userDisplay" class="user-name">User</span>
         <span class="role-badge" id="roleBadge">Student</span>
         <button class="btn-logout" onclick="logout()">
-          <i class="fas fa-sign-out-alt"></i><span class="logout-text"> Logout</span>
+          <i class="fas fa-sign-out-alt"></i><span class="logout-text">Logout</span>
         </button>
       </div>
     </header>
@@ -35,11 +44,11 @@
     <!-- MAIN -->
     <main class="main-content">
 
-      <!-- LOGIN VIEW -->
+      <!-- LOGIN -->
       <section id="loginView" class="view active">
         <div class="login-card">
           <div class="login-icon"><i class="fas fa-graduation-cap"></i></div>
-          <h2>🚀 Aerospace Department</h2>
+          <h2>Aerospace Department</h2>
           <p class="sub">Sign in to access course materials</p>
           <div class="login-role-toggle">
             <button class="active" data-role="student" onclick="setLoginRole('student')">
@@ -51,18 +60,24 @@
           </div>
           <form id="loginForm" onsubmit="handleLogin(event)">
             <div class="form-group">
-              <label><i class="fas fa-user"></i> Username</label>
-              <input type="text" id="loginUsername" placeholder="Enter your username" required autocomplete="username">
+              <label>Username</label>
+              <div class="input-wrap">
+                <i class="fas fa-user"></i>
+                <input type="text" id="loginUsername" placeholder="Enter your username" required autocomplete="username">
+              </div>
             </div>
             <div class="form-group">
-              <label><i class="fas fa-lock"></i> Password</label>
-              <input type="password" id="loginPassword" placeholder="Enter your password" required autocomplete="current-password">
+              <label>Password</label>
+              <div class="input-wrap">
+                <i class="fas fa-lock"></i>
+                <input type="password" id="loginPassword" placeholder="Enter your password" required autocomplete="current-password">
+              </div>
             </div>
-            <button type="submit" class="btn btn-primary btn-block">
+            <button type="submit" class="btn btn-primary btn-block btn-lg">
               <i class="fas fa-sign-in-alt"></i> Sign In
             </button>
           </form>
-          <div style="text-align:center;margin-top:14px;">
+          <div class="login-footer">
             <a href="#" onclick="showRegisterModal();return false;" class="link-inline">
               <i class="fas fa-user-plus"></i> Register as Student
             </a>
@@ -70,17 +85,22 @@
         </div>
       </section>
 
-      <!-- STUDENT HOME VIEW -->
+      <!-- STUDENT HOME -->
       <section id="studentHomeView" class="view">
         <div class="hero-section">
+          <div class="hero-orb hero-orb-1"></div>
+          <div class="hero-orb hero-orb-2"></div>
           <div class="hero-content">
+            <span class="hero-tag"><i class="fas fa-sparkles"></i> Aerospace Engineering · IIT Kharagpur</span>
             <h1>Welcome to the Aerospace Department</h1>
-            <p>Your gateway to world-class course materials, lectures, and resources.</p>
-            <a href="#" class="btn btn-primary btn-lg" onclick="event.preventDefault();navigateStudent('courses')">
+            <p>Your gateway to world-class course materials, lectures, and resources — all in one place.</p>
+            <a href="#" class="btn btn-accent btn-lg" onclick="event.preventDefault();navigateStudent('courses')">
               <i class="fas fa-book-open"></i> Explore Courses
             </a>
           </div>
-          <div class="hero-image"><i class="fas fa-rocket"></i></div>
+          <div class="hero-image">
+            <i class="fas fa-rocket"></i>
+          </div>
         </div>
 
         <section class="about-owner section-card">
@@ -130,7 +150,7 @@
         </section>
       </section>
 
-      <!-- ADMIN DASHBOARD -->
+      <!-- ADMIN -->
       <section id="adminView" class="view">
         <div class="dash-header">
           <h2><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
@@ -157,24 +177,31 @@
         </div>
 
         <div id="adminTabCourses" class="admin-tab-content active">
-          <div class="stats-grid" id="adminStats">
+          <div class="stats-grid">
             <div class="stat-card">
-              <span class="icon"><i class="fas fa-book-open"></i></span>
-              <div class="num" id="statCourses">0</div>
-              <div class="label">Total Courses</div>
+              <div class="stat-icon tone-brand"><i class="fas fa-book-open"></i></div>
+              <div>
+                <div class="num" id="statCourses">0</div>
+                <div class="label">Total Courses</div>
+              </div>
             </div>
             <div class="stat-card">
-              <span class="icon"><i class="fas fa-file-alt"></i></span>
-              <div class="num" id="statMaterials">0</div>
-              <div class="label">Total Materials</div>
+              <div class="stat-icon tone-cyan"><i class="fas fa-file-alt"></i></div>
+              <div>
+                <div class="num" id="statMaterials">0</div>
+                <div class="label">Total Materials</div>
+              </div>
             </div>
             <div class="stat-card">
-              <span class="icon"><i class="fas fa-users"></i></span>
-              <div class="num" id="statStudents">0</div>
-              <div class="label">Students</div>
+              <div class="stat-icon tone-gold"><i class="fas fa-users"></i></div>
+              <div>
+                <div class="num" id="statStudents">0</div>
+                <div class="label">Students</div>
+              </div>
             </div>
           </div>
           <div class="search-bar">
+            <i class="fas fa-search"></i>
             <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="renderAdminCourses()">
           </div>
           <div id="adminCourseList"></div>
@@ -196,23 +223,19 @@
         </div>
       </section>
 
-      <!-- STUDENT COURSES VIEW -->
+      <!-- STUDENT COURSES -->
       <section id="studentCoursesView" class="view">
         <div class="dash-header">
           <h2><i class="fas fa-graduation-cap"></i> All Courses</h2>
-          <div class="actions">
-            <span class="muted-note">
-              <i class="fas fa-file-alt"></i> Browse and purchase premium courses
-            </span>
-          </div>
         </div>
         <div class="search-bar">
+          <i class="fas fa-search"></i>
           <input type="text" id="studentCourseSearch" placeholder="Search courses..." oninput="renderStudentCourses()">
         </div>
         <div id="studentCourseList"></div>
       </section>
 
-      <!-- COURSE DETAIL VIEW -->
+      <!-- COURSE DETAIL -->
       <section id="courseDetailView" class="view">
         <button class="back-link" onclick="goBackFromDetail()">
           <i class="fas fa-arrow-left"></i> Back
@@ -223,12 +246,12 @@
     </main>
 
     <footer class="app-footer" id="appFooter" style="display:none;">
-      <p>&copy; 2026 Aerospace Department. All rights reserved.</p>
-      <p>Made with <i class="fas fa-heart" style="color:#f0b429;"></i> for the future of aviation.</p>
+      <p>&copy; 2026 Aerospace Department · All rights reserved.</p>
+      <p>Made with <i class="fas fa-heart"></i> for the future of aviation.</p>
     </footer>
   </div>
 
-  <!-- MODAL: Course -->
+  <!-- Course Modal -->
   <div class="modal-overlay" id="courseModal">
     <div class="modal-box">
       <h3 id="courseModalTitle"><i class="fas fa-plus-circle"></i> New Course</h3>
@@ -277,11 +300,11 @@
     </div>
   </div>
 
-  <!-- MODAL: Material (SINGLE COPY) -->
+  <!-- Material Modal (single) -->
   <div class="modal-overlay" id="materialModal">
     <div class="modal-box">
       <h3 id="materialModalTitle"><i class="fas fa-paperclip"></i> Add Material</h3>
-      <p class="modal-sub">Upload a file or provide a link.</p>
+      <p class="modal-sub" id="materialModalSub">Upload a file or provide a link.</p>
       <form id="materialForm" onsubmit="saveMaterial(event)">
         <input type="hidden" id="editMaterialId">
         <input type="hidden" id="materialCourseId">
@@ -308,7 +331,7 @@
           </div>
         </div>
         <div class="form-group" id="materialPriceGroup" style="display:none; margin-top:16px;">
-          <label style="color:#b91c1c; font-weight:bold;">Material Unlock Price (₹) *</label>
+          <label>Material Unlock Price (₹) *</label>
           <input type="number" id="materialPrice" placeholder="e.g. 49" min="0" step="1">
         </div>
         <div class="form-group" style="margin-top:16px;">
@@ -331,7 +354,7 @@
     </div>
   </div>
 
-  <!-- MODAL: Register -->
+  <!-- Register Modal -->
   <div class="modal-overlay" id="registerModal">
     <div class="modal-box">
       <h3><i class="fas fa-user-plus"></i> Student Registration</h3>
@@ -361,11 +384,11 @@
     </div>
   </div>
 
-  <!-- MODAL: Professor -->
+  <!-- Professor Modal -->
   <div class="modal-overlay" id="professorModal">
     <div class="modal-box">
       <h3 id="professorModalTitle"><i class="fas fa-chalkboard-teacher"></i> Add Professor</h3>
-      <p class="modal-sub">Enter professor details.</p>
+      <p class="modal-sub" id="professorModalSub">Enter professor details.</p>
       <form id="professorForm" onsubmit="saveProfessor(event)">
         <input type="hidden" id="editProfessorId">
         <div class="form-group">

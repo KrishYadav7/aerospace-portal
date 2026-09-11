@@ -40,6 +40,45 @@ let studentNav = 'home';
 let adminTab = 'courses';
 
 const $ = id => document.getElementById(id);
+/* ============================================================
+   THEME + MOBILE NAV
+   ============================================================ */
+(function initTheme() {
+  const saved = localStorage.getItem('aero_theme');
+  const prefers = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefers ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', theme);
+})();
+
+function updateThemeIcon() {
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  btn.innerHTML = isDark ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+}
+
+document.addEventListener('click', (e) => {
+  // Theme toggle
+  if (e.target.closest('#themeToggle')) {
+    const cur = document.documentElement.getAttribute('data-theme');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('aero_theme', next);
+    updateThemeIcon();
+    return;
+  }
+  // Mobile nav toggle
+  if (e.target.closest('#navToggle')) {
+    document.getElementById('mainNav')?.classList.toggle('open');
+    return;
+  }
+  // Auto-close mobile nav on link click
+  if (e.target.closest('.main-nav a')) {
+    document.getElementById('mainNav')?.classList.remove('open');
+  }
+});
+
+document.addEventListener('DOMContentLoaded', updateThemeIcon);
 // Mobile nav toggle
 document.addEventListener('click', (e) => {
   const toggle = e.target.closest('#navToggle');
