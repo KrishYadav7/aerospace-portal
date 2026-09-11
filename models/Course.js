@@ -29,5 +29,13 @@ const courseSchema = new mongoose.Schema({
     answer: { type: String, default: "" }, // Admin ka jawaab
     date: { type: Date, default: Date.now }
   }]
-
+materials: [{
+  title: String,
+  type: String,
+  description: String,
+  url: String,
+  fileData: String,
+  fileName: String,
+  isPremium: { type: Boolean, default: false } // <-- ये नई लाइन ऐड करनी है
+}],
 module.exports = mongoose.model('Course', courseSchema);

@@ -563,29 +563,29 @@ function renderCourseDetail(courseId) {
   const course = findCourse(courseId);
   if (!course) { courseDetailContent.innerHTML = `<div class="empty-state"><p>Course not found.</p></div>`; return; }
 
-  const isPremium = course.isPremium || false;
+  const isPremiumCourse = course.isPremium || false;
   const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
   
   let html = `
     <div class="course-detail-header">
-      <h2>${course.name} ${isPremium ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>' : ''}</h2>
+      <h2>${course.name} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
       <div class="meta">
         <span><i class="fas fa-code"></i> ${course.code || 'N/A'}</span>
         <span><i class="fas fa-user"></i> ${course.instructor || '—'}</span>
-        ${isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
+        ${isPremiumCourse ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
       </div>
       <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
     </div>
   `;
 
-  if (isPremium && currentUser.role === 'student' && !isPurchased) {
+  // Naya Banner: Agar student ne course nahi kharida hai, to ek warning banner dikhayenge
+  if (isPremiumCourse && currentUser.role === 'student' && !isPurchased) {
     html += `
-      <div class="payment-overlay">
-        <i class="fas fa-lock"></i><h3>This course is premium</h3><p>Please purchase it to access all materials.</p>
-        <button class="btn btn-primary" onclick="showPaymentModal('${course.id}')"><i class="fas fa-shopping-cart"></i> Buy Now – ₹${course.price || 0}</button>
-      </div>`;
-    courseDetailContent.innerHTML = html;
-    return;
+      <div style="background: #fff3cd; color: #856404; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ffeeba; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <div><i class="fas fa-info-circle"></i> You are viewing free materials. Premium materials are locked.</div>
+        <button class="btn btn-warning btn-sm" style="background:#f59e0b; color:#fff;" onclick="showPaymentModal('${course.id}')"><i class="fas fa-shopping-cart"></i> Buy Full Course (₹${course.price})</button>
+      </div>
+    `;
   }
 
   const materials = course.materials || [];
@@ -601,14 +601,12 @@ function renderCourseDetail(courseId) {
   });
   html += `</div>`;
 
-  // =========================================================
-  // Q&A SECTION LOGIC
-  // =========================================================
+  // Q&A Section logic as it is
   if (currentMaterialFilter === 'qa') {
     const doubts = course.doubts || [];
     html += `<div class="qa-section" style="padding: 15px; background: #f8fafc; border-radius: 8px;">
                <div style="margin-bottom: 20px;">
-                 <textarea id="newDoubtText" placeholder="Eg: Sir, specific impulse ka formula samajh nahi aaya..." style="width:100%; padding:10px; border-radius:5px; border:1px solid #cbd5e1;"></textarea>
+                 <textarea id="newDoubtText" placeholder="Eg: Sir, specific impulse ka formula..." style="width:100%; padding:10px; border-radius:5px; border:1px solid #cbd5e1;"></textarea>
                  <button class="btn btn-primary btn-sm" style="margin-top:10px;" onclick="askDoubt('${course.id}')"><i class="fas fa-paper-plane"></i> Ask Doubt</button>
                </div>`;
                
@@ -619,13 +617,7 @@ function renderCourseDetail(courseId) {
         html += `<div style="background:#fff; padding:15px; margin-bottom:10px; border-left: 4px solid #3b82f6; border-radius:5px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
                    <strong><i class="fas fa-user-graduate"></i> ${d.studentName}</strong> 
                    <p style="margin:8px 0; color:#333;">Q: ${d.question}</p>
-                   
-                   ${d.answer 
-                     ? `<div style="background:#f1f5f9; padding:10px; border-radius:5px; color:#0f172a;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin:</strong> ${d.answer}</div>` 
-                     : currentUser.role === 'admin' 
-                        ? `<button class="btn btn-success btn-sm" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Reply</button>`
-                        : `<span style="font-size:12px; color:#f59e0b;"><i class="fas fa-clock"></i> Waiting for reply...</span>`
-                   }
+                   ${d.answer ? `<div style="background:#f1f5f9; padding:10px; border-radius:5px; color:#0f172a;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin:</strong> ${d.answer}</div>` : (currentUser.role === 'admin' ? `<button class="btn btn-success btn-sm" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Reply</button>` : `<span style="font-size:12px; color:#f59e0b;"><i class="fas fa-clock"></i> Waiting for reply...</span>`)}
                  </div>`;
       });
     }
@@ -634,6 +626,7 @@ function renderCourseDetail(courseId) {
     return;
   }
 
+  // Material Loop
   if (filtered.length === 0) {
     html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No materials found.</p></div>`;
   } else {
@@ -642,28 +635,44 @@ function renderCourseDetail(courseId) {
       const hasFile = m.fileData && m.fileData.length > 0;
       const hasUrl = m.url && m.url.length > 0;
       
+      // LOGIC: Check if user is admin, OR user has bought course, OR material is NOT premium
+      const isMatPremium = m.isPremium || false;
+      const canAccess = (currentUser.role === 'admin') || isPurchased || !isMatPremium;
+      
       let fileActionHtml = '';
-      if (hasFile) {
-        if (currentUser.role === 'admin') {
-          fileActionHtml = `<a href="${m.fileData}" download="${m.fileName || 'download'}" class="btn btn-primary btn-sm"><i class="fas fa-download"></i> Download</a>
-                            <button class="btn btn-outline btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View</button>`;
-        } else {
-          fileActionHtml = `<button class="btn btn-primary btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View Online</button>`;
+      
+      if (!canAccess) {
+        // Agar access nahi hai to Lock button dikhayenge
+        fileActionHtml = `<button class="btn btn-warning btn-sm" style="background:#b91c1c; color:#fff; border:none;" onclick="showPaymentModal('${course.id}')"><i class="fas fa-lock"></i> Unlock (PRO)</button>`;
+      } else {
+        // Normal View/Download buttons
+        if (hasFile) {
+          if (currentUser.role === 'admin') {
+            fileActionHtml = `<a href="${m.fileData}" download="${m.fileName || 'download'}" class="btn btn-primary btn-sm"><i class="fas fa-download"></i> Download</a>
+                              <button class="btn btn-outline btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View</button>`;
+          } else {
+            fileActionHtml = `<button class="btn btn-primary btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View Online</button>`;
+          }
+        }
+        if (hasUrl) {
+          fileActionHtml += ` <a href="${m.url}" target="_blank" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
         }
       }
 
       html += `
-        <div class="material-item">
+        <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
           ${currentUser.role === 'admin' ? `
             <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
             <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
           ` : ''}
-          <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
+          <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+            <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
+            ${isMatPremium ? `<span style="font-size:10px; background:#f0b429; color:#0b1a33; padding:2px 6px; border-radius:12px; font-weight:bold;"><i class="fas fa-crown"></i> PRO</span>` : `<span style="font-size:10px; background:#10b981; color:white; padding:2px 6px; border-radius:12px; font-weight:bold;">FREE</span>`}
+          </div>
           <h4>${m.title}</h4>
           <div class="mat-desc">${m.description || ''}</div>
           <div class="mat-actions">
             ${fileActionHtml}
-            ${hasUrl ? `<a href="${m.url}" target="_blank" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>` : ''}
           </div>
         </div>
       `;
@@ -764,6 +773,7 @@ function openAddMaterialModal(courseId) {
   $('editMaterialId').value = ''; $('materialCourseId').value = courseId;
   $('materialTitle').value = ''; $('materialType').value = 'video';
   $('materialDescription').value = ''; $('materialUrl').value = ''; $('materialFile').value = '';
+  $('materialIsPremium').checked = false; // Naya checkbox reset
   openModal('materialModal');
 }
 
@@ -775,9 +785,13 @@ async function saveMaterial(e) {
 
   const processSave = async (fileData, fileName) => {
     const materialData = {
-      title: $('materialTitle').value.trim(), type: $('materialType').value,
-      description: $('materialDescription').value.trim(), url: $('materialUrl').value.trim(),
-      fileData, fileName
+      title: $('materialTitle').value.trim(), 
+      type: $('materialType').value,
+      description: $('materialDescription').value.trim(), 
+      url: $('materialUrl').value.trim(),
+      isPremium: $('materialIsPremium').checked, // <-- Naya data jo DB mein jayega
+      fileData, 
+      fileName
     };
 
     if (materialId) {
@@ -789,7 +803,7 @@ async function saveMaterial(e) {
         });
         const data = await response.json();
         if (data.success) {
-          showToast('📎 Material safely added to database!', 'success');
+          showToast('📎 Material added successfully!', 'success');
           closeModal('materialModal');
           fetchCoursesFromDB();
         }
