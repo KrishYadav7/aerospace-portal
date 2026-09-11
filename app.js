@@ -1099,6 +1099,14 @@ function renderCourseCardHTML(course, role) {
       </div>
     `;
   }
+  // Function to show/hide amount input field for materials
+window.toggleMaterialPriceInput = function() {
+  const isPremiumChecked = document.getElementById('materialIsPremium').checked;
+  const priceBox = document.getElementById('materialPriceGroup');
+  if (priceBox) {
+    priceBox.style.display = isPremiumChecked ? 'block' : 'none';
+  }
+};
   
   // Return your card template appending the actionsHTML
   // ...

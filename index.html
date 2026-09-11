@@ -324,7 +324,7 @@
     </div>
   </div>
 
-  <!-- MODAL: Material -->
+ <!-- MODAL: Material -->
   <div class="modal-overlay" id="materialModal">
     <div class="modal-box">
       <h3 id="materialModalTitle"><i class="fas fa-paperclip"></i> Add Material</h3>
@@ -338,7 +338,7 @@
           <input type="text" id="materialTitle" placeholder="e.g. Lecture 1: Intro" required>
         </div>
         
-        <!-- Systematic Type & Premium Checkbox Grid -->
+        <!-- Type aur Premium Checkbox -->
         <div class="form-row" style="align-items: center;">
           <div class="form-group" style="margin-bottom: 0;">
             <label>Type *</label>
@@ -352,16 +352,23 @@
           </div>
           
           <div class="form-group premium-toggle" style="margin-bottom: 0;">
-            <label style="padding: 10px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; width: 100%;">
-              <input type="checkbox" id="materialIsPremium">
+            <label style="padding: 10px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; width: 100%; cursor: pointer;">
+              <!-- ONCHANGE ZAROORI HAI YAHAN -->
+              <input type="checkbox" id="materialIsPremium" onchange="toggleMaterialPriceInput()">
               <span style="color: #be123c; font-weight: bold;"><i class="fas fa-crown"></i> PRO Material</span>
             </label>
           </div>
         </div>
+
+        <!-- YEH BOX CHHIPA HUA HAI, CHECKBOX PAR CLICK KARNE SE DIKHEGA -->
+        <div class="form-group" id="materialPriceGroup" style="display:none; margin-top: 16px;">
+          <label style="color:#b91c1c; font-weight:bold;">Material Unlock Price (₹) *</label>
+          <input type="number" id="materialPrice" placeholder="e.g. 49" min="0" step="1">
+        </div>
         
-        <div class="form-group" style="margin-top: 18px;">
+        <div class="form-group" style="margin-top: 16px;">
           <label>Description</label>
-          <textarea id="materialDescription" placeholder="Optional description" rows="2"></textarea>
+          <textarea id="materialDescription" placeholder="Optional description"></textarea>
         </div>
         
         <div class="form-group">
@@ -371,13 +378,12 @@
         
         <div class="form-group">
           <label>Or Upload File (PDF, PPT, etc.)</label>
-          <input type="file" id="materialFile" accept=".pdf,.ppt,.pptx,.doc,.docx,.txt,.mp4,.webm,.ogg,.png,.jpg,.jpeg">
-          <span style="font-size:12px;color:#94a3b8;">Max ~10MB per file (stored in your browser)</span>
+          <input type="file" id="materialFile">
         </div>
         
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('materialModal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Material</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save</button>
         </div>
       </form>
     </div>

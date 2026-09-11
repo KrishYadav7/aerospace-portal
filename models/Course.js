@@ -30,13 +30,14 @@ const courseSchema = new mongoose.Schema({
     date: { type: Date, default: Date.now }
   }]
 materials: [{
-  title: String,
-  type: String,
-  description: String,
-  url: String,
-  fileData: String,
-  fileName: String,
-  isPremium: { type: Boolean, default: false },
-  price: { type: Number, default: 0 } // <-- Yeh line add karni hai
-}]
+    title: { type: String, required: true },
+    type: { type: String, required: true },
+    description: String,
+    url: String,
+    fileData: String,
+    fileName: String,
+    // YEH DO NAYI LINES ADD KARNI HAIN:
+    isPremium: { type: Boolean, default: false },
+    price: { type: Number, default: 0 }
+  }],
 module.exports = mongoose.model('Course', courseSchema);
