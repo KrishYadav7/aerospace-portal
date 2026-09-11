@@ -1167,3 +1167,170 @@ function togglePriceInput() {
 function exportData() {
   showToast('Export feature is coming soon!', 'info');
 }
+// ================================================================
+// MATERIAL PREMIUM LOGIC (Amount & Logo Fix)
+// ================================================================
+
+window.toggleMaterialPriceInput = function() {
+  const isPremium = document.getElementById('materialIsPremium').checked;
+  const priceGrp = document.getElementById('materialPriceGroup');
+  if(priceGrp) priceGrp.style.display = isPremium ? 'block' : 'none';
+};
+
+function openAddMaterialModal(courseId) {
+  $('materialModalTitle').textContent = '📎 Add Material';
+  $('editMaterialId').value = ''; $('materialCourseId').value = courseId;
+  $('materialTitle').value = ''; $('materialType').value = 'video';
+  $('materialDescription').value = ''; $('materialUrl').value = ''; $('materialFile').value = '';
+  
+  if($('materialIsPremium')) $('materialIsPremium').checked = false;
+  if($('materialPrice')) $('materialPrice').value = '';
+  toggleMaterialPriceInput(); 
+  openModal('materialModal');
+}
+
+async function saveMaterial(e) {
+  e.preventDefault();
+  const courseId = $('materialCourseId').value;
+  const materialId = $('editMaterialId').value;
+  const file = $('materialFile').files ? $('materialFile').files[0] : null;
+
+  const processSave = async (fileData, fileName) => {
+    const isPremiumMat = $('materialIsPremium') ? $('materialIsPremium').checked : false;
+    const matPrice = $('materialPrice') ? (parseFloat($('materialPrice').value) || 0) : 0;
+
+    const materialData = {
+      title: $('materialTitle').value.trim(), 
+      type: $('materialType').value,
+      description: $('materialDescription').value.trim(), 
+      url: $('materialUrl').value.trim(),
+      isPremium: isPremiumMat, // Database ko bhej rahe hain
+      price: matPrice,         // Database ko amount bhej rahe hain
+      fileData, 
+      fileName
+    };
+
+    if (materialId) {
+      showToast('Edit feature coming soon!', 'info'); closeModal('materialModal');
+    } else {
+      try {
+        const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(materialData)
+        });
+        const data = await response.json();
+        if (data.success) {
+          showToast('📎 Content successfully uploaded!', 'success');
+          closeModal('materialModal');
+          fetchCoursesFromDB();
+        }
+      } catch (error) { showToast('Server error.', 'error'); }
+    }
+  };
+
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = ev => processSave(ev.target.result, file.name);
+    reader.readAsDataURL(file);
+  } else { processSave('', ''); }
+}
+
+// === RENDER LOGIC FOR PRO LOGO AND AMOUNT ===
+function renderCourseDetail(courseId) {
+  const course = findCourse(courseId);
+  if (!course) { courseDetailContent.innerHTML = `<div class="empty-state"><p>Course not found.</p></div>`; return; }
+
+  const isPremiumCourse = course.isPremium || false;
+  const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
+  
+  let html = `
+    <div class="course-detail-header">
+      <h2>${course.name} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
+      <div class="meta">
+        <span><i class="fas fa-code"></i> ${course.code || 'N/A'}</span>
+        <span><i class="fas fa-user"></i> ${course.instructor || '—'}</span>
+        ${isPremiumCourse ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
+      </div>
+      <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
+    </div>
+  `;
+
+  if (isPremiumCourse && currentUser.role === 'student' && !isPurchased) {
+    html += `<div style="background: #fff3cd; color: #856404; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ffeeba; display: flex; justify-content: space-between; align-items: center;">
+        <div><i class="fas fa-info-circle"></i> Premium materials are locked.</div>
+        <button class="btn btn-warning btn-sm" style="background:#f59e0b; color:#fff;" onclick="showPaymentModal('${course.id}')"><i class="fas fa-shopping-cart"></i> Buy Full Course (₹${course.price})</button>
+      </div>`;
+  }
+
+  const materials = course.materials || [];
+  const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
+  
+  const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
+  const typeLabels = { all: 'All', video: '🎬 Video', pyq: '📄 PYQ', tutorial: '📝 Tutorial', slides: '📊 Slides', qa: '❓ Q&A', other: '📁 Other' };
+  
+  html += `<div class="material-tabs">`;
+  types.forEach(t => {
+    const count = t === 'all' ? materials.length : materials.filter(m => m.type === t).length;
+    html += `<button class="${currentMaterialFilter === t ? 'active' : ''}" onclick="setMaterialFilter('${t}')">${typeLabels[t]} (${count})</button>`;
+  });
+  html += `</div>`;
+
+  if (currentMaterialFilter === 'qa') {
+    // QA Section remains same
+    html += `<div class="qa-section" style="padding: 15px; background: #f8fafc; border-radius: 8px;"><p>Q&A Section Active</p></div>`;
+    courseDetailContent.innerHTML = html; return;
+  }
+
+  if (filtered.length === 0) {
+    html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No content uploaded yet.</p></div>`;
+  } else {
+    html += `<div class="material-list">`;
+    filtered.forEach(m => {
+      const hasFile = m.fileData && m.fileData.length > 0;
+      const hasUrl = m.url && m.url.length > 0;
+      
+      // LOGIC: Yahan Premium Amount aur Logo Check hoga
+      const isMatPremium = m.isPremium === true || m.isPremium === 'true';
+      const matPrice = parseFloat(m.price) || 0;
+      
+      const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
+      const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || !isMatPremium;
+      
+      let fileActionHtml = '';
+      if (!canAccess) {
+        // Red Lock Button pta amount
+        fileActionHtml = `<button class="btn btn-warning btn-sm" style="background:#b91c1c; color:#fff; border:none;" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock for ₹${matPrice}</button>`;
+      } else {
+        if (hasFile) {
+          if (currentUser.role === 'admin') fileActionHtml = `<a href="${m.fileData}" download="${m.fileName || 'download'}" class="btn btn-primary btn-sm"><i class="fas fa-download"></i> Download</a> <button class="btn btn-outline btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View</button>`;
+          else fileActionHtml = `<button class="btn btn-primary btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View Content</button>`;
+        }
+        if (hasUrl) fileActionHtml += ` <a href="${m.url}" target="_blank" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
+      }
+
+      // PRO/FREE TAG with Amount
+      const badgeHtml = isMatPremium 
+        ? `<span style="font-size:10px; background:#f0b429; color:#0b1a33; padding:3px 8px; border-radius:12px; font-weight:bold;"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>` 
+        : `<span style="font-size:10px; background:#10b981; color:white; padding:3px 8px; border-radius:12px; font-weight:bold;">FREE</span>`;
+
+      html += `
+        <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
+          ${currentUser.role === 'admin' ? `
+            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
+            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
+          ` : ''}
+          <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+            <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
+            ${badgeHtml}
+          </div>
+          <h4>${m.title}</h4>
+          <div class="mat-desc">${m.description || ''}</div>
+          <div class="mat-actions" style="margin-top:10px;">
+            ${fileActionHtml}
+          </div>
+        </div>
+      `;
+    });
+    html += `</div>`;
+  }
+  courseDetailContent.innerHTML = html;
+}

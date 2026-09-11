@@ -36,7 +36,7 @@ materials: [{
     url: String,
     fileData: String,
     fileName: String,
-    // YEH DO NAYI LINES ADD KARNI HAIN:
+    // YEH DO NAYI LINES ADD KARNA BAHUT ZAROORI HAI
     isPremium: { type: Boolean, default: false },
     price: { type: Number, default: 0 }
   }],
