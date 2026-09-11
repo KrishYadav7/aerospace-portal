@@ -1346,3 +1346,60 @@ function renderCourseDetail(courseId) {
   }
   courseDetailContent.innerHTML = html;
 }
+// ================================================================
+// Q&A / DOUBT SYSTEM (Student Ask & Admin Reply)
+// ================================================================
+
+async function askDoubt(courseId) {
+  const textarea = document.getElementById('newDoubtText');
+  if (!textarea) return;
+  const question = textarea.value.trim();
+  
+  if (!question) {
+    showToast('Please type your doubt or question first.', 'error');
+    return;
+  }
+
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentName: currentUser.fullName || currentUser.username,
+        question: question
+      })
+    });
+    const data = await response.json();
+    if (data.success) {
+      showToast('❓ Doubt submitted successfully!', 'success');
+      textarea.value = ''; // Box clear kar do
+      renderCourseDetail(courseId); // Screen refresh karke doubt dikhane ke liye
+    } else {
+      showToast(data.message || 'Error submitting doubt', 'error');
+    }
+  } catch (error) {
+    showToast('Server error while submitting doubt.', 'error');
+  }
+}
+
+async function replyDoubt(courseId, doubtId) {
+  const answer = prompt("Enter your reply/solution for this student:");
+  if (answer === null || answer.trim() === '') return;
+
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answer: answer.trim() })
+    });
+    const data = await response.json();
+    if (data.success) {
+      showToast('💡 Answer posted successfully!', 'success');
+      renderCourseDetail(courseId); // Refresh karke admin ka jawab dikhane ke liye
+    } else {
+      showToast(data.message || 'Error posting answer', 'error');
+    }
+  } catch (error) {
+    showToast('Server error while posting answer.', 'error');
+  }
+}
