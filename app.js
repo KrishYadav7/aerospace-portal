@@ -52,7 +52,8 @@ function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 
 async function fetchCoursesFromDB() {
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/courses');
+    // Cache hatane ke liye URL ke end mein timestamp add kiya hai
+    const response = await fetch('https://aerospace-portal.onrender.com/api/courses?t=' + new Date().getTime());
     const data = await response.json();
     liveCourses = data.map(course => {
       const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
@@ -1001,24 +1002,28 @@ async function editCourse(courseId) {
   let newPrice = prompt("Update Course Price (₹):", course.price || 0);
   if (newPrice === null) return;
 
-  // Naya Logic: Price ko number mein convert karo
+  // Amount ko number banayein aur premium check karein
   newPrice = parseFloat(newPrice) || 0;
-  
-  // Agar price 0 se zyada hai, toh isPremium automatically true ho jayega
   const isPremium = newPrice > 0; 
 
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
       method: 'PUT', 
       headers: { 'Content-Type': 'application/json' },
-      // Yahan hum isPremium bhi backend ko bhej rahe hain
       body: JSON.stringify({ name: newTitle, description: newDesc, price: newPrice, isPremium: isPremium })
     });
     
     const data = await response.json();
     if (data.success) {
       showToast('✏️ ' + data.message, 'success');
-      fetchCoursesFromDB(); // Data refresh karne ke liye
+      
+      // MAGIC TRICK: Bina page refresh kiye turant UI update karna
+      course.name = newTitle;
+      course.description = newDesc;
+      course.price = newPrice;
+      course.isPremium = isPremium; // Yeh line logo aur amount dono wapas le aayegi
+      
+      renderApp(); // Screen ko turant refresh karega
     } else {
       showToast(data.message, 'error');
     }

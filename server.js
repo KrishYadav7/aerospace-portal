@@ -219,13 +219,15 @@ app.delete('/api/courses/:id', async (req, res) => {
 // =========================================================
 
 // 1. Course Edit karne ki API
+// 1. Course Edit karne ki API
 app.put('/api/courses/:id', async (req, res) => {
   try {
-    // Yahan hum isPremium ko bhi body se accept kar rahe hain
     const { name, description, price, isPremium } = req.body;
     
-    // Database mein isPremium bhi update hoga
-    await Course.findByIdAndUpdate(req.params.id, { name, description, price, isPremium });
+    // $set use karna zaroori hai taaki exactly yehi fields database mein force update hon
+    await Course.findByIdAndUpdate(req.params.id, { 
+      $set: { name, description, price, isPremium } 
+    });
     
     res.json({ success: true, message: 'Course updated successfully!' });
   } catch (error) {
