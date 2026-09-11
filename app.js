@@ -2047,32 +2047,40 @@ async function viewFileOnline(courseId, materialId) {
   }
 }
 
-/* NEW — opens video materials in the custom player */
-function openMaterialVideo(courseId, materialId) {
-  const course = findCourse(courseId); if (!course) return;
+/* ============================================================
+   VIDEO — Open material's video in custom player
+   Fetches the YouTube ID from the server per-session so the
+   raw URL never appears in the page source.
+   ============================================================ */
+async function openMaterialVideo(courseId, materialId) {
+  const course = findCourse(courseId);
+  if (!course) return;
   const mat = course.materials.find(m => m.id === materialId);
   if (!mat || !mat.url) return showToast('No video URL set for this material.', 'error');
-  window.VideoPlayer.open({
-    src: mat.url,
-    materialId: mat.id,
-    courseId: course.id,
-    title: mat.title,
-    username: currentUser.fullName || currentUser.username || 'Student'
-  });
-}
 
-/* NEW: open video material in the custom player */
-function openMaterialVideo(courseId, materialId) {
-  const course = findCourse(courseId); if (!course) return;
-  const mat = course.materials.find(m => m.id === materialId);
-  if (!mat || !mat.url) return showToast('No video URL set for this material.', 'error');
-  window.VideoPlayer.open({
-    src: mat.url,
-    materialId: mat.id,
-    courseId: course.id,
-    title: mat.title,
-    username: currentUser.fullName || currentUser.username || 'Student'
-  });
+  try {
+    const res = await fetch(
+      `https://aerospace-portal.onrender.com/api/materials/${courseId}/${materialId}/video-session`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser._id })
+      }
+    );
+    const data = await res.json();
+    if (!data.success) return showToast(data.message || 'Could not load video.', 'error');
+
+    window.VideoPlayer.open({
+      source: 'youtube',
+      videoId: data.videoId,
+      materialId: mat.id,
+      courseId: course.id,
+      title: mat.title,
+      username: currentUser.fullName || currentUser.username || 'Student'
+    });
+  } catch {
+    showToast('Server error loading video.', 'error');
+  }
 }
 
 async function toggleBookmark(e, courseId) {

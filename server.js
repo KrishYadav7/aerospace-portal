@@ -583,6 +583,58 @@ app.get('/api/students', async (req, res) => {
     res.json({ success: true, students });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
+/* ============================================================
+   VIDEO SESSION
+   Extracts YouTube ID server-side so the raw URL never appears
+   in the page HTML. Client fetches the ID per-session.
+   ============================================================ */
+function extractYouTubeId(url) {
+  if (!url) return null;
+  const m = String(url).match(
+    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
+  );
+  return m ? m[1] : null;
+}
 
+app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+    const mat = course.materials.id(req.params.materialId);
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+    if (!mat.url) return res.status(400).json({ success: false, message: 'No video URL on this material.' });
+
+    // Access control — mirror the client-side gating
+    const isPremiumMat = mat.isPremium === true || mat.isPremium === 'true';
+    if (isPremiumMat && userId) {
+      const user = await User.findById(userId);
+      if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+      const owns =
+        (user.purchases || []).includes(course._id.toString()) ||
+        (user.purchases || []).includes(mat._id.toString());
+      if (!owns && user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Purchase required.' });
+      }
+    }
+
+    const ytId = extractYouTubeId(mat.url);
+    if (!ytId) {
+      return res.status(400).json({ success: false, message: 'This video is not a YouTube link.' });
+    }
+
+    // Short-lived session marker (not persisted). Only the ID is returned,
+    // never the full URL. Client never sees youtube.com in its own HTML.
+    res.json({
+      success: true,
+      videoId: ytId,
+      title: mat.title,
+      expiresAt: Date.now() + (2 * 60 * 60 * 1000)
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server is running on port ${PORT}`));

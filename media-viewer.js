@@ -1,6 +1,6 @@
 /* ============================================================
-   AEROSPACE MEDIA VIEWER v2 — PDF + Video
-   Self-contained. No dependencies except pdfjsLib (loaded in HTML).
+   AEROSPACE MEDIA VIEWER v3
+   PDF viewer (unchanged) + Video player with custom YouTube UI
    ============================================================ */
 (function () {
   'use strict';
@@ -64,12 +64,10 @@
   };
 
   /* ============================================================
-     PDF VIEWER
+     PDF VIEWER (unchanged)
      ============================================================ */
   class PDFViewer {
-    constructor() {
-      this._init();
-    }
+    constructor() { this._init(); }
 
     _init() {
       this.active = false;
@@ -148,7 +146,6 @@
       }
     }
 
-    /* ---------- UI construction ---------- */
     _buildUI() {
       const old = document.getElementById('pdfViewerModal');
       if (old) old.remove();
@@ -165,13 +162,11 @@
       el.innerHTML =
         '<div class="pdfv-shell">' +
           '<div class="pdfv-toolbar">' +
-
             '<div class="pdfv-toolbar-left">' +
               '<button type="button" class="pdfv-btn" data-act="close" title="Close (Esc)"><i class="fas fa-times"></i></button>' +
               '<span class="pdfv-title" id="pdfvTitle"></span>' +
               '<span class="pdfv-hlcount" id="pdfvHlCount"></span>' +
             '</div>' +
-
             '<div class="pdfv-toolbar-center">' +
               '<button type="button" class="pdfv-btn" data-act="prev" title="Previous page"><i class="fas fa-chevron-up"></i></button>' +
               '<span class="pdfv-pageinfo">' +
@@ -185,15 +180,12 @@
               '<button type="button" class="pdfv-btn" data-act="zoomin" title="Zoom in"><i class="fas fa-search-plus"></i></button>' +
               '<button type="button" class="pdfv-btn" data-act="fit" title="Fit to width"><i class="fas fa-arrows-alt-h"></i></button>' +
             '</div>' +
-
             '<div class="pdfv-toolbar-right">' +
               '<div class="pdfv-hl-colors" id="pdfvColors">' + colorBtns + '</div>' +
               '<button type="button" class="pdfv-btn" data-act="clear-page" title="Clear highlights on current page"><i class="fas fa-eraser"></i></button>' +
               '<button type="button" class="pdfv-btn" data-act="clear-all" title="Clear all highlights"><i class="fas fa-trash-alt"></i></button>' +
             '</div>' +
-
           '</div>' +
-
           '<div class="pdfv-body" id="pdfvBody">' +
             '<div class="pdfv-pages" id="pdfvPages"></div>' +
             '<div class="pdfv-watermark" id="pdfvWatermark"></div>' +
@@ -202,9 +194,7 @@
               '<p>Loading document…</p>' +
             '</div>' +
           '</div>' +
-
         '</div>' +
-
         '<div class="pdfv-selection-menu" id="pdfvSelMenu">' +
           '<button type="button" class="pdfv-sel-btn" data-act="highlight"><i class="fas fa-highlighter"></i> Highlight</button>' +
           '<button type="button" class="pdfv-sel-btn" data-act="copy"><i class="fas fa-copy"></i> Copy</button>' +
@@ -220,25 +210,20 @@
 
       const self = this;
 
-      // Toolbar buttons
       el.querySelectorAll('.pdfv-btn').forEach(function (btn) {
         btn.addEventListener('click', function () { self._handleToolbar(btn.dataset.act); });
       });
-
-      // Color buttons
       el.querySelectorAll('.pdfv-color').forEach(function (btn) {
         btn.addEventListener('click', function () { self._setColor(btn.dataset.color); });
       });
       this._setColor('yellow');
 
-      // Page input
       const pageInput = el.querySelector('#pdfvPageInput');
       pageInput.addEventListener('change', function () {
         const n = parseInt(pageInput.value, 10);
         if (n >= 1 && self.pdfDoc && n <= self.pdfDoc.numPages) self._scrollToPage(n);
       });
 
-      // Selection floating menu
       this.selMenu.addEventListener('mousedown', function (e) { e.preventDefault(); });
       this.selMenu.addEventListener('click', function (e) {
         const b = e.target.closest('.pdfv-sel-btn');
@@ -247,16 +232,13 @@
         else if (b.dataset.act === 'copy') self._copySelection();
       });
 
-      // Document-level listeners (removed on close)
       document.addEventListener('selectionchange', this._onSelectionChange);
       document.addEventListener('keydown', this._onKeyDown, true);
       this.bodyEl.addEventListener('scroll', this._onBodyScroll, { passive: true });
 
-      // Block right-click & drag
       this.bodyEl.addEventListener('contextmenu', function (e) { e.preventDefault(); });
       this.bodyEl.addEventListener('dragstart', function (e) { e.preventDefault(); });
 
-      // Click on highlight → delete
       this.pagesEl.addEventListener('click', function (e) {
         const mark = e.target.closest('mark.pdf-hl');
         if (!mark) return;
@@ -264,7 +246,6 @@
         self._deleteHighlight(mark.dataset.hlId);
       });
 
-      // Backdrop click closes
       el.addEventListener('click', function (e) {
         if (e.target === el) self.close();
       });
@@ -289,7 +270,6 @@
       });
     }
 
-    /* ---------- Rendering ---------- */
     async _renderAllPages() {
       this.pagesEl.innerHTML = '';
       this.pageEls.clear();
@@ -308,10 +288,7 @@
         this.pagesEl.appendChild(pageEl);
         this.pageEls.set(i, pageEl);
       }
-
-      for (let i = 1; i <= total; i++) {
-        await this._renderPage(i);
-      }
+      for (let i = 1; i <= total; i++) await this._renderPage(i);
       this._applyAllHighlights();
     }
 
@@ -325,7 +302,6 @@
       pageEl.style.width = viewport.width + 'px';
       pageEl.style.height = viewport.height + 'px';
 
-      // ---- Canvas ----
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
@@ -339,7 +315,6 @@
         viewport: viewport
       }).promise;
 
-      // ---- Text layer ----
       const textLayer = document.createElement('div');
       textLayer.className = 'pdfv-textlayer';
       textLayer.style.width = viewport.width + 'px';
@@ -347,9 +322,6 @@
       pageEl.appendChild(textLayer);
 
       const textContent = await page.getTextContent();
-
-      // PDF.js 3.11.x uses `textContentSource`; older 3.x used `textContent`.
-      // We pass BOTH defensively.
       let task;
       try {
         task = pdfjsLib.renderTextLayer({
@@ -368,7 +340,6 @@
         });
       }
       await task.promise;
-
       this.textLayers.set(n, textLayer);
     }
 
@@ -390,7 +361,6 @@
       if (inp && document.activeElement !== inp) inp.value = current;
     }
 
-    /* ---------- Zoom ---------- */
     _changeZoom(delta) { this._setZoom(this.scale + delta); }
 
     async _setZoom(scale) {
@@ -419,7 +389,6 @@
       this._setZoom(target);
     }
 
-    /* ---------- Selection ---------- */
     _onSelectionChange() {
       if (!this.active) return;
       const self = this;
@@ -439,7 +408,6 @@
 
       this.pendingSel = { textLayer: textLayer };
 
-      // Measure menu
       this.selMenu.style.display = 'flex';
       this.selMenu.style.visibility = 'hidden';
       this.selMenu.style.left = '0px';
@@ -469,7 +437,6 @@
       this.pendingSel = null;
     }
 
-    /* ---------- Highlight creation ---------- */
     _createHighlight() {
       if (!this.pendingSel) return;
       const sel = window.getSelection();
@@ -489,28 +456,19 @@
       if (start == null || end == null || start >= end) {
         return userToast('Could not create highlight — try selecting again.', 'error');
       }
-
-      // Reject overlap
       const pageHls = this.highlights.filter(function (h) { return h.page === pageNum; });
       for (let i = 0; i < pageHls.length; i++) {
         if (start < pageHls[i].end && end > pageHls[i].start) {
           return userToast('Overlaps an existing highlight.', 'error');
         }
       }
-
       this.highlights.push({
-        id: uid(),
-        page: pageNum,
-        start: start,
-        end: end,
-        text: text,
-        color: this.color,
-        createdAt: Date.now()
+        id: uid(), page: pageNum, start, end, text: text,
+        color: this.color, createdAt: Date.now()
       });
       this._saveHighlights();
       this._applyPageHighlights(pageNum);
       this._updateHlCount();
-
       sel.removeAllRanges();
       this._hideSelMenu();
       userToast('Highlighted.', 'success');
@@ -538,9 +496,7 @@
             function () { userToast('Copied to clipboard.', 'success'); },
             function () { self._fallbackCopy(text); }
           );
-        } else {
-          this._fallbackCopy(text);
-        }
+        } else this._fallbackCopy(text);
       } catch (e) { this._fallbackCopy(text); }
     }
 
@@ -554,7 +510,7 @@
         ta.select();
         const ok = document.execCommand('copy');
         document.body.removeChild(ta);
-        userToast(ok ? 'Copied to clipboard.' : 'Copy failed.', ok ? 'success' : 'error');
+        userToast(ok ? 'Copied.' : 'Copy failed.', ok ? 'success' : 'error');
       } catch (e) { userToast('Copy failed.', 'error'); }
     }
 
@@ -588,7 +544,6 @@
       this._updateHlCount();
     }
 
-    /* ---------- Storage ---------- */
     _storageKey() { return 'aero_pdf_hl_' + this.materialId; }
 
     _loadHighlights() {
@@ -600,9 +555,8 @@
     }
 
     _saveHighlights() {
-      try {
-        localStorage.setItem(this._storageKey(), JSON.stringify(this.highlights));
-      } catch (e) { console.warn('[PDFViewer] save failed', e); }
+      try { localStorage.setItem(this._storageKey(), JSON.stringify(this.highlights)); }
+      catch (e) {}
     }
 
     _updateHlCount() {
@@ -613,7 +567,6 @@
       el.textContent = n > 0 ? '· ' + n + ' highlight' + (n === 1 ? '' : 's') : '';
     }
 
-    /* ---------- Highlight painting ---------- */
     _applyAllHighlights() {
       const self = this;
       this.textLayers.forEach(function (_, n) { self._applyPageHighlights(n); });
@@ -624,19 +577,16 @@
       const textLayer = this.textLayers.get(pageNum);
       if (!pageEl || !textLayer) return;
 
-      // Unwrap existing marks
       pageEl.querySelectorAll('mark.pdf-hl').forEach(function (mark) {
         const parent = mark.parentNode;
         if (!parent) return;
         while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
         parent.removeChild(mark);
       });
-      try { textLayer.normalize(); } catch (e) { /* ignore */ }
+      try { textLayer.normalize(); } catch (e) {}
 
       const list = this.highlights.filter(function (h) { return h.page === pageNum; });
       if (list.length === 0) return;
-
-      // Apply rightmost first (offsets stay valid while we split nodes)
       list.sort(function (a, b) { return b.start - a.start; });
       for (let i = 0; i < list.length; i++) this._paintHighlight(list[i], textLayer);
     }
@@ -685,7 +635,6 @@
       }
     }
 
-    /* ---------- Watermark ---------- */
     _renderWatermark() {
       if (!this.modal) return;
       const wm = this.modal.querySelector('#pdfvWatermark');
@@ -694,7 +643,6 @@
       wm.style.backgroundImage = makeWatermarkUrl(text, { size: 20, angle: -28, tile: 400 });
     }
 
-    /* ---------- Keyboard ---------- */
     _onKeyDown(e) {
       if (!this.active) return;
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
@@ -703,7 +651,6 @@
       }
     }
 
-    /* ---------- Close ---------- */
     close() {
       if (!this.active) return;
       this.active = false;
@@ -720,13 +667,10 @@
         m.classList.remove('active');
         setTimeout(function () { try { m.remove(); } catch (e) {} }, 240);
       }
-
       this.pdfDoc = null;
       this.pageEls.clear();
       this.textLayers.clear();
       this.pendingSel = null;
-
-      // Reset for a fresh open
       const saved = this.materialId;
       this._init();
       this.materialId = saved;
@@ -734,30 +678,35 @@
   }
 
   /* ============================================================
-     VIDEO PLAYER
+     VIDEO PLAYER v3 — Direct HTML5 + YouTube with custom controls
      ============================================================ */
   class VideoPlayer {
-    constructor() {
-      this._init();
-    }
+    constructor() { this._init(); }
 
     _init() {
       this.active = false;
       this.modal = null;
-      this.video = null;
+      this.video = null;         // HTML5 <video> (direct mode)
+      this.ytPlayer = null;      // YT.Player instance (youtube mode)
+      this.mode = null;          // 'direct' | 'youtube'
       this.materialId = null;
       this.username = '';
       this.title = '';
       this._hideTimer = null;
       this._toastTimer = null;
       this._resumeTimer = null;
+      this._ytPollTimer = null;
       this._prevBodyOverflow = '';
-      this._isYouTube = false;
       this._dragSeeking = false;
       this._onDocClick = null;
-
       this._onKeyDown = this._onKeyDown.bind(this);
       this._onFsChange = this._onFsChange.bind(this);
+    }
+
+    _esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[c];
+      });
     }
 
     _parseYouTube(url) {
@@ -768,7 +717,29 @@
       return m ? m[1] : null;
     }
 
-    open(opts) {
+    /* ---- Load the YouTube IFrame API (lazily) ---- */
+    _loadYouTubeAPI() {
+      if (window.YT && window.YT.Player) return Promise.resolve();
+      return new Promise(function (resolve) {
+        const existing = document.querySelector('script[src*="youtube.com/iframe_api"]');
+        if (existing) {
+          const prev = window.onYouTubeIframeAPIReady;
+          window.onYouTubeIframeAPIReady = function () {
+            try { prev && prev(); } catch (e) {}
+            resolve();
+          };
+          return;
+        }
+        window.onYouTubeIframeAPIReady = function () { resolve(); };
+        const s = document.createElement('script');
+        s.src = 'https://www.youtube.com/iframe_api';
+        s.async = true;
+        document.head.appendChild(s);
+      });
+    }
+
+    /* ---- Entry ---- */
+    async open(opts) {
       if (this.active) return;
       this.active = true;
 
@@ -777,56 +748,155 @@
       this.title      = opts.title || 'Video';
       this._prevBodyOverflow = document.body.style.overflow;
 
-      const src = String(opts.src || '').trim();
-      const ytId = this._parseYouTube(src);
+      // Prefer server-provided ID
+      let ytId = opts.videoId || null;
+      let directSrc = null;
+
+      if (!ytId) {
+        const src = String(opts.src || '').trim();
+        const parsed = this._parseYouTube(src);
+        if (parsed) ytId = parsed;
+        else directSrc = src;
+      }
 
       if (ytId) {
-        this._openYouTube(ytId);
-      } else if (/^https?:\/\//i.test(src) || src.indexOf('data:') === 0 || src.indexOf('blob:') === 0) {
-        this._openDirect(src, opts.poster);
+        await this._openYouTube(ytId);
+      } else if (directSrc && (/^https?:\/\//i.test(directSrc) || directSrc.indexOf('data:') === 0 || directSrc.indexOf('blob:') === 0)) {
+        this._openDirect(directSrc, opts.poster);
       } else {
         this.active = false;
-        userToast('Invalid or missing video URL.', 'error');
+        userToast('Invalid or missing video source.', 'error');
       }
     }
 
-    _openYouTube(ytId) {
-      this._isYouTube = true;
-      const src = 'https://www.youtube.com/embed/' + ytId +
-        '?rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&fs=1';
-
-      this._buildModal(
-        '<iframe class="vp-iframe" frameborder="0" allowfullscreen ' +
-        'src="' + src + '" ' +
-        'allow="autoplay; encrypted-media; picture-in-picture; fullscreen" ' +
-        'referrerpolicy="strict-origin-when-cross-origin"></iframe>'
-      );
-      this._renderWatermark();
-      document.addEventListener('keydown', this._onKeyDown, true);
-    }
-
+    /* ============================================================
+       DIRECT HTML5 VIDEO
+       ============================================================ */
     _openDirect(src, poster) {
-      const self = this;
-      const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
-      const speedHtml = speeds.map(function (s) {
-        return '<button type="button" data-speed="' + s + '"' +
-               (s === 1 ? ' class="active"' : '') + '>' + s + '×</button>';
-      }).join('');
-
+      this.mode = 'direct';
       const posterAttr = poster ? ' poster="' + this._esc(poster) + '"' : '';
-
-      const html =
+      const inner =
         '<video id="vpVideo" playsinline preload="metadata" ' +
         'controlslist="nodownload noplaybackrate noremoteplayback"' +
         posterAttr + '></video>' +
+        this._sharedUiHtml();
 
+      this._buildModal(inner);
+      this.video = this.modal.querySelector('#vpVideo');
+      this.video.src = src;
+
+      this._renderWatermark();
+      this._wireSharedControls();
+      this._wireDirectEvents();
+      this._loadPrefs();
+
+      const self = this;
+      const p = this.video.play();
+      if (p && p.catch) p.catch(function () { self._showCenterPlay(); });
+
+      document.addEventListener('keydown', this._onKeyDown, true);
+      document.addEventListener('fullscreenchange', this._onFsChange);
+      document.addEventListener('webkitfullscreenchange', this._onFsChange);
+    }
+
+    /* ============================================================
+       YOUTUBE VIA IFRAME PLAYER API
+       ============================================================ */
+    async _openYouTube(videoId) {
+      this.mode = 'youtube';
+
+      const inner =
+        '<div class="vp-video-area">' +
+          '<div id="vpYtMount"></div>' +
+          '<div class="vp-click-capture" id="vpClickCapture"></div>' +
+        '</div>' +
+        this._sharedUiHtml();
+
+      this._buildModal(inner);
+      this._renderWatermark();
+      this._wireSharedControls();
+
+      document.addEventListener('keydown', this._onKeyDown, true);
+      document.addEventListener('fullscreenchange', this._onFsChange);
+      document.addEventListener('webkitfullscreenchange', this._onFsChange);
+
+      await this._loadYouTubeAPI();
+
+      const self = this;
+      const playerVars = {
+        autoplay: 1,
+        controls: 0,           // hide default YT controls — we provide ours
+        disablekb: 1,
+        modestbranding: 1,     // minimize YT branding
+        rel: 0,                // no related videos at end
+        showinfo: 0,
+        iv_load_policy: 3,     // no annotations
+        fs: 0,                 // no fullscreen button (we handle it)
+        playsinline: 1,
+        origin: window.location.origin,
+        widget_referrer: window.location.origin
+      };
+
+      this.ytPlayer = new window.YT.Player('vpYtMount', {
+        videoId: videoId,
+        playerVars: playerVars,
+        events: {
+          onReady: function () {
+            try {
+              const v = parseFloat(localStorage.getItem('aero_vp_volume') || '1');
+              if (!isNaN(v)) {
+                self.ytPlayer.setVolume(Math.round(v * 100));
+                if (v === 0) self.ytPlayer.mute();
+              }
+              const r = parseFloat(localStorage.getItem('aero_vp_speed') || '1');
+              if (!isNaN(r) && r !== 1) {
+                self.ytPlayer.setPlaybackRate(r);
+                const btn = self.modal.querySelector('#vpSpeedBtn');
+                if (btn) btn.textContent = r + '×';
+              }
+            } catch (e) {}
+            self._updateYtTime();
+            self.ytPlayer.playVideo();
+          },
+          onStateChange: function (e) {
+            const YTS = window.YT.PlayerState;
+            if (e.data === YTS.PLAYING) {
+              self._setPlayIcon(true);
+              self._hideCenterPlay();
+              self._scheduleHideControls();
+              self._startYtPolling();
+            } else if (e.data === YTS.PAUSED) {
+              self._setPlayIcon(false);
+              self._showCenterPlay();
+              self._showControls();
+              clearTimeout(self._hideTimer);
+              self._stopYtPolling();
+            } else if (e.data === YTS.ENDED) {
+              self._setPlayIcon(false);
+              self._showCenterPlay();
+              self._stopYtPolling();
+            } else if (e.data === YTS.BUFFERING) {
+              self._setPlayIcon(true);
+              self._startYtPolling();
+            }
+          },
+          onError: function (e) {
+            console.error('[YouTube]', e.data);
+            userToast('This video is restricted and cannot be played here.', 'error');
+          }
+        }
+      });
+    }
+
+    /* ---------- Shared control bar HTML ---------- */
+    _sharedUiHtml() {
+      const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+      return (
         '<div class="vp-watermark" id="vpWatermark"></div>' +
         '<div class="vp-title" id="vpTitle">' + this._esc(this.title) + '</div>' +
         '<button type="button" class="vp-center-play" id="vpCenterPlay"><i class="fas fa-play"></i></button>' +
         '<div class="vp-toast" id="vpToast"></div>' +
-
         '<div class="vp-controls" id="vpControls">' +
-
           '<div class="vp-progress-row" id="vpProgress">' +
             '<div class="vp-progress-bg"></div>' +
             '<div class="vp-progress-buffered" id="vpBuffered"></div>' +
@@ -834,7 +904,6 @@
             '<div class="vp-thumb" id="vpThumb"></div>' +
             '<div class="vp-tooltip" id="vpTooltip">0:00</div>' +
           '</div>' +
-
           '<div class="vp-buttons">' +
             '<button type="button" class="vp-btn" data-act="back" title="Back 10s (J)"><i class="fas fa-rotate-left"></i></button>' +
             '<button type="button" class="vp-btn" data-act="play" id="vpPlayBtn" title="Play/Pause (Space)"><i class="fas fa-play"></i></button>' +
@@ -847,34 +916,16 @@
             '</div>' +
             '<div class="vp-speed-wrap">' +
               '<button type="button" class="vp-speed-btn" data-act="speed" id="vpSpeedBtn" title="Playback speed">1×</button>' +
-              '<div class="vp-speed-menu" id="vpSpeedMenu">' + speedHtml + '</div>' +
+              '<div class="vp-speed-menu" id="vpSpeedMenu">' +
+                speeds.map(function (s) {
+                  return '<button type="button" data-speed="' + s + '"' + (s === 1 ? ' class="active"' : '') + '>' + s + '×</button>';
+                }).join('') +
+              '</div>' +
             '</div>' +
-            '<button type="button" class="vp-btn" data-act="pip" id="vpPipBtn" title="Picture-in-Picture (P)"><i class="fas fa-clone"></i></button>' +
             '<button type="button" class="vp-btn" data-act="fs" id="vpFsBtn" title="Fullscreen (F)"><i class="fas fa-expand"></i></button>' +
           '</div>' +
-
-        '</div>';
-
-      this._buildModal(html);
-
-      this.video = this.modal.querySelector('#vpVideo');
-      this.video.src = src;
-      this._renderWatermark();
-      this._wireVideo();
-      this._loadPrefs();
-
-      const p = this.video.play();
-      if (p && p.catch) p.catch(function () { self._showCenterPlay(); });
-
-      document.addEventListener('keydown', this._onKeyDown, true);
-      document.addEventListener('fullscreenchange', this._onFsChange);
-      document.addEventListener('webkitfullscreenchange', this._onFsChange);
-    }
-
-    _esc(s) {
-      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[c];
-      });
+        '</div>'
+      );
     }
 
     _buildModal(inner) {
@@ -896,37 +947,14 @@
       el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
     }
 
-    _wireVideo() {
+    /* ---------- Shared control wiring ---------- */
+    _wireSharedControls() {
       const self = this;
-      const v = this.video;
-      if (!v || !this.modal) return;
+      const modal = this.modal;
+      if (!modal) return;
 
-      v.addEventListener('timeupdate', function () { self._updateProgress(); });
-      v.addEventListener('loadedmetadata', function () {
-        self._updateProgress(); self._updateTime(); self._restoreResume();
-      });
-      v.addEventListener('play', function () {
-        self._setPlayIcon(true); self._hideCenterPlay(); self._scheduleHideControls();
-      });
-      v.addEventListener('pause', function () {
-        self._setPlayIcon(false); self._showCenterPlay(); self._showControls();
-        clearTimeout(self._hideTimer); self._saveResume();
-      });
-      v.addEventListener('ended', function () {
-        self._setPlayIcon(false); self._showCenterPlay(); self._saveResume();
-      });
-      v.addEventListener('progress', function () { self._updateBuffered(); });
-      v.addEventListener('volumechange', function () { self._updateVolumeIcon(); });
-      v.addEventListener('error', function () {
-        userToast('Could not play this video. Check the URL or format.', 'error');
-      });
-      v.addEventListener('dblclick', function () { self._toggleFullscreen(); });
-      v.addEventListener('click', function () {
-        if (!self._dragSeeking) self._togglePlay();
-      });
-
-      // Buttons
-      this.modal.querySelectorAll('.vp-btn, .vp-speed-btn').forEach(function (b) {
+      // Toolbar buttons
+      modal.querySelectorAll('.vp-btn, .vp-speed-btn').forEach(function (b) {
         b.addEventListener('click', function (e) {
           e.stopPropagation();
           self._handleAction(b.dataset.act);
@@ -934,27 +962,22 @@
       });
 
       // Center play button
-      const centerPlay = this.modal.querySelector('#vpCenterPlay');
-      if (centerPlay) {
-        centerPlay.addEventListener('click', function (e) {
-          e.stopPropagation();
-          self._togglePlay();
-        });
-      }
+      const cp = modal.querySelector('#vpCenterPlay');
+      if (cp) cp.addEventListener('click', function (e) { e.stopPropagation(); self._togglePlay(); });
 
       // Progress bar
-      const progress = this.modal.querySelector('#vpProgress');
+      const progress = modal.querySelector('#vpProgress');
       const getPct = function (e) {
         const r = progress.getBoundingClientRect();
         return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
       };
       const preview = function (e) {
         const pct = getPct(e);
-        self.modal.querySelector('#vpFilled').style.width = (pct * 100) + '%';
-        self.modal.querySelector('#vpThumb').style.left   = (pct * 100) + '%';
-        const tip = self.modal.querySelector('#vpTooltip');
+        modal.querySelector('#vpFilled').style.width = (pct * 100) + '%';
+        modal.querySelector('#vpThumb').style.left = (pct * 100) + '%';
+        const tip = modal.querySelector('#vpTooltip');
         tip.style.left = (pct * 100) + '%';
-        tip.textContent = self._formatTime(pct * (v.duration || 0));
+        tip.textContent = self._formatTime(pct * self._getDuration());
         return pct;
       };
       progress.addEventListener('mousemove', preview);
@@ -964,7 +987,8 @@
         let lastPct = preview(e);
         const onMove = function (ev) { lastPct = preview(ev); };
         const onUp = function () {
-          if (v.duration) v.currentTime = lastPct * v.duration;
+          const dur = self._getDuration();
+          if (dur) self._seek(lastPct * dur);
           self._dragSeeking = false;
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup', onUp);
@@ -974,37 +998,100 @@
       });
 
       // Volume
-      const vol = this.modal.querySelector('#vpVolume');
-      vol.addEventListener('input', function () { self._setVolume(parseFloat(vol.value)); });
+      const vol = modal.querySelector('#vpVolume');
+      if (vol) vol.addEventListener('input', function () { self._setVolume(parseFloat(vol.value)); });
 
       // Speed menu
-      const speedMenu = this.modal.querySelector('#vpSpeedMenu');
-      speedMenu.querySelectorAll('button').forEach(function (b) {
-        b.addEventListener('click', function (e) {
-          e.stopPropagation();
-          self._setSpeed(parseFloat(b.dataset.speed));
-          speedMenu.classList.remove('open');
+      const speedMenu = modal.querySelector('#vpSpeedMenu');
+      if (speedMenu) {
+        speedMenu.querySelectorAll('button').forEach(function (b) {
+          b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            self._setSpeed(parseFloat(b.dataset.speed));
+            speedMenu.classList.remove('open');
+          });
         });
-      });
+      }
       this._onDocClick = function (e) {
-        if (!e.target.closest('.vp-speed-wrap')) speedMenu.classList.remove('open');
+        if (!e.target.closest('.vp-speed-wrap') && speedMenu) speedMenu.classList.remove('open');
       };
       document.addEventListener('click', this._onDocClick);
 
-      // Auto-hide controls
-      this.modal.addEventListener('mousemove', function () { self._scheduleHideControls(); });
-      this.modal.addEventListener('touchstart', function () { self._scheduleHideControls(); }, { passive: true });
+      // Auto-hide + double-click fullscreen on the shell
+      const shell = modal.querySelector('.vp-shell');
+      if (shell) {
+        shell.addEventListener('mousemove', function () { self._scheduleHideControls(); });
+        shell.addEventListener('touchstart', function () { self._scheduleHideControls(); }, { passive: true });
+        shell.addEventListener('dblclick', function (e) {
+          if (e.target.closest('.vp-controls') || e.target.closest('.vp-speed-menu')) return;
+          self._toggleFullscreen();
+        });
+      }
 
-      // Periodic resume save
+      // Click-capture for YouTube (blocks native YT interactions AND toggles play)
+      const capture = modal.querySelector('#vpClickCapture');
+      if (capture) {
+        capture.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (self._dragSeeking) return;
+          self._togglePlay();
+        });
+      }
+
+      // Direct video click-to-toggle
+      if (this.video) {
+        this.video.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (self._dragSeeking) return;
+          self._togglePlay();
+        });
+      }
+    }
+
+    /* ---------- Direct-mode events ---------- */
+    _wireDirectEvents() {
+      const self = this;
+      const v = this.video;
+      if (!v) return;
+
+      v.addEventListener('timeupdate', function () { self._updateProgress(); });
+      v.addEventListener('loadedmetadata', function () {
+        self._updateProgress();
+        self._updateTime();
+        self._restoreResume();
+      });
+      v.addEventListener('play', function () {
+        self._setPlayIcon(true);
+        self._hideCenterPlay();
+        self._scheduleHideControls();
+      });
+      v.addEventListener('pause', function () {
+        self._setPlayIcon(false);
+        self._showCenterPlay();
+        self._showControls();
+        clearTimeout(self._hideTimer);
+        self._saveResume();
+      });
+      v.addEventListener('ended', function () {
+        self._setPlayIcon(false);
+        self._showCenterPlay();
+        self._saveResume();
+      });
+      v.addEventListener('progress', function () { self._updateBuffered(); });
+      v.addEventListener('volumechange', function () { self._updateVolumeIcon(); });
+      v.addEventListener('error', function () {
+        userToast('Could not play this video.', 'error');
+      });
+
       this._resumeTimer = setInterval(function () { self._saveResume(); }, 3000);
     }
 
+    /* ---------- Actions (mode-agnostic) ---------- */
     _handleAction(act) {
       if (act === 'play') this._togglePlay();
-      else if (act === 'back') this._seek((this.video ? this.video.currentTime : 0) - 10);
-      else if (act === 'fwd')  this._seek((this.video ? this.video.currentTime : 0) + 10);
+      else if (act === 'back') this._seek(this._getTime() - 10);
+      else if (act === 'fwd')  this._seek(this._getTime() + 10);
       else if (act === 'mute') this._toggleMute();
-      else if (act === 'pip')  this._togglePiP();
       else if (act === 'fs')   this._toggleFullscreen();
       else if (act === 'speed') {
         const menu = this.modal.querySelector('#vpSpeedMenu');
@@ -1013,28 +1100,60 @@
     }
 
     _togglePlay() {
-      if (!this.video) return;
-      if (this.video.paused) {
-        const p = this.video.play();
-        if (p && p.catch) p.catch(function () {});
+      if (this.mode === 'youtube') {
+        if (!this.ytPlayer || !this.ytPlayer.getPlayerState) return;
+        const s = this.ytPlayer.getPlayerState();
+        if (s === 1 || s === 3) this.ytPlayer.pauseVideo();
+        else this.ytPlayer.playVideo();
       } else {
-        this.video.pause();
+        if (!this.video) return;
+        if (this.video.paused) {
+          const p = this.video.play();
+          if (p && p.catch) p.catch(function () {});
+        } else {
+          this.video.pause();
+        }
       }
     }
 
+    _getTime() {
+      if (this.mode === 'youtube') {
+        try { return (this.ytPlayer && this.ytPlayer.getCurrentTime()) || 0; } catch (e) { return 0; }
+      }
+      return (this.video && this.video.currentTime) || 0;
+    }
+
+    _getDuration() {
+      if (this.mode === 'youtube') {
+        try { return (this.ytPlayer && this.ytPlayer.getDuration()) || 0; } catch (e) { return 0; }
+      }
+      return (this.video && this.video.duration) || 0;
+    }
+
     _seek(t) {
-      if (!this.video) return;
-      const d = this.video.duration || 0;
-      const from = this.video.currentTime;
-      this.video.currentTime = Math.max(0, Math.min(d, t));
-      this._flashToast((t < from ? '⏪ ' : '⏩ ') + this._formatTime(this.video.currentTime));
+      const dur = this._getDuration();
+      if (dur) t = Math.max(0, Math.min(dur, t));
+      if (this.mode === 'youtube') {
+        if (this.ytPlayer && this.ytPlayer.seekTo) this.ytPlayer.seekTo(t, true);
+      } else {
+        if (this.video) this.video.currentTime = t;
+      }
+      this._flashToast(this._formatTime(t));
     }
 
     _setVolume(v) {
-      if (!this.video) return;
       v = Math.max(0, Math.min(1, v));
-      this.video.volume = v;
-      if (v > 0) this.video.muted = false;
+      if (this.mode === 'youtube') {
+        if (this.ytPlayer && this.ytPlayer.setVolume) {
+          this.ytPlayer.setVolume(Math.round(v * 100));
+          if (v > 0) this.ytPlayer.unMute();
+        }
+      } else {
+        if (this.video) {
+          this.video.volume = v;
+          if (v > 0) this.video.muted = false;
+        }
+      }
       const volEl = this.modal.querySelector('#vpVolume');
       if (volEl) volEl.value = v;
       this._updateVolumeIcon();
@@ -1042,16 +1161,30 @@
     }
 
     _toggleMute() {
-      if (!this.video) return;
-      this.video.muted = !this.video.muted;
+      if (this.mode === 'youtube') {
+        if (!this.ytPlayer || !this.ytPlayer.isMuted) return;
+        if (this.ytPlayer.isMuted()) this.ytPlayer.unMute();
+        else this.ytPlayer.mute();
+      } else {
+        if (!this.video) return;
+        this.video.muted = !this.video.muted;
+      }
       this._updateVolumeIcon();
     }
 
     _updateVolumeIcon() {
-      if (!this.modal || !this.video) return;
+      if (!this.modal) return;
       const i = this.modal.querySelector('#vpMuteBtn i');
       if (!i) return;
-      const v = this.video.muted ? 0 : this.video.volume;
+      let v = 0;
+      if (this.mode === 'youtube') {
+        try {
+          v = (this.ytPlayer && this.ytPlayer.isMuted && this.ytPlayer.isMuted())
+            ? 0 : ((this.ytPlayer && this.ytPlayer.getVolume && this.ytPlayer.getVolume() / 100) || 0);
+        } catch (e) { v = 1; }
+      } else {
+        v = this.video ? (this.video.muted ? 0 : this.video.volume) : 0;
+      }
       i.className = v === 0
         ? 'fas fa-volume-xmark'
         : v < 0.5
@@ -1060,8 +1193,11 @@
     }
 
     _setSpeed(s) {
-      if (!this.video) return;
-      this.video.playbackRate = s;
+      if (this.mode === 'youtube') {
+        if (this.ytPlayer && this.ytPlayer.setPlaybackRate) this.ytPlayer.setPlaybackRate(s);
+      } else {
+        if (this.video) this.video.playbackRate = s;
+      }
       const btn = this.modal.querySelector('#vpSpeedBtn');
       if (btn) btn.textContent = s + '×';
       this.modal.querySelectorAll('#vpSpeedMenu button').forEach(function (b) {
@@ -1070,36 +1206,15 @@
       try { localStorage.setItem('aero_vp_speed', String(s)); } catch (e) {}
     }
 
-    async _togglePiP() {
-      if (!this.video) return;
-      try {
-        if (document.pictureInPictureElement) {
-          await document.exitPictureInPicture();
-        } else if (document.pictureInPictureEnabled) {
-          await this.video.requestPictureInPicture();
-        } else {
-          userToast('Picture-in-Picture not supported.', 'info');
-        }
-      } catch (e) {
-        userToast('Picture-in-Picture unavailable.', 'info');
-      }
-    }
-
     _toggleFullscreen() {
       const target = this.modal;
       if (!target) return;
       if (!document.fullscreenElement) {
         const req = target.requestFullscreen || target.webkitRequestFullscreen || target.msRequestFullscreen;
-        if (req) {
-          const p = req.call(target);
-          if (p && p.catch) p.catch(function () {});
-        }
+        if (req) { const p = req.call(target); if (p && p.catch) p.catch(function () {}); }
       } else {
         const ex = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
-        if (ex) {
-          const p = ex.call(document);
-          if (p && p.catch) p.catch(function () {});
-        }
+        if (ex) { const p = ex.call(document); if (p && p.catch) p.catch(function () {}); }
       }
     }
 
@@ -1125,6 +1240,7 @@
       if (el) el.classList.remove('visible');
     }
 
+    /* ---------- Direct-mode progress ---------- */
     _updateProgress() {
       if (!this.video || !this.modal) return;
       const d = this.video.duration || 0;
@@ -1135,6 +1251,7 @@
       if (thumb) thumb.style.left = pct + '%';
       this._updateTime();
     }
+
     _updateBuffered() {
       if (!this.video || !this.modal) return;
       if (!this.video.buffered || !this.video.buffered.length) return;
@@ -1144,12 +1261,44 @@
       const buf = this.modal.querySelector('#vpBuffered');
       if (buf) buf.style.width = (end / d) * 100 + '%';
     }
+
     _updateTime() {
       if (!this.video || !this.modal) return;
       const el = this.modal.querySelector('#vpTime');
       if (el) el.textContent =
         this._formatTime(this.video.currentTime) + ' / ' + this._formatTime(this.video.duration);
     }
+
+    /* ---------- YouTube polling ---------- */
+    _startYtPolling() {
+      const self = this;
+      this._stopYtPolling();
+      this._ytPollTimer = setInterval(function () { self._updateYtTime(); }, 250);
+    }
+    _stopYtPolling() {
+      if (this._ytPollTimer) { clearInterval(this._ytPollTimer); this._ytPollTimer = null; }
+    }
+    _updateYtTime() {
+      if (!this.ytPlayer || !this.modal) return;
+      try {
+        const dur = this.ytPlayer.getDuration() || 0;
+        const cur = this.ytPlayer.getCurrentTime() || 0;
+        const pct = dur ? (cur / dur) * 100 : 0;
+        const filled = this.modal.querySelector('#vpFilled');
+        const thumb = this.modal.querySelector('#vpThumb');
+        if (filled) filled.style.width = pct + '%';
+        if (thumb) thumb.style.left = pct + '%';
+        const timeEl = this.modal.querySelector('#vpTime');
+        if (timeEl) timeEl.textContent = this._formatTime(cur) + ' / ' + this._formatTime(dur);
+        try {
+          const frac = this.ytPlayer.getVideoLoadedFraction() || 0;
+          const buf = this.modal.querySelector('#vpBuffered');
+          if (buf) buf.style.width = (frac * 100) + '%';
+        } catch (e) {}
+      } catch (e) {}
+    }
+
+    /* ---------- Utilities ---------- */
     _formatTime(t) {
       if (!isFinite(t) || t < 0) t = 0;
       const h = Math.floor(t / 3600);
@@ -1176,7 +1325,16 @@
       this._showControls();
       const self = this;
       clearTimeout(this._hideTimer);
-      if (this.video && !this.video.paused) {
+      let playing = false;
+      if (this.mode === 'youtube') {
+        try {
+          const s = this.ytPlayer && this.ytPlayer.getPlayerState && this.ytPlayer.getPlayerState();
+          playing = s === 1 || s === 3;
+        } catch (e) {}
+      } else {
+        playing = this.video && !this.video.paused;
+      }
+      if (playing) {
         this._hideTimer = setTimeout(function () {
           if (!self.modal) return;
           const c = self.modal.querySelector('#vpControls');
@@ -1187,6 +1345,7 @@
         }, 2500);
       }
     }
+
     _showControls() {
       if (!this.modal) return;
       const c = this.modal.querySelector('#vpControls');
@@ -1204,10 +1363,10 @@
       wm.style.backgroundImage = makeWatermarkUrl(text, { dark: true, size: 22, angle: -30, tile: 400 });
     }
 
-    /* ---------- Resume ---------- */
+    /* ---------- Resume (direct only) ---------- */
     _resumeKey() { return 'aero_vp_pos_' + this.materialId; }
     _saveResume() {
-      if (!this.video) return;
+      if (this.mode !== 'direct' || !this.video) return;
       try {
         const d = this.video.duration || 0;
         const t = this.video.currentTime;
@@ -1224,8 +1383,9 @@
         }
       } catch (e) {}
     }
+
     _loadPrefs() {
-      if (!this.video) return;
+      if (!this.video || this.mode !== 'direct') return;
       try {
         const v = parseFloat(localStorage.getItem('aero_vp_volume') || '1');
         if (!isNaN(v)) {
@@ -1242,23 +1402,32 @@
     /* ---------- Keyboard ---------- */
     _onKeyDown(e) {
       if (!this.active) return;
-      const tag = (e.target && e.target.tagName || '').toLowerCase();
+      const tag = ((e.target && e.target.tagName) || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea') return;
 
       if (e.key === 'Escape') {
         if (!document.fullscreenElement) { e.preventDefault(); this.close(); }
         return;
       }
-      if (!this.video) return;
-
       if (e.key === ' ' || e.key === 'k') { e.preventDefault(); this._togglePlay(); }
-      else if (e.key === 'ArrowRight' || e.key === 'l') this._seek(this.video.currentTime + 10);
-      else if (e.key === 'ArrowLeft'  || e.key === 'j') this._seek(this.video.currentTime - 10);
-      else if (e.key === 'ArrowUp')   { e.preventDefault(); this._setVolume(Math.min(1, this.video.volume + 0.1)); }
-      else if (e.key === 'ArrowDown') { e.preventDefault(); this._setVolume(Math.max(0, this.video.volume - 0.1)); }
+      else if (e.key === 'ArrowRight' || e.key === 'l') this._seek(this._getTime() + 10);
+      else if (e.key === 'ArrowLeft'  || e.key === 'j') this._seek(this._getTime() - 10);
+      else if (e.key === 'ArrowUp')   {
+        e.preventDefault();
+        const cur = this.mode === 'youtube'
+          ? ((this.ytPlayer && this.ytPlayer.getVolume && this.ytPlayer.getVolume() / 100) || 0)
+          : (this.video ? this.video.volume : 0);
+        this._setVolume(Math.min(1, cur + 0.1));
+      }
+      else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        const cur = this.mode === 'youtube'
+          ? ((this.ytPlayer && this.ytPlayer.getVolume && this.ytPlayer.getVolume() / 100) || 0)
+          : (this.video ? this.video.volume : 0);
+        this._setVolume(Math.max(0, cur - 0.1));
+      }
       else if (e.key === 'm') this._toggleMute();
       else if (e.key === 'f') this._toggleFullscreen();
-      else if (e.key === 'p') this._togglePiP();
       else if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); e.stopPropagation(); }
     }
 
@@ -1270,10 +1439,16 @@
       clearInterval(this._resumeTimer);
       clearTimeout(this._hideTimer);
       clearTimeout(this._toastTimer);
+      this._stopYtPolling();
 
-      if (this.video) {
+      if (this.mode === 'direct' && this.video) {
         try { this.video.pause(); } catch (e) {}
         this._saveResume();
+      }
+      if (this.mode === 'youtube' && this.ytPlayer) {
+        try { this.ytPlayer.stopVideo && this.ytPlayer.stopVideo(); } catch (e) {}
+        try { this.ytPlayer.destroy && this.ytPlayer.destroy(); } catch (e) {}
+        this.ytPlayer = null;
       }
 
       document.removeEventListener('keydown', this._onKeyDown, true);
@@ -1300,7 +1475,7 @@
     }
   }
 
-  /* ---------- Expose as singletons ---------- */
+  /* ---------- Expose singletons ---------- */
   window.PDFViewer   = new PDFViewer();
   window.VideoPlayer = new VideoPlayer();
 
