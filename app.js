@@ -574,10 +574,6 @@ function renderCourseDetail(courseId) {
         ${isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
       </div>
       <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
-      ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
-            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
-          ` : ''}
     </div>
   `;
 
@@ -593,7 +589,7 @@ function renderCourseDetail(courseId) {
 
   const materials = course.materials || [];
   const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
-  // Purani line dhoondhiye aur usko is se replace kijiye:
+  
   const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
   const typeLabels = { all: 'All', video: '🎬 Video', pyq: '📄 PYQ', tutorial: '📝 Tutorial', slides: '📊 Slides', qa: '❓ Q&A', other: '📁 Other' };
   
@@ -603,7 +599,8 @@ function renderCourseDetail(courseId) {
     html += `<button class="${currentMaterialFilter === t ? 'active' : ''}" onclick="setMaterialFilter('${t}')">${typeLabels[t]} (${count})</button>`;
   });
   html += `</div>`;
-// =========================================================
+
+  // =========================================================
   // Q&A SECTION LOGIC
   // =========================================================
   if (currentMaterialFilter === 'qa') {
@@ -633,14 +630,14 @@ function renderCourseDetail(courseId) {
     }
     html += `</div>`;
     courseDetailContent.innerHTML = html;
-    return; // Q&A dikhane ke baad material list render na ho isliye yahan se wapas bhej dein
+    return;
   }
+
   if (filtered.length === 0) {
     html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No materials found.</p></div>`;
   } else {
     html += `<div class="material-list">`;
     filtered.forEach(m => {
-      // Fix: Code ko sahi jagah HTML string ke andar dala gaya hai
       const hasFile = m.fileData && m.fileData.length > 0;
       const hasUrl = m.url && m.url.length > 0;
       
@@ -657,7 +654,7 @@ function renderCourseDetail(courseId) {
       html += `
         <div class="material-item">
           ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${m.id}', '${m.title}', '${m.description || ''}')" title="Edit"><i class="fas fa-edit"></i></button>
+            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
             <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
           ` : ''}
           <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
@@ -674,7 +671,6 @@ function renderCourseDetail(courseId) {
   }
   courseDetailContent.innerHTML = html;
 }
-
 // ================================================================
 // SECURE FILE VIEWER (Naya Function Jo File Dikhayega)
 // ================================================================
@@ -1038,4 +1034,27 @@ async function editMaterial(courseId, materialId) {
       fetchCoursesFromDB();
     } else showToast(data.message, 'error');
   } catch (error) { showToast('Error connecting to server.', 'error'); }
+}
+// app.js mein render function ka basic logic check karo
+function renderCourseCardHTML(course, role) {
+  let actionsHTML = '';
+  
+  // Agar admin login hai, tabhi Edit/Delete dikhana hai
+  if (role === 'admin') {
+    actionsHTML = `
+      <div class="card-actions">
+        <!-- Edit Course Button -->
+        <button class="btn btn-primary btn-sm" onclick="openEditCourseModal('${course._id}')">
+          <i class="fas fa-edit"></i> Edit
+        </button>
+        <!-- Delete Course Button -->
+        <button class="delete-course-btn" onclick="deleteCourse('${course._id}')">
+          <i class="fas fa-trash-alt"></i>
+        </button>
+      </div>
+    `;
+  }
+  
+  // Return your card template appending the actionsHTML
+  // ...
 }

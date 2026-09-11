@@ -337,7 +337,31 @@ app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
     res.status(500).json({ success: false, message: 'Error posting answer' });
   }
 });
-
+// API: Ek specific course ko id se mangwana (View Course Fix)
+app.get('/api/courses/:id', async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.id);
+    if (!course) {
+      return res.status(404).json({ success: false, message: 'Course not found' });
+    }
+    res.json({ success: true, course });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  }
+});
+// API: Course ke andar se specific Material delete karna
+app.delete('/api/courses/:courseId/materials/:materialId', async (req, res) => {
+  try {
+    // $pull operator use karke array se material remove karenge
+    await Course.findByIdAndUpdate(
+      req.params.courseId,
+      { $pull: { materials: { _id: req.params.materialId } } }
+    );
+    res.json({ success: true, message: 'Material deleted successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server error deleting material.' });
+  }
+});
 // Server ko start karna
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
