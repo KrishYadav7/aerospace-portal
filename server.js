@@ -21,7 +21,7 @@ mongoose.connect(process.env.MONGO_URI)
   .catch((err) => console.log('Database Connection Error:', err));
 
 /* ============================================================
-   STREAK HELPER
+   STREAK HELPERS
    ============================================================ */
 function todayStr() {
   const d = new Date();
@@ -95,7 +95,7 @@ app.post('/api/login', async (req, res) => {
 });
 
 /* ============================================================
-   REGISTRATION
+   REGISTRATION — Self-service (OTP)
    ============================================================ */
 const otpStore = {};
 const transporter = nodemailer.createTransport({
@@ -131,6 +131,84 @@ app.post('/api/register', async (req, res) => {
 });
 
 /* ============================================================
+   ADMIN — Manual Student Registration (NEW)
+   ============================================================ */
+app.post('/api/admin/create-student', async (req, res) => {
+  try {
+    const { fullName, username, email, password } = req.body;
+
+    if (!fullName || !username || !password) {
+      return res.status(400).json({ success: false, message: 'Full name, username, and password are required.' });
+    }
+    if (username.length < 3) return res.status(400).json({ success: false, message: 'Username must be at least 3 characters.' });
+    if (password.length < 6) return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) return res.status(400).json({ success: false, message: 'Username is already taken.' });
+
+    if (email) {
+      const existingEmail = await User.findOne({ email });
+      if (existingEmail) return res.status(400).json({ success: false, message: 'Email is already registered.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const newStudent = new User({
+      fullName: fullName.trim(),
+      username: username.trim().toLowerCase(),
+      email: email ? email.trim() : '',
+      password: hashedPassword,
+      role: 'student'
+    });
+    await newStudent.save();
+
+    res.json({
+      success: true,
+      message: 'Student created successfully!',
+      student: {
+        _id: newStudent._id,
+        fullName: newStudent.fullName,
+        username: newStudent.username,
+        email: newStudent.email || '',
+        password: password, // plaintext — for admin to share. Never persisted.
+        createdAt: newStudent.createdAt || new Date()
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+app.post('/api/admin/reset-password/:userId', async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+    }
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    res.json({ success: true, message: 'Password reset successfully.', password: newPassword });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+app.delete('/api/admin/students/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (user.role === 'admin') return res.status(400).json({ success: false, message: 'Cannot delete admin accounts.' });
+    await User.findByIdAndDelete(req.params.userId);
+    res.json({ success: true, message: 'Student deleted.' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
    COURSES — CRUD
    ============================================================ */
 app.get('/api/courses', async (req, res) => {
@@ -154,18 +232,11 @@ app.post('/api/courses', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
-// UPDATED — accept ALL editable fields
 app.put('/api/courses/:id', async (req, res) => {
   try {
-    const allowed = [
-      'name', 'code', 'semester', 'instructor', 'description',
-      'category', 'difficulty', 'duration', 'learningOutcomes',
-      'thumbnail', 'status', 'featured',
-      'isPremium', 'price'
-    ];
+    const allowed = ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price'];
     const update = {};
     allowed.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
-
     const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
     if (!updated) return res.status(404).json({ success: false, message: 'Course not found' });
     res.json({ success: true, message: 'Course updated successfully!', course: updated });
@@ -192,17 +263,14 @@ app.post('/api/courses/:courseId/materials', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
-// UPDATED — accept file data too, for full editing
 app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
     const mat = course.materials.id(req.params.materialId);
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
-
     const fields = ['title', 'type', 'description', 'url', 'isPremium', 'price', 'fileData', 'fileName'];
     fields.forEach(f => { if (req.body[f] !== undefined) mat[f] = req.body[f]; });
-
     await course.save();
     res.json({ success: true, message: 'Material updated successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error updating material: ' + e.message }); }
@@ -216,13 +284,12 @@ app.delete('/api/courses/:courseId/materials/:materialId', async (req, res) => {
 });
 
 /* ============================================================
-   ANNOUNCEMENTS (Sprint 5)
+   ANNOUNCEMENTS
    ============================================================ */
 app.post('/api/courses/:courseId/announcements', async (req, res) => {
   try {
     const { title, body, authorName } = req.body;
     if (!title || !title.trim()) return res.status(400).json({ success: false, message: 'Title required' });
-
     const ann = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       title: title.trim(),
@@ -230,7 +297,6 @@ app.post('/api/courses/:courseId/announcements', async (req, res) => {
       authorName: authorName || 'Instructor',
       date: new Date()
     };
-
     await Course.findByIdAndUpdate(req.params.courseId, { $push: { announcements: ann } });
     res.json({ success: true, message: 'Announcement posted!', announcement: ann });
   } catch (e) { res.status(500).json({ success: false, message: 'Error posting announcement: ' + e.message }); }
@@ -284,14 +350,10 @@ app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Error posting answer: ' + e.message }); }
 });
 
-/* ============================================================
-   PEER Q&A
-   ============================================================ */
 app.post('/api/courses/:courseId/doubts/:doubtId/replies', async (req, res) => {
   try {
     const { authorName, authorUsername, authorRole, text } = req.body;
     if (!text || !text.trim()) return res.status(400).json({ success: false, message: 'Reply text required' });
-
     await Course.updateOne(
       { _id: req.params.courseId, "doubts._id": req.params.doubtId },
       { $push: { "doubts.$.replies": {
@@ -299,7 +361,6 @@ app.post('/api/courses/:courseId/doubts/:doubtId/replies', async (req, res) => {
         text: text.trim(), date: new Date(), isAccepted: false
       } } }
     );
-
     const course = await Course.findById(req.params.courseId);
     const doubt = course?.doubts?.id(req.params.doubtId);
     if (doubt && doubt.studentUsername && doubt.studentUsername !== authorUsername) {
@@ -332,7 +393,6 @@ app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', async 
     const acceptor = await User.findOne({ username: acceptedBy });
     const isAdmin = acceptor?.role === 'admin';
     if (!isAsker && !isAdmin) return res.status(403).json({ success: false, message: 'Only asker or admin can accept' });
-
     doubt.replies.forEach(r => { r.isAccepted = false; });
     const reply = doubt.replies.id(req.params.replyId);
     if (!reply) return res.status(404).json({ success: false, message: 'Reply not found' });
@@ -362,12 +422,10 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
     const { userId, answers } = req.body;
     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
     if (!Array.isArray(answers)) return res.status(400).json({ success: false, message: 'answers must be an array' });
-
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
     const mat = course.materials.id(req.params.materialId);
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
-
     const quiz = mat.quiz || [];
     if (quiz.length === 0) return res.status(400).json({ success: false, message: 'This material has no quiz' });
 
@@ -378,7 +436,6 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       if (isCorrect) score++;
       return { correct: isCorrect, chosen, correctIndex: q.correctIndex, explanation: q.explanation || '' };
     });
-
     const total = quiz.length;
     const pct = Math.round((score / total) * 100);
 
@@ -386,9 +443,7 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.quizResults) user.quizResults = new Map();
     const prev = user.quizResults.get(req.params.materialId) || { attempts: 0 };
-    user.quizResults.set(req.params.materialId, {
-      score, total, attempts: (prev.attempts || 0) + 1, lastAttemptAt: new Date()
-    });
+    user.quizResults.set(req.params.materialId, { score, total, attempts: (prev.attempts || 0) + 1, lastAttemptAt: new Date() });
     await user.save();
 
     res.json({ success: true, score, total, percent: pct, results, attempts: (prev.attempts || 0) + 1 });
@@ -520,11 +575,11 @@ app.post('/api/user/notifications/:userId/mark-read', async (req, res) => {
 });
 
 /* ============================================================
-   STUDENTS LIST
+   STUDENTS LIST (admin)
    ============================================================ */
 app.get('/api/students', async (req, res) => {
   try {
-    const students = await User.find({ role: 'student' }).select('-password');
+    const students = await User.find({ role: 'student' }).select('-password').sort({ createdAt: -1 });
     res.json({ success: true, students });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });

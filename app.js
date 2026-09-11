@@ -1,5 +1,5 @@
 /* ============================================================
-   STORAGE — Professors
+   STORAGE — Professors (localStorage)
    ============================================================ */
 const STORAGE_KEY = 'aerospace_data';
 
@@ -49,9 +49,7 @@ let currentCourseId = null;
 let currentMaterialFilter = 'all';
 let loginRole = 'student';
 let studentNav = 'home';
-let adminTab = 'courses';
-
-// NEW: editor state
+let adminTab = 'overview';
 let editingCourseId = null;
 let editingTab = 'details';
 
@@ -71,14 +69,12 @@ function syncHashToState() {
   const hash = location.hash || '#/home';
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
 
-  // #/course/xxx
   if (parts[0] === 'course' && parts[1]) {
     currentCourseId = parts[1];
     window.currentSelectedCourseId = parts[1];
     editingCourseId = null;
     return;
   }
-  // #/admin/edit/xxx
   if (parts[0] === 'admin' && parts[1] === 'edit' && parts[2]) {
     editingCourseId = parts[2];
     currentCourseId = null;
@@ -91,7 +87,7 @@ function syncHashToState() {
   editingCourseId = null;
 
   if (parts[0] === 'admin') {
-    adminTab = parts[1] || 'courses';
+    adminTab = parts[1] || 'overview';
   } else if (parts[0] === 'courses') {
     studentNav = 'courses';
   } else if (parts[0] === 'saved') {
@@ -152,6 +148,27 @@ function difficultyColor(d) {
   if (d === 'Beginner') return { bg: 'rgba(16,185,129,.12)', fg: '#059669' };
   if (d === 'Advanced') return { bg: 'rgba(239,68,68,.12)', fg: '#dc2626' };
   return { bg: 'rgba(245,158,11,.14)', fg: '#d97706' };
+}
+
+/* Robust clipboard helper (works on HTTP + HTTPS) */
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    return true;
+  } catch { return false; }
 }
 
 /* ============================================================
@@ -232,8 +249,10 @@ async function handleLogin(e) {
       currentUser = data.user;
       localStorage.setItem('aero_token', data.token);
       localStorage.setItem('aero_user', JSON.stringify(data.user));
-      studentNav = 'home'; adminTab = 'courses'; editingCourseId = null;
-      pushHash('#/home');
+      studentNav = 'home';
+      adminTab = 'overview';
+      editingCourseId = null;
+      pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
       showToast(data.message, 'success');
       renderApp();
     } else showToast(data.message, 'error');
@@ -243,7 +262,7 @@ async function handleLogin(e) {
 function logout() {
   currentUser = null; currentCourseId = null; editingCourseId = null;
   window.currentSelectedCourseId = null;
-  currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'courses';
+  currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
   localStorage.removeItem('aero_token'); localStorage.removeItem('aero_user');
   pushHash('#/home'); renderApp(); showToast('Logged out.', 'info');
 }
@@ -285,6 +304,149 @@ async function verifyAndCompleteRegistration(otp) {
     if (data.success) { showToast('🎉 ' + data.message, 'success'); tempRegisterData = null; }
     else showToast(data.message, 'error');
   } catch { showToast('Error verifying OTP.', 'error'); }
+}
+
+/* ============================================================
+   ADMIN — Manual Student Registration (NEW)
+   ============================================================ */
+function openStudentRegModal() {
+  ['newStuFullName', 'newStuUsername', 'newStuEmail', 'newStuPassword'].forEach(id => {
+    const el = $(id); if (el) el.value = '';
+  });
+  const btn = $('studentRegSubmitBtn');
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Student'; }
+  openModal('studentRegModal');
+  setTimeout(() => $('newStuFullName')?.focus(), 100);
+}
+
+function autoGeneratePassword() {
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const symbols = '@#$%&!';
+  let pass = 'Aero@';
+  for (let i = 0; i < 6; i++) pass += chars[Math.floor(Math.random() * chars.length)];
+  pass += symbols[Math.floor(Math.random() * symbols.length)];
+  pass += Math.floor(Math.random() * 90 + 10);
+  $('newStuPassword').value = pass;
+}
+
+function generatePreviewPassword() {
+  // No-op helper (kept for hook compatibility)
+}
+
+async function saveNewStudent(e) {
+  e.preventDefault();
+  const fullName = $('newStuFullName').value.trim();
+  const username = $('newStuUsername').value.trim().toLowerCase();
+  const email = $('newStuEmail').value.trim();
+  const password = $('newStuPassword').value.trim();
+
+  if (!fullName || !username || !password) return showToast('Fill all required fields.', 'error');
+  if (username.length < 3) return showToast('Username must be at least 3 characters.', 'error');
+  if (password.length < 6) return showToast('Password must be at least 6 characters.', 'error');
+  if (!/^[a-z0-9._-]+$/.test(username)) return showToast('Username may only contain letters, numbers, dots, underscores, or hyphens.', 'error');
+
+  const btn = $('studentRegSubmitBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
+
+  try {
+    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/create-student', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fullName, username, email, password })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      closeModal('studentRegModal');
+      showCredentialsCard(data.student);
+      // Refresh the students list if we're on that tab
+      if (adminTab === 'students') renderAdminStudents();
+    } else {
+      showToast(data.message || 'Failed to create student.', 'error');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Student';
+    }
+  } catch (err) {
+    showToast('Server error.', 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Student';
+  }
+}
+
+function showCredentialsCard(student) {
+  const card = $('credentialsCard');
+  if (!card) return;
+
+  card.innerHTML = `
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-id-card"></i> Full Name</div>
+      <div class="cred-value-group">
+        <span class="cred-value">${escapeHtml(student.fullName)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('name', '${escapeHtml(student.fullName).replace(/'/g, "\\'")}')" title="Copy">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-at"></i> Username</div>
+      <div class="cred-value-group">
+        <span class="cred-value cred-code">${escapeHtml(student.username)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('username', '${escapeHtml(student.username)}')" title="Copy">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-key"></i> Password</div>
+      <div class="cred-value-group">
+        <span class="cred-value cred-code">${escapeHtml(student.password)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('password', '${escapeHtml(student.password)}')" title="Copy">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>
+    ${student.email ? `
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-envelope"></i> Email</div>
+      <div class="cred-value-group">
+        <span class="cred-value">${escapeHtml(student.email)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('email', '${escapeHtml(student.email)}')" title="Copy">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>` : ''}
+  `;
+
+  // Store for "copy all"
+  window.__lastCreatedStudent = student;
+
+  openModal('credentialsModal');
+}
+
+async function copyCredential(field, value) {
+  const ok = await copyToClipboard(value);
+  if (ok) showToast(`✓ ${field.charAt(0).toUpperCase() + field.slice(1)} copied!`, 'success');
+  else showToast('Copy failed. Please copy manually.', 'error');
+}
+
+async function copyAllCredentials() {
+  const s = window.__lastCreatedStudent;
+  if (!s) return;
+  const text = [
+    '🎓 Aerospace Department — Login Credentials',
+    '',
+    `Name: ${s.fullName}`,
+    `Username: ${s.username}`,
+    `Password: ${s.password}`,
+    s.email ? `Email: ${s.email}` : '',
+    '',
+    'Login at: https://aerospace-portal.onrender.com',
+    'Please change your password after first login.'
+  ].filter(Boolean).join('\n');
+
+  const ok = await copyToClipboard(text);
+  if (ok) showToast('✓ Full credentials copied!', 'success');
+  else showToast('Copy failed.', 'error');
 }
 
 /* ============================================================
@@ -338,25 +500,21 @@ function renderApp() {
   }
   renderNotificationBadge(); buildNav();
 
-  // ADMIN EDIT PAGE
   if (editingCourseId && currentUser.role === 'admin') {
     $('adminEditView').classList.add('active');
     renderCourseEditor(editingCourseId);
     return;
   }
-  // COURSE DETAIL
   if (currentCourseId) {
     $('courseDetailView').classList.add('active');
     renderCourseDetail(currentCourseId);
     return;
   }
-  // ADMIN DASHBOARD
   if (currentUser.role === 'admin') {
     $('adminView').classList.add('active');
     renderAdminDashboard();
     return;
   }
-  // STUDENT VIEWS
   if (studentNav === 'home') { $('studentHomeView').classList.add('active'); renderStudentHome(); }
   else if (studentNav === 'saved') { $('studentSavedView').classList.add('active'); renderSavedCourses(); }
   else { $('studentCoursesView').classList.add('active'); renderStudentCourses(); }
@@ -372,146 +530,102 @@ function buildNav() {
   const savedActive   = (studentNav === 'saved'   && !currentCourseId) ? 'active' : '';
   const savedCount = (currentUser.bookmarks || []).length;
   $('mainNav').innerHTML = `
-    <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-home"></i> Home</a>
-    <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-book"></i> Courses</a>
+    <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> Home</a>
+    <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> Courses</a>
     <a href="#" class="${savedActive}" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> Saved${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
   `;
 }
 
 /* ============================================================
-   NOTIFICATIONS
-   ============================================================ */
-function getUnreadCount() { return (currentUser?.notifications || []).filter(n => !n.read).length; }
-function renderNotificationBadge() {
-  const badge = document.getElementById('notifBadge'); if (!badge) return;
-  const count = getUnreadCount();
-  if (count > 0) { badge.textContent = count > 9 ? '9+' : count; badge.style.display = 'inline-flex'; }
-  else badge.style.display = 'none';
-}
-function renderNotificationList() {
-  const list = document.getElementById('notifList');
-  const markAll = document.getElementById('notifMarkAll');
-  if (!list) return;
-  const notifs = (currentUser?.notifications || []).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  if (notifs.length === 0) {
-    list.innerHTML = `<div class="notif-empty"><i class="fas fa-bell-slash"></i><p>No notifications yet.</p></div>`;
-    if (markAll) markAll.style.display = 'none';
-    return;
-  }
-  const unread = notifs.filter(n => !n.read).length;
-  if (markAll) markAll.style.display = unread > 0 ? 'inline-block' : 'none';
-  let html = '';
-  notifs.forEach(n => {
-    const ago = timeAgo(n.createdAt);
-    const icon = n.type === 'doubt-reply' ? 'fa-comment-dots' : 'fa-bell';
-    html += `<div class="notif-item ${n.read ? '' : 'unread'}" onclick="openNotification('${n.id}')">
-      <div class="notif-icon"><i class="fas ${icon}"></i></div>
-      <div class="notif-content">
-        <div class="notif-title">${escapeHtml(n.title)}</div>
-        <div class="notif-body">${escapeHtml(n.body)}</div>
-        <div class="notif-time">${ago}</div>
-      </div>
-      ${!n.read ? '<span class="notif-dot"></span>' : ''}
-    </div>`;
-  });
-  list.innerHTML = html;
-}
-async function openNotification(notifId) {
-  const n = (currentUser?.notifications || []).find(x => x.id === notifId);
-  if (!n) return;
-  if (!n.read) {
-    try {
-      const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notifId })
-      });
-      const data = await res.json();
-      if (data.success) {
-        currentUser.notifications = data.notifications;
-        localStorage.setItem('aero_user', JSON.stringify(currentUser));
-        renderNotificationBadge(); renderNotificationList();
-      }
-    } catch {}
-  }
-  document.getElementById('notifWrap')?.classList.remove('open');
-  if (n.link) location.hash = n.link;
-}
-async function markAllNotificationsRead() {
-  if (!currentUser?._id) return;
-  try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ all: true })
-    });
-    const data = await res.json();
-    if (data.success) {
-      currentUser.notifications = data.notifications;
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
-      renderNotificationBadge(); renderNotificationList();
-      showToast('All marked read.', 'success');
-    }
-  } catch { showToast('Server error.', 'error'); }
-}
-async function loadNotifications() {
-  if (!currentUser?._id) return;
-  try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}`);
-    const data = await res.json();
-    if (data.success) {
-      currentUser.notifications = data.notifications;
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
-      renderNotificationBadge(); renderNotificationList();
-    }
-  } catch {}
-}
-
-/* ============================================================
-   ADMIN DASHBOARD
+   ADMIN DASHBOARD — STRICT TAB ISOLATION
    ============================================================ */
 function switchAdminTab(tab) {
-  adminTab = tab; editingCourseId = null;
+  adminTab = tab;
   pushHash(`#/admin/${tab}`);
-  document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
-  document.querySelector(`.admin-tab[data-tab="${tab}"]`).classList.add('active');
-  document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
-  $(`adminTab${tab.charAt(0).toUpperCase() + tab.slice(1)}`).classList.add('active');
+  updateAdminTabUI();
   renderAdminDashboard();
 }
+
+function updateAdminTabUI() {
+  // Update tab button active state
+  document.querySelectorAll('.admin-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === adminTab));
+
+  // Update tab content visibility — ONLY the active tab is shown
+  document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
+  const contentId = `adminTab${adminTab.charAt(0).toUpperCase() + adminTab.slice(1)}`;
+  const content = document.getElementById(contentId);
+  if (content) content.classList.add('active');
+
+  // Update page title + header actions
+  const titleEl = $('adminPageTitle');
+  const actionsEl = $('adminHeaderActions');
+  const titleMap = {
+    overview:   { icon: 'fa-tachometer-alt', text: 'Admin Dashboard' },
+    courses:    { icon: 'fa-graduation-cap', text: 'Manage Courses' },
+    professors: { icon: 'fa-user-tie',       text: 'Manage Professors' },
+    students:   { icon: 'fa-user-graduate',  text: 'Manage Students' }
+  };
+  const actionsMap = {
+    overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
+    courses: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-success" onclick="openAddCourseModal()"><i class="fas fa-plus-circle"></i> <span class="btn-text">New Course</span></button>`,
+    professors: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-success" onclick="openAddProfessorModal()"><i class="fas fa-user-plus"></i> <span class="btn-text">Add Professor</span></button>`,
+    students: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-success" onclick="openStudentRegModal()"><i class="fas fa-user-plus"></i> <span class="btn-text">Register Student</span></button>`
+  };
+  const meta = titleMap[adminTab] || titleMap.overview;
+  if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
+  if (actionsEl) actionsEl.innerHTML = actionsMap[adminTab] || '';
+}
+
 function renderAdminDashboard() {
-  if (adminTab === 'courses') renderAdminCourses();
+  updateAdminTabUI();
+  if (adminTab === 'overview') renderAdminOverview();
+  else if (adminTab === 'courses') renderAdminCourses();
   else if (adminTab === 'professors') renderAdminProfessors();
   else if (adminTab === 'students') renderAdminStudents();
 }
 
+async function renderAdminOverview() {
+  const courses = getCourses();
+  const professors = getProfessors();
+
+  $('statCourses').textContent = courses.length;
+  $('statMaterials').textContent = courses.reduce((s, c) => s + (c.materials ? c.materials.length : 0), 0);
+  $('statProfessors').textContent = professors.length;
+  $('statStudents').textContent = '...';
+
+  try {
+    const res = await fetch('https://aerospace-portal.onrender.com/api/students');
+    const data = await res.json();
+    if (data.success) $('statStudents').textContent = data.students.length;
+  } catch { $('statStudents').textContent = '—'; }
+}
+
 async function renderAdminCourses() {
   const courses = getCourses();
-  const searchTerm = ($('adminCourseSearch').value || '').toLowerCase().trim();
+  const searchTerm = ($('adminCourseSearch')?.value || '').toLowerCase().trim();
   const filtered = courses.filter(c =>
     c.name.toLowerCase().includes(searchTerm) ||
     (c.code && c.code.toLowerCase().includes(searchTerm))
   );
 
-  $('statCourses').textContent = courses.length;
-  $('statMaterials').textContent = courses.reduce((sum, c) => sum + (c.materials ? c.materials.length : 0), 0);
-  $('statStudents').textContent = '...';
-  try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/students');
-    const data = await res.json();
-    if (data.success) $('statStudents').textContent = data.students.length;
-  } catch { $('statStudents').textContent = 'Error'; }
-
   if (filtered.length === 0) {
-    $('adminCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-search"></i><p>No courses found.</p></div>`;
+    $('adminCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-graduation-cap"></i><p>No courses found. Create your first course above.</p></div>`;
     return;
   }
 
   let html = `<div class="course-grid">`;
   filtered.forEach(c => {
-    const matCount = c.materials ? c.materials.length : 0;
+    const matCount = (c.materials || []).length;
     const statusBadge = c.status === 'draft' ? '<span class="status-badge draft">DRAFT</span>'
-                     : c.status === 'archived' ? '<span class="status-badge archived">ARCHIVED</span>'
-                     : '';
-    const featuredBadge = c.featured ? '<span class="status-badge featured"><i class="fas fa-star"></i> FEATURED</span>' : '';
+                     : c.status === 'archived' ? '<span class="status-badge archived">ARCHIVED</span>' : '';
+    const featuredBadge = c.featured ? '<span class="status-badge featured"><i class="fas fa-star"></i></span>' : '';
     const premiumLabel = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` : '';
 
     const pendingDoubts = (c.doubts || []).filter(d => {
@@ -522,14 +636,17 @@ async function renderAdminCourses() {
 
     const alertHtml = pendingDoubts > 0 ? `
       <div class="admin-alert">
-        <span><i class="fas fa-bell"></i> ${pendingDoubts} Pending Doubt(s)</span>
+        <span><i class="fas fa-bell"></i> ${pendingDoubts} Pending</span>
         <button onclick="event.stopPropagation(); currentMaterialFilter='qa'; viewCourseDetail('${c.id}');">
-          Reply Now <i class="fas fa-arrow-right"></i>
+          Reply <i class="fas fa-arrow-right"></i>
         </button>
       </div>` : '';
 
+    const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt=""></div>` : '';
+
     html += `
-      <div class="course-card" style="${accentStyle(c.code || c.name)}">
+      <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}">
+        ${thumbHtml}
         <button class="delete-course-btn" onclick="event.stopPropagation();deleteCourse('${c.id}')" title="Delete"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${premiumLabel} ${statusBadge} ${featuredBadge}</div>
         <h3>${escapeHtml(c.name)}</h3>
@@ -539,11 +656,11 @@ async function renderAdminCourses() {
           <span><i class="fas fa-calendar-alt"></i> ${escapeHtml(c.semester) || '—'}</span>
           ${c.category ? `<span><i class="fas fa-tag"></i> ${escapeHtml(c.category)}</span>` : ''}
         </div>
-        <div class="material-count"><i class="fas fa-file-alt"></i> ${matCount} materials</div>
+        <div class="material-count"><i class="fas fa-layer-group"></i> ${matCount} materials</div>
         <div class="card-actions">
           <button class="btn btn-warning btn-sm" onclick="event.stopPropagation();openCourseEditor('${c.id}')"><i class="fas fa-edit"></i> Edit</button>
           <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
-          <button class="btn btn-success btn-sm" onclick="event.stopPropagation();openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
+          <button class="btn btn-success btn-sm" onclick="event.stopPropagation();openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Material</button>
         </div>
       </div>
     `;
@@ -554,57 +671,152 @@ async function renderAdminCourses() {
 
 function renderAdminProfessors() {
   const professors = getProfessors();
+  const countEl = $('professorCountLabel');
+  if (countEl) countEl.textContent = `${professors.length} member${professors.length === 1 ? '' : 's'}`;
+
   if (professors.length === 0) {
-    $('adminProfessorList').innerHTML = `<div class="empty-state"><i class="fas fa-chalkboard-teacher"></i><p>No professors added yet.</p></div>`;
+    $('adminProfessorList').innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-user-tie"></i>
+        <p>No professors added yet.</p>
+        <button class="btn btn-success" style="margin-top:16px;" onclick="openAddProfessorModal()">
+          <i class="fas fa-user-plus"></i> Add First Professor
+        </button>
+      </div>`;
     return;
   }
-  let html = '';
+
+  let html = `<div class="admin-professor-grid">`;
   professors.forEach(p => {
-    const photoHtml = p.photo ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}">` : `<div class="avatar-placeholder"><i class="fas fa-user"></i></div>`;
-    html += `<div class="admin-professor-item">${photoHtml}
-      <div class="info">
-        <h4>${escapeHtml(p.name)}</h4>
-        <div class="title">${escapeHtml(p.title)}</div>
-        <div class="desc">${escapeHtml(p.description) || ''}</div>
-      </div>
-      <div class="actions"><button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')"><i class="fas fa-trash"></i></button></div>
-    </div>`;
+    const photoHtml = p.photo
+      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}">`
+      : `<div class="avatar-placeholder"><i class="fas fa-user-tie"></i></div>`;
+
+    html += `
+      <div class="admin-professor-item">
+        ${photoHtml}
+        <div class="info">
+          <h4>${escapeHtml(p.name)}</h4>
+          <div class="title">${escapeHtml(p.title)}</div>
+          <div class="desc">${escapeHtml(p.description) || ''}</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')" title="Delete">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>`;
   });
+  html += `</div>`;
   $('adminProfessorList').innerHTML = html;
 }
 
 async function renderAdminStudents() {
   const container = $('adminStudentList');
   if (!container) return;
-  container.innerHTML = `<div class="empty-state"><p>Loading students...</p></div>`;
+  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading students...</p></div>`;
+
   try {
     const response = await fetch('https://aerospace-portal.onrender.com/api/students');
     const data = await response.json();
+    const countEl = $('studentCountLabel');
+
     if (data.success) {
+      if (countEl) countEl.textContent = `${data.students.length} student${data.students.length === 1 ? '' : 's'}`;
+
       if (data.students.length === 0) {
-        container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>No students registered yet.</p></div>`;
+        container.innerHTML = `
+          <div class="empty-state">
+            <i class="fas fa-user-graduate"></i>
+            <p>No students registered yet.</p>
+            <button class="btn btn-success" style="margin-top:16px;" onclick="openStudentRegModal()">
+              <i class="fas fa-user-plus"></i> Register First Student
+            </button>
+          </div>`;
         return;
       }
-      let html = '';
+
+      let html = `<div class="student-grid">`;
       data.students.forEach(s => {
-        html += `<div class="student-list-item">
-          <div class="student-info">
-            <h4>${escapeHtml(s.fullName || s.username)}</h4>
-            <div>
-              <strong>Username:</strong> @${escapeHtml(s.username)}<br>
-              ${s.email ? `<strong>Email:</strong> ${escapeHtml(s.email)}` : '<span style="color:#ef4444">No email</span>'}
+        const initials = (s.fullName || s.username || '?')
+          .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+        const created = s.createdAt ? new Date(s.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+
+        html += `
+          <div class="student-card">
+            <div class="student-card-header">
+              <div class="student-avatar">${initials}</div>
+              <div class="student-card-info">
+                <h4>${escapeHtml(s.fullName || s.username)}</h4>
+                <div class="student-username">@${escapeHtml(s.username)}</div>
+              </div>
             </div>
-          </div>
-          <div class="student-purchases"><i class="fas fa-check-circle"></i> Registered</div>
-        </div>`;
+            <div class="student-card-body">
+              <div class="student-meta-row">
+                <i class="fas fa-envelope"></i>
+                <span>${s.email ? escapeHtml(s.email) : '<em style="color:var(--text-tertiary);">No email</em>'}</span>
+              </div>
+              <div class="student-meta-row">
+                <i class="fas fa-calendar-plus"></i>
+                <span>Joined ${created}</span>
+              </div>
+            </div>
+            <div class="student-card-actions">
+              <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${s._id}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
+                <i class="fas fa-key"></i> Reset Password
+              </button>
+              <button class="btn btn-danger btn-sm" onclick="deleteStudent('${s._id}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
+                <i class="fas fa-trash"></i>
+              </button>
+            </div>
+          </div>`;
       });
+      html += `</div>`;
       container.innerHTML = html;
     }
-  } catch { container.innerHTML = `<div class="empty-state"><p style="color:red;">Error loading students.</p></div>`; }
+  } catch {
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading students.</p></div>`;
+  }
+}
+
+async function resetStudentPassword(userId, name) {
+  const newPass = prompt(`Enter new password for ${name} (min 6 characters):`);
+  if (!newPass || newPass.length < 6) {
+    if (newPass !== null) showToast('Password must be at least 6 characters.', 'error');
+    return;
+  }
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/admin/reset-password/${userId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newPassword: newPass })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showCredentialsCard({
+        fullName: name,
+        username: '(unchanged)',
+        password: newPass,
+        email: ''
+      });
+      showToast('✓ Password reset!', 'success');
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function deleteStudent(userId, name) {
+  if (!confirm(`Delete student "${name}"? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/admin/students/${userId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('🗑️ Student deleted.', 'info');
+      renderAdminStudents();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
 }
 
 /* ============================================================
-   COURSE EDITOR (NEW — full page)
+   COURSE EDITOR (unchanged from previous version)
    ============================================================ */
 function openCourseEditor(courseId) {
   editingCourseId = courseId;
@@ -614,18 +826,13 @@ function openCourseEditor(courseId) {
   pushHash(`#/admin/edit/${courseId}`);
   renderApp();
 }
-
 function closeCourseEditor() {
   editingCourseId = null;
   editingTab = 'details';
   pushHash('#/admin/courses');
   renderApp();
 }
-
-function switchEditorTab(tab) {
-  editingTab = tab;
-  renderCourseEditor(editingCourseId);
-}
+function switchEditorTab(tab) { editingTab = tab; renderCourseEditor(editingCourseId); }
 
 function renderCourseEditor(courseId) {
   const course = findCourse(courseId);
@@ -654,7 +861,7 @@ function renderCourseEditor(courseId) {
           <span><i class="fas fa-tag"></i> ${escapeHtml(course.category) || 'General'}</span>
           <span><i class="fas fa-signal"></i> ${escapeHtml(course.difficulty) || 'Intermediate'}</span>
           <span><i class="fas fa-clock"></i> ${escapeHtml(course.duration) || 'Not set'}</span>
-          <span><i class="fas fa-file-alt"></i> ${(course.materials || []).length} materials</span>
+          <span><i class="fas fa-layer-group"></i> ${(course.materials || []).length} materials</span>
         </div>
       </div>
       <div class="editor-hero-right">
@@ -663,173 +870,127 @@ function renderCourseEditor(courseId) {
         </button>
       </div>
     </div>
-
     <div class="editor-tabs">
       <button class="editor-tab ${editingTab === 'details' ? 'active' : ''}" onclick="switchEditorTab('details')">
         <i class="fas fa-info-circle"></i> Details
       </button>
       <button class="editor-tab ${editingTab === 'materials' ? 'active' : ''}" onclick="switchEditorTab('materials')">
-        <i class="fas fa-file-alt"></i> Materials (${(course.materials || []).length})
+        <i class="fas fa-layer-group"></i> Materials (${(course.materials || []).length})
       </button>
       <button class="editor-tab ${editingTab === 'announcements' ? 'active' : ''}" onclick="switchEditorTab('announcements')">
         <i class="fas fa-bullhorn"></i> Announcements (${(course.announcements || []).length})
       </button>
     </div>
-
     <div class="editor-body">
   `;
-
-  if (editingTab === 'details')       html += renderEditorDetails(course);
-  else if (editingTab === 'materials')     html += renderEditorMaterials(course);
+  if (editingTab === 'details') html += renderEditorDetails(course);
+  else if (editingTab === 'materials') html += renderEditorMaterials(course);
   else if (editingTab === 'announcements') html += renderEditorAnnouncements(course);
-
   html += `</div>`;
   $('courseEditorContent').innerHTML = html;
 }
 
-/* ---------- DETAILS TAB ---------- */
 function renderEditorDetails(course) {
   const outcomes = (course.learningOutcomes || []).join('\n');
   return `
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-info-circle"></i> Basic Information</h3>
       <div class="editor-grid-2">
-        <div class="form-group">
-          <label>Course Name *</label>
-          <input type="text" id="edName" value="${escapeHtml(course.name)}">
-        </div>
-        <div class="form-group">
-          <label>Course Code *</label>
-          <input type="text" id="edCode" value="${escapeHtml(course.code)}">
-        </div>
-        <div class="form-group">
-          <label>Semester</label>
-          <input type="text" id="edSemester" value="${escapeHtml(course.semester) || ''}">
-        </div>
-        <div class="form-group">
-          <label>Instructor</label>
-          <input type="text" id="edInstructor" value="${escapeHtml(course.instructor) || ''}">
-        </div>
+        <div class="form-group"><label>Course Name *</label><input type="text" id="edName" value="${escapeHtml(course.name)}"></div>
+        <div class="form-group"><label>Course Code *</label><input type="text" id="edCode" value="${escapeHtml(course.code)}"></div>
+        <div class="form-group"><label>Semester</label><input type="text" id="edSemester" value="${escapeHtml(course.semester) || ''}"></div>
+        <div class="form-group"><label>Instructor</label><input type="text" id="edInstructor" value="${escapeHtml(course.instructor) || ''}"></div>
       </div>
-      <div class="form-group">
-        <label>Description</label>
+      <div class="form-group"><label>Description</label>
         <textarea id="edDescription" rows="4">${escapeHtml(course.description) || ''}</textarea>
       </div>
     </div>
-
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-layer-group"></i> Classification</h3>
       <div class="editor-grid-3">
-        <div class="form-group">
-          <label>Category</label>
+        <div class="form-group"><label>Category</label>
           <select id="edCategory">
-            ${['Aerodynamics','Propulsion','Structures','Avionics','Mathematics','General']
-              .map(c => `<option value="${c}" ${course.category === c ? 'selected' : ''}>${c}</option>`).join('')}
+            ${['Aerodynamics','Propulsion','Structures','Avionics','Mathematics','General'].map(c => `<option value="${c}" ${course.category === c ? 'selected' : ''}>${c}</option>`).join('')}
           </select>
         </div>
-        <div class="form-group">
-          <label>Difficulty</label>
+        <div class="form-group"><label>Difficulty</label>
           <select id="edDifficulty">
-            ${['Beginner','Intermediate','Advanced']
-              .map(c => `<option value="${c}" ${course.difficulty === c ? 'selected' : ''}>${c}</option>`).join('')}
+            ${['Beginner','Intermediate','Advanced'].map(c => `<option value="${c}" ${course.difficulty === c ? 'selected' : ''}>${c}</option>`).join('')}
           </select>
         </div>
-        <div class="form-group">
-          <label>Duration (e.g. "12 hours")</label>
+        <div class="form-group"><label>Duration</label>
           <input type="text" id="edDuration" value="${escapeHtml(course.duration) || ''}" placeholder="e.g. 12 hours">
         </div>
       </div>
     </div>
-
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-bullseye"></i> Learning Outcomes</h3>
-      <p class="editor-hint">One outcome per line. Students will see these as bullet points.</p>
-      <textarea id="edOutcomes" rows="5" placeholder="Understand fundamental aerodynamic principles&#10;Apply Bernoulli's equation to real problems&#10;Design basic airfoil shapes">${escapeHtml(outcomes)}</textarea>
+      <p class="editor-hint">One outcome per line.</p>
+      <textarea id="edOutcomes" rows="5" placeholder="Understand aerodynamic principles&#10;Apply Bernoulli's equation...">${escapeHtml(outcomes)}</textarea>
     </div>
-
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-cog"></i> Status & Visibility</h3>
       <div class="editor-grid-3">
-        <div class="form-group">
-          <label>Status</label>
+        <div class="form-group"><label>Status</label>
           <select id="edStatus">
             <option value="published" ${course.status === 'published' ? 'selected' : ''}>✅ Published</option>
             <option value="draft" ${course.status === 'draft' ? 'selected' : ''}>📝 Draft</option>
             <option value="archived" ${course.status === 'archived' ? 'selected' : ''}>📦 Archived</option>
           </select>
         </div>
-        <div class="form-group">
-          <label>Featured</label>
+        <div class="form-group"><label>Featured</label>
           <label class="toggle-box" style="margin-top:6px;">
             <input type="checkbox" id="edFeatured" ${course.featured ? 'checked' : ''}>
-            <span><i class="fas fa-star"></i> Feature this course</span>
+            <span><i class="fas fa-star"></i> Featured</span>
           </label>
         </div>
-        <div class="form-group">
-          <label>Monetization</label>
+        <div class="form-group"><label>Monetization</label>
           <label class="toggle-box" style="margin-top:6px;">
             <input type="checkbox" id="edIsPremium" ${course.isPremium ? 'checked' : ''}>
-            <span><i class="fas fa-crown"></i> Premium course</span>
+            <span><i class="fas fa-crown"></i> Premium</span>
           </label>
         </div>
       </div>
-      <div class="form-group">
-        <label>Price (₹)</label>
+      <div class="form-group"><label>Price (₹)</label>
         <input type="number" id="edPrice" value="${course.price || 0}" min="0" step="1">
       </div>
     </div>
-
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-image"></i> Thumbnail</h3>
       <div class="thumbnail-editor">
-        ${course.thumbnail ? `<img src="${course.thumbnail}" class="thumbnail-preview" alt="Thumbnail">` : '<div class="thumbnail-preview-empty"><i class="fas fa-image"></i><span>No thumbnail</span></div>'}
+        ${course.thumbnail ? `<img src="${course.thumbnail}" class="thumbnail-preview" alt="">` : '<div class="thumbnail-preview-empty"><i class="fas fa-image"></i><span>No thumbnail</span></div>'}
         <div class="thumbnail-actions">
           <input type="file" id="edThumbnailFile" accept="image/*" style="display:none;" onchange="handleThumbnailUpload(this)">
-          <button class="btn btn-outline btn-sm" onclick="document.getElementById('edThumbnailFile').click()">
-            <i class="fas fa-upload"></i> Upload Image
-          </button>
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('edThumbnailFile').click()"><i class="fas fa-upload"></i> Upload</button>
           ${course.thumbnail ? `<button class="btn btn-outline btn-sm" onclick="removeThumbnail()"><i class="fas fa-times"></i> Remove</button>` : ''}
         </div>
       </div>
     </div>
-
     <div class="editor-footer">
-      <div class="editor-footer-left">
-        <span class="editor-hint"><i class="fas fa-info-circle"></i> Changes are saved to the database immediately.</span>
-      </div>
+      <div class="editor-footer-left"><span class="editor-hint"><i class="fas fa-info-circle"></i> Saved to database immediately.</span></div>
       <div class="editor-footer-right">
         <button class="btn btn-outline" onclick="renderCourseEditor('${course.id}')">Reset</button>
-        <button class="btn btn-primary btn-lg" onclick="saveCourseDetails('${course.id}')">
-          <i class="fas fa-save"></i> Save All Changes
-        </button>
+        <button class="btn btn-primary btn-lg" onclick="saveCourseDetails('${course.id}')"><i class="fas fa-save"></i> Save Changes</button>
       </div>
     </div>
   `;
 }
 
-/* ---------- MATERIALS TAB ---------- */
 function renderEditorMaterials(course) {
   let html = `
     <div class="editor-section">
       <div class="editor-section-header">
-        <h3 class="editor-section-title"><i class="fas fa-file-alt"></i> Materials (${(course.materials || []).length})</h3>
-        <button class="btn btn-success" onclick="addNewMaterial('${course.id}')">
-          <i class="fas fa-plus"></i> Add Material
-        </button>
+        <h3 class="editor-section-title"><i class="fas fa-layer-group"></i> Materials (${(course.materials || []).length})</h3>
+        <button class="btn btn-success" onclick="addNewMaterial('${course.id}')"><i class="fas fa-plus"></i> Add Material</button>
       </div>
-      <p class="editor-hint">Click any material to expand and edit all its properties, including quiz questions.</p>
+      <p class="editor-hint">Click any material to expand and edit.</p>
     </div>
   `;
-
   if (!course.materials || course.materials.length === 0) {
-    html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No materials yet. Add your first one above.</p></div>`;
+    html += `<div class="empty-state"><i class="fas fa-layer-group"></i><p>No materials yet.</p></div>`;
     return html;
   }
-
-  course.materials.forEach((m, idx) => {
-    html += renderMaterialEditorCard(course.id, m, idx);
-  });
-
+  course.materials.forEach((m, idx) => { html += renderMaterialEditorCard(course.id, m, idx); });
   return html;
 }
 
@@ -845,126 +1006,80 @@ function renderMaterialEditorCard(courseId, m, idx) {
           ${m.isPremium ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO</span>` : '<span class="mat-badge free">FREE</span>'}
           ${quizCount > 0 ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>` : ''}
         </div>
-        <div class="me-summary-right">
-          <i class="fas fa-chevron-down me-chevron"></i>
-        </div>
+        <div class="me-summary-right"><i class="fas fa-chevron-down me-chevron"></i></div>
       </summary>
       <div class="me-body">
         <div class="editor-grid-2">
-          <div class="form-group">
-            <label>Title</label>
-            <input type="text" class="me-title" value="${escapeHtml(m.title)}">
-          </div>
-          <div class="form-group">
-            <label>Type</label>
+          <div class="form-group"><label>Title</label><input type="text" class="me-title" value="${escapeHtml(m.title)}"></div>
+          <div class="form-group"><label>Type</label>
             <select class="me-type">
-              <option value="video" ${m.type === 'video' ? 'selected' : ''}>🎬 Video Lecture</option>
-              <option value="pyq" ${m.type === 'pyq' ? 'selected' : ''}>📄 Previous Year Question</option>
-              <option value="tutorial" ${m.type === 'tutorial' ? 'selected' : ''}>📝 Tutorial Sheet</option>
+              <option value="video" ${m.type === 'video' ? 'selected' : ''}>🎬 Video</option>
+              <option value="pyq" ${m.type === 'pyq' ? 'selected' : ''}>📄 PYQ</option>
+              <option value="tutorial" ${m.type === 'tutorial' ? 'selected' : ''}>📝 Tutorial</option>
               <option value="slides" ${m.type === 'slides' ? 'selected' : ''}>📊 Slides</option>
               <option value="other" ${m.type === 'other' ? 'selected' : ''}>📁 Other</option>
             </select>
           </div>
         </div>
-        <div class="form-group">
-          <label>Description</label>
-          <textarea class="me-desc" rows="2">${escapeHtml(m.description) || ''}</textarea>
-        </div>
-        <div class="form-group">
-          <label>Link (YouTube / URL)</label>
-          <input type="url" class="me-url" value="${escapeHtml(m.url) || ''}" placeholder="https://...">
-        </div>
+        <div class="form-group"><label>Description</label><textarea class="me-desc" rows="2">${escapeHtml(m.description) || ''}</textarea></div>
+        <div class="form-group"><label>Link</label><input type="url" class="me-url" value="${escapeHtml(m.url) || ''}"></div>
         <div class="editor-grid-2">
-          <div class="form-group">
-            <label>Access</label>
+          <div class="form-group"><label>Access</label>
             <label class="toggle-box pro" style="margin-top:6px;">
               <input type="checkbox" class="me-premium" ${m.isPremium ? 'checked' : ''}>
               <span><i class="fas fa-crown"></i> PRO Material</span>
             </label>
           </div>
-          <div class="form-group">
-            <label>Price (₹) if PRO</label>
-            <input type="number" class="me-price" value="${m.price || 0}" min="0" step="1">
-          </div>
+          <div class="form-group"><label>Price (₹)</label><input type="number" class="me-price" value="${m.price || 0}" min="0" step="1"></div>
         </div>
-
         <div class="me-file-section">
-          <label>Attached File</label>
-          ${m.fileName
-            ? `<div class="me-file-info"><i class="fas fa-paperclip"></i> ${escapeHtml(m.fileName)} <button class="btn btn-outline btn-sm" onclick="replaceMaterialFile('${courseId}', '${m.id}')"><i class="fas fa-sync"></i> Replace</button></div>`
-            : `<div class="me-file-info empty"><i class="fas fa-file"></i> No file attached <button class="btn btn-outline btn-sm" onclick="replaceMaterialFile('${courseId}', '${m.id}')"><i class="fas fa-upload"></i> Upload</button></div>`}
-          <input type="file" class="me-file-input" style="display:none;" accept=".pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg" onchange="handleNewMaterialFile(this, '${courseId}', '${m.id}')">
+          <label>File</label>
+          ${m.fileName ? `<div class="me-file-info"><i class="fas fa-paperclip"></i> ${escapeHtml(m.fileName)} <button class="btn btn-outline btn-sm" onclick="replaceMaterialFile('${courseId}', '${m.id}')"><i class="fas fa-sync"></i> Replace</button></div>`
+                        : `<div class="me-file-info empty"><i class="fas fa-file"></i> No file <button class="btn btn-outline btn-sm" onclick="replaceMaterialFile('${courseId}', '${m.id}')"><i class="fas fa-upload"></i> Upload</button></div>`}
+          <input type="file" class="me-file-input" style="display:none;" onchange="handleNewMaterialFile(this, '${courseId}', '${m.id}')">
         </div>
-
         <div class="me-quiz-section">
           <div class="me-quiz-header">
-            <h4><i class="fas fa-question-circle"></i> Quiz (${quizCount} question${quizCount === 1 ? '' : 's'})</h4>
-            <button class="btn btn-accent btn-sm" onclick="openQuizModal('${courseId}', '${m.id}')">
-              <i class="fas fa-pen"></i> ${quizCount > 0 ? 'Edit Quiz' : 'Add Quiz'}
-            </button>
+            <h4><i class="fas fa-question-circle"></i> Quiz (${quizCount})</h4>
+            <button class="btn btn-accent btn-sm" onclick="openQuizModal('${courseId}', '${m.id}')"><i class="fas fa-pen"></i> ${quizCount > 0 ? 'Edit' : 'Add Quiz'}</button>
           </div>
         </div>
-
         <div class="me-actions">
-          <button class="btn btn-danger btn-sm" onclick="deleteMaterialFromEditor('${courseId}', '${m.id}', '${escapeHtml(m.title).replace(/'/g, "\\'")}')">
-            <i class="fas fa-trash"></i> Delete Material
-          </button>
-          <button class="btn btn-primary" onclick="saveMaterialInline('${courseId}', '${m.id}')">
-            <i class="fas fa-save"></i> Save Material
-          </button>
+          <button class="btn btn-danger btn-sm" onclick="deleteMaterialFromEditor('${courseId}', '${m.id}', '${escapeHtml(m.title).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i> Delete</button>
+          <button class="btn btn-primary" onclick="saveMaterialInline('${courseId}', '${m.id}')"><i class="fas fa-save"></i> Save Material</button>
         </div>
       </div>
     </details>
   `;
 }
 
-/* ---------- ANNOUNCEMENTS TAB ---------- */
 function renderEditorAnnouncements(course) {
   const anns = (course.announcements || []).slice().sort((a, b) => new Date(b.date) - new Date(a.date));
-
   let html = `
     <div class="editor-section">
-      <h3 class="editor-section-title"><i class="fas fa-bullhorn"></i> Post New Announcement</h3>
-      <p class="editor-hint">Students will see this on the course page.</p>
-      <div class="form-group">
-        <label>Title *</label>
-        <input type="text" id="annTitle" placeholder="e.g. Exam schedule update">
-      </div>
-      <div class="form-group">
-        <label>Message</label>
-        <textarea id="annBody" rows="4" placeholder="Write your announcement..."></textarea>
-      </div>
-      <button class="btn btn-primary" onclick="postAnnouncement('${course.id}')">
-        <i class="fas fa-paper-plane"></i> Post Announcement
-      </button>
+      <h3 class="editor-section-title"><i class="fas fa-bullhorn"></i> Post Announcement</h3>
+      <div class="form-group"><label>Title *</label><input type="text" id="annTitle" placeholder="e.g. Exam schedule update"></div>
+      <div class="form-group"><label>Message</label><textarea id="annBody" rows="4" placeholder="Write your announcement..."></textarea></div>
+      <button class="btn btn-primary" onclick="postAnnouncement('${course.id}')"><i class="fas fa-paper-plane"></i> Post</button>
     </div>
-
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-list"></i> Posted (${anns.length})</h3>
   `;
-
-  if (anns.length === 0) {
-    html += `<div class="empty-state" style="padding:30px;"><i class="fas fa-bullhorn"></i><p>No announcements yet.</p></div>`;
-  } else {
+  if (anns.length === 0) html += `<div class="empty-state" style="padding:30px;"><i class="fas fa-bullhorn"></i><p>No announcements yet.</p></div>`;
+  else {
     html += `<div class="ann-list">`;
     anns.forEach(a => {
-      const dateStr = new Date(a.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      const d = new Date(a.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
       html += `<div class="ann-card">
         <div class="ann-card-head">
-          <div>
-            <strong>${escapeHtml(a.title)}</strong>
-            <span class="ann-meta">by ${escapeHtml(a.authorName || 'Admin')} · ${dateStr}</span>
-          </div>
-          <button class="ann-delete" onclick="deleteAnnouncement('${course.id}', '${a.id}')" title="Delete">
-            <i class="fas fa-trash-alt"></i>
-          </button>
+          <div><strong>${escapeHtml(a.title)}</strong><span class="ann-meta">by ${escapeHtml(a.authorName)} · ${d}</span></div>
+          <button class="ann-delete" onclick="deleteAnnouncement('${course.id}', '${a.id}')"><i class="fas fa-trash-alt"></i></button>
         </div>
         ${a.body ? `<p class="ann-body">${escapeHtml(a.body)}</p>` : ''}
       </div>`;
     });
     html += `</div>`;
   }
-
   html += `</div>`;
   return html;
 }
@@ -975,14 +1090,11 @@ function renderEditorAnnouncements(course) {
 async function saveCourseDetails(courseId) {
   const name = $('edName').value.trim();
   const code = $('edCode').value.trim();
-  if (!name || !code) return showToast('Name and code are required.', 'error');
-
+  if (!name || !code) return showToast('Name and code required.', 'error');
   const outcomesRaw = $('edOutcomes').value;
-  const learningOutcomes = outcomesRaw.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-
+  const learningOutcomes = outcomesRaw.split('\n').map(l => l.trim()).filter(Boolean);
   const payload = {
-    name,
-    code,
+    name, code,
     semester: $('edSemester').value.trim(),
     instructor: $('edInstructor').value.trim(),
     description: $('edDescription').value.trim(),
@@ -995,23 +1107,15 @@ async function saveCourseDetails(courseId) {
     isPremium: $('edIsPremium').checked,
     price: parseFloat($('edPrice').value) || 0
   };
-
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('✅ Course details saved!', 'success');
-      await fetchCoursesFromDB();
-    } else {
-      showToast(data.message || 'Failed to save.', 'error');
-    }
-  } catch {
-    showToast('Server error.', 'error');
-  }
+    if (data.success) { showToast('✅ Saved!', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
 }
 
 function handleThumbnailUpload(input) {
@@ -1022,15 +1126,11 @@ function handleThumbnailUpload(input) {
   reader.onload = async (e) => {
     try {
       const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${editingCourseId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ thumbnail: e.target.result })
       });
       const data = await res.json();
-      if (data.success) {
-        showToast('✅ Thumbnail updated!', 'success');
-        await fetchCoursesFromDB();
-      }
+      if (data.success) { showToast('✓ Thumbnail updated!', 'success'); await fetchCoursesFromDB(); }
     } catch { showToast('Upload failed.', 'error'); }
   };
   reader.readAsDataURL(file);
@@ -1039,112 +1139,79 @@ function handleThumbnailUpload(input) {
 async function removeThumbnail() {
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${editingCourseId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ thumbnail: '' })
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('Thumbnail removed.', 'info');
-      await fetchCoursesFromDB();
-    }
+    if (data.success) { showToast('Thumbnail removed.', 'info'); await fetchCoursesFromDB(); }
   } catch { showToast('Failed.', 'error'); }
 }
 
 async function addNewMaterial(courseId) {
   const title = prompt('Material title:');
   if (!title || !title.trim()) return;
-
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: title.trim(),
-        type: 'video',
-        description: '',
-        url: '',
-        isPremium: false,
-        price: 0
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title.trim(), type: 'video', description: '', url: '', isPremium: false, price: 0 })
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('✅ Material added!', 'success');
-      await fetchCoursesFromDB();
-    } else {
-      showToast(data.message || 'Failed.', 'error');
-    }
+    if (data.success) { showToast('✓ Material added!', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
 async function saveMaterialInline(courseId, materialId) {
-  const details = document.querySelector(`.material-editor[data-mat-id="${materialId}"]`);
-  if (!details) return;
-
+  const el = document.querySelector(`.material-editor[data-mat-id="${materialId}"]`);
+  if (!el) return;
   const payload = {
-    title: details.querySelector('.me-title').value.trim(),
-    type: details.querySelector('.me-type').value,
-    description: details.querySelector('.me-desc').value.trim(),
-    url: details.querySelector('.me-url').value.trim(),
-    isPremium: details.querySelector('.me-premium').checked,
-    price: parseFloat(details.querySelector('.me-price').value) || 0
+    title: el.querySelector('.me-title').value.trim(),
+    type: el.querySelector('.me-type').value,
+    description: el.querySelector('.me-desc').value.trim(),
+    url: el.querySelector('.me-url').value.trim(),
+    isPremium: el.querySelector('.me-premium').checked,
+    price: parseFloat(el.querySelector('.me-price').value) || 0
   };
-
   if (!payload.title) return showToast('Title required.', 'error');
-
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('✅ Material saved!', 'success');
-      await fetchCoursesFromDB();
-    } else {
-      showToast(data.message || 'Failed.', 'error');
-    }
+    if (data.success) { showToast('✓ Material saved!', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
 async function deleteMaterialFromEditor(courseId, materialId, title) {
-  if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
+  if (!confirm(`Delete "${title}"?`)) return;
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, { method: 'DELETE' });
     const data = await res.json();
-    if (data.success) {
-      showToast('Material deleted.', 'info');
-      await fetchCoursesFromDB();
-    } else showToast(data.message || 'Failed.', 'error');
+    if (data.success) { showToast('Deleted.', 'info'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
 function replaceMaterialFile(courseId, materialId) {
-  const details = document.querySelector(`.material-editor[data-mat-id="${materialId}"]`);
-  if (!details) return;
-  details.querySelector('.me-file-input').click();
+  const el = document.querySelector(`.material-editor[data-mat-id="${materialId}"]`);
+  if (el) el.querySelector('.me-file-input').click();
 }
 
 function handleNewMaterialFile(input, courseId, materialId) {
   const file = input.files && input.files[0];
   if (!file) return;
   if (file.size > 10 * 1024 * 1024) return showToast('File too large (max 10 MB).', 'error');
-
   const reader = new FileReader();
   reader.onload = async (e) => {
     try {
       const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileData: e.target.result, fileName: file.name })
       });
       const data = await res.json();
-      if (data.success) {
-        showToast('✅ File replaced!', 'success');
-        await fetchCoursesFromDB();
-      }
+      if (data.success) { showToast('✓ File replaced!', 'success'); await fetchCoursesFromDB(); }
     } catch { showToast('Upload failed.', 'error'); }
   };
   reader.readAsDataURL(file);
@@ -1154,22 +1221,14 @@ async function postAnnouncement(courseId) {
   const title = $('annTitle').value.trim();
   const body = $('annBody').value.trim();
   if (!title) return showToast('Title required.', 'error');
-
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/announcements`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title,
-        body,
-        authorName: currentUser.fullName || currentUser.username || 'Instructor'
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, body, authorName: currentUser.fullName || currentUser.username || 'Instructor' })
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('📢 Announcement posted!', 'success');
-      await fetchCoursesFromDB();
-    } else showToast(data.message || 'Failed.', 'error');
+    if (data.success) { showToast('📢 Posted!', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
@@ -1178,10 +1237,8 @@ async function deleteAnnouncement(courseId, annId) {
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/announcements/${annId}`, { method: 'DELETE' });
     const data = await res.json();
-    if (data.success) {
-      showToast('Announcement deleted.', 'info');
-      await fetchCoursesFromDB();
-    } else showToast(data.message || 'Failed.', 'error');
+    if (data.success) { showToast('Deleted.', 'info'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
@@ -1200,13 +1257,8 @@ function renderStudentHome() {
     professors.forEach(p => {
       const photoHtml = p.photo
         ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="professor-avatar">`
-        : `<div class="professor-avatar avatar-placeholder-lg"><i class="fas fa-user"></i></div>`;
-      html += `<div class="professor-card">
-        ${photoHtml}
-        <h3>${escapeHtml(p.name)}</h3>
-        <div class="prof-title">${escapeHtml(p.title)}</div>
-        <p>${escapeHtml(p.description) || ''}</p>
-      </div>`;
+        : `<div class="professor-avatar avatar-placeholder-lg"><i class="fas fa-user-tie"></i></div>`;
+      html += `<div class="professor-card">${photoHtml}<h3>${escapeHtml(p.name)}</h3><div class="prof-title">${escapeHtml(p.title)}</div><p>${escapeHtml(p.description) || ''}</p></div>`;
     });
     $('professorsGrid').innerHTML = html;
   }
@@ -1216,30 +1268,24 @@ function renderStreakCard() {
   const container = document.getElementById('streakCardContainer');
   if (!container) return;
   if (currentUser.role !== 'student') { container.innerHTML = ''; return; }
-
   const streak = currentUser.streakCount || 0;
   const longest = currentUser.longestStreak || 0;
   if (streak === 0 && longest === 0) { container.innerHTML = ''; return; }
-
   let message = ''; let icon = 'fa-fire'; let tone = 'warm';
-  if (streak === 0) {
-    message = `Welcome back! Start a new streak today. Your best was ${longest} day${longest > 1 ? 's' : ''}.`;
-    icon = 'fa-hourglass-start'; tone = 'cool';
-  } else if (streak < 3) message = `You're on a ${streak}-day streak. Keep it going!`;
-  else if (streak < 7) message = `🔥 ${streak} days strong! You're building momentum.`;
-  else if (streak < 30) message = `🚀 ${streak}-day streak! That's serious consistency.`;
-  else message = `🏆 ${streak} days! You're in the top tier of learners.`;
-
+  if (streak === 0) { message = `Welcome back! Best was ${longest} day${longest > 1 ? 's' : ''}.`; icon = 'fa-hourglass-start'; tone = 'cool'; }
+  else if (streak < 3) message = `You're on a ${streak}-day streak. Keep going!`;
+  else if (streak < 7) message = `🔥 ${streak} days strong!`;
+  else if (streak < 30) message = `🚀 ${streak}-day streak!`;
+  else message = `🏆 ${streak} days! Top tier.`;
   container.innerHTML = `
     <div class="streak-card ${tone}">
       <div class="streak-flame"><i class="fas ${icon}"></i></div>
       <div class="streak-info">
         <span class="streak-label">Daily Streak</span>
         <h3>${streak} day${streak === 1 ? '' : 's'}</h3>
-        <p>${message}${longest > streak ? ` · Best: ${longest} days` : ''}</p>
+        <p>${message}${longest > streak ? ` · Best: ${longest}` : ''}</p>
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
 function renderContinueCard() {
@@ -1249,28 +1295,23 @@ function renderContinueCard() {
   if (!la || !la.courseId || currentUser.role !== 'student') { container.innerHTML = ''; return; }
   const course = findCourse(la.courseId);
   if (!course) { container.innerHTML = ''; return; }
-
   const acc = accentStyle(course.code || course.name);
   const viewedCount = getProgress(course.id).length;
   const totalMats = (course.materials || []).length;
-
   container.innerHTML = `
     <div class="continue-card" style="${acc}">
       <div class="continue-icon"><i class="fas fa-play-circle"></i></div>
       <div class="continue-info">
         <span class="continue-label"><i class="fas fa-history"></i> Continue where you left off</span>
         <h3>${escapeHtml(course.name)}</h3>
-        <p>${viewedCount} of ${totalMats} materials completed · Last opened ${timeAgo(la.timestamp)}</p>
+        <p>${viewedCount} of ${totalMats} materials completed · ${timeAgo(la.timestamp)}</p>
       </div>
-      <button class="btn btn-primary continue-btn" onclick="viewCourseDetail('${course.id}')">
-        <i class="fas fa-play"></i> Resume
-      </button>
-    </div>
-  `;
+      <button class="btn btn-primary continue-btn" onclick="viewCourseDetail('${course.id}')"><i class="fas fa-play"></i> Resume</button>
+    </div>`;
 }
 
 /* ============================================================
-   STUDENT COURSES (with filters)
+   STUDENT COURSES
    ============================================================ */
 function clearCourseFilters() {
   const c = $('filterCategory'); const d = $('filterDifficulty'); const p = $('filterPrice');
@@ -1299,7 +1340,6 @@ function renderStudentCourses() {
     return true;
   });
 
-  // Featured first, then alphabetical
   filtered.sort((a, b) => {
     if (a.featured && !b.featured) return -1;
     if (!a.featured && b.featured) return 1;
@@ -1307,14 +1347,12 @@ function renderStudentCourses() {
   });
 
   if (filtered.length === 0) {
-    $('studentCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-book-open"></i><p>No courses match your filters.</p></div>`;
+    $('studentCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-graduation-cap"></i><p>No courses match your filters.</p></div>`;
     return;
   }
 
   let html = `<div class="course-grid">`;
-  filtered.forEach(c => {
-    html += renderStudentCourseCard(c);
-  });
+  filtered.forEach(c => { html += renderStudentCourseCard(c); });
   html += `</div>`;
   $('studentCourseList').innerHTML = html;
 }
@@ -1338,14 +1376,12 @@ function renderStudentCourseCard(c) {
     ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>${!isPurchased ? ` <span class="premium-badge premium-locked"><i class="fas fa-lock"></i> Locked</span>` : ''}`
     : '';
 
-  const thumbHtml = c.thumbnail
-    ? `<div class="course-thumb"><img src="${c.thumbnail}" alt=""></div>`
-    : '';
+  const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt=""></div>` : '';
 
   return `
     <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}" onclick="viewCourseDetail('${c.id}')">
       ${thumbHtml}
-      <button class="bookmark-btn ${saved ? 'saved' : ''}" onclick="toggleBookmark(event, '${c.id}')" title="${saved ? 'Remove from saved' : 'Save course'}">
+      <button class="bookmark-btn ${saved ? 'saved' : ''}" onclick="toggleBookmark(event, '${c.id}')" title="${saved ? 'Remove' : 'Save'}">
         <i class="fas fa-bookmark"></i>
       </button>
       <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${featuredBadge} ${badge}</div>
@@ -1360,11 +1396,10 @@ function renderStudentCourseCard(c) {
         ${c.isPremium ? `<span class="chip gold"><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>` : `<span class="chip green"><i class="fas fa-gift"></i> Free</span>`}
       </div>
       <p class="course-desc">${escapeHtml(c.description) || ''}</p>
-      <div class="material-count"><i class="fas fa-file-alt"></i> ${totalMats} materials</div>
+      <div class="material-count"><i class="fas fa-layer-group"></i> ${totalMats} materials</div>
       ${progressHtml}
       ${c.isPremium && !isPurchased ? `<div style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();showPaymentModal('${c.id}')"><i class="fas fa-shopping-cart"></i> Buy Now</button></div>` : ''}
-    </div>
-  `;
+    </div>`;
 }
 
 function renderSavedCourses() {
@@ -1374,10 +1409,8 @@ function renderSavedCourses() {
     container.innerHTML = `<div class="empty-state">
       <i class="fas fa-bookmark"></i>
       <p>You haven't saved any courses yet.</p>
-      <p style="margin-top:8px;font-size:13px;">Tap the bookmark icon on any course to save it for later.</p>
-      <button class="btn btn-primary" style="margin-top:16px;" onclick="navigateStudent('courses')">
-        <i class="fas fa-book"></i> Browse Courses
-      </button>
+      <p style="margin-top:8px;font-size:13px;">Tap the bookmark icon on any course to save it.</p>
+      <button class="btn btn-primary" style="margin-top:16px;" onclick="navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> Browse Courses</button>
     </div>`;
     return;
   }
@@ -1407,7 +1440,6 @@ function renderCourseDetail(courseId) {
     $('courseDetailContent').innerHTML = `<div class="empty-state"><p>Course not found.</p></div>`;
     return;
   }
-
   const isPremiumCourse = course.isPremium || false;
   const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
   const acc = accentStyle(course.code || course.name);
@@ -1417,7 +1449,7 @@ function renderCourseDetail(courseId) {
     <div class="course-detail-header" style="${acc}">
       ${course.thumbnail ? `<img src="${course.thumbnail}" class="cd-thumb" alt="">` : ''}
       <div class="cd-content">
-        <h2>${escapeHtml(course.name)} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
+        <h2>${escapeHtml(course.name)} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>' : ''}</h2>
         <div class="cd-chips">
           ${course.category ? `<span class="chip"><i class="fas fa-tag"></i> ${escapeHtml(course.category)}</span>` : ''}
           ${course.difficulty ? `<span class="chip" style="background:${diff.bg};color:${diff.fg};"><i class="fas fa-signal"></i> ${course.difficulty}</span>` : ''}
@@ -1433,7 +1465,6 @@ function renderCourseDetail(courseId) {
     </div>
   `;
 
-  // Learning outcomes
   if (course.learningOutcomes && course.learningOutcomes.length > 0) {
     html += `<div class="learning-outcomes">
       <h3><i class="fas fa-bullseye"></i> What you'll learn</h3>
@@ -1441,29 +1472,21 @@ function renderCourseDetail(courseId) {
     </div>`;
   }
 
-  // Announcements
   if (course.announcements && course.announcements.length > 0) {
     const sortedAnns = [...course.announcements].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 3);
     html += `<div class="course-announcements">
       <h3><i class="fas fa-bullhorn"></i> Announcements</h3>
       ${sortedAnns.map(a => {
         const d = new Date(a.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
-        return `<div class="ann-card compact">
-          <div class="ann-card-head">
-            <div><strong>${escapeHtml(a.title)}</strong><span class="ann-meta">${d}</span></div>
-          </div>
-          ${a.body ? `<p class="ann-body">${escapeHtml(a.body)}</p>` : ''}
-        </div>`;
+        return `<div class="ann-card compact"><div class="ann-card-head"><div><strong>${escapeHtml(a.title)}</strong><span class="ann-meta">${d}</span></div></div>${a.body ? `<p class="ann-body">${escapeHtml(a.body)}</p>` : ''}</div>`;
       }).join('')}
     </div>`;
   }
 
   if (isPremiumCourse && currentUser.role === 'student' && !isPurchased) {
     html += `<div class="premium-notice">
-      <div><i class="fas fa-info-circle"></i> Premium materials are locked.</div>
-      <button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}')">
-        <i class="fas fa-shopping-cart"></i> Buy Full Course (₹${course.price})
-      </button>
+      <div><i class="fas fa-info-circle"></i> Premium materials locked.</div>
+      <button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}')"><i class="fas fa-shopping-cart"></i> Buy (₹${course.price})</button>
     </div>`;
   }
 
@@ -1476,11 +1499,9 @@ function renderCourseDetail(courseId) {
         <div class="cert-earned-icon"><i class="fas fa-award"></i></div>
         <div class="cert-earned-info">
           <h4>🎉 Course Completed!</h4>
-          <p>You've finished all ${totalMats} materials. Claim your certificate.</p>
+          <p>You've finished all ${totalMats} materials.</p>
         </div>
-        <button class="btn btn-accent" onclick="generateCertificate('${course.id}')">
-          <i class="fas fa-download"></i> Get Certificate
-        </button>
+        <button class="btn btn-accent" onclick="generateCertificate('${course.id}')"><i class="fas fa-download"></i> Get Certificate</button>
       </div>`;
     }
   }
@@ -1507,7 +1528,7 @@ function renderCourseDetail(courseId) {
   }
 
   if (filtered.length === 0) {
-    html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No content uploaded in this category.</p></div>`;
+    html += `<div class="empty-state"><i class="fas fa-layer-group"></i><p>No content in this category.</p></div>`;
   } else {
     html += `<div class="material-list">`;
     filtered.forEach(m => { html += renderMaterialCard(course, m, isPurchased); });
@@ -1529,7 +1550,7 @@ function renderMaterialCard(course, m, isPurchased) {
 
   let fileActionHtml = '';
   if (!canAccess) {
-    fileActionHtml = `<button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock for ₹${matPrice}</button>`;
+    fileActionHtml = `<button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock ₹${matPrice}</button>`;
   } else {
     if (hasFile) {
       fileActionHtml += currentUser.role === 'admin'
@@ -1548,10 +1569,8 @@ function renderMaterialCard(course, m, isPurchased) {
     </button>`;
     if (quizCount > 0) {
       const qr = (currentUser.quizResults || {})[m.id];
-      const label = qr ? `Retake Quiz (${qr.score}/${qr.total})` : `Take Quiz (${quizCount})`;
-      progressBtnHtml += ` <button class="btn btn-accent btn-sm" onclick="event.stopPropagation();openQuizPlayer('${course.id}', '${m.id}')">
-        <i class="fas fa-question-circle"></i> ${label}
-      </button>`;
+      const label = qr ? `Retake (${qr.score}/${qr.total})` : `Take Quiz (${quizCount})`;
+      progressBtnHtml += ` <button class="btn btn-accent btn-sm" onclick="event.stopPropagation();openQuizPlayer('${course.id}', '${m.id}')"><i class="fas fa-question-circle"></i> ${label}</button>`;
     }
   }
 
@@ -1559,9 +1578,7 @@ function renderMaterialCard(course, m, isPurchased) {
     ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`
     : `<span class="mat-badge free">FREE</span>`;
 
-  const quizBadge = quizCount > 0
-    ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount} question${quizCount > 1 ? 's' : ''}</span>`
-    : '';
+  const quizBadge = quizCount > 0 ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>` : '';
 
   return `
     <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
@@ -1579,8 +1596,7 @@ function renderMaterialCard(course, m, isPurchased) {
 
 function renderQASection(course) {
   const doubts = [...(course.doubts || [])];
-  let html = `<div class="qa-section">
-    <h3><i class="fas fa-comments"></i> Course Q&A / Doubts</h3>`;
+  let html = `<div class="qa-section"><h3><i class="fas fa-comments"></i> Course Q&A / Doubts</h3>`;
 
   if (currentUser.role === 'student') {
     html += `<div class="qa-ask-box">
@@ -1591,7 +1607,7 @@ function renderQASection(course) {
   }
 
   if (doubts.length === 0) {
-    html += `<div class="empty-state" style="padding: 20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet.</p></div>`;
+    html += `<div class="empty-state" style="padding:20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet.</p></div>`;
   } else {
     doubts.sort((a, b) => {
       const aHas = hasAnyAnswer(a); const bHas = hasAnyAnswer(b);
@@ -1602,9 +1618,7 @@ function renderQASection(course) {
 
     doubts.forEach(d => {
       const answered = hasAnyAnswer(d);
-      const statusBadge = answered
-        ? `<span class="qa-status solved">ANSWERED</span>`
-        : `<span class="qa-status pending">OPEN</span>`;
+      const statusBadge = answered ? `<span class="qa-status solved">ANSWERED</span>` : `<span class="qa-status pending">OPEN</span>`;
       const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
       const emailText = d.studentEmail ? escapeHtml(d.studentEmail) : 'No Email';
       const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
@@ -1620,24 +1634,22 @@ function renderQASection(course) {
           const rDate = r.date ? new Date(r.date).toLocaleDateString() : '';
           const isAdminReply = r.authorRole === 'admin';
           const canAccept = (isAsker || isAdmin) && !r.isAccepted;
-          repliesHtml += `
-            <div class="qa-reply ${isAdminReply ? 'admin-reply' : ''} ${r.isAccepted ? 'accepted' : ''}">
-              <div class="qa-reply-head">
-                <strong><i class="fas ${isAdminReply ? 'fa-user-shield' : 'fa-user-circle'}"></i> ${escapeHtml(r.authorName || r.authorUsername)}</strong>
-                ${isAdminReply ? '<span class="qa-reply-tag">Instructor</span>' : ''}
-                ${r.isAccepted ? '<span class="qa-reply-tag accepted-tag"><i class="fas fa-check-circle"></i> Accepted</span>' : ''}
-                <span class="qa-reply-date">${rDate}</span>
-              </div>
-              <div class="qa-reply-text">${escapeHtml(r.text)}</div>
-              ${canAccept ? `<button class="qa-accept-btn" onclick="acceptReply('${course.id}', '${d._id}', '${r._id}')"><i class="fas fa-check"></i> Accept this answer</button>` : ''}
-            </div>`;
+          repliesHtml += `<div class="qa-reply ${isAdminReply ? 'admin-reply' : ''} ${r.isAccepted ? 'accepted' : ''}">
+            <div class="qa-reply-head">
+              <strong><i class="fas ${isAdminReply ? 'fa-user-shield' : 'fa-user-circle'}"></i> ${escapeHtml(r.authorName || r.authorUsername)}</strong>
+              ${isAdminReply ? '<span class="qa-reply-tag">Instructor</span>' : ''}
+              ${r.isAccepted ? '<span class="qa-reply-tag accepted-tag"><i class="fas fa-check-circle"></i> Accepted</span>' : ''}
+              <span class="qa-reply-date">${rDate}</span>
+            </div>
+            <div class="qa-reply-text">${escapeHtml(r.text)}</div>
+            ${canAccept ? `<button class="qa-accept-btn" onclick="acceptReply('${course.id}', '${d._id}', '${r._id}')"><i class="fas fa-check"></i> Accept</button>` : ''}
+          </div>`;
         });
         repliesHtml += `</div>`;
       }
 
       const legacyAnswerHtml = (!replies.length && d.answer)
-        ? `<div class="qa-answer"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${escapeHtml(d.answer)}</div>`
-        : '';
+        ? `<div class="qa-answer"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin:</strong> ${escapeHtml(d.answer)}</div>` : '';
 
       const replyFormHtml = canReply ? `
         <div class="qa-reply-form" id="replyForm-${d._id}">
@@ -1647,20 +1659,19 @@ function renderQASection(course) {
           </button>
         </div>` : '';
 
-      html += `
-        <div class="qa-item ${answered ? 'solved' : 'pending'}">
-          <div class="qa-head">
-            <div>
-              <strong><i class="fas fa-user-circle"></i> ${escapeHtml(d.studentName)} <span class="qa-username">${usernameText}</span></strong>
-              ${isAdmin ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
-            </div>
-            <div>${statusBadge} <span class="qa-date">${dateText}</span></div>
+      html += `<div class="qa-item ${answered ? 'solved' : 'pending'}">
+        <div class="qa-head">
+          <div>
+            <strong><i class="fas fa-user-circle"></i> ${escapeHtml(d.studentName)} <span class="qa-username">${usernameText}</span></strong>
+            ${isAdmin ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
           </div>
-          <p class="qa-question"><strong>Q:</strong> ${escapeHtml(d.question)}</p>
-          ${legacyAnswerHtml}
-          ${repliesHtml}
-          ${replyFormHtml}
-        </div>`;
+          <div>${statusBadge} <span class="qa-date">${dateText}</span></div>
+        </div>
+        <p class="qa-question"><strong>Q:</strong> ${escapeHtml(d.question)}</p>
+        ${legacyAnswerHtml}
+        ${repliesHtml}
+        ${replyFormHtml}
+      </div>`;
     });
   }
   html += `</div>`;
@@ -1679,12 +1690,11 @@ function generateCertificate(courseId) {
 
   const studentName = currentUser.fullName || currentUser.username;
   const completionDate = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  const certId = 'AERO-' + (course.code || 'CRS').toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' +
-    String(currentUser._id).slice(-4).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
+  const certId = 'AERO-' + (course.code || 'CRS').toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' + String(currentUser._id).slice(-4).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
   const acc = getCourseAccent(course.code || course.name);
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Certificate — ${escapeHtml(course.name)}</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800;900&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:'Inter',sans-serif;background:#f0f4f8;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px 20px}
@@ -1716,10 +1726,7 @@ function generateCertificate(courseId) {
   </style></head><body>
   <div class="toolbar"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
   <div class="cert"><div class="cert-inner">
-    <div class="cert-header">
-      <div class="cert-logo">🚀</div>
-      <div class="cert-dept"><h1>Aerospace Department</h1><span>IIT Kharagpur</span></div>
-    </div>
+    <div class="cert-header"><div class="cert-logo">🚀</div><div class="cert-dept"><h1>Aerospace Department</h1><span>IIT Kharagpur</span></div></div>
     <div class="cert-title">Certificate</div>
     <div class="cert-subtitle">of Completion</div>
     <div class="cert-presented">This certificate is proudly presented to</div>
@@ -1761,14 +1768,13 @@ function renderQuizDraft() {
   const list = document.getElementById('quizQuestionsList');
   if (!list) return;
   if (quizDraft.length === 0) {
-    list.innerHTML = `<div class="empty-state" style="padding:20px;margin-bottom:14px;"><i class="fas fa-question-circle"></i><p>No questions yet. Click "Add Question" below.</p></div>`;
+    list.innerHTML = `<div class="empty-state" style="padding:20px;margin-bottom:14px;"><i class="fas fa-question-circle"></i><p>No questions yet.</p></div>`;
     return;
   }
   let html = '';
   quizDraft.forEach((q, qi) => {
     html += `<div class="quiz-edit-card">
-      <div class="quiz-edit-head">
-        <strong>Question ${qi + 1}</strong>
+      <div class="quiz-edit-head"><strong>Question ${qi + 1}</strong>
         <button type="button" class="quiz-remove" onclick="removeQuizQuestion(${qi})"><i class="fas fa-trash-alt"></i></button>
       </div>
       <div class="form-group" style="margin-bottom:10px;">
@@ -1777,13 +1783,9 @@ function renderQuizDraft() {
       <div class="quiz-options">
         ${(q.options || ['', '', '', '']).map((opt, oi) => `
           <div class="quiz-option-row">
-            <label class="quiz-radio">
-              <input type="radio" name="correct-${qi}" ${q.correctIndex === oi ? 'checked' : ''} onchange="updateQuizCorrect(${qi}, ${oi})">
-              <span class="quiz-radio-dot"></span>
-            </label>
+            <label class="quiz-radio"><input type="radio" name="correct-${qi}" ${q.correctIndex === oi ? 'checked' : ''} onchange="updateQuizCorrect(${qi}, ${oi})"><span class="quiz-radio-dot"></span></label>
             <input type="text" placeholder="Option ${oi + 1}" value="${escapeHtml(opt)}" oninput="updateQuizOption(${qi}, ${oi}, this.value)">
-          </div>
-        `).join('')}
+          </div>`).join('')}
       </div>
       <div class="form-group" style="margin:10px 0 0;">
         <input type="text" placeholder="Explanation (optional)" value="${escapeHtml(q.explanation || '')}" oninput="updateQuizField(${qi}, 'explanation', this.value)">
@@ -1812,11 +1814,8 @@ async function saveQuiz() {
       body: JSON.stringify({ quiz: quizDraft })
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('✅ Quiz saved!', 'success');
-      closeModal('quizModal');
-      fetchCoursesFromDB();
-    } else showToast(data.message || 'Failed.', 'error');
+    if (data.success) { showToast('✓ Quiz saved!', 'success'); closeModal('quizModal'); fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
@@ -1825,7 +1824,7 @@ function openQuizPlayer(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
   const mat = course.materials.find(m => m.id === materialId); if (!mat) return;
   const quiz = mat.quiz || [];
-  if (quiz.length === 0) return showToast('This material has no quiz.', 'info');
+  if (quiz.length === 0) return showToast('No quiz.', 'info');
   quizPlayerState = { courseId, materialId, materialTitle: mat.title, quiz, answers: new Array(quiz.length).fill(-1), submitted: false, response: null };
   renderQuizPlayer();
   openModal('quizPlayerModal');
@@ -1834,7 +1833,7 @@ function renderQuizPlayer() {
   const st = quizPlayerState; if (!st) return;
   $('quizPlayerTitle').innerHTML = `<i class="fas fa-question-circle"></i> ${escapeHtml(st.materialTitle)}`;
   if (!st.submitted) {
-    $('quizPlayerSub').textContent = `${st.quiz.length} question${st.quiz.length > 1 ? 's' : ''} · Choose one option per question`;
+    $('quizPlayerSub').textContent = `${st.quiz.length} questions · Choose one per question`;
     $('quizPlayerActions').innerHTML = `<button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">Cancel</button>
       <button type="button" class="btn btn-primary" onclick="submitQuiz()"><i class="fas fa-paper-plane"></i> Submit</button>`;
     let html = '';
@@ -1843,12 +1842,10 @@ function renderQuizPlayer() {
         <div class="quiz-play-qnum">Question ${qi + 1} of ${st.quiz.length}</div>
         <h4 class="quiz-play-question">${escapeHtml(q.question)}</h4>
         <div class="quiz-play-options">
-          ${q.options.map((opt, oi) => `
-            <label class="quiz-play-option ${st.answers[qi] === oi ? 'selected' : ''}" onclick="selectQuizAnswer(${qi}, ${oi})">
-              <span class="quiz-play-letter">${String.fromCharCode(65 + oi)}</span>
-              <span class="quiz-play-text">${escapeHtml(opt)}</span>
-            </label>
-          `).join('')}
+          ${q.options.map((opt, oi) => `<label class="quiz-play-option ${st.answers[qi] === oi ? 'selected' : ''}" onclick="selectQuizAnswer(${qi}, ${oi})">
+            <span class="quiz-play-letter">${String.fromCharCode(65 + oi)}</span>
+            <span class="quiz-play-text">${escapeHtml(opt)}</span>
+          </label>`).join('')}
         </div>
       </div>`;
     });
@@ -1871,10 +1868,7 @@ function renderQuizPlayer() {
     st.quiz.forEach((q, qi) => {
       const r = results[qi]; const ok = r.correct;
       html += `<div class="quiz-result-item ${ok ? 'ok' : 'bad'}">
-        <div class="quiz-result-head">
-          <span class="quiz-result-badge ${ok ? 'ok' : 'bad'}"><i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i></span>
-          <strong>Q${qi + 1}.</strong> ${escapeHtml(q.question)}
-        </div>
+        <div class="quiz-result-head"><span class="quiz-result-badge ${ok ? 'ok' : 'bad'}"><i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i></span><strong>Q${qi + 1}.</strong> ${escapeHtml(q.question)}</div>
         <div class="quiz-result-body">
           <div class="quiz-answer-row"><span class="quiz-answer-label">Your answer:</span><span class="${ok ? 'ok-text' : 'bad-text'}">${escapeHtml(q.options[r.chosen] ?? '—')}</span></div>
           ${!ok ? `<div class="quiz-answer-row"><span class="quiz-answer-label">Correct:</span><span class="ok-text">${escapeHtml(q.options[r.correctIndex])}</span></div>` : ''}
@@ -1893,7 +1887,7 @@ function selectQuizAnswer(qi, oi) {
 async function submitQuiz() {
   const st = quizPlayerState; if (!st) return;
   const unanswered = st.answers.filter(a => a < 0).length;
-  if (unanswered > 0) return showToast(`Answer all questions (${unanswered} left).`, 'error');
+  if (unanswered > 0) return showToast(`Answer all (${unanswered} left).`, 'error');
   try {
     const res = await fetch(`https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1907,9 +1901,9 @@ async function submitQuiz() {
       localStorage.setItem('aero_user', JSON.stringify(currentUser));
       renderQuizPlayer();
       const pct = data.percent;
-      if (pct === 100) showToast('🏆 Perfect score!', 'success');
+      if (pct === 100) showToast('🏆 Perfect!', 'success');
       else if (pct >= 60) showToast(`🎉 Scored ${data.score}/${data.total}!`, 'success');
-      else showToast(`📚 Scored ${data.score}/${data.total}. Retake to improve.`, 'info');
+      else showToast(`📚 Scored ${data.score}/${data.total}.`, 'info');
     } else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
@@ -1981,7 +1975,7 @@ async function refreshUserData() {
 }
 
 /* ============================================================
-   COURSE / MATERIAL CRUD (from dashboard)
+   COURSE / MATERIAL CRUD
    ============================================================ */
 function openAddCourseModal() {
   $('courseModalTitle').textContent = '📚 New Course';
@@ -2016,10 +2010,9 @@ async function saveCourse(e) {
     difficulty: $('courseDifficulty')?.value || 'Intermediate',
     isPremium: $('courseIsPremium').checked,
     price: parseFloat($('coursePrice').value) || 0,
-    status: 'draft' // New courses start as draft until admin completes them
+    status: 'draft'
   };
   if (!payload.name || !payload.code) return showToast('Name and code required.', 'error');
-
   try {
     const response = await fetch('https://aerospace-portal.onrender.com/api/courses', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2030,23 +2023,20 @@ async function saveCourse(e) {
       showToast('🎉 Course created! Opening editor...', 'success');
       closeModal('courseModal');
       await fetchCoursesFromDB();
-      // Auto-open the editor for the new course
-      if (data.course && data.course._id) {
-        setTimeout(() => openCourseEditor(data.course._id), 300);
-      }
+      if (data.course && data.course._id) setTimeout(() => openCourseEditor(data.course._id), 300);
     } else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
 async function deleteCourse(courseId) {
-  if (!confirm('Delete this course and all its materials? Cannot be undone.')) return;
+  if (!confirm('Delete this course and all its materials?')) return;
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, { method: 'DELETE' });
     const data = await response.json();
     if (data.success) {
       if (currentCourseId === courseId) currentCourseId = null;
       if (editingCourseId === courseId) editingCourseId = null;
-      showToast('🗑️ Course deleted.', 'info');
+      showToast('🗑️ Deleted.', 'info');
       fetchCoursesFromDB();
     } else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
@@ -2072,7 +2062,7 @@ function saveProfessor(e) {
       photo: photoData || ''
     });
     saveData(data);
-    showToast('Professor added!', 'success');
+    showToast('✓ Professor added!', 'success');
     closeModal('professorModal');
     renderApp();
   };
@@ -2088,12 +2078,12 @@ function deleteProfessor(professorId) {
   const data = loadData();
   data.professors = data.professors.filter(p => p.id !== professorId);
   saveData(data);
-  showToast('Professor deleted.', 'info');
+  showToast('Deleted.', 'info');
   renderApp();
 }
 
 /* ============================================================
-   LEGACY MATERIAL MODAL (from dashboard "Add Material" button)
+   LEGACY MATERIAL MODAL
    ============================================================ */
 window.toggleMaterialPriceInput = function () {
   const isPremium = $('materialIsPremium').checked;
@@ -2120,7 +2110,6 @@ async function saveMaterial(e) {
   e.preventDefault();
   const courseId = $('materialCourseId').value;
   const file = $('materialFile').files ? $('materialFile').files[0] : null;
-
   const processSave = async (fileData, fileName) => {
     const isPremiumMat = $('materialIsPremium') ? $('materialIsPremium').checked : false;
     const matPrice = $('materialPrice') ? (parseFloat($('materialPrice').value) || 0) : 0;
@@ -2129,25 +2118,19 @@ async function saveMaterial(e) {
       type: $('materialType').value,
       description: $('materialDescription').value.trim(),
       url: $('materialUrl').value.trim(),
-      isPremium: isPremiumMat,
-      price: matPrice,
+      isPremium: isPremiumMat, price: matPrice,
       fileData, fileName
     };
-
     try {
       const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(materialData)
       });
       const data = await response.json();
-      if (data.success) {
-        showToast('📎 Material uploaded!', 'success');
-        closeModal('materialModal');
-        fetchCoursesFromDB();
-      } else showToast(data.message || 'Failed.', 'error');
+      if (data.success) { showToast('📎 Uploaded!', 'success'); closeModal('materialModal'); fetchCoursesFromDB(); }
+      else showToast(data.message || 'Failed.', 'error');
     } catch { showToast('Server error.', 'error'); }
   };
-
   if (file) {
     const reader = new FileReader();
     reader.onload = ev => processSave(ev.target.result, file.name);
@@ -2173,11 +2156,8 @@ async function askDoubt(courseId) {
       })
     });
     const data = await response.json();
-    if (data.success) {
-      showToast('❓ Doubt submitted!', 'success');
-      textarea.value = '';
-      fetchCoursesFromDB();
-    } else showToast(data.message || 'Error.', 'error');
+    if (data.success) { showToast('❓ Submitted!', 'success'); textarea.value = ''; fetchCoursesFromDB(); }
+    else showToast(data.message || 'Error.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
@@ -2196,11 +2176,8 @@ async function postReply(courseId, doubtId) {
       })
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('💬 Reply posted!', 'success');
-      ta.value = '';
-      fetchCoursesFromDB();
-    } else showToast(data.message || 'Failed.', 'error');
+    if (data.success) { showToast('💬 Posted!', 'success'); ta.value = ''; fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
@@ -2211,10 +2188,8 @@ async function acceptReply(courseId, doubtId, replyId) {
       body: JSON.stringify({ acceptedBy: currentUser.username })
     });
     const data = await res.json();
-    if (data.success) {
-      showToast('✅ Answer accepted!', 'success');
-      fetchCoursesFromDB();
-    } else showToast(data.message || 'Failed.', 'error');
+    if (data.success) { showToast('✅ Accepted!', 'success'); fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
 
@@ -2247,15 +2222,14 @@ async function showPaymentModal(courseId, materialId = null) {
       description: `Purchase: ${itemName}`,
       order_id: data.order.id,
       handler: async function (response) {
-        showToast('Verifying payment...', 'info');
+        showToast('Verifying...', 'info');
         const verifyRes = await fetch('https://aerospace-portal.onrender.com/api/verify-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             razorpay_order_id: response.razorpay_order_id,
             razorpay_payment_id: response.razorpay_payment_id,
             razorpay_signature: response.razorpay_signature,
-            courseId: purchaseId,
-            userId: currentUser._id
+            courseId: purchaseId, userId: currentUser._id
           })
         });
         const verifyData = await verifyRes.json();
@@ -2265,13 +2239,9 @@ async function showPaymentModal(courseId, materialId = null) {
           localStorage.setItem('aero_user', JSON.stringify(currentUser));
           showToast('🎉 Payment Successful!', 'success');
           renderApp();
-        } else showToast('Payment verification failed!', 'error');
+        } else showToast('Verification failed!', 'error');
       },
-      prefill: {
-        name: currentUser.username,
-        email: currentUser.email || 'student@aerospace.com',
-        contact: '9999999999'
-      },
+      prefill: { name: currentUser.username, email: currentUser.email || 'student@aerospace.com', contact: '9999999999' },
       theme: { color: '#4f46e5' }
     };
     new Razorpay(options).open();
@@ -2330,7 +2300,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
         if (!deferredInstallPrompt) return;
         deferredInstallPrompt.prompt();
         const { outcome } = await deferredInstallPrompt.userChoice;
-        if (outcome === 'accepted') showToast('🎉 App installed!', 'success');
+        if (outcome === 'accepted') showToast('🎉 Installed!', 'success');
         deferredInstallPrompt = null;
         localStorage.setItem('aero_pwa_dismissed', '1');
       });
@@ -2340,7 +2310,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     }, 3000);
   }
 });
-window.addEventListener('appinstalled', () => { showToast('🎉 App installed!', 'success'); deferredInstallPrompt = null; });
+window.addEventListener('appinstalled', () => { showToast('🎉 Installed!', 'success'); deferredInstallPrompt = null; });
 
 /* ============================================================
    INIT
@@ -2349,7 +2319,7 @@ async function initApp() {
   const savedUser = localStorage.getItem('aero_user');
   if (savedUser) {
     currentUser = JSON.parse(savedUser);
-    if (currentUser.role === 'admin') adminTab = 'courses';
+    if (currentUser.role === 'admin') adminTab = 'overview';
   }
   syncHashToState();
   renderApp();

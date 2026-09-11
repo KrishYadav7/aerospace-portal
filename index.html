@@ -150,47 +150,127 @@
       <!-- ADMIN DASHBOARD -->
       <section id="adminView" class="view">
         <div class="dash-header">
-          <h2><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
-          <div class="actions">
-            <button class="btn btn-success" onclick="openAddCourseModal()">
-              <i class="fas fa-plus-circle"></i> <span class="btn-text">New Course</span>
-            </button>
-          </div>
+          <h2 id="adminPageTitle"><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
+          <div class="actions" id="adminHeaderActions"></div>
         </div>
 
         <div class="admin-tabs">
-          <button class="admin-tab active" data-tab="courses" onclick="switchAdminTab('courses')"><i class="fas fa-book"></i> Courses</button>
-          <button class="admin-tab" data-tab="professors" onclick="switchAdminTab('professors')"><i class="fas fa-chalkboard-teacher"></i> Professors</button>
-          <button class="admin-tab" data-tab="students" onclick="switchAdminTab('students')"><i class="fas fa-users"></i> Students</button>
+          <button class="admin-tab" data-tab="overview" onclick="switchAdminTab('overview')">
+            <i class="fas fa-chart-pie"></i> Overview
+          </button>
+          <button class="admin-tab" data-tab="courses" onclick="switchAdminTab('courses')">
+            <i class="fas fa-graduation-cap"></i> Courses
+          </button>
+          <button class="admin-tab" data-tab="professors" onclick="switchAdminTab('professors')">
+            <i class="fas fa-user-tie"></i> Professors
+          </button>
+          <button class="admin-tab" data-tab="students" onclick="switchAdminTab('students')">
+            <i class="fas fa-user-graduate"></i> Students
+          </button>
         </div>
 
-        <div id="adminTabCourses" class="admin-tab-content active">
+        <!-- ============ TAB: OVERVIEW ============ -->
+        <div id="adminTabOverview" class="admin-tab-content">
           <div class="stats-grid">
-            <div class="stat-card"><div class="stat-icon tone-brand"><i class="fas fa-book-open"></i></div><div><div class="num" id="statCourses">0</div><div class="label">Total Courses</div></div></div>
-            <div class="stat-card"><div class="stat-icon tone-cyan"><i class="fas fa-file-alt"></i></div><div><div class="num" id="statMaterials">0</div><div class="label">Total Materials</div></div></div>
-            <div class="stat-card"><div class="stat-icon tone-gold"><i class="fas fa-users"></i></div><div><div class="num" id="statStudents">0</div><div class="label">Students</div></div></div>
+            <div class="stat-card">
+              <div class="stat-icon tone-brand"><i class="fas fa-graduation-cap"></i></div>
+              <div class="stat-info">
+                <div class="num" id="statCourses">0</div>
+                <div class="label">Total Courses</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon tone-cyan"><i class="fas fa-layer-group"></i></div>
+              <div class="stat-info">
+                <div class="num" id="statMaterials">0</div>
+                <div class="label">Total Materials</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon tone-emerald"><i class="fas fa-user-graduate"></i></div>
+              <div class="stat-info">
+                <div class="num" id="statStudents">0</div>
+                <div class="label">Students</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon tone-gold"><i class="fas fa-user-tie"></i></div>
+              <div class="stat-info">
+                <div class="num" id="statProfessors">0</div>
+                <div class="label">Professors</div>
+              </div>
+            </div>
           </div>
-          <div class="search-bar"><i class="fas fa-search"></i>
-            <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="renderAdminCourses()">
+
+          <div class="section-card" style="margin-top:24px;">
+            <h2><i class="fas fa-bolt"></i> Quick Actions</h2>
+            <div class="quick-actions-grid">
+              <button class="quick-action-card" onclick="openAddCourseModal()">
+                <div class="qa-icon tone-brand"><i class="fas fa-plus-circle"></i></div>
+                <div class="qa-info">
+                  <strong>Create Course</strong>
+                  <span>Add a new course to the catalog</span>
+                </div>
+              </button>
+              <button class="quick-action-card" onclick="openAddProfessorModal()">
+                <div class="qa-icon tone-gold"><i class="fas fa-user-plus"></i></div>
+                <div class="qa-info">
+                  <strong>Add Professor</strong>
+                  <span>Introduce a new team member</span>
+                </div>
+              </button>
+              <button class="quick-action-card" onclick="openStudentRegModal()">
+                <div class="qa-icon tone-emerald"><i class="fas fa-user-graduate"></i></div>
+                <div class="qa-info">
+                  <strong>Register Student</strong>
+                  <span>Create credentials manually</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============ TAB: COURSES ============ -->
+        <div id="adminTabCourses" class="admin-tab-content">
+          <div class="tab-toolbar">
+            <div class="search-bar" style="margin:0; flex:1; max-width:440px;">
+              <i class="fas fa-search"></i>
+              <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="renderAdminCourses()">
+            </div>
           </div>
           <div id="adminCourseList"></div>
         </div>
 
+        <!-- ============ TAB: PROFESSORS ============ -->
         <div id="adminTabProfessors" class="admin-tab-content">
-          <div class="tab-header">
-            <h3><i class="fas fa-chalkboard-teacher"></i> Manage Professors</h3>
-            <button class="btn btn-success" onclick="openAddProfessorModal()"><i class="fas fa-plus-circle"></i> Add Professor</button>
+          <div class="tab-toolbar">
+            <div class="tab-toolbar-text">
+              <h3><i class="fas fa-user-tie"></i> All Professors</h3>
+              <span class="tab-toolbar-sub" id="professorCountLabel">0 members</span>
+            </div>
+            <button class="btn btn-success" onclick="openAddProfessorModal()">
+              <i class="fas fa-user-plus"></i> Add Professor
+            </button>
           </div>
           <div id="adminProfessorList"></div>
         </div>
 
+        <!-- ============ TAB: STUDENTS ============ -->
         <div id="adminTabStudents" class="admin-tab-content">
-          <h3 class="tab-title"><i class="fas fa-users"></i> Registered Students</h3>
+          <div class="tab-toolbar">
+            <div class="tab-toolbar-text">
+              <h3><i class="fas fa-user-graduate"></i> Registered Students</h3>
+              <span class="tab-toolbar-sub" id="studentCountLabel">0 students</span>
+            </div>
+            <button class="btn btn-success" onclick="openStudentRegModal()">
+              <i class="fas fa-user-plus"></i> Register Student
+            </button>
+          </div>
           <div id="adminStudentList"></div>
         </div>
       </section>
 
-      <!-- ADMIN COURSE EDITOR (new) -->
+      <!-- ADMIN COURSE EDITOR -->
       <section id="adminEditView" class="view">
         <button class="back-link" onclick="closeCourseEditor()">
           <i class="fas fa-arrow-left"></i> Back to Dashboard
@@ -258,11 +338,13 @@
     </footer>
   </div>
 
+  <!-- ============ MODALS ============ -->
+
   <!-- Course Modal -->
   <div class="modal-overlay" id="courseModal">
     <div class="modal-box">
       <h3 id="courseModalTitle"><i class="fas fa-plus-circle"></i> New Course</h3>
-      <p class="modal-sub">Enter the course details below. You can add more details after creating it.</p>
+      <p class="modal-sub">Enter the course details below.</p>
       <form id="courseForm" onsubmit="saveCourse(event)">
         <input type="hidden" id="editCourseId">
         <div class="form-group"><label>Course Name *</label>
@@ -280,7 +362,7 @@
           <input type="text" id="courseInstructor" placeholder="e.g. Dr. Smith">
         </div>
         <div class="form-group"><label>Description</label>
-          <textarea id="courseDescription" placeholder="Brief description of the course" rows="3"></textarea>
+          <textarea id="courseDescription" placeholder="Brief description" rows="3"></textarea>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Category</label>
@@ -321,7 +403,7 @@
     </div>
   </div>
 
-  <!-- Material Modal (still used for adding NEW materials from dashboard) -->
+  <!-- Material Modal -->
   <div class="modal-overlay" id="materialModal">
     <div class="modal-box">
       <h3 id="materialModalTitle"><i class="fas fa-paperclip"></i> Add Material</h3>
@@ -371,11 +453,11 @@
     </div>
   </div>
 
-  <!-- Register Modal -->
+  <!-- Register Modal (Self-service) -->
   <div class="modal-overlay" id="registerModal">
     <div class="modal-box">
       <h3><i class="fas fa-user-plus"></i> Student Registration</h3>
-      <p class="modal-sub">Create a new student account.</p>
+      <p class="modal-sub">Create a new student account with OTP verification.</p>
       <form id="registerForm" onsubmit="registerStudent(event)">
         <div class="form-group"><label>Full Name *</label><input type="text" id="regFullName" placeholder="e.g. John Doe" required></div>
         <div class="form-group"><label>Username *</label><input type="text" id="regUsername" placeholder="Choose a username" required></div>
@@ -389,10 +471,84 @@
     </div>
   </div>
 
+  <!-- ============ ADMIN: Register Student Modal (NEW) ============ -->
+  <div class="modal-overlay" id="studentRegModal">
+    <div class="modal-box">
+      <div class="modal-icon-header">
+        <div class="modal-icon-tile tone-emerald"><i class="fas fa-user-graduate"></i></div>
+        <div>
+          <h3>Register New Student</h3>
+          <p class="modal-sub" style="margin:4px 0 0;">Create login credentials manually. You can share them with the student.</p>
+        </div>
+      </div>
+      <form id="studentRegForm" onsubmit="saveNewStudent(event)">
+        <div class="form-group">
+          <label><i class="fas fa-id-card"></i> Full Name *</label>
+          <input type="text" id="newStuFullName" placeholder="e.g. Rohan Verma" required autocomplete="off">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label><i class="fas fa-at"></i> Username *</label>
+            <input type="text" id="newStuUsername" placeholder="e.g. rohan.v" required autocomplete="off" oninput="generatePreviewPassword()">
+          </div>
+          <div class="form-group">
+            <label><i class="fas fa-envelope"></i> Email (optional)</label>
+            <input type="email" id="newStuEmail" placeholder="rohan@example.com" autocomplete="off">
+          </div>
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-key"></i> Password *</label>
+          <div class="password-field-row">
+            <input type="text" id="newStuPassword" placeholder="Min. 6 characters" required minlength="6" autocomplete="off">
+            <button type="button" class="btn btn-outline btn-sm" onclick="autoGeneratePassword()" title="Auto-generate">
+              <i class="fas fa-wand-magic-sparkles"></i> Generate
+            </button>
+          </div>
+          <span class="hint">You'll see this password once after creating. Copy it and share it with the student.</span>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('studentRegModal')">Cancel</button>
+          <button type="submit" class="btn btn-success" id="studentRegSubmitBtn">
+            <i class="fas fa-user-plus"></i> Create Student
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ ADMIN: Credentials Card Modal (NEW) ============ -->
+  <div class="modal-overlay" id="credentialsModal">
+    <div class="modal-box" style="max-width:520px;">
+      <div class="credentials-success-icon">
+        <i class="fas fa-check-circle"></i>
+      </div>
+      <h3 style="text-align:center;">Student Created Successfully!</h3>
+      <p class="modal-sub" style="text-align:center;">Share these credentials with the student. This is the only time the password will be visible.</p>
+
+      <div class="credentials-card" id="credentialsCard">
+        <!-- Filled in by JS -->
+      </div>
+
+      <div class="credentials-warning">
+        <i class="fas fa-exclamation-triangle"></i>
+        <span>Save or copy the password now. It is hashed on the server and cannot be retrieved later.</span>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="copyAllCredentials()">
+          <i class="fas fa-copy"></i> Copy All
+        </button>
+        <button type="button" class="btn btn-primary" onclick="closeModal('credentialsModal')">
+          <i class="fas fa-check"></i> Done
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Professor Modal -->
   <div class="modal-overlay" id="professorModal">
     <div class="modal-box">
-      <h3 id="professorModalTitle"><i class="fas fa-chalkboard-teacher"></i> Add Professor</h3>
+      <h3 id="professorModalTitle"><i class="fas fa-user-tie"></i> Add Professor</h3>
       <p class="modal-sub">Enter professor details.</p>
       <form id="professorForm" onsubmit="saveProfessor(event)">
         <input type="hidden" id="editProfessorId">
@@ -414,16 +570,13 @@
   <div class="modal-overlay" id="quizModal">
     <div class="modal-box" style="max-width: 700px;">
       <h3 id="quizModalTitle"><i class="fas fa-question-circle"></i> Manage Quiz</h3>
-      <p class="modal-sub">Add multiple-choice questions for this material. Students will answer them and get instant feedback.</p>
+      <p class="modal-sub">Add multiple-choice questions for this material.</p>
       <input type="hidden" id="quizCourseId">
       <input type="hidden" id="quizMaterialId">
-
       <div id="quizQuestionsList"></div>
-
       <button type="button" class="btn btn-outline" id="quizAddQuestionBtn" style="width:100%;justify-content:center;">
         <i class="fas fa-plus"></i> Add Question
       </button>
-
       <div class="modal-actions">
         <button type="button" class="btn btn-outline" onclick="closeModal('quizModal')">Cancel</button>
         <button type="button" class="btn btn-primary" onclick="saveQuiz()"><i class="fas fa-save"></i> Save Quiz</button>
