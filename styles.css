@@ -806,14 +806,23 @@ a { color: inherit; }
   top: 0;
   left: 0; right: 0;
   height: 3px;
-  background: linear-gradient(90deg, var(--brand-500), var(--accent-500));
+  background: linear-gradient(90deg,
+    var(--accent-1, var(--brand-500)),
+    var(--accent-2, var(--accent-500)));
   transform: translateY(-100%);
   transition: transform .3s var(--ease);
 }
 .course-card:hover {
   transform: translateY(-5px);
-  box-shadow: var(--shadow-lg);
-  border-color: var(--brand-200);
+  box-shadow:
+    0 12px 32px var(--accent-glow, rgba(99,102,241,.25)),
+    0 4px 8px rgba(15,23,42,.04);
+  border-color: var(--accent-solid, var(--brand-200));
+  border-color: color-mix(in srgb, var(--accent-solid, #6366f1) 40%, transparent);
+}
+[data-theme="dark"] .course-card:hover {
+  border-color: var(--accent-solid, var(--brand-500));
+  border-color: color-mix(in srgb, var(--accent-solid, #6366f1) 60%, transparent);
 }
 .course-card:hover::before { transform: translateY(0); }
 [data-theme="dark"] .course-card:hover { border-color: var(--brand-500); }
@@ -821,7 +830,7 @@ a { color: inherit; }
 .course-card .course-code {
   font-size: 11px;
   font-weight: 700;
-  color: var(--brand-600);
+  color: var(--accent-solid, var(--brand-600));
   text-transform: uppercase;
   letter-spacing: .8px;
   display: flex;
@@ -852,13 +861,19 @@ a { color: inherit; }
 }
 .material-count {
   font-size: 11.5px;
-  color: var(--brand-700);
-  background: var(--brand-50);
+  color: var(--accent-solid, var(--brand-700));
+  background: var(--accent-soft, var(--brand-50));
   padding: 4px 12px;
   border-radius: var(--radius-pill);
   display: inline-block;
   font-weight: 600;
   align-self: flex-start;
+}
+/* dark-mode override no longer hardcoded to brand */
+[data-theme="dark"] .material-count {
+  background: var(--accent-soft, rgba(99,102,241,.15));
+  color: var(--accent-solid, var(--brand-300));
+  filter: brightness(1.35);
 }
 [data-theme="dark"] .material-count { background: rgba(99,102,241,.15); color: var(--brand-300); }
 
@@ -927,7 +942,9 @@ a { color: inherit; }
   position: absolute;
   top: 0; left: 0; bottom: 0;
   width: 4px;
-  background: linear-gradient(180deg, var(--brand-500), var(--accent-500));
+  background: linear-gradient(180deg,
+    var(--accent-1, var(--brand-500)),
+    var(--accent-2, var(--accent-500)));
 }
 .course-detail-header h2 {
   font-size: 22px;

@@ -41,6 +41,44 @@ let adminTab = 'courses';
 
 const $ = id => document.getElementById(id);
 /* ============================================================
+   COURSE ACCENT SYSTEM
+   Each course code hashes to one of 8 curated gradient palettes.
+   CSS vars --accent-1, --accent-2, --accent-solid, --accent-soft,
+   --accent-glow are set inline on the card so all descendant
+   styling adapts automatically.
+   ============================================================ */
+const COURSE_ACCENTS = [
+  { from: '#6366f1', to: '#8b5cf6', solid: '#6366f1', soft: 'rgba(99,102,241,0.12)', glow: 'rgba(99,102,241,0.28)' },   // indigo → violet
+  { from: '#06b6d4', to: '#3b82f6', solid: '#0891b2', soft: 'rgba(6,182,212,0.12)',  glow: 'rgba(6,182,212,0.28)' },    // cyan → blue
+  { from: '#10b981', to: '#14b8a6', solid: '#059669', soft: 'rgba(16,185,129,0.12)', glow: 'rgba(16,185,129,0.28)' },   // emerald → teal
+  { from: '#f59e0b', to: '#f97316', solid: '#d97706', soft: 'rgba(245,158,11,0.14)', glow: 'rgba(245,158,11,0.30)' },   // amber → orange
+  { from: '#ec4899', to: '#f43f5e', solid: '#db2777', soft: 'rgba(236,72,153,0.12)', glow: 'rgba(236,72,153,0.28)' },   // pink → rose
+  { from: '#8b5cf6', to: '#d946ef', solid: '#7c3aed', soft: 'rgba(139,92,246,0.14)', glow: 'rgba(139,92,246,0.28)' },   // violet → fuchsia
+  { from: '#0ea5e9', to: '#6366f1', solid: '#0284c7', soft: 'rgba(14,165,233,0.12)', glow: 'rgba(14,165,233,0.28)' },   // sky → indigo
+  { from: '#22c55e', to: '#84cc16', solid: '#16a34a', soft: 'rgba(34,197,94,0.12)',  glow: 'rgba(34,197,94,0.28)' },    // green → lime
+];
+
+function hashString(str) {
+  const s = String(str || 'COURSE');
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash) + s.charCodeAt(i);
+    hash |= 0; // force 32-bit
+  }
+  return Math.abs(hash);
+}
+
+function getCourseAccent(codeOrName) {
+  return COURSE_ACCENTS[hashString(codeOrName) % COURSE_ACCENTS.length];
+}
+
+/** Returns an inline-style string with the accent CSS vars. */
+function accentStyle(codeOrName) {
+  const a = getCourseAccent(codeOrName);
+  return `--accent-1:${a.from};--accent-2:${a.to};--accent-solid:${a.solid};--accent-soft:${a.soft};--accent-glow:${a.glow};`;
+}
+
+/* ============================================================
    THEME + MOBILE NAV
    ============================================================ */
 (function initTheme() {
@@ -239,7 +277,7 @@ async function renderAdminCourses() {
       </div>` : '';
 
     html += `
-      <div class="course-card">
+        <div class="course-card" style="${accentStyle(c.code || c.name)}">
         <button class="delete-course-btn" onclick="deleteCourse('${c.id}')" title="Delete course"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${c.code || 'N/A'} ${premiumLabel}</div>
         <h3>${c.name}</h3>
@@ -316,7 +354,7 @@ function renderStudentCourses() {
     const isPurchased = currentUser.purchases && currentUser.purchases.includes(c.id);
     let badge = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` + (!isPurchased ? ` <span class="premium-badge" style="background:#94a3b8;color:#fff;"><i class="fas fa-lock"></i> Locked</span>` : '') : '';
     html += `
-      <div class="course-card" onclick="viewCourseDetail('${c.id}')">
+  <div class="course-card" style="${accentStyle(c.code || c.name)}" onclick="viewCourseDetail('${c.id}')">
         <div class="course-code">${c.code || 'N/A'} ${badge}</div>
         <h3>${c.name}</h3>
         <div class="course-meta">
@@ -348,9 +386,9 @@ function renderCourseDetail(courseId) {
   const isPremiumCourse = course.isPremium || false;
   const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
   
-  let html = `
-    <div class="course-detail-header">
-      <h2>${course.name} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
+let html = `
+  <div class="course-detail-header" style="${accentStyle(course.code || course.name)}">
+    <h2>${course.name} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
       <div class="meta">
         <span><i class="fas fa-code"></i> ${course.code || 'N/A'}</span>
         <span><i class="fas fa-user"></i> ${course.instructor || '—'}</span>
