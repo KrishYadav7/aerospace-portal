@@ -168,7 +168,6 @@
           </button>
         </div>
 
-        <!-- ============ TAB: OVERVIEW ============ -->
         <div id="adminTabOverview" class="admin-tab-content">
           <div class="stats-grid">
             <div class="stat-card">
@@ -229,7 +228,6 @@
           </div>
         </div>
 
-        <!-- ============ TAB: COURSES ============ -->
         <div id="adminTabCourses" class="admin-tab-content">
           <div class="tab-toolbar">
             <div class="search-bar" style="margin:0; flex:1; max-width:440px;">
@@ -240,7 +238,6 @@
           <div id="adminCourseList"></div>
         </div>
 
-        <!-- ============ TAB: PROFESSORS ============ -->
         <div id="adminTabProfessors" class="admin-tab-content">
           <div class="tab-toolbar">
             <div class="tab-toolbar-text">
@@ -254,7 +251,6 @@
           <div id="adminProfessorList"></div>
         </div>
 
-        <!-- ============ TAB: STUDENTS ============ -->
         <div id="adminTabStudents" class="admin-tab-content">
           <div class="tab-toolbar">
             <div class="tab-toolbar-text">
@@ -438,7 +434,7 @@
           <textarea id="materialDescription" placeholder="Optional description"></textarea>
         </div>
         <div class="form-group"><label>YouTube / Link (optional)</label>
-          <input type="url" id="materialUrl" placeholder="https://...">
+          <input type="text" id="materialUrl" placeholder="https://... or youtube.com/...">
         </div>
         <div class="form-group"><label>Or Upload File (PDF, PPT, etc.)</label>
           <input type="file" id="materialFile">
@@ -451,7 +447,7 @@
     </div>
   </div>
 
-  <!-- Register Modal (Self-service) -->
+  <!-- Register Modal -->
   <div class="modal-overlay" id="registerModal">
     <div class="modal-box">
       <h3><i class="fas fa-user-plus"></i> Student Registration</h3>
@@ -469,7 +465,7 @@
     </div>
   </div>
 
-  <!-- ============ ADMIN: Register Student Modal (NEW) ============ -->
+  <!-- Admin: Register Student Modal -->
   <div class="modal-overlay" id="studentRegModal">
     <div class="modal-box">
       <div class="modal-icon-header">
@@ -487,7 +483,7 @@
         <div class="form-row">
           <div class="form-group">
             <label><i class="fas fa-at"></i> Username *</label>
-            <input type="text" id="newStuUsername" placeholder="e.g. rohan.v" required autocomplete="off" oninput="generatePreviewPassword()">
+            <input type="text" id="newStuUsername" placeholder="e.g. rohan.v" required autocomplete="off">
           </div>
           <div class="form-group">
             <label><i class="fas fa-envelope"></i> Email (optional)</label>
@@ -514,7 +510,7 @@
     </div>
   </div>
 
-  <!-- ============ ADMIN: Credentials Card Modal (NEW) ============ -->
+  <!-- Credentials Card Modal -->
   <div class="modal-overlay" id="credentialsModal">
     <div class="modal-box" style="max-width:520px;">
       <div class="credentials-success-icon">
@@ -523,9 +519,7 @@
       <h3 style="text-align:center;">Student Created Successfully!</h3>
       <p class="modal-sub" style="text-align:center;">Share these credentials with the student. This is the only time the password will be visible.</p>
 
-      <div class="credentials-card" id="credentialsCard">
-        <!-- Filled in by JS -->
-      </div>
+      <div class="credentials-card" id="credentialsCard"></div>
 
       <div class="credentials-warning">
         <i class="fas fa-exclamation-triangle"></i>
@@ -589,6 +583,36 @@
       <p class="modal-sub" id="quizPlayerSub"></p>
       <div id="quizPlayerBody"></div>
       <div class="modal-actions" id="quizPlayerActions"></div>
+    </div>
+  </div>
+
+  <!-- Create Playlist Modal -->
+  <div class="modal-overlay" id="playlistModal">
+    <div class="modal-box" style="max-width:600px;">
+      <h3 id="playlistModalTitle"><i class="fas fa-list"></i> New Playlist</h3>
+      <p class="modal-sub">Group video lectures into a named playlist.</p>
+      <form id="playlistForm" onsubmit="savePlaylistFromModal(event)">
+        <input type="hidden" id="playlistCourseId">
+        <div class="form-group">
+          <label>Playlist Title *</label>
+          <input type="text" id="playlistTitle" placeholder="e.g. Week 1 — Aerodynamics" required>
+        </div>
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <textarea id="playlistDescription" rows="2" placeholder="Brief description…"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Videos to include</label>
+          <div class="playlist-checklist" id="playlistVideoChecklist"></div>
+          <span class="hint">Uncheck videos you don't want. You can add more later.</span>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('playlistModal')">Cancel</button>
+          <button type="submit" class="btn btn-success" id="playlistSubmitBtn">
+            <i class="fas fa-plus"></i> Create Playlist
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 

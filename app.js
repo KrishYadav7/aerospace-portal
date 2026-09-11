@@ -32,7 +32,7 @@ async function fetchCoursesFromDB() {
     const data = await response.json();
     liveCourses = data.map(course => {
       const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
-      return { ...course, id: course._id, materials: fixedMaterials };
+      return { ...course, id: course._id, materials: fixedMaterials, playlists: course.playlists || [] };
     });
     renderApp();
   } catch (error) {
@@ -150,7 +150,6 @@ function difficultyColor(d) {
   return { bg: 'rgba(245,158,11,.14)', fg: '#d97706' };
 }
 
-/* Robust clipboard helper */
 async function copyToClipboard(text) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -443,7 +442,7 @@ async function copyAllCredentials() {
 }
 
 /* ============================================================
-   NOTIFICATIONS (RESTORED — this was missing!)
+   NOTIFICATIONS
    ============================================================ */
 function getUnreadCount() {
   return (currentUser?.notifications || []).filter(n => !n.read).length;
@@ -647,7 +646,7 @@ function buildNav() {
 }
 
 /* ============================================================
-   ADMIN DASHBOARD — STRICT TAB ISOLATION
+   ADMIN DASHBOARD
    ============================================================ */
 function switchAdminTab(tab) {
   adminTab = tab;
@@ -730,8 +729,12 @@ async function renderAdminCourses() {
   let html = `<div class="course-grid">`;
   filtered.forEach(c => {
     const matCount = (c.materials || []).length;
-    const statusBadge = c.status === 'draft' ? '<span class="status-badge draft">DRAFT</span>'
-                     : c.status === 'archived' ? '<span class="status-badge archived">ARCHIVED</span>' : '';
+    const plCount = (c.playlists || []).length;
+    const statusBadge = c.status === 'draft'
+      ? '<span class="status-badge draft">DRAFT — hidden from students</span>'
+      : c.status === 'archived'
+        ? '<span class="status-badge archived">ARCHIVED</span>'
+        : '';
     const featuredBadge = c.featured ? '<span class="status-badge featured"><i class="fas fa-star"></i></span>' : '';
     const premiumLabel = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` : '';
 
@@ -763,10 +766,12 @@ async function renderAdminCourses() {
           <span><i class="fas fa-calendar-alt"></i> ${escapeHtml(c.semester) || '—'}</span>
           ${c.category ? `<span><i class="fas fa-tag"></i> ${escapeHtml(c.category)}</span>` : ''}
         </div>
-        <div class="material-count"><i class="fas fa-layer-group"></i> ${matCount} materials</div>
+        <div class="material-count"><i class="fas fa-layer-group"></i> ${matCount} materials${plCount > 0 ? ` · <i class="fas fa-list"></i> ${plCount} playlist${plCount === 1 ? '' : 's'}` : ''}</div>
         <div class="card-actions">
           <button class="btn btn-warning btn-sm" onclick="event.stopPropagation();openCourseEditor('${c.id}')"><i class="fas fa-edit"></i> Edit</button>
-          <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
+          ${c.status === 'draft'
+            ? `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();publishCourse('${c.id}')"><i class="fas fa-rocket"></i> Publish</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>`}
           <button class="btn btn-success btn-sm" onclick="event.stopPropagation();openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Material</button>
         </div>
       </div>
@@ -984,6 +989,9 @@ function renderCourseEditor(courseId) {
       <button class="editor-tab ${editingTab === 'materials' ? 'active' : ''}" onclick="switchEditorTab('materials')">
         <i class="fas fa-layer-group"></i> Materials (${(course.materials || []).length})
       </button>
+      <button class="editor-tab ${editingTab === 'playlists' ? 'active' : ''}" onclick="switchEditorTab('playlists')">
+        <i class="fas fa-list"></i> Playlists (${(course.playlists || []).length})
+      </button>
       <button class="editor-tab ${editingTab === 'announcements' ? 'active' : ''}" onclick="switchEditorTab('announcements')">
         <i class="fas fa-bullhorn"></i> Announcements (${(course.announcements || []).length})
       </button>
@@ -992,6 +1000,7 @@ function renderCourseEditor(courseId) {
   `;
   if (editingTab === 'details') html += renderEditorDetails(course);
   else if (editingTab === 'materials') html += renderEditorMaterials(course);
+  else if (editingTab === 'playlists') html += renderEditorPlaylists(course);
   else if (editingTab === 'announcements') html += renderEditorAnnouncements(course);
   html += `</div>`;
   $('courseEditorContent').innerHTML = html;
@@ -1129,7 +1138,7 @@ function renderMaterialEditorCard(courseId, m, idx) {
           </div>
         </div>
         <div class="form-group"><label>Description</label><textarea class="me-desc" rows="2">${escapeHtml(m.description) || ''}</textarea></div>
-        <div class="form-group"><label>Link</label><input type="url" class="me-url" value="${escapeHtml(m.url) || ''}"></div>
+        <div class="form-group"><label>Link</label><input type="text" class="me-url" value="${escapeHtml(m.url) || ''}"></div>
         <div class="editor-grid-2">
           <div class="form-group"><label>Access</label>
             <label class="toggle-box pro" style="margin-top:6px;">
@@ -1191,6 +1200,233 @@ function renderEditorAnnouncements(course) {
   return html;
 }
 
+/* ============================================================
+   ADMIN — PLAYLIST EDITOR
+   ============================================================ */
+function renderEditorPlaylists(course) {
+  const playlists = course.playlists || [];
+  const videoMaterials = (course.materials || []).filter(m => m.type === 'video' && (m.url || m.fileData));
+
+  let html = `
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <h3 class="editor-section-title"><i class="fas fa-list"></i> Playlists (${playlists.length})</h3>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-outline" onclick="autoGeneratePlaylist('${course.id}')">
+            <i class="fas fa-wand-magic-sparkles"></i>
+            Auto-create from ${videoMaterials.length} video${videoMaterials.length === 1 ? '' : 's'}
+          </button>
+          <button class="btn btn-success" onclick="openCreatePlaylistModal('${course.id}')">
+            <i class="fas fa-plus"></i> New Playlist
+          </button>
+        </div>
+      </div>
+      <p class="editor-hint">Group video lectures into named playlists. Students can then watch them in sequence with auto-advance.</p>
+    </div>
+  `;
+
+  if (playlists.length === 0) {
+    html += `
+      <div class="empty-state">
+        <i class="fas fa-list"></i>
+        <p>No playlists yet.</p>
+        <p style="margin-top:8px;font-size:13px;">Click <strong>Auto-create from videos</strong> to bundle every video lecture, or <strong>New Playlist</strong> to build one manually.</p>
+      </div>`;
+    return html;
+  }
+
+  playlists.forEach(pl => {
+    const items = pl.materialIds
+      .map(id => (course.materials || []).find(m => m.id === id))
+      .filter(Boolean);
+
+    const availableVideos = videoMaterials.filter(m => !pl.materialIds.includes(m.id));
+
+    html += `
+      <div class="playlist-editor-card">
+        <div class="playlist-editor-header">
+          <div class="playlist-editor-info">
+            <h4><i class="fas fa-list"></i> ${escapeHtml(pl.title)}</h4>
+            ${pl.description ? `<p class="playlist-editor-desc">${escapeHtml(pl.description)}</p>` : ''}
+            <span class="playlist-editor-meta">${items.length} video${items.length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="playlist-editor-actions">
+            <button class="btn btn-outline btn-sm" onclick="renamePlaylist('${course.id}', '${pl.id}')">
+              <i class="fas fa-pen"></i> Rename
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="deletePlaylist('${course.id}', '${pl.id}')">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="playlist-items-list">
+          ${items.length === 0
+            ? '<p class="playlist-empty-note">No videos in this playlist yet.</p>'
+            : items.map((m, idx) => `
+              <div class="playlist-item-row">
+                <span class="playlist-item-index">${idx + 1}</span>
+                <span class="playlist-item-title">${escapeHtml(m.title)}</span>
+                <button class="playlist-item-remove" onclick="removeVideoFromPlaylist('${course.id}', '${pl.id}', '${m.id}')" title="Remove from playlist">
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
+            `).join('')}
+        </div>
+
+        ${availableVideos.length > 0 ? `
+          <div class="playlist-add-row">
+            <select class="playlist-add-select" id="playlistAdd-${pl.id}">
+              <option value="">— Select a video to add —</option>
+              ${availableVideos.map(m => `<option value="${m.id}">${escapeHtml(m.title)}</option>`).join('')}
+            </select>
+            <button class="btn btn-primary btn-sm" onclick="addSelectedVideoToPlaylist('${course.id}', '${pl.id}')">
+              <i class="fas fa-plus"></i> Add
+            </button>
+          </div>` : ''}
+      </div>
+    `;
+  });
+  return html;
+}
+
+function openCreatePlaylistModal(courseId) {
+  const course = findCourse(courseId);
+  if (!course) return;
+  const videoMaterials = (course.materials || []).filter(m => m.type === 'video' && (m.url || m.fileData));
+
+  const modal = document.getElementById('playlistModal');
+  if (!modal) return showToast('Playlist modal missing.', 'error');
+
+  $('playlistCourseId').value = courseId;
+  $('playlistTitle').value = '';
+  $('playlistDescription').value = '';
+
+  const checklist = $('playlistVideoChecklist');
+  if (checklist) {
+    if (videoMaterials.length === 0) {
+      checklist.innerHTML = '<p class="playlist-empty-note">No video materials yet. Add videos first.</p>';
+    } else {
+      checklist.innerHTML = videoMaterials.map(m => `
+        <label class="playlist-checkbox-row">
+          <input type="checkbox" value="${m.id}" checked>
+          <span>${escapeHtml(m.title)}</span>
+        </label>
+      `).join('');
+    }
+  }
+
+  openModal('playlistModal');
+}
+
+async function savePlaylistFromModal(e) {
+  if (e) e.preventDefault();
+  const courseId = $('playlistCourseId').value;
+  const title = $('playlistTitle').value.trim();
+  const description = $('playlistDescription').value.trim();
+  if (!title) return showToast('Playlist title is required.', 'error');
+
+  const checkboxes = document.querySelectorAll('#playlistVideoChecklist input[type="checkbox"]:checked');
+  const materialIds = Array.from(checkboxes).map(cb => cb.value);
+
+  const btn = $('playlistSubmitBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...'; }
+
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, description, materialIds })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('✓ Playlist created!', 'success');
+      closeModal('playlistModal');
+      await fetchCoursesFromDB();
+    } else {
+      showToast(data.message || 'Failed.', 'error');
+    }
+  } catch { showToast('Server error.', 'error'); }
+  finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus"></i> Create Playlist'; }
+  }
+}
+
+async function autoGeneratePlaylist(courseId) {
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/auto-videos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'All Video Lectures' })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('✓ ' + data.message, 'success');
+      await fetchCoursesFromDB();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function renamePlaylist(courseId, playlistId) {
+  const course = findCourse(courseId);
+  const pl = (course.playlists || []).find(p => p.id === playlistId);
+  if (!pl) return;
+  const newTitle = prompt('Rename playlist:', pl.title);
+  if (newTitle === null) return;
+  if (!newTitle.trim()) return showToast('Title cannot be empty.', 'error');
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: newTitle.trim() })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('✓ Renamed.', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function deletePlaylist(courseId, playlistId) {
+  if (!confirm('Delete this playlist? The videos in it will NOT be deleted from the course.')) return;
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (data.success) { showToast('Playlist deleted.', 'info'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function addSelectedVideoToPlaylist(courseId, playlistId) {
+  const sel = document.getElementById('playlistAdd-' + playlistId);
+  if (!sel || !sel.value) return showToast('Pick a video first.', 'info');
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}/materials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ materialId: sel.value })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('✓ Added.', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function removeVideoFromPlaylist(courseId, playlistId, materialId) {
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}/materials/${materialId}`, {
+      method: 'DELETE'
+    });
+    const data = await res.json();
+    if (data.success) { showToast('Removed.', 'info'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+/* ============================================================
+   COURSE / MATERIAL CRUD
+   ============================================================ */
 async function saveCourseDetails(courseId) {
   const name = $('edName').value.trim();
   const code = $('edCode').value.trim();
@@ -1481,6 +1717,7 @@ function renderStudentCourseCard(c) {
     : '';
 
   const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt=""></div>` : '';
+  const plCount = (c.playlists || []).length;
 
   return `
     <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}" onclick="viewCourseDetail('${c.id}')">
@@ -1498,6 +1735,7 @@ function renderStudentCourseCard(c) {
         ${c.difficulty ? `<span class="chip" style="background:${diff.bg};color:${diff.fg};"><i class="fas fa-signal"></i> ${c.difficulty}</span>` : ''}
         ${c.duration ? `<span class="chip"><i class="fas fa-clock"></i> ${escapeHtml(c.duration)}</span>` : ''}
         ${c.isPremium ? `<span class="chip gold"><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>` : `<span class="chip green"><i class="fas fa-gift"></i> Free</span>`}
+        ${plCount > 0 ? `<span class="chip"><i class="fas fa-list"></i> ${plCount} playlist${plCount === 1 ? '' : 's'}</span>` : ''}
       </div>
       <p class="course-desc">${escapeHtml(c.description) || ''}</p>
       <div class="material-count"><i class="fas fa-layer-group"></i> ${totalMats} materials</div>
@@ -1611,15 +1849,45 @@ function renderCourseDetail(courseId) {
   }
 
   const materials = course.materials || [];
+  const hasPlaylists = (course.playlists || []).length > 0;
   const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
-  const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
-  const typeLabels = { all: 'All', video: '🎬 Video', pyq: '📄 PYQ', tutorial: '📝 Tutorial', slides: '📊 Slides', qa: '❓ Q&A', other: '📁 Other' };
+
+  const types = hasPlaylists
+    ? ['all', 'playlists', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other']
+    : ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
+
+  const typeLabels = {
+    all: 'All',
+    playlists: '▶️ Playlists',
+    video: '🎬 Video',
+    pyq: '📄 PYQ',
+    tutorial: '📝 Tutorial',
+    slides: '📊 Slides',
+    qa: '❓ Q&A',
+    other: '📁 Other'
+  };
+
+  if (hasPlaylists && currentMaterialFilter !== 'playlists') {
+    const totalVids = (course.playlists || []).reduce((sum, p) => sum + (p.materialIds || []).length, 0);
+    html += `
+      <div class="playlist-banner">
+        <div class="playlist-banner-icon"><i class="fas fa-list"></i></div>
+        <div class="playlist-banner-info">
+          <h4>🎬 ${(course.playlists || []).length} Playlist${(course.playlists || []).length === 1 ? '' : 's'} available</h4>
+          <p>Watch lectures in sequence — ${totalVids} video${totalVids === 1 ? '' : 's'} in total</p>
+        </div>
+        <button class="btn btn-accent" onclick="setMaterialFilter('playlists')">
+          <i class="fas fa-play"></i> Browse Playlists
+        </button>
+      </div>`;
+  }
 
   html += `<div class="material-tabs">`;
   types.forEach(t => {
     let count = 0;
     if (t === 'all') count = materials.length;
     else if (t === 'qa') count = course.doubts ? course.doubts.length : 0;
+    else if (t === 'playlists') count = (course.playlists || []).length;
     else count = materials.filter(m => m.type === t).length;
     html += `<button class="${currentMaterialFilter === t ? 'active' : ''}" onclick="setMaterialFilter('${t}')">${typeLabels[t]} (${count})</button>`;
   });
@@ -1627,6 +1895,12 @@ function renderCourseDetail(courseId) {
 
   if (currentMaterialFilter === 'qa') {
     html += renderQASection(course);
+    $('courseDetailContent').innerHTML = html;
+    return;
+  }
+
+  if (currentMaterialFilter === 'playlists') {
+    html += renderCoursePlaylists(course);
     $('courseDetailContent').innerHTML = html;
     return;
   }
@@ -1655,14 +1929,12 @@ function renderMaterialCard(course, m, isPurchased) {
   if (!canAccess) {
     fileActionHtml = `<button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock ₹${matPrice}</button>`;
   } else {
-    // Video → custom player (no download, custom controls)
     if (m.type === 'video' && hasUrl) {
       fileActionHtml += `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')"><i class="fas fa-play"></i> Watch</button>`;
     } else if (hasUrl) {
       fileActionHtml += ` <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
     }
 
-    // File → PDF viewer (or download for admins on non-PDFs)
     if (hasFile) {
       const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
                     String(m.fileData || '').startsWith('data:application/pdf');
@@ -1788,6 +2060,99 @@ function renderQASection(course) {
   }
   html += `</div>`;
   return html;
+}
+
+/* ============================================================
+   STUDENT — PLAYLIST VIEW
+   ============================================================ */
+function renderCoursePlaylists(course) {
+  const playlists = course.playlists || [];
+  const validPlaylists = playlists.filter(pl => (pl.materialIds || []).length > 0);
+
+  if (validPlaylists.length === 0) {
+    return `<div class="empty-state"><i class="fas fa-list"></i><p>No playlists available yet.</p></div>`;
+  }
+
+  let html = `<div class="playlist-grid">`;
+  validPlaylists.forEach(pl => {
+    const items = pl.materialIds
+      .map(id => (course.materials || []).find(m => m.id === id))
+      .filter(Boolean);
+
+    const firstThree = items.slice(0, 3).map(m => `<li>${escapeHtml(m.title)}</li>`).join('');
+    const more = items.length > 3 ? `<li class="playlist-more">+ ${items.length - 3} more</li>` : '';
+
+    html += `
+      <div class="playlist-card">
+        <div class="playlist-card-cover">
+          <i class="fas fa-play-circle"></i>
+          <span class="playlist-card-count">${items.length} video${items.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="playlist-card-body">
+          <h3>${escapeHtml(pl.title)}</h3>
+          ${pl.description ? `<p class="playlist-card-desc">${escapeHtml(pl.description)}</p>` : ''}
+          <ul class="playlist-card-preview">
+            ${firstThree}
+            ${more}
+          </ul>
+          <button class="btn btn-primary btn-block" onclick="openPlaylistPlayer('${course.id}', '${pl.id}', 0)">
+            <i class="fas fa-play"></i> Play Playlist
+          </button>
+        </div>
+      </div>
+    `;
+  });
+  html += `</div>`;
+  return html;
+}
+
+async function openPlaylistPlayer(courseId, playlistId, startIndex = 0) {
+  if (!currentUser) return showToast('Please log in first.', 'error');
+  const course = findCourse(courseId);
+  if (!course) return;
+  const playlist = (course.playlists || []).find(p => p.id === playlistId);
+  if (!playlist) return showToast('Playlist not found.', 'error');
+  if (playlist.materialIds.length === 0) return showToast('This playlist is empty.', 'info');
+
+  showToast('Loading playlist…', 'info');
+
+  const items = [];
+  for (const matId of playlist.materialIds) {
+    const mat = (course.materials || []).find(m => m.id === matId);
+    if (!mat || mat.type !== 'video' || !mat.url) continue;
+
+    try {
+      const res = await fetch(
+        `https://aerospace-portal.onrender.com/api/materials/${courseId}/${mat.id}/video-session`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: currentUser._id })
+        }
+      );
+      const data = await res.json();
+      if (!data.success) continue;
+
+      items.push({
+        materialId: mat.id,
+        title: mat.title,
+        kind: data.kind,
+        videoId: data.videoId || null,
+        directUrl: data.directUrl || null
+      });
+    } catch (e) { /* skip */ }
+  }
+
+  if (items.length === 0) return showToast('No playable videos in this playlist.', 'error');
+
+  const safeStart = Math.max(0, Math.min(startIndex, items.length - 1));
+
+  window.VideoPlayer.open({
+    playlist: items,
+    playlistIndex: safeStart,
+    playlistTitle: playlist.title,
+    username: currentUser.fullName || currentUser.username || 'Student'
+  });
 }
 
 /* ============================================================
@@ -2021,7 +2386,7 @@ async function submitQuiz() {
 }
 
 /* ============================================================
-   FILE VIEWER / BOOKMARK / PROGRESS
+   FILE VIEWER / VIDEO / BOOKMARK / PROGRESS
    ============================================================ */
 async function viewFileOnline(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
@@ -2047,12 +2412,8 @@ async function viewFileOnline(courseId, materialId) {
   }
 }
 
-/* ============================================================
-   VIDEO — Open material's video in custom player
-   Fetches the YouTube ID from the server per-session so the
-   raw URL never appears in the page source.
-   ============================================================ */
 async function openMaterialVideo(courseId, materialId) {
+  if (!currentUser) return showToast('Please log in first.', 'error');
   const course = findCourse(courseId);
   if (!course) return;
   const mat = course.materials.find(m => m.id === materialId);
@@ -2070,14 +2431,20 @@ async function openMaterialVideo(courseId, materialId) {
     const data = await res.json();
     if (!data.success) return showToast(data.message || 'Could not load video.', 'error');
 
-    window.VideoPlayer.open({
-      source: 'youtube',
-      videoId: data.videoId,
+    const baseOpts = {
       materialId: mat.id,
       courseId: course.id,
       title: mat.title,
       username: currentUser.fullName || currentUser.username || 'Student'
-    });
+    };
+
+    if (data.kind === 'youtube' && data.videoId) {
+      window.VideoPlayer.open({ ...baseOpts, videoId: data.videoId });
+    } else if (data.kind === 'direct' && data.directUrl) {
+      window.VideoPlayer.open({ ...baseOpts, src: data.directUrl });
+    } else {
+      showToast('Unsupported video response from server.', 'error');
+    }
   } catch {
     showToast('Server error loading video.', 'error');
   }
@@ -2135,7 +2502,7 @@ async function refreshUserData() {
 }
 
 /* ============================================================
-   COURSE / MATERIAL CRUD
+   COURSE MODAL
    ============================================================ */
 function openAddCourseModal() {
   $('courseModalTitle').textContent = '📚 New Course';
@@ -2170,7 +2537,7 @@ async function saveCourse(e) {
     difficulty: $('courseDifficulty')?.value || 'Intermediate',
     isPremium: $('courseIsPremium').checked,
     price: parseFloat($('coursePrice').value) || 0,
-    status: 'draft'
+    status: 'published'
   };
   if (!payload.name || !payload.code) return showToast('Name and code required.', 'error');
   try {
@@ -2180,10 +2547,10 @@ async function saveCourse(e) {
     });
     const data = await response.json();
     if (data.success) {
-      showToast('🎉 Course created! Opening editor...', 'success');
+      showToast('🎉 Course created & published!', 'success');
       closeModal('courseModal');
       await fetchCoursesFromDB();
-      if (data.course && data.course._id) setTimeout(() => openCourseEditor(data.course._id), 300);
+      if (data.course && data.course._id) openCourseEditor(data.course._id);
     } else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
@@ -2200,6 +2567,25 @@ async function deleteCourse(courseId) {
       fetchCoursesFromDB();
     } else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
+}
+
+async function publishCourse(courseId) {
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'published' })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('🚀 Course published!', 'success');
+      fetchCoursesFromDB();
+    } else {
+      showToast(data.message || 'Failed to publish.', 'error');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
 }
 
 /* ============================================================

@@ -10,7 +10,6 @@ const materialSchema = new mongoose.Schema({
   isPremium: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
 
-  // Sprint 4 — quiz
   quiz: [{
     question:     { type: String, required: true },
     options:      { type: [String], default: [] },
@@ -46,31 +45,36 @@ const announcementSchema = new mongoose.Schema({
   date:       { type: Date, default: Date.now }
 });
 
+const playlistSchema = new mongoose.Schema({
+  id:          { type: String, required: true },
+  title:       { type: String, required: true },
+  description: { type: String, default: '' },
+  materialIds: { type: [String], default: [] },
+  createdAt:   { type: Date, default: Date.now }
+});
+
 const courseSchema = new mongoose.Schema({
-  // Core
   name: { type: String, required: true },
   code: { type: String, required: true },
   semester: String,
   instructor: String,
   description: String,
 
-  // Sprint 5 — rich metadata
   category:   { type: String, default: 'General' },
-  difficulty: { type: String, default: 'Intermediate' },  // Beginner | Intermediate | Advanced
+  difficulty: { type: String, default: 'Intermediate' },
   duration:   { type: String, default: '' },
   learningOutcomes: { type: [String], default: [] },
   thumbnail:  { type: String, default: '' },
-  status:     { type: String, default: 'published' },     // draft | published | archived
+  status:     { type: String, default: 'published' },
   featured:   { type: Boolean, default: false },
 
-  // Monetization
   isPremium: { type: Boolean, default: false },
   price:     { type: Number, default: 0 },
 
-  // Content
   materials: [materialSchema],
   doubts:    [doubtSchema],
-  announcements: [announcementSchema]
+  announcements: [announcementSchema],
+  playlists: [playlistSchema]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Course', courseSchema);

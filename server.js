@@ -21,7 +21,7 @@ mongoose.connect(process.env.MONGO_URI)
   .catch((err) => console.log('Database Connection Error:', err));
 
 /* ============================================================
-   STREAK HELPERS
+   HELPERS
    ============================================================ */
 function todayStr() {
   const d = new Date();
@@ -61,8 +61,16 @@ function serializeUser(user) {
   };
 }
 
+function extractYouTubeId(url) {
+  if (!url) return null;
+  const m = String(url).match(
+    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
+  );
+  return m ? m[1] : null;
+}
+
 /* ============================================================
-   SETUP ADMIN
+   SETUP
    ============================================================ */
 app.get('/setup-admin', async (req, res) => {
   try {
@@ -131,12 +139,11 @@ app.post('/api/register', async (req, res) => {
 });
 
 /* ============================================================
-   ADMIN — Manual Student Registration (NEW)
+   ADMIN — Student Management
    ============================================================ */
 app.post('/api/admin/create-student', async (req, res) => {
   try {
     const { fullName, username, email, password } = req.body;
-
     if (!fullName || !username || !password) {
       return res.status(400).json({ success: false, message: 'Full name, username, and password are required.' });
     }
@@ -169,7 +176,7 @@ app.post('/api/admin/create-student', async (req, res) => {
         fullName: newStudent.fullName,
         username: newStudent.username,
         email: newStudent.email || '',
-        password: password, // plaintext — for admin to share. Never persisted.
+        password: password,
         createdAt: newStudent.createdAt || new Date()
       }
     });
@@ -278,7 +285,16 @@ app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
 
 app.delete('/api/courses/:courseId/materials/:materialId', async (req, res) => {
   try {
-    await Course.findByIdAndUpdate(req.params.courseId, { $pull: { materials: { _id: req.params.materialId } } });
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+    course.materials = course.materials.filter(m => m._id.toString() !== req.params.materialId);
+
+    (course.playlists || []).forEach(pl => {
+      pl.materialIds = pl.materialIds.filter(id => id !== req.params.materialId);
+    });
+
+    await course.save();
     res.json({ success: true, message: 'Material deleted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error deleting material.' }); }
 });
@@ -575,7 +591,7 @@ app.post('/api/user/notifications/:userId/mark-read', async (req, res) => {
 });
 
 /* ============================================================
-   STUDENTS LIST (admin)
+   STUDENTS LIST
    ============================================================ */
 app.get('/api/students', async (req, res) => {
   try {
@@ -583,19 +599,10 @@ app.get('/api/students', async (req, res) => {
     res.json({ success: true, students });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
+
 /* ============================================================
    VIDEO SESSION
-   Extracts YouTube ID server-side so the raw URL never appears
-   in the page HTML. Client fetches the ID per-session.
    ============================================================ */
-function extractYouTubeId(url) {
-  if (!url) return null;
-  const m = String(url).match(
-    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
-  );
-  return m ? m[1] : null;
-}
-
 app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) => {
   try {
     const { userId } = req.body || {};
@@ -606,7 +613,6 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
     if (!mat.url) return res.status(400).json({ success: false, message: 'No video URL on this material.' });
 
-    // Access control — mirror the client-side gating
     const isPremiumMat = mat.isPremium === true || mat.isPremium === 'true';
     if (isPremiumMat && userId) {
       const user = await User.findById(userId);
@@ -619,16 +625,27 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
       }
     }
 
-    const ytId = extractYouTubeId(mat.url);
-    if (!ytId) {
-      return res.status(400).json({ success: false, message: 'This video is not a YouTube link.' });
+    const url = String(mat.url).trim();
+    const ytId = extractYouTubeId(url);
+
+    if (ytId) {
+      return res.json({
+        success: true,
+        kind: 'youtube',
+        videoId: ytId,
+        title: mat.title,
+        expiresAt: Date.now() + (2 * 60 * 60 * 1000)
+      });
     }
 
-    // Short-lived session marker (not persisted). Only the ID is returned,
-    // never the full URL. Client never sees youtube.com in its own HTML.
+    if (!/^https?:\/\//i.test(url) && !/^blob:/i.test(url)) {
+      return res.status(400).json({ success: false, message: 'Unsupported video URL.' });
+    }
+
     res.json({
       success: true,
-      videoId: ytId,
+      kind: 'direct',
+      directUrl: url,
       title: mat.title,
       expiresAt: Date.now() + (2 * 60 * 60 * 1000)
     });
@@ -636,5 +653,116 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+
+/* ============================================================
+   PLAYLISTS
+   ============================================================ */
+app.post('/api/courses/:courseId/playlists', async (req, res) => {
+  try {
+    const { title, description, materialIds } = req.body || {};
+    if (!title || !title.trim()) return res.status(400).json({ success: false, message: 'Title is required.' });
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+
+    const playlist = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      title: title.trim(),
+      description: (description || '').trim(),
+      materialIds: Array.isArray(materialIds) ? materialIds.slice() : [],
+      createdAt: new Date()
+    };
+    course.playlists.push(playlist);
+    await course.save();
+    res.json({ success: true, message: 'Playlist created.', playlist });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+app.post('/api/courses/:courseId/playlists/auto-videos', async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+
+    const videoIds = (course.materials || [])
+      .filter(m => m.type === 'video' && (m.url || m.fileData))
+      .map(m => m._id.toString());
+
+    if (videoIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No video materials in this course yet.' });
+    }
+
+    const playlist = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      title: (req.body && req.body.title) ? String(req.body.title).trim() : 'All Video Lectures',
+      description: 'Auto-generated playlist from all video materials in this course.',
+      materialIds: videoIds,
+      createdAt: new Date()
+    };
+    course.playlists.push(playlist);
+    await course.save();
+    res.json({
+      success: true,
+      message: 'Auto playlist created with ' + videoIds.length + ' video' + (videoIds.length === 1 ? '' : 's') + '.',
+      playlist
+    });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+app.put('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+    const pl = (course.playlists || []).find(p => p.id === req.params.playlistId);
+    if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
+
+    if (req.body.title !== undefined) pl.title = String(req.body.title).trim();
+    if (req.body.description !== undefined) pl.description = String(req.body.description || '').trim();
+    if (Array.isArray(req.body.materialIds)) pl.materialIds = req.body.materialIds;
+
+    await course.save();
+    res.json({ success: true, message: 'Playlist updated.', playlist: pl });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+app.delete('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
+  try {
+    await Course.findByIdAndUpdate(
+      req.params.courseId,
+      { $pull: { playlists: { id: req.params.playlistId } } }
+    );
+    res.json({ success: true, message: 'Playlist deleted.' });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+app.post('/api/courses/:courseId/playlists/:playlistId/materials', async (req, res) => {
+  try {
+    const { materialId } = req.body || {};
+    if (!materialId) return res.status(400).json({ success: false, message: 'materialId required.' });
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+    const pl = (course.playlists || []).find(p => p.id === req.params.playlistId);
+    if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
+
+    if (!pl.materialIds.includes(materialId)) pl.materialIds.push(materialId);
+    await course.save();
+    res.json({ success: true, message: 'Added to playlist.', playlist: pl });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId', async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+    const pl = (course.playlists || []).find(p => p.id === req.params.playlistId);
+    if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
+
+    pl.materialIds = pl.materialIds.filter(id => id !== req.params.materialId);
+    await course.save();
+    res.json({ success: true, message: 'Removed from playlist.', playlist: pl });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+/* ============================================================
+   LISTEN
+   ============================================================ */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server is running on port ${PORT}`));

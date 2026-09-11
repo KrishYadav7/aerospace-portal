@@ -1,6 +1,9 @@
 /* ============================================================
-   AEROSPACE MEDIA VIEWER v3
-   PDF viewer (unchanged) + Video player with custom YouTube UI
+   AEROSPACE MEDIA VIEWER v4
+   - PDF viewer with client-side highlighting
+   - Video player (direct HTML5 + YouTube)
+   - Explicit Back button on both viewers
+   - Ultra-light single-line watermark
    ============================================================ */
 (function () {
   'use strict';
@@ -17,16 +20,17 @@
     });
   }
 
+  // Ultra-light single-line watermark
   function makeWatermarkUrl(text, opts) {
     opts = opts || {};
-    const color = opts.dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.08)';
-    const size  = opts.size  || 22;
-    const angle = opts.angle || -28;
-    const tile  = opts.tile  || 420;
+    const color = opts.dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+    const size  = opts.size  || 10;       // very small
+    const angle = opts.angle || -22;
+    const tile  = opts.tile  || 1200;     // sparse — very few repeats
     const svg =
       '<svg xmlns="http://www.w3.org/2000/svg" width="' + tile + '" height="' + tile + '">' +
         '<text x="50%" y="50%" font-family="Inter,Arial,sans-serif" font-size="' + size + '" ' +
-        'font-weight="700" fill="' + color + '" text-anchor="middle" ' +
+        'font-weight="600" fill="' + color + '" text-anchor="middle" ' +
         'transform="rotate(' + angle + ' ' + (tile / 2) + ' ' + (tile / 2) + ')">' +
           escapeXml(text) +
         '</text>' +
@@ -64,7 +68,7 @@
   };
 
   /* ============================================================
-     PDF VIEWER (unchanged)
+     PDF VIEWER
      ============================================================ */
   class PDFViewer {
     constructor() { this._init(); }
@@ -163,7 +167,10 @@
         '<div class="pdfv-shell">' +
           '<div class="pdfv-toolbar">' +
             '<div class="pdfv-toolbar-left">' +
-              '<button type="button" class="pdfv-btn" data-act="close" title="Close (Esc)"><i class="fas fa-times"></i></button>' +
+              // ---- BACK BUTTON (explicit, labeled) ----
+              '<button type="button" class="pdfv-back-btn" data-act="close" title="Back (Esc)">' +
+                '<i class="fas fa-arrow-left"></i><span>Back</span>' +
+              '</button>' +
               '<span class="pdfv-title" id="pdfvTitle"></span>' +
               '<span class="pdfv-hlcount" id="pdfvHlCount"></span>' +
             '</div>' +
@@ -210,7 +217,8 @@
 
       const self = this;
 
-      el.querySelectorAll('.pdfv-btn').forEach(function (btn) {
+      // Wire both .pdfv-btn (icon buttons) and .pdfv-back-btn (labeled back)
+      el.querySelectorAll('.pdfv-btn, .pdfv-back-btn').forEach(function (btn) {
         btn.addEventListener('click', function () { self._handleToolbar(btn.dataset.act); });
       });
       el.querySelectorAll('.pdfv-color').forEach(function (btn) {
@@ -635,12 +643,15 @@
       }
     }
 
+    // ---- Watermark: single line, very small ----
     _renderWatermark() {
       if (!this.modal) return;
       const wm = this.modal.querySelector('#pdfvWatermark');
       if (!wm) return;
-      const text = this.username + '  ·  ' + new Date().toISOString().slice(0, 10);
-      wm.style.backgroundImage = makeWatermarkUrl(text, { size: 20, angle: -28, tile: 400 });
+      const text = this.username; // one line, no date
+      wm.style.backgroundImage = makeWatermarkUrl(text, {
+        size: 10, angle: -22, tile: 1200
+      });
     }
 
     _onKeyDown(e) {
@@ -678,7 +689,7 @@
   }
 
   /* ============================================================
-     VIDEO PLAYER v3 — Direct HTML5 + YouTube with custom controls
+     VIDEO PLAYER
      ============================================================ */
   class VideoPlayer {
     constructor() { this._init(); }
@@ -686,9 +697,9 @@
     _init() {
       this.active = false;
       this.modal = null;
-      this.video = null;         // HTML5 <video> (direct mode)
-      this.ytPlayer = null;      // YT.Player instance (youtube mode)
-      this.mode = null;          // 'direct' | 'youtube'
+      this.video = null;
+      this.ytPlayer = null;
+      this.mode = null;
       this.materialId = null;
       this.username = '';
       this.title = '';
@@ -717,7 +728,6 @@
       return m ? m[1] : null;
     }
 
-    /* ---- Load the YouTube IFrame API (lazily) ---- */
     _loadYouTubeAPI() {
       if (window.YT && window.YT.Player) return Promise.resolve();
       return new Promise(function (resolve) {
@@ -738,7 +748,6 @@
       });
     }
 
-    /* ---- Entry ---- */
     async open(opts) {
       if (this.active) return;
       this.active = true;
@@ -748,7 +757,6 @@
       this.title      = opts.title || 'Video';
       this._prevBodyOverflow = document.body.style.overflow;
 
-      // Prefer server-provided ID
       let ytId = opts.videoId || null;
       let directSrc = null;
 
@@ -800,7 +808,7 @@
     }
 
     /* ============================================================
-       YOUTUBE VIA IFRAME PLAYER API
+       YOUTUBE
        ============================================================ */
     async _openYouTube(videoId) {
       this.mode = 'youtube';
@@ -820,18 +828,29 @@
       document.addEventListener('fullscreenchange', this._onFsChange);
       document.addEventListener('webkitfullscreenchange', this._onFsChange);
 
-      await this._loadYouTubeAPI();
+      const pipBtn = this.modal.querySelector('#vpPipBtn');
+      if (pipBtn) pipBtn.style.display = 'none';
+
+      try {
+        await this._loadYouTubeAPI();
+        if (!window.YT || !window.YT.Player) throw new Error('YT API unavailable');
+      } catch (err) {
+        console.error('[YouTube] API failed', err);
+        userToast('Could not load the video player. Check your connection.', 'error');
+        this.close();
+        return;
+      }
 
       const self = this;
       const playerVars = {
         autoplay: 1,
-        controls: 0,           // hide default YT controls — we provide ours
+        controls: 0,
         disablekb: 1,
-        modestbranding: 1,     // minimize YT branding
-        rel: 0,                // no related videos at end
+        modestbranding: 1,
+        rel: 0,
         showinfo: 0,
-        iv_load_policy: 3,     // no annotations
-        fs: 0,                 // no fullscreen button (we handle it)
+        iv_load_policy: 3,
+        fs: 0,
         playsinline: 1,
         origin: window.location.origin,
         widget_referrer: window.location.origin
@@ -888,10 +907,14 @@
       });
     }
 
-    /* ---------- Shared control bar HTML ---------- */
+    /* ---------- Shared UI (includes Back button) ---------- */
     _sharedUiHtml() {
       const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
       return (
+        // ---- BACK BUTTON (always visible, top-left) ----
+        '<button type="button" class="vp-back-btn" id="vpBackBtn" title="Back (Esc)">' +
+          '<i class="fas fa-arrow-left"></i><span>Back</span>' +
+        '</button>' +
         '<div class="vp-watermark" id="vpWatermark"></div>' +
         '<div class="vp-title" id="vpTitle">' + this._esc(this.title) + '</div>' +
         '<button type="button" class="vp-center-play" id="vpCenterPlay"><i class="fas fa-play"></i></button>' +
@@ -953,6 +976,15 @@
       const modal = this.modal;
       if (!modal) return;
 
+      // ---- Back button ----
+      const backBtn = modal.querySelector('#vpBackBtn');
+      if (backBtn) {
+        backBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          self.close();
+        });
+      }
+
       // Toolbar buttons
       modal.querySelectorAll('.vp-btn, .vp-speed-btn').forEach(function (b) {
         b.addEventListener('click', function (e) {
@@ -961,11 +993,9 @@
         });
       });
 
-      // Center play button
       const cp = modal.querySelector('#vpCenterPlay');
       if (cp) cp.addEventListener('click', function (e) { e.stopPropagation(); self._togglePlay(); });
 
-      // Progress bar
       const progress = modal.querySelector('#vpProgress');
       const getPct = function (e) {
         const r = progress.getBoundingClientRect();
@@ -997,11 +1027,9 @@
         document.addEventListener('mouseup', onUp);
       });
 
-      // Volume
       const vol = modal.querySelector('#vpVolume');
       if (vol) vol.addEventListener('input', function () { self._setVolume(parseFloat(vol.value)); });
 
-      // Speed menu
       const speedMenu = modal.querySelector('#vpSpeedMenu');
       if (speedMenu) {
         speedMenu.querySelectorAll('button').forEach(function (b) {
@@ -1017,18 +1045,16 @@
       };
       document.addEventListener('click', this._onDocClick);
 
-      // Auto-hide + double-click fullscreen on the shell
       const shell = modal.querySelector('.vp-shell');
       if (shell) {
         shell.addEventListener('mousemove', function () { self._scheduleHideControls(); });
         shell.addEventListener('touchstart', function () { self._scheduleHideControls(); }, { passive: true });
         shell.addEventListener('dblclick', function (e) {
-          if (e.target.closest('.vp-controls') || e.target.closest('.vp-speed-menu')) return;
+          if (e.target.closest('.vp-controls') || e.target.closest('.vp-speed-menu') || e.target.closest('.vp-back-btn')) return;
           self._toggleFullscreen();
         });
       }
 
-      // Click-capture for YouTube (blocks native YT interactions AND toggles play)
       const capture = modal.querySelector('#vpClickCapture');
       if (capture) {
         capture.addEventListener('click', function (e) {
@@ -1038,7 +1064,6 @@
         });
       }
 
-      // Direct video click-to-toggle
       if (this.video) {
         this.video.addEventListener('click', function (e) {
           e.stopPropagation();
@@ -1048,7 +1073,6 @@
       }
     }
 
-    /* ---------- Direct-mode events ---------- */
     _wireDirectEvents() {
       const self = this;
       const v = this.video;
@@ -1086,7 +1110,6 @@
       this._resumeTimer = setInterval(function () { self._saveResume(); }, 3000);
     }
 
-    /* ---------- Actions (mode-agnostic) ---------- */
     _handleAction(act) {
       if (act === 'play') this._togglePlay();
       else if (act === 'back') this._seek(this._getTime() - 10);
@@ -1240,7 +1263,6 @@
       if (el) el.classList.remove('visible');
     }
 
-    /* ---------- Direct-mode progress ---------- */
     _updateProgress() {
       if (!this.video || !this.modal) return;
       const d = this.video.duration || 0;
@@ -1269,7 +1291,6 @@
         this._formatTime(this.video.currentTime) + ' / ' + this._formatTime(this.video.duration);
     }
 
-    /* ---------- YouTube polling ---------- */
     _startYtPolling() {
       const self = this;
       this._stopYtPolling();
@@ -1298,7 +1319,6 @@
       } catch (e) {}
     }
 
-    /* ---------- Utilities ---------- */
     _formatTime(t) {
       if (!isFinite(t) || t < 0) t = 0;
       const h = Math.floor(t / 3600);
@@ -1355,15 +1375,17 @@
       this.modal.style.cursor = '';
     }
 
+    // ---- Watermark: single line, very small ----
     _renderWatermark() {
       if (!this.modal) return;
       const wm = this.modal.querySelector('#vpWatermark');
       if (!wm) return;
-      const text = this.username + '  ·  ' + new Date().toISOString().slice(0, 10);
-      wm.style.backgroundImage = makeWatermarkUrl(text, { dark: true, size: 22, angle: -30, tile: 400 });
+      const text = this.username; // one line, no date
+      wm.style.backgroundImage = makeWatermarkUrl(text, {
+        dark: true, size: 10, angle: -22, tile: 1200
+      });
     }
 
-    /* ---------- Resume (direct only) ---------- */
     _resumeKey() { return 'aero_vp_pos_' + this.materialId; }
     _saveResume() {
       if (this.mode !== 'direct' || !this.video) return;
@@ -1399,7 +1421,6 @@
       this._updateVolumeIcon();
     }
 
-    /* ---------- Keyboard ---------- */
     _onKeyDown(e) {
       if (!this.active) return;
       const tag = ((e.target && e.target.tagName) || '').toLowerCase();
@@ -1431,7 +1452,6 @@
       else if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); e.stopPropagation(); }
     }
 
-    /* ---------- Close ---------- */
     close() {
       if (!this.active) return;
       this.active = false;
@@ -1479,5 +1499,5 @@
   window.PDFViewer   = new PDFViewer();
   window.VideoPlayer = new VideoPlayer();
 
-  console.log('[AeroMediaViewer] Ready');
+  console.log('[AeroMediaViewer v4] Ready');
 })();

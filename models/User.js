@@ -7,10 +7,8 @@ const userSchema = new mongoose.Schema({
   fullName: String,
   email:    String,
 
-  // Purchases
   purchases: { type: [String], default: [] },
 
-  // Sprint 2 — bookmarks, progress, last activity
   bookmarks: { type: [String], default: [] },
   progress:  { type: Map, of: [String], default: {} },
   lastActivity: {
@@ -19,12 +17,10 @@ const userSchema = new mongoose.Schema({
     timestamp:  { type: Date,   default: null }
   },
 
-  // Sprint 3 — streaks
   streakCount:    { type: Number, default: 0 },
   longestStreak:  { type: Number, default: 0 },
   lastActiveDate: { type: String, default: null },
 
-  // Sprint 3 — notifications
   notifications: [{
     id:        { type: String },
     type:      { type: String, default: 'info' },
@@ -36,7 +32,6 @@ const userSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
   }],
 
-  // Sprint 4 — quiz results per material
   quizResults: { type: Map, of: Object, default: {} }
 }, { timestamps: true });
 
