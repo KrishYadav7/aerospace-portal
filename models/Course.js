@@ -7,8 +7,18 @@ const materialSchema = new mongoose.Schema({
   url: String,
   fileData: String,
   fileName: String,
-  isPremium: { type: Boolean, default: false }, // <-- Database ab isko save karega
-  price: { type: Number, default: 0 }           // <-- Database ab amount save karega
+  isPremium: { type: Boolean, default: false },
+  price: { type: Number, default: 0 }
+});
+
+// Naya: Student ki basic details save karne ke liye
+const doubtSchema = new mongoose.Schema({
+  studentName: String,
+  studentUsername: String,
+  studentEmail: String,
+  question: String,
+  answer: String,
+  date: { type: Date, default: Date.now }
 });
 
 const courseSchema = new mongoose.Schema({
@@ -20,14 +30,7 @@ const courseSchema = new mongoose.Schema({
   isPremium: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
   materials: [materialSchema],
-doubts: [{
-    studentName: String,
-    studentUsername: String, // Naya: Student ka username
-    studentEmail: String,    // Naya: Student ki email id
-    question: String,
-    answer: String,
-    date: { type: Date, default: Date.now } // Naya: Jis din doubt pucha
-  }]
+  doubts: [doubtSchema]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Course', courseSchema);

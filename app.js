@@ -1,50 +1,20 @@
-// ================================================================
-// DATA LAYER (Local Storage for Professors & Payments temporarily)
-// ================================================================
-
 const STORAGE_KEY = 'aerospace_data';
-const UPI_CONFIG = {
-  upiId: 'example@upi',
-  merchantName: 'Aerospace Dept',
-  currency: 'INR'
-};
-
 function getDefaultData() {
-  return {
-    users: [], 
-    courses: [], 
-    professors: [
-      { id: 'p1', name: 'Prof. S. K. Mehta', title: 'Aerodynamics & Fluid Mechanics', description: 'Ph.D. from MIT, author of 3 textbooks.', photo: '' },
-      { id: 'p2', name: 'Prof. R. N. Sharma', title: 'Propulsion & Combustion', description: 'Former ISRO scientist.', photo: '' },
-      { id: 'p3', name: 'Prof. P. K. Gupta', title: 'Avionics & Control Systems', description: 'Expert in UAV navigation.', photo: '' },
-      { id: 'p4', name: 'Prof. M. S. Rao', title: 'Spacecraft Design & Orbital Mechanics', description: 'Over 30 years in satellite design.', photo: '' }
+  return { professors: [
+      { id: 'p1', name: 'Prof. S. K. Mehta', title: 'Aerodynamics', description: 'Ph.D. from MIT', photo: '' },
+      { id: 'p2', name: 'Prof. R. N. Sharma', title: 'Propulsion', description: 'Former ISRO scientist.', photo: '' }
     ]
   };
 }
 
 function loadData() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return getDefaultData();
-    const data = JSON.parse(raw);
-    if (!data.professors || !Array.isArray(data.professors)) data.professors = getDefaultData().professors;
-    return data;
-  } catch {
-    return getDefaultData();
-  }
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || getDefaultData(); } 
+  catch { return getDefaultData(); }
 }
 
-function saveData(data) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
-
+function saveData(data) { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
 function getProfessors() { return loadData().professors; }
-function findProfessor(id) { return getProfessors().find(p => p.id === id) || null; }
 function generateId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
-
-// ================================================================
-// LIVE MONGODB DATA LAYER
-// ================================================================
 
 let liveCourses = [];
 function getCourses() { return liveCourses; }
@@ -52,7 +22,6 @@ function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 
 async function fetchCoursesFromDB() {
   try {
-    // Cache hatane ke liye URL ke end mein timestamp add kiya hai
     const response = await fetch('https://aerospace-portal.onrender.com/api/courses?t=' + new Date().getTime());
     const data = await response.json();
     liveCourses = data.map(course => {
@@ -60,15 +29,8 @@ async function fetchCoursesFromDB() {
       return { ...course, id: course._id, materials: fixedMaterials };
     });
     renderApp(); 
-  } catch(error) {
-    console.error('Error fetching courses:', error);
-    renderApp();
-  }
+  } catch(error) { console.error('Error fetching courses:', error); renderApp(); }
 }
-
-// ================================================================
-// APP STATE
-// ================================================================
 
 let currentUser = null;
 let currentCourseId = null;
@@ -77,248 +39,105 @@ let loginRole = 'student';
 let studentNav = 'home';
 let adminTab = 'courses';
 
-// DOM refs
 const $ = id => document.getElementById(id);
-const loginView = $('loginView');
-const adminView = $('adminView');
-const studentHomeView = $('studentHomeView');
-const studentCoursesView = $('studentCoursesView');
-const courseDetailView = $('courseDetailView');
-const appHeader = $('appHeader');
-const appFooter = $('appFooter');
-const mainNav = $('mainNav');
-const userDisplay = $('userDisplay');
-const roleBadge = $('roleBadge');
-const adminCourseList = $('adminCourseList');
-const studentCourseList = $('studentCourseList');
-const courseDetailContent = $('courseDetailContent');
-const adminProfessorList = $('adminProfessorList');
-const adminStudentList = $('adminStudentList');
-const professorsGrid = $('professorsGrid');
-
-// ================================================================
-// LOGIN & REGISTRATION (MongoDB Connected)
-// ================================================================
 
 function setLoginRole(role) {
   loginRole = role;
-  document.querySelectorAll('.login-role-toggle button').forEach(b => {
-    b.classList.toggle('active', b.dataset.role === role);
-  });
+  document.querySelectorAll('.login-role-toggle button').forEach(b => b.classList.toggle('active', b.dataset.role === role));
 }
 
 async function handleLogin(e) {
   e.preventDefault();
   const username = $('loginUsername').value.trim();
   const password = $('loginPassword').value.trim();
-  
-  if (!username || !password) {
-    showToast('Please enter both username and password.', 'error');
-    return;
-  }
-
+  if (!username || !password) return showToast('Please enter both username and password.', 'error');
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
+    const response = await fetch('https://aerospace-portal.onrender.com/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
     const data = await response.json();
-
     if (data.success) {
-      if (loginRole === 'admin' && data.user.role !== 'admin') {
-        showToast('This account is not an admin.', 'error');
-        return;
-      }
-      if (loginRole === 'student' && data.user.role !== 'student') {
-        showToast('This account is not a student.', 'error');
-        return;
-      }
-
+      if (loginRole === 'admin' && data.user.role !== 'admin') return showToast('Not an admin account.', 'error');
+      if (loginRole === 'student' && data.user.role !== 'student') return showToast('Not a student account.', 'error');
       currentUser = data.user;
       localStorage.setItem('aero_token', data.token); 
       localStorage.setItem('aero_user', JSON.stringify(data.user));
-      
-      studentNav = 'home';
-      adminTab = 'courses';
+      studentNav = 'home'; adminTab = 'courses';
       showToast(data.message, 'success');
       renderApp();
-    } else {
-      showToast(data.message, 'error');
-    }
-  } catch (error) {
-    showToast('Server is not running or network error.', 'error');
-  }
+    } else { showToast(data.message, 'error'); }
+  } catch (error) { showToast('Server network error.', 'error'); }
 }
 
 function logout() {
-  currentUser = null;
-  currentCourseId = null;
-  studentNav = 'home';
-  localStorage.removeItem('aero_token');
-  localStorage.removeItem('aero_user');
-  renderApp();
-  showToast('Logged out.', 'info');
+  currentUser = null; currentCourseId = null; studentNav = 'home';
+  localStorage.removeItem('aero_token'); localStorage.removeItem('aero_user');
+  renderApp(); showToast('Logged out.', 'info');
 }
 
 function showRegisterModal() {
-  $('regFullName').value = '';
-  $('regUsername').value = '';
-  $('regEmail').value = '';
-  $('regPassword').value = '';
+  $('regFullName').value = ''; $('regUsername').value = ''; $('regEmail').value = ''; $('regPassword').value = '';
   openModal('registerModal');
 }
 
-// ================================================================
-// REGISTRATION WITH OTP VERIFICATION
-// ================================================================
-
-let tempRegisterData = null; // Registration data yahan save rakhenge jab tak OTP na aa jaye
+let tempRegisterData = null;
 
 async function registerStudent(e) {
   e.preventDefault();
-  
-  const fullName = $('regFullName').value.trim();
-  const username = $('regUsername').value.trim();
-  const email = $('regEmail').value.trim();
-  const password = $('regPassword').value.trim();
-
-  if (!fullName || !username || !password || !email) {
-    showToast('Please fill all fields including Email.', 'error');
-    return;
-  }
-
+  const fullName = $('regFullName').value.trim(), username = $('regUsername').value.trim(), email = $('regEmail').value.trim(), password = $('regPassword').value.trim();
+  if (!fullName || !username || !password || !email) return showToast('Fill all fields.', 'error');
   showToast('Sending OTP to your email... Please wait.', 'info');
-
   try {
-    // 1. Backend ko OTP bhejne ka order dena
-    const response = await fetch('https://aerospace-portal.onrender.com/api/send-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, username })
-    });
+    const response = await fetch('https://aerospace-portal.onrender.com/api/send-otp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, username }) });
     const data = await response.json();
-
     if (data.success) {
-      // 2. Agar email chala gaya, toh data save karo aur box band karo
       tempRegisterData = { fullName, username, email, password };
       closeModal('registerModal');
-      
-      // 3. Student se OTP maango (Browser ka inbuilt popup)
       const enteredOtp = prompt(`An OTP has been sent to ${email}.\n\nPlease enter your 6-digit OTP below:`);
-      
-      if (enteredOtp) {
-        verifyAndCompleteRegistration(enteredOtp);
-      } else {
-        showToast('Registration cancelled by user.', 'info');
-      }
-    } else {
-      showToast(data.message, 'error');
-    }
-  } catch (error) {
-    showToast('Server is not running or network error.', 'error');
-  }
+      if (enteredOtp) verifyAndCompleteRegistration(enteredOtp);
+    } else { showToast(data.message, 'error'); }
+  } catch (error) { showToast('Server network error.', 'error'); }
 }
 
-// 4. OTP aur form data ek sath Backend ko bhejna verify karne ke liye
 async function verifyAndCompleteRegistration(otp) {
   try {
-    const finalData = { ...tempRegisterData, otp: otp };
-    
-    const response = await fetch('https://aerospace-portal.onrender.com/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(finalData)
-    });
-    
+    const response = await fetch('https://aerospace-portal.onrender.com/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...tempRegisterData, otp: otp }) });
     const data = await response.json();
-
-    if (data.success) {
-      showToast('🎉 ' + data.message, 'success');
-      tempRegisterData = null; // Memory clean
-    } else {
-      showToast(data.message, 'error');
-    }
-  } catch (error) {
-    showToast('Error verifying OTP.', 'error');
-  }
+    if (data.success) { showToast('🎉 ' + data.message, 'success'); tempRegisterData = null; } 
+    else { showToast(data.message, 'error'); }
+  } catch (error) { showToast('Error verifying OTP.', 'error'); }
 }
 
-// ================================================================
-// NAVIGATION & RENDER ENGINE
-// ================================================================
-
 function navigateStudent(dest) {
-  if (dest === 'home') studentNav = 'home';
-  else if (dest === 'courses') studentNav = 'courses';
-  if (currentCourseId) {
-    currentCourseId = null;
-    renderApp();
-    setTimeout(() => { studentNav = dest; renderApp(); }, 50);
-    return;
-  }
+  if (dest === 'home') studentNav = 'home'; else if (dest === 'courses') studentNav = 'courses';
+  if (currentCourseId) { currentCourseId = null; renderApp(); setTimeout(() => { studentNav = dest; renderApp(); }, 50); return; }
   renderApp();
 }
 
 function renderApp() {
-  loginView.classList.remove('active');
-  adminView.classList.remove('active');
-  studentHomeView.classList.remove('active');
-  studentCoursesView.classList.remove('active');
-  courseDetailView.classList.remove('active');
-  appHeader.style.display = 'none';
-  appFooter.style.display = 'none';
+  $('loginView').classList.remove('active'); $('adminView').classList.remove('active');
+  $('studentHomeView').classList.remove('active'); $('studentCoursesView').classList.remove('active');
+  $('courseDetailView').classList.remove('active');
+  $('appHeader').style.display = 'none'; $('appFooter').style.display = 'none';
 
-  if (!currentUser) {
-    loginView.classList.add('active');
-    return;
-  }
+  if (!currentUser) { $('loginView').classList.add('active'); return; }
 
-  appHeader.style.display = 'flex';
-  appFooter.style.display = 'block';
-  userDisplay.textContent = currentUser.username;
-  roleBadge.textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
-  roleBadge.className = 'role-badge ' + currentUser.role;
-
+  $('appHeader').style.display = 'flex'; $('appFooter').style.display = 'block';
+  $('userDisplay').textContent = currentUser.username;
+  $('roleBadge').textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
+  $('roleBadge').className = 'role-badge ' + currentUser.role;
   buildNav();
 
-  if (currentCourseId) {
-    courseDetailView.classList.add('active');
-    renderCourseDetail(currentCourseId);
-    return;
-  }
-
-  if (currentUser.role === 'admin') {
-    adminView.classList.add('active');
-    renderAdminDashboard();
-    return;
-  }
-
-  if (studentNav === 'home') {
-    studentHomeView.classList.add('active');
-    renderStudentHome(); 
-  } else {
-    studentCoursesView.classList.add('active');
-    renderStudentCourses();
-  }
+  if (currentCourseId) { $('courseDetailView').classList.add('active'); renderCourseDetail(currentCourseId); return; }
+  if (currentUser.role === 'admin') { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
+  if (studentNav === 'home') { $('studentHomeView').classList.add('active'); renderStudentHome(); } 
+  else { $('studentCoursesView').classList.add('active'); renderStudentCourses(); }
 }
 
 function buildNav() {
-  if (currentUser.role === 'admin') {
-    mainNav.innerHTML = `<a href="#" class="active" onclick="event.preventDefault();">Dashboard</a>`;
-    return;
-  }
+  if (currentUser.role === 'admin') { $('mainNav').innerHTML = `<a href="#" class="active" onclick="event.preventDefault();">Dashboard</a>`; return; }
   const homeActive = (studentNav === 'home' && !currentCourseId) ? 'active' : '';
   const coursesActive = (studentNav === 'courses' && !currentCourseId) ? 'active' : '';
-  mainNav.innerHTML = `
-    <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-home"></i> Home</a>
-    <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-book"></i> Courses</a>
-  `;
+  $('mainNav').innerHTML = `<a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-home"></i> Home</a><a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-book"></i> Courses</a>`;
 }
-
-// ================================================================
-// ADMIN DASHBOARD
-// ================================================================
 
 function switchAdminTab(tab) {
   adminTab = tab;
@@ -340,9 +159,8 @@ async function renderAdminCourses() {
   const searchTerm = ($('adminCourseSearch').value || '').toLowerCase().trim();
   const filtered = courses.filter(c => c.name.toLowerCase().includes(searchTerm) || (c.code && c.code.toLowerCase().includes(searchTerm)));
 
-  const totalMaterials = courses.reduce((sum, c) => sum + (c.materials ? c.materials.length : 0), 0);
   $('statCourses').textContent = courses.length;
-  $('statMaterials').textContent = totalMaterials;
+  $('statMaterials').textContent = courses.reduce((sum, c) => sum + (c.materials ? c.materials.length : 0), 0);
   $('statStudents').textContent = '...'; 
 
   try {
@@ -352,8 +170,7 @@ async function renderAdminCourses() {
   } catch (e) { $('statStudents').textContent = 'Error'; }
 
   if (filtered.length === 0) {
-    adminCourseList.innerHTML = `<div class="empty-state"><i class="fas fa-search"></i><p>No courses found.</p></div>`;
-    return;
+    $('adminCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-search"></i><p>No courses found.</p></div>`; return;
   }
 
   let html = `<div class="course-grid">`;
@@ -361,21 +178,20 @@ async function renderAdminCourses() {
     const matCount = c.materials ? c.materials.length : 0;
     const premiumLabel = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` : '';
     
-    // NAYA FEATURE: Pending Doubts ka Alert aur Reply Button
-    const pendingDoubtsCount = (c.doubts || []).filter(d => !d.answer).length;
-    const doubtAlertHtml = pendingDoubtsCount > 0 
-      ? `<div style="background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; padding:8px 12px; border-radius:8px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
-           <span style="font-size:13px; font-weight:600;"><i class="fas fa-bell"></i> ${pendingDoubtsCount} Pending Doubt(s)</span>
-           <button onclick="event.stopPropagation(); viewCourseDetail('${c.id}'); setTimeout(()=>setMaterialFilter('qa'), 100);" style="background:#ef4444; color:#fff; border:none; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:bold; box-shadow:0 2px 4px rgba(239,68,68,0.3);">Reply Now <i class="fas fa-arrow-right"></i></button>
-         </div>` 
-      : '';
+    // NAYA: Admin Alert popup for Pending Doubts
+    const pendingDoubts = (c.doubts || []).filter(d => !d.answer).length;
+    const alertHtml = pendingDoubts > 0 ? `
+      <div style="background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; padding:8px 12px; border-radius:8px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:13px; font-weight:600;"><i class="fas fa-bell"></i> ${pendingDoubts} Pending Doubt(s)</span>
+        <button onclick="event.stopPropagation(); currentMaterialFilter='qa'; viewCourseDetail('${c.id}');" style="background:#ef4444; color:#fff; border:none; padding:4px 10px; border-radius:6px; font-size:12px; cursor:pointer; font-weight:bold;">Reply Now <i class="fas fa-arrow-right"></i></button>
+      </div>` : '';
 
     html += `
       <div class="course-card">
         <button class="delete-course-btn" onclick="deleteCourse('${c.id}')" title="Delete course"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${c.code || 'N/A'} ${premiumLabel}</div>
         <h3>${c.name}</h3>
-        ${doubtAlertHtml}
+        ${alertHtml}
         <div class="course-meta">
           <span><i class="fas fa-user"></i> ${c.instructor || '—'}</span>
           <span><i class="fas fa-calendar-alt"></i> ${c.semester || '—'}</span>
@@ -391,148 +207,48 @@ async function renderAdminCourses() {
     `;
   });
   html += `</div>`;
-  adminCourseList.innerHTML = html;
+  $('adminCourseList').innerHTML = html;
 }
 
 function renderAdminProfessors() {
   const professors = getProfessors();
-  if (professors.length === 0) {
-    adminProfessorList.innerHTML = `<div class="empty-state"><i class="fas fa-chalkboard-teacher"></i><p>No professors added yet.</p></div>`;
-    return;
-  }
+  if (professors.length === 0) { $('adminProfessorList').innerHTML = `<div class="empty-state"><i class="fas fa-chalkboard-teacher"></i><p>No professors added yet.</p></div>`; return; }
   let html = '';
   professors.forEach(p => {
     const photoHtml = p.photo ? `<img src="${p.photo}" alt="${p.name}">` : `<div style="width:60px;height:60px;border-radius:50%;background:#dce1e8;display:flex;align-items:center;justify-content:center;font-size:24px;color:#6b7a8f;"><i class="fas fa-user"></i></div>`;
-    html += `
-      <div class="admin-professor-item">
-        ${photoHtml}
-        <div class="info"><h4>${p.name}</h4><div class="title">${p.title}</div><div style="font-size:13px;color:#6b7a8f;margin-top:2px;">${p.description || ''}</div></div>
-        <div class="actions">
-          <button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')"><i class="fas fa-trash"></i></button>
-        </div>
-      </div>
-    `;
+    html += `<div class="admin-professor-item">${photoHtml}<div class="info"><h4>${p.name}</h4><div class="title">${p.title}</div><div style="font-size:13px;color:#6b7a8f;margin-top:2px;">${p.description || ''}</div></div><div class="actions"><button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')"><i class="fas fa-trash"></i></button></div></div>`;
   });
-  adminProfessorList.innerHTML = html;
+  $('adminProfessorList').innerHTML = html;
 }
 
-// ================================================================
-// ADMIN STUDENTS LIST (MongoDB Connected)
-// ================================================================
-
-// ================================================================
-// ADMIN COURSES WALA DASHBOARD (Fixed Student Count)
-// ================================================================
-async function renderAdminCourses() {
-  const courses = getCourses();
-  const searchTerm = ($('adminCourseSearch').value || '').toLowerCase().trim();
-  const filtered = courses.filter(c => c.name.toLowerCase().includes(searchTerm) || (c.code && c.code.toLowerCase().includes(searchTerm)));
-
-  const totalMaterials = courses.reduce((sum, c) => sum + (c.materials ? c.materials.length : 0), 0);
-  $('statCourses').textContent = courses.length;
-  $('statMaterials').textContent = totalMaterials;
-  $('statStudents').textContent = '...'; 
-
-  try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/students');
-    const data = await res.json();
-    if (data.success) $('statStudents').textContent = data.students.length;
-  } catch (e) { $('statStudents').textContent = 'Error'; }
-
-  if (filtered.length === 0) {
-    adminCourseList.innerHTML = `<div class="empty-state"><i class="fas fa-search"></i><p>No courses found.</p></div>`;
-    return;
-  }
-
-  let html = `<div class="course-grid">`;
-  filtered.forEach(c => {
-    const matCount = c.materials ? c.materials.length : 0;
-    const premiumLabel = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` : '';
-    html += `
-      <div class="course-card">
-        <button class="delete-course-btn" onclick="deleteCourse('${c.id}')" title="Delete course"><i class="fas fa-trash-alt"></i></button>
-        <div class="course-code">${c.code || 'N/A'} ${premiumLabel}</div>
-        <h3>${c.name}</h3>
-        <div class="course-meta">
-          <span><i class="fas fa-user"></i> ${c.instructor || '—'}</span>
-          <span><i class="fas fa-calendar-alt"></i> ${c.semester || '—'}</span>
-          ${c.isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>` : ''}
-        </div>
-        <div class="material-count"><i class="fas fa-file-alt"></i> ${matCount} materials</div>
-        <div class="card-actions">
-          <!-- YE RAHA NAYA SAFE EDIT BUTTON -->
-          <button class="btn btn-warning btn-sm" style="background-color: #f59e0b; color: white;" onclick="editCourse('${c.id}')"><i class="fas fa-edit"></i> Edit</button>
-          <button class="btn btn-primary btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
-          <button class="btn btn-success btn-sm" onclick="openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Add Material</button>
-        </div>
-      </div>
-    `;
-  });
-  html += `</div>`;
-  adminCourseList.innerHTML = html;
-}
-
-// ================================================================
-// ADMIN STUDENTS LIST WALA TAB (Fixed Live Database)
-// ================================================================
 async function renderAdminStudents() {
   const container = $('adminStudentList');
-  if(!container) return; // Safety check
-  
+  if(!container) return; 
   container.innerHTML = `<div class="empty-state"><p>Loading students from database...</p></div>`;
-  
   try {
     const response = await fetch('https://aerospace-portal.onrender.com/api/students');
     const data = await response.json();
-    
     if (data.success) {
-      const students = data.students;
-
-      if (students.length === 0) {
-        container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>No students registered yet.</p></div>`;
-        return;
-      }
-
+      if (data.students.length === 0) { container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>No students registered yet.</p></div>`; return; }
       let html = '';
-      students.forEach(s => {
-        html += `
-          <div class="student-list-item" style="background: #fff; padding: 15px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;">
-            <div class="student-info">
-              <h4 style="margin: 0 0 5px 0; color: #1e293b;">${s.fullName || s.username}</h4>
-              <div style="font-size: 13px; color: #64748b;">
-                <strong>Username:</strong> @${s.username} <br>
-                ${s.email ? `<strong>Email:</strong> ${s.email}` : '<span style="color:#ef4444">No email provided</span>'}
-              </div>
-            </div>
-            <div class="student-purchases" style="background: #f1f5f9; padding: 8px 12px; border-radius: 20px; font-size: 13px; color: #3b82f6; font-weight: bold;">
-              <i class="fas fa-check-circle"></i> Registered
-            </div>
-          </div>
-        `;
+      data.students.forEach(s => {
+        html += `<div class="student-list-item" style="background: #fff; padding: 15px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;"><div class="student-info"><h4 style="margin: 0 0 5px 0; color: #1e293b;">${s.fullName || s.username}</h4><div style="font-size: 13px; color: #64748b;"><strong>Username:</strong> @${s.username} <br>${s.email ? `<strong>Email:</strong> ${s.email}` : '<span style="color:#ef4444">No email provided</span>'}</div></div><div class="student-purchases" style="background: #f1f5f9; padding: 8px 12px; border-radius: 20px; font-size: 13px; color: #3b82f6; font-weight: bold;"><i class="fas fa-check-circle"></i> Registered</div></div>`;
       });
       container.innerHTML = html;
     }
-  } catch (error) {
-    container.innerHTML = `<div class="empty-state"><p style="color:red;">Error fetching student list. Is server running?</p></div>`;
-    console.error('Error:', error);
-  }
+  } catch (error) { container.innerHTML = `<div class="empty-state"><p style="color:red;">Error fetching student list.</p></div>`; }
 }
-
-// ================================================================
-// STUDENT VIEWS
-// ================================================================
 
 function renderStudentHome() {
   const professors = getProfessors();
-  if (professors.length === 0) {
-    professorsGrid.innerHTML = `<p style="color:#94a3b8;">No professors added yet.</p>`;
-  } else {
+  if (professors.length === 0) { $('professorsGrid').innerHTML = `<p style="color:#94a3b8;">No professors added yet.</p>`; } 
+  else {
     let html = '';
     professors.forEach(p => {
       const photoHtml = p.photo ? `<img src="${p.photo}" alt="${p.name}" class="professor-avatar">` : `<div class="professor-avatar" style="background:#dce1e8;display:flex;align-items:center;justify-content:center;font-size:40px;color:#6b7a8f;width:100px;height:100px;border-radius:50%;margin:0 auto 10px;"><i class="fas fa-user"></i></div>`;
       html += `<div class="professor-card">${photoHtml}<h3>${p.name}</h3><div class="prof-title">${p.title}</div><p>${p.description || ''}</p></div>`;
     });
-    professorsGrid.innerHTML = html;
+    $('professorsGrid').innerHTML = html;
   }
 }
 
@@ -541,19 +257,12 @@ function renderStudentCourses() {
   const searchTerm = ($('studentCourseSearch').value || '').toLowerCase().trim();
   const filtered = courses.filter(c => c.name.toLowerCase().includes(searchTerm) || (c.code && c.code.toLowerCase().includes(searchTerm)));
 
-  if (filtered.length === 0) {
-    studentCourseList.innerHTML = `<div class="empty-state"><i class="fas fa-book-open"></i><p>No courses available.</p></div>`;
-    return;
-  }
+  if (filtered.length === 0) { $('studentCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-book-open"></i><p>No courses available.</p></div>`; return; }
 
   let html = `<div class="course-grid">`;
   filtered.forEach(c => {
     const isPurchased = currentUser.purchases && currentUser.purchases.includes(c.id);
-    let badge = '';
-    if (c.isPremium) {
-      badge = `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>`;
-      if (!isPurchased) badge += ` <span class="premium-badge" style="background:#94a3b8;color:#fff;"><i class="fas fa-lock"></i> Locked</span>`;
-    }
+    let badge = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` + (!isPurchased ? ` <span class="premium-badge" style="background:#94a3b8;color:#fff;"><i class="fas fa-lock"></i> Locked</span>` : '') : '';
     html += `
       <div class="course-card" onclick="viewCourseDetail('${c.id}')">
         <div class="course-code">${c.code || 'N/A'} ${badge}</div>
@@ -569,22 +278,20 @@ function renderStudentCourses() {
     `;
   });
   html += `</div>`;
-  studentCourseList.innerHTML = html;
+  $('studentCourseList').innerHTML = html;
 }
 
-function viewCourseDetail(courseId) { currentCourseId = courseId; renderApp();window.currentSelectedCourseId = courseId; }
+function viewCourseDetail(courseId) { currentCourseId = courseId; window.currentSelectedCourseId = courseId; renderApp(); }
 function goBackFromDetail() { currentCourseId = null; renderApp(); }
+
 function setMaterialFilter(type) {
   currentMaterialFilter = type;
-  // Jis course ki detail khuli hai, usko dobara render kar do taaki naya tab dikhe
-  if (window.currentSelectedCourseId) {
-    renderCourseDetail(window.currentSelectedCourseId);
-  }
+  if (window.currentSelectedCourseId) renderCourseDetail(window.currentSelectedCourseId);
 }
 
 function renderCourseDetail(courseId) {
   const course = findCourse(courseId);
-  if (!course) { courseDetailContent.innerHTML = `<div class="empty-state"><p>Course not found.</p></div>`; return; }
+  if (!course) { $('courseDetailContent').innerHTML = `<div class="empty-state"><p>Course not found.</p></div>`; return; }
 
   const isPremiumCourse = course.isPremium || false;
   const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
@@ -610,31 +317,25 @@ function renderCourseDetail(courseId) {
 
   const materials = course.materials || [];
   const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
-  
   const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
   const typeLabels = { all: 'All', video: '🎬 Video', pyq: '📄 PYQ', tutorial: '📝 Tutorial', slides: '📊 Slides', qa: '❓ Q&A', other: '📁 Other' };
   
-  // Tabs rendering with correct Q&A count fix
   html += `<div class="material-tabs">`;
   types.forEach(t => {
     let count = 0;
     if (t === 'all') count = materials.length;
     else if (t === 'qa') count = course.doubts ? course.doubts.length : 0;
     else count = materials.filter(m => m.type === t).length;
-
     html += `<button class="${currentMaterialFilter === t ? 'active' : ''}" onclick="setMaterialFilter('${t}')">${typeLabels[t]} (${count})</button>`;
   });
   html += `</div>`;
 
-  // === Q&A SECTION LOGIC (FIXED) ===
-// === Q&A SECTION LOGIC (ADVANCED UI) ===
+  // === ADVANCED Q&A UI ===
   if (currentMaterialFilter === 'qa') {
     const doubts = course.doubts || [];
-    
     html += `<div class="qa-section" style="padding: 20px; background: #fff; border-radius: 12px; border: 1px solid #e9edf2;">
                <h3 style="margin-bottom: 15px; color: #0b1a33;"><i class="fas fa-comments"></i> Course Q&A / Doubts</h3>`;
 
-    // Sirf student ko sawal puchne ka box dikhega
     if (currentUser.role === 'student') {
       html += `<div style="margin-bottom: 25px; background: #f8fafc; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0;">
                  <label style="font-weight:600; color:#1e293b; display:block; margin-bottom:8px;">Ask a New Doubt</label>
@@ -646,7 +347,6 @@ function renderCourseDetail(courseId) {
     if (doubts.length === 0) {
       html += `<div class="empty-state" style="padding: 20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet.</p></div>`;
     } else {
-      // Sort: Unanswered doubts upar dikhenge, aur answered neeche
       const sortedDoubts = doubts.sort((a, b) => {
          if (!a.answer && b.answer) return -1;
          if (a.answer && !b.answer) return 1;
@@ -660,7 +360,7 @@ function renderCourseDetail(courseId) {
           : `<span style="background:#f59e0b; color:#fff; font-size:10px; padding:3px 8px; border-radius:12px; font-weight:bold;">PENDING</span>`;
         
         const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
-        const emailText = d.studentEmail ? d.studentEmail : 'No Email provided';
+        const emailText = d.studentEmail ? d.studentEmail : 'No Email';
         const usernameText = d.studentUsername ? `@${d.studentUsername}` : '';
 
         html += `
@@ -673,22 +373,18 @@ function renderCourseDetail(courseId) {
               <div>${statusBadge} <span style="font-size:11px; color:#94a3b8; margin-left:8px;">${dateText}</span></div>
             </div>
             <p style="margin:8px 0; color:#334155; font-size:14px; background:#f8fafc; padding:10px; border-radius:6px;"><strong>Q:</strong> ${d.question}</p>
-            
             ${isAnswered 
               ? `<div style="background:#eff6ff; padding:12px; border-radius:6px; color:#1e3a8a; margin-top:10px; font-size:14px; border-left: 3px solid #3b82f6;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${d.answer}</div>` 
-              : (currentUser.role === 'admin' 
-                 ? `<button class="btn btn-success btn-sm" style="margin-top:10px;" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Give Reply</button>` 
-                 : `<div style="font-size:13px; color:#d97706; margin-top:10px; font-weight:500;"><i class="fas fa-clock"></i> Waiting for admin's reply...</div>`)
+              : (currentUser.role === 'admin' ? `<button class="btn btn-success btn-sm" style="margin-top:10px;" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Give Reply</button>` : `<div style="font-size:13px; color:#d97706; margin-top:10px; font-weight:500;"><i class="fas fa-clock"></i> Waiting for admin's reply...</div>`)
             }
           </div>`;
       });
     }
     html += `</div>`;
-    courseDetailContent.innerHTML = html;
+    $('courseDetailContent').innerHTML = html;
     return;
   }
 
-  // Material Loop (Normal files)
   if (filtered.length === 0) {
     html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No content uploaded in this category.</p></div>`;
   } else {
@@ -696,10 +392,8 @@ function renderCourseDetail(courseId) {
     filtered.forEach(m => {
       const hasFile = m.fileData && m.fileData.length > 0;
       const hasUrl = m.url && m.url.length > 0;
-      
       const isMatPremium = m.isPremium === true || m.isPremium === 'true';
       const matPrice = parseFloat(m.price) || 0;
-      
       const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
       const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || !isMatPremium;
       
@@ -707,117 +401,60 @@ function renderCourseDetail(courseId) {
       if (!canAccess) {
         fileActionHtml = `<button class="btn btn-warning btn-sm" style="background:#b91c1c; color:#fff; border:none;" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock for ₹${matPrice}</button>`;
       } else {
-        if (hasFile) {
-          if (currentUser.role === 'admin') fileActionHtml = `<a href="${m.fileData}" download="${m.fileName || 'download'}" class="btn btn-primary btn-sm"><i class="fas fa-download"></i> Download</a> <button class="btn btn-outline btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View</button>`;
-          else fileActionHtml = `<button class="btn btn-primary btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View Content</button>`;
-        }
+        if (hasFile) fileActionHtml += currentUser.role === 'admin' ? `<a href="${m.fileData}" download="${m.fileName || 'download'}" class="btn btn-primary btn-sm"><i class="fas fa-download"></i> Download</a> <button class="btn btn-outline btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View</button>` : `<button class="btn btn-primary btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View Content</button>`;
         if (hasUrl) fileActionHtml += ` <a href="${m.url}" target="_blank" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
       }
 
-      const badgeHtml = isMatPremium 
-        ? `<span style="font-size:10px; background:#f0b429; color:#0b1a33; padding:3px 8px; border-radius:12px; font-weight:bold;"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>` 
-        : `<span style="font-size:10px; background:#10b981; color:white; padding:3px 8px; border-radius:12px; font-weight:bold;">FREE</span>`;
+      const badgeHtml = isMatPremium ? `<span style="font-size:10px; background:#f0b429; color:#0b1a33; padding:3px 8px; border-radius:12px; font-weight:bold;"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>` : `<span style="font-size:10px; background:#10b981; color:white; padding:3px 8px; border-radius:12px; font-weight:bold;">FREE</span>`;
 
       html += `
         <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
-          ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
-            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
-          ` : ''}
-          <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-            <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
-            ${badgeHtml}
-          </div>
+          ${currentUser.role === 'admin' ? `<button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button><button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>` : ''}
+          <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;"><div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>${badgeHtml}</div>
           <h4>${m.title}</h4>
           <div class="mat-desc">${m.description || ''}</div>
-          <div class="mat-actions" style="margin-top:10px;">
-            ${fileActionHtml}
-          </div>
+          <div class="mat-actions" style="margin-top:10px;">${fileActionHtml}</div>
         </div>
       `;
     });
     html += `</div>`;
   }
-  courseDetailContent.innerHTML = html;
+  $('courseDetailContent').innerHTML = html;
 }
-// ================================================================
-// SECURE FILE VIEWER (Naya Function Jo File Dikhayega)
-// ================================================================
 
 async function viewFileOnline(courseId, materialId) {
-  const course = findCourse(courseId);
-  if (!course) return;
+  const course = findCourse(courseId); if (!course) return;
   const mat = course.materials.find(m => m.id === materialId);
-  
   if (mat && mat.fileData) {
     try {
-      const response = await fetch(mat.fileData);
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      window.open(blobUrl, '_blank');
-    } catch (error) {
-      showToast('Error opening file online.', 'error');
-      console.error(error);
-    }
-  } else {
-    showToast('No file attached to this material.', 'info');
-  }
+      const response = await fetch(mat.fileData); const blob = await response.blob();
+      window.open(URL.createObjectURL(blob), '_blank');
+    } catch (error) { showToast('Error opening file online.', 'error'); }
+  } else { showToast('No file attached.', 'info'); }
 }
-
-// ================================================================
-// COURSE CRUD (MongoDB Connected)
-// ================================================================
 
 function openAddCourseModal() {
   $('courseModalTitle').textContent = '📚 New Course';
-  $('editCourseId').value = ''; 
-  $('courseName').value = ''; 
-  $('courseCode').value = '';
-  $('courseSemester').value = ''; 
-  $('courseInstructor').value = ''; 
-  $('courseDescription').value = '';
-  
-  // Safe checks - Agar checkbox/price box milega tabhi reset karega
-  const premiumCheck = document.getElementById('courseIsPremium');
-  if (premiumCheck) premiumCheck.checked = false; 
-  
-  const priceInput = document.getElementById('coursePrice');
-  if (priceInput) priceInput.value = ''; 
-  
-  const priceGroup = document.getElementById('priceGroup');
-  if (priceGroup) priceGroup.style.display = 'none';
-  
+  $('editCourseId').value = ''; $('courseName').value = ''; $('courseCode').value = ''; $('courseSemester').value = ''; $('courseInstructor').value = ''; $('courseDescription').value = '';
+  const pc = $('courseIsPremium'); if(pc) pc.checked = false; 
+  const pi = $('coursePrice'); if(pi) pi.value = ''; 
+  const pg = $('priceGroup'); if(pg) pg.style.display = 'none';
   openModal('courseModal');
 }
 
-function togglePriceInput() { $('priceGroup').style.display = $('courseIsPremium').checked ? 'block' : 'none'; }
+function togglePriceInput() { const pg = $('priceGroup'); const pc = $('courseIsPremium'); if(pg && pc) pg.style.display = pc.checked ? 'block' : 'none'; }
 
 async function saveCourse(e) {
   e.preventDefault();
   const id = $('editCourseId').value;
-  const courseData = {
-    name: $('courseName').value.trim(), code: $('courseCode').value.trim(),
-    semester: $('courseSemester').value.trim(), instructor: $('courseInstructor').value.trim(),
-    description: $('courseDescription').value.trim(), isPremium: $('courseIsPremium').checked,
-    price: parseFloat($('coursePrice').value) || 0
-  };
-
+  const courseData = { name: $('courseName').value.trim(), code: $('courseCode').value.trim(), semester: $('courseSemester').value.trim(), instructor: $('courseInstructor').value.trim(), description: $('courseDescription').value.trim(), isPremium: $('courseIsPremium').checked, price: parseFloat($('coursePrice').value) || 0 };
   if (!courseData.name || !courseData.code) return showToast('Name and code required.', 'error');
-
   try {
-    if (id) {
-      showToast('Edit feature coming soon!', 'info');
-      closeModal('courseModal');
-    } else {
-      const response = await fetch('https://aerospace-portal.onrender.com/api/courses', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(courseData)
-      });
+    if (id) { showToast('Edit feature coming soon!', 'info'); closeModal('courseModal'); } 
+    else {
+      const response = await fetch('https://aerospace-portal.onrender.com/api/courses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(courseData) });
       const data = await response.json();
-      if (data.success) {
-        showToast('🎉 Course created safely in Database!', 'success');
-        closeModal('courseModal');
-        fetchCoursesFromDB();
-      }
+      if (data.success) { showToast('🎉 Course created!', 'success'); closeModal('courseModal'); fetchCoursesFromDB(); }
     }
   } catch (error) { showToast('Server error.', 'error'); }
 }
@@ -827,86 +464,72 @@ async function deleteCourse(courseId) {
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, { method: 'DELETE' });
     const data = await response.json();
-    if (data.success) {
-      if (currentCourseId === courseId) currentCourseId = null;
-      showToast('🗑️ Course safely deleted from Database.', 'info');
-      fetchCoursesFromDB();
-    } else {
-      showToast(data.message, 'error');
-    }
+    if (data.success) { if (currentCourseId === courseId) currentCourseId = null; showToast('🗑️ Course deleted.', 'info'); fetchCoursesFromDB(); }
   } catch (error) { showToast('Server error.', 'error'); }
 }
 
-// ================================================================
-// MATERIAL CRUD (MongoDB Connected)
-// ================================================================
-
-function openAddMaterialModal(courseId) {
-  $('materialModalTitle').textContent = '📎 Add Material';
-  $('editMaterialId').value = ''; $('materialCourseId').value = courseId;
-  $('materialTitle').value = ''; $('materialType').value = 'video';
-  $('materialDescription').value = ''; $('materialUrl').value = ''; $('materialFile').value = '';
-  $('materialIsPremium').checked = false; // Naya checkbox reset
-  openModal('materialModal');
+async function editCourse(courseId) {
+  const course = findCourse(courseId); if (!course) return;
+  const newTitle = prompt("Update Course Name:", course.name); if (newTitle === null) return;
+  const newDesc = prompt("Update Course Description:", course.description || ''); if (newDesc === null) return;
+  let newPrice = prompt("Update Course Price (₹):", course.price || 0); if (newPrice === null) return;
+  newPrice = parseFloat(newPrice) || 0; const isPremium = newPrice > 0; 
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newTitle, description: newDesc, price: newPrice, isPremium: isPremium }) });
+    const data = await response.json();
+    if (data.success) { showToast('✏️ ' + data.message, 'success'); course.name = newTitle; course.description = newDesc; course.price = newPrice; course.isPremium = isPremium; renderApp(); } 
+    else { showToast(data.message, 'error'); }
+  } catch (error) { showToast('Error connecting to server.', 'error'); }
 }
 
-// Naya Toggle Function
-function toggleMaterialPriceInput() {
-  const isPremium = $('materialIsPremium').checked;
-  $('materialPriceGroup').style.display = isPremium ? 'block' : 'none';
-}
+window.toggleMaterialPriceInput = function() {
+  const isPremium = $('materialIsPremium').checked; const priceGrp = $('materialPriceGroup');
+  if(priceGrp) priceGrp.style.display = isPremium ? 'block' : 'none';
+};
 
 function openAddMaterialModal(courseId) {
-  $('materialModalTitle').textContent = '📎 Add Material';
-  $('editMaterialId').value = ''; $('materialCourseId').value = courseId;
-  $('materialTitle').value = ''; $('materialType').value = 'video';
-  $('materialDescription').value = ''; $('materialUrl').value = ''; $('materialFile').value = '';
-  $('materialIsPremium').checked = false;
+  $('materialModalTitle').textContent = '📎 Add Material'; $('editMaterialId').value = ''; $('materialCourseId').value = courseId;
+  $('materialTitle').value = ''; $('materialType').value = 'video'; $('materialDescription').value = ''; $('materialUrl').value = ''; $('materialFile').value = '';
+  if($('materialIsPremium')) $('materialIsPremium').checked = false;
   if($('materialPrice')) $('materialPrice').value = '';
-  toggleMaterialPriceInput(); 
-  openModal('materialModal');
+  toggleMaterialPriceInput(); openModal('materialModal');
 }
 
 async function saveMaterial(e) {
   e.preventDefault();
-  const courseId = $('materialCourseId').value;
-  const materialId = $('editMaterialId').value;
+  const courseId = $('materialCourseId').value; const materialId = $('editMaterialId').value;
   const file = $('materialFile').files ? $('materialFile').files[0] : null;
 
   const processSave = async (fileData, fileName) => {
-    const materialData = {
-      title: $('materialTitle').value.trim(), 
-      type: $('materialType').value,
-      description: $('materialDescription').value.trim(), 
-      url: $('materialUrl').value.trim(),
-      isPremium: $('materialIsPremium').checked,
-      price: parseFloat($('materialPrice').value) || 0, // <-- Price ab save hoga
-      fileData, 
-      fileName
-    };
+    const isPremiumMat = $('materialIsPremium') ? $('materialIsPremium').checked : false;
+    const matPrice = $('materialPrice') ? (parseFloat($('materialPrice').value) || 0) : 0;
+    const materialData = { title: $('materialTitle').value.trim(), type: $('materialType').value, description: $('materialDescription').value.trim(), url: $('materialUrl').value.trim(), isPremium: isPremiumMat, price: matPrice, fileData, fileName };
 
-    if (materialId) {
-      showToast('Edit feature coming soon!', 'info'); closeModal('materialModal');
-    } else {
+    if (materialId) { showToast('Edit feature coming soon!', 'info'); closeModal('materialModal'); } 
+    else {
       try {
-        const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(materialData)
-        });
+        const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(materialData) });
         const data = await response.json();
-        if (data.success) {
-          showToast('📎 Material added successfully!', 'success');
-          closeModal('materialModal');
-          fetchCoursesFromDB();
-        }
+        if (data.success) { showToast('📎 Content successfully uploaded!', 'success'); closeModal('materialModal'); fetchCoursesFromDB(); }
       } catch (error) { showToast('Server error.', 'error'); }
     }
   };
+  if (file) { const reader = new FileReader(); reader.onload = ev => processSave(ev.target.result, file.name); reader.readAsDataURL(file); } 
+  else { processSave('', ''); }
+}
 
-  if (file) {
-    const reader = new FileReader();
-    reader.onload = ev => processSave(ev.target.result, file.name);
-    reader.readAsDataURL(file);
-  } else { processSave('', ''); }
+async function editMaterial(courseId, materialId) {
+  const course = findCourse(courseId); if (!course) return;
+  const mat = course.materials.find(m => m.id === materialId); if (!mat) return;
+  const newTitle = prompt("Update Material Title:", mat.title); if (newTitle === null) return;
+  const newDesc = prompt("Update Material Description:", mat.description || ''); if (newDesc === null) return;
+  let newPrice = prompt("Update Material Unlock Price (₹) - [Type 0 to make it FREE]:", mat.price || 0); if (newPrice === null) return;
+  newPrice = parseFloat(newPrice) || 0; const isPremium = newPrice > 0;
+  try {
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: newTitle, description: newDesc, isPremium: isPremium, price: newPrice }) });
+    const data = await response.json();
+    if (data.success) { showToast('✏️ Material updated with amount!', 'success'); fetchCoursesFromDB(); }
+  } catch (error) { showToast('Error connecting to server.', 'error'); }
 }
 
 async function deleteMaterial(courseId, materialId) {
@@ -918,549 +541,92 @@ async function deleteMaterial(courseId, materialId) {
   } catch (error) { showToast('Server error.', 'error'); }
 }
 
-// ================================================================
-// PROFESSOR CRUD (Local Storage Temp)
-// ================================================================
-
 function openAddProfessorModal() {
-  $('editProfessorId').value = ''; $('professorName').value = '';
-  $('professorTitle').value = ''; $('professorDescription').value = ''; $('professorPhoto').value = '';
-  openModal('professorModal');
+  $('editProfessorId').value = ''; $('professorName').value = ''; $('professorTitle').value = ''; $('professorDescription').value = ''; $('professorPhoto').value = ''; openModal('professorModal');
 }
-
 function saveProfessor(e) {
-  e.preventDefault();
-  const data = loadData();
-  const name = $('professorName').value.trim();
-  const processSave = (photoData) => {
-    data.professors.push({
-      id: generateId(), name, title: $('professorTitle').value.trim(),
-      description: $('professorDescription').value.trim(), photo: photoData || ''
-    });
-    saveData(data); showToast('Professor added!', 'success');
-    closeModal('professorModal'); renderApp();
-  };
+  e.preventDefault(); const data = loadData(); const name = $('professorName').value.trim();
+  const processSave = (photoData) => { data.professors.push({ id: generateId(), name, title: $('professorTitle').value.trim(), description: $('professorDescription').value.trim(), photo: photoData || '' }); saveData(data); showToast('Professor added!', 'success'); closeModal('professorModal'); renderApp(); };
   const photoFile = $('professorPhoto').files ? $('professorPhoto').files[0] : null;
-  if (photoFile) {
-    const reader = new FileReader(); reader.onload = ev => processSave(ev.target.result); reader.readAsDataURL(photoFile);
-  } else { processSave(null); }
+  if (photoFile) { const reader = new FileReader(); reader.onload = ev => processSave(ev.target.result); reader.readAsDataURL(photoFile); } else { processSave(null); }
 }
-
 function deleteProfessor(professorId) {
   if (!confirm('Delete this professor?')) return;
-  const data = loadData();
-  data.professors = data.professors.filter(p => p.id !== professorId);
-  saveData(data); showToast('Professor deleted.', 'info'); renderApp();
+  const data = loadData(); data.professors = data.professors.filter(p => p.id !== professorId); saveData(data); showToast('Professor deleted.', 'info'); renderApp();
 }
-
-// ================================================================
-// PAYMENT (Dummy Verification - Prep for Razorpay)
-// ================================================================
-
-// ================================================================
-// ASLI RAZORPAY PAYMENT INTEGRATION
-// ================================================================
-
-async function showPaymentModal(courseId, materialId = null) {
-  const course = findCourse(courseId);
-  if (!course) return;
-
-  let amount = course.price || 0;
-  let itemName = course.name;
-  let purchaseId = course.id; 
-
-  if (materialId) {
-    const mat = course.materials.find(m => m.id === materialId);
-    if (mat) {
-      amount = mat.price || 0;
-      itemName = mat.title;
-      purchaseId = mat.id; 
-    }
-  }
-
-  showToast(`Initiating secure payment for ${itemName}...`, 'info');
-
-  try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/create-order', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: amount }) 
-    });
-    const data = await response.json();
-    if (!data.success) { showToast('Error creating order.', 'error'); return; }
-
-    const options = {
-      "key": "rzp_test_TaPfJOdu1PgUed",
-      "amount": data.order.amount,
-      "currency": "INR",
-      "name": "Aerospace EdTech",
-      "description": `Purchase: ${itemName}`,
-      "order_id": data.order.id,
-      "handler": async function (response) {
-        showToast('Verifying payment...', 'info');
-        const verifyRes = await fetch('https://aerospace-portal.onrender.com/api/verify-payment', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            razorpay_order_id: response.razorpay_order_id,
-            razorpay_payment_id: response.razorpay_payment_id,
-            razorpay_signature: response.razorpay_signature,
-            courseId: purchaseId, 
-            userId: currentUser._id 
-          })
-        });
-        
-        const verifyData = await verifyRes.json();
-        if (verifyData.success) {
-          if (!currentUser.purchases) currentUser.purchases = [];
-          if (!currentUser.purchases.includes(purchaseId)) currentUser.purchases.push(purchaseId);
-          localStorage.setItem('aero_user', JSON.stringify(currentUser));
-          showToast('🎉 Payment Successful! Content Unlocked.', 'success');
-          renderApp(); 
-        } else {
-          showToast('Payment verification failed!', 'error');
-        }
-      },
-      "prefill": { "name": currentUser.username, "email": currentUser.email || "student@aerospace.com", "contact": "9999999999" },
-      "theme": { "color": "#2563eb" }
-    };
-
-    const rzp1 = new Razorpay(options);
-    rzp1.open();
-  } catch (error) {
-    showToast('Server error during payment initialization.', 'error');
-  }
-}
-
-function confirmPayment() {
-  const courseId = $('paymentModal').dataset.courseId;
-  $('paymentQrContainer').style.display = 'none'; $('paymentActions').style.display = 'none'; $('paymentVerification').style.display = 'block';
-  
-  setTimeout(() => {
-    // Note: Temporary dummy logic before Razorpay integration
-    if (!currentUser.purchases) currentUser.purchases = [];
-    if (!currentUser.purchases.includes(courseId)) currentUser.purchases.push(courseId);
-    localStorage.setItem('aero_user', JSON.stringify(currentUser));
-    showToast('🎉 Dummy Payment verified! Course unlocked.', 'success');
-    closeModal('paymentModal'); renderApp();
-  }, 2000); 
-}
-
-// ================================================================
-// MODAL HELPERS & TOAST
-// ================================================================
-
-function openModal(id) { document.getElementById(id).classList.add('active'); }
-function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-document.querySelectorAll('.modal-overlay').forEach(overlay => {
-  overlay.addEventListener('click', function(e) { if (e.target === this) this.classList.remove('active'); });
-});
-
-function showToast(message, type = 'info') {
-  const container = $('toastContainer');
-  const toast = document.createElement('div');
-  toast.className = `toast ${type}`;
-  toast.innerHTML = `<i class="fas fa-info-circle"></i> ${message}`;
-  container.appendChild(toast);
-  setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateX(30px)'; setTimeout(() => toast.remove(), 350); }, 3500);
-}
-
-// ================================================================
-// INIT (App Start & Database Load)
-// ================================================================
-
-async function initApp() {
-  const savedUser = localStorage.getItem('aero_user');
-  if (savedUser) {
-    currentUser = JSON.parse(savedUser);
-    if(currentUser.role === 'admin') adminTab = 'courses';
-  }
-  renderApp(); 
-  await fetchCoursesFromDB();
-}
-
-initApp();
-// =========================================================
-// EDIT COURSE & MATERIAL FUNCTIONS (ADMIN)
-// =========================================================
-
-// =========================================================
-// SAFE EDIT FUNCTIONS
-// =========================================================
-
-async function editCourse(courseId) {
-  const course = findCourse(courseId);
-  if (!course) return;
-
-  const newTitle = prompt("Update Course Name:", course.name);
-  if (newTitle === null) return;
-  
-  const newDesc = prompt("Update Course Description:", course.description || '');
-  if (newDesc === null) return;
-  
-  let newPrice = prompt("Update Course Price (₹):", course.price || 0);
-  if (newPrice === null) return;
-
-  // Amount ko number banayein aur premium check karein
-  newPrice = parseFloat(newPrice) || 0;
-  const isPremium = newPrice > 0; 
-
-  try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
-      method: 'PUT', 
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newTitle, description: newDesc, price: newPrice, isPremium: isPremium })
-    });
-    
-    const data = await response.json();
-    if (data.success) {
-      showToast('✏️ ' + data.message, 'success');
-      
-      // MAGIC TRICK: Bina page refresh kiye turant UI update karna
-      course.name = newTitle;
-      course.description = newDesc;
-      course.price = newPrice;
-      course.isPremium = isPremium; // Yeh line logo aur amount dono wapas le aayegi
-      
-      renderApp(); // Screen ko turant refresh karega
-    } else {
-      showToast(data.message, 'error');
-    }
-  } catch (error) { 
-    showToast('Error connecting to server.', 'error'); 
-  }
-}
-async function editMaterial(courseId, materialId) {
-  const course = findCourse(courseId);
-  if (!course) return;
-  const mat = course.materials.find(m => m.id === materialId);
-  if (!mat) return;
-
-  const newTitle = prompt("Update Material Title:", mat.title);
-  if (newTitle === null) return;
-  
-  const newDesc = prompt("Update Material Description:", mat.description || '');
-  if (newDesc === null) return;
-
-  // NAYA: Ab yeh tumse amount bhi poochega
-  let newPrice = prompt("Update Material Unlock Price (₹) - [Type 0 to make it FREE]:", mat.price || 0);
-  if (newPrice === null) return;
-
-  newPrice = parseFloat(newPrice) || 0;
-  const isPremium = newPrice > 0; // Agar amount 0 se zyada hai to automatic premium ban jayega
-
-  try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      // Backend ko naya price aur premium status bhej raha hai
-      body: JSON.stringify({ title: newTitle, description: newDesc, isPremium: isPremium, price: newPrice })
-    });
-    
-    const data = await response.json();
-    if (data.success) {
-      showToast('✏️ Material properly updated with amount!', 'success');
-      fetchCoursesFromDB(); // UI ko refresh karega jisse logo dikhe
-    } else {
-      showToast(data.message, 'error');
-    }
-  } catch (error) { showToast('Error connecting to server.', 'error'); }
-}
-// app.js mein render function ka basic logic check karo
-function renderCourseCardHTML(course, role) {
-  let actionsHTML = '';
-  
-  // Agar admin login hai, tabhi Edit/Delete dikhana hai
-  if (role === 'admin') {
-    actionsHTML = `
-      <div class="card-actions">
-        <!-- Edit Course Button -->
-        <button class="btn btn-primary btn-sm" onclick="openEditCourseModal('${course._id}')">
-          <i class="fas fa-edit"></i> Edit
-        </button>
-        <!-- Delete Course Button -->
-        <button class="delete-course-btn" onclick="deleteCourse('${course._id}')">
-          <i class="fas fa-trash-alt"></i>
-        </button>
-      </div>
-    `;
-  }
-  // Function to show/hide amount input field for materials
-window.toggleMaterialPriceInput = function() {
-  const isPremiumChecked = document.getElementById('materialIsPremium').checked;
-  const priceBox = document.getElementById('materialPriceGroup');
-  if (priceBox) {
-    priceBox.style.display = isPremiumChecked ? 'block' : 'none';
-  }
-};
-  
-  // Return your card template appending the actionsHTML
-  // ...
-}
-function exportData() {
-  showToast('Export feature is coming soon!', 'info');
-}
-
-// ================================================================
-// NEW COURSE MODAL & EXPORT FIXES
-// ================================================================
-
-function openAddCourseModal() {
-  $('courseModalTitle').textContent = '📚 New Course';
-  $('editCourseId').value = ''; 
-  $('courseName').value = ''; 
-  $('courseCode').value = '';
-  $('courseSemester').value = ''; 
-  $('courseInstructor').value = ''; 
-  $('courseDescription').value = '';
-  
-  // Safe checks - Agar checkbox/price box milega tabhi reset karega
-  const premiumCheck = document.getElementById('courseIsPremium');
-  if (premiumCheck) premiumCheck.checked = false; 
-  
-  const priceInput = document.getElementById('coursePrice');
-  if (priceInput) priceInput.value = ''; 
-  
-  const priceGroup = document.getElementById('priceGroup');
-  if (priceGroup) priceGroup.style.display = 'none';
-  
-  openModal('courseModal');
-}
-
-function togglePriceInput() { 
-  const priceGroup = document.getElementById('priceGroup');
-  const premiumCheck = document.getElementById('courseIsPremium');
-  if (priceGroup && premiumCheck) {
-    priceGroup.style.display = premiumCheck.checked ? 'block' : 'none'; 
-  }
-}
-
-// Export button ki lal error hatane ke liye
-function exportData() {
-  showToast('Export feature is coming soon!', 'info');
-}
-// ================================================================
-// MATERIAL PREMIUM LOGIC (Amount & Logo Fix)
-// ================================================================
-
-window.toggleMaterialPriceInput = function() {
-  const isPremium = document.getElementById('materialIsPremium').checked;
-  const priceGrp = document.getElementById('materialPriceGroup');
-  if(priceGrp) priceGrp.style.display = isPremium ? 'block' : 'none';
-};
-
-function openAddMaterialModal(courseId) {
-  $('materialModalTitle').textContent = '📎 Add Material';
-  $('editMaterialId').value = ''; $('materialCourseId').value = courseId;
-  $('materialTitle').value = ''; $('materialType').value = 'video';
-  $('materialDescription').value = ''; $('materialUrl').value = ''; $('materialFile').value = '';
-  
-  if($('materialIsPremium')) $('materialIsPremium').checked = false;
-  if($('materialPrice')) $('materialPrice').value = '';
-  toggleMaterialPriceInput(); 
-  openModal('materialModal');
-}
-
-async function saveMaterial(e) {
-  e.preventDefault();
-  const courseId = $('materialCourseId').value;
-  const materialId = $('editMaterialId').value;
-  const file = $('materialFile').files ? $('materialFile').files[0] : null;
-
-  const processSave = async (fileData, fileName) => {
-    const isPremiumMat = $('materialIsPremium') ? $('materialIsPremium').checked : false;
-    const matPrice = $('materialPrice') ? (parseFloat($('materialPrice').value) || 0) : 0;
-
-    const materialData = {
-      title: $('materialTitle').value.trim(), 
-      type: $('materialType').value,
-      description: $('materialDescription').value.trim(), 
-      url: $('materialUrl').value.trim(),
-      isPremium: isPremiumMat, // Database ko bhej rahe hain
-      price: matPrice,         // Database ko amount bhej rahe hain
-      fileData, 
-      fileName
-    };
-
-    if (materialId) {
-      showToast('Edit feature coming soon!', 'info'); closeModal('materialModal');
-    } else {
-      try {
-        const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(materialData)
-        });
-        const data = await response.json();
-        if (data.success) {
-          showToast('📎 Content successfully uploaded!', 'success');
-          closeModal('materialModal');
-          fetchCoursesFromDB();
-        }
-      } catch (error) { showToast('Server error.', 'error'); }
-    }
-  };
-
-  if (file) {
-    const reader = new FileReader();
-    reader.onload = ev => processSave(ev.target.result, file.name);
-    reader.readAsDataURL(file);
-  } else { processSave('', ''); }
-}
-
-// === RENDER LOGIC FOR PRO LOGO AND AMOUNT ===
-function renderCourseDetail(courseId) {
-  const course = findCourse(courseId);
-  if (!course) { courseDetailContent.innerHTML = `<div class="empty-state"><p>Course not found.</p></div>`; return; }
-
-  const isPremiumCourse = course.isPremium || false;
-  const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
-  
-  let html = `
-    <div class="course-detail-header">
-      <h2>${course.name} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
-      <div class="meta">
-        <span><i class="fas fa-code"></i> ${course.code || 'N/A'}</span>
-        <span><i class="fas fa-user"></i> ${course.instructor || '—'}</span>
-        ${isPremiumCourse ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
-      </div>
-      <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
-    </div>
-  `;
-
-  if (isPremiumCourse && currentUser.role === 'student' && !isPurchased) {
-    html += `<div style="background: #fff3cd; color: #856404; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ffeeba; display: flex; justify-content: space-between; align-items: center;">
-        <div><i class="fas fa-info-circle"></i> Premium materials are locked.</div>
-        <button class="btn btn-warning btn-sm" style="background:#f59e0b; color:#fff;" onclick="showPaymentModal('${course.id}')"><i class="fas fa-shopping-cart"></i> Buy Full Course (₹${course.price})</button>
-      </div>`;
-  }
-
-  const materials = course.materials || [];
-  const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
-  
-  const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
-  const typeLabels = { all: 'All', video: '🎬 Video', pyq: '📄 PYQ', tutorial: '📝 Tutorial', slides: '📊 Slides', qa: '❓ Q&A', other: '📁 Other' };
-  
-  html += `<div class="material-tabs">`;
-  types.forEach(t => {
-    const count = t === 'all' ? materials.length : materials.filter(m => m.type === t).length;
-    html += `<button class="${currentMaterialFilter === t ? 'active' : ''}" onclick="setMaterialFilter('${t}')">${typeLabels[t]} (${count})</button>`;
-  });
-  html += `</div>`;
-
-  if (currentMaterialFilter === 'qa') {
-    // QA Section remains same
-    html += `<div class="qa-section" style="padding: 15px; background: #f8fafc; border-radius: 8px;"><p>Q&A Section Active</p></div>`;
-    courseDetailContent.innerHTML = html; return;
-  }
-
-  if (filtered.length === 0) {
-    html += `<div class="empty-state"><i class="fas fa-file-alt"></i><p>No content uploaded yet.</p></div>`;
-  } else {
-    html += `<div class="material-list">`;
-    filtered.forEach(m => {
-      const hasFile = m.fileData && m.fileData.length > 0;
-      const hasUrl = m.url && m.url.length > 0;
-      
-      // LOGIC: Yahan Premium Amount aur Logo Check hoga
-      const isMatPremium = m.isPremium === true || m.isPremium === 'true';
-      const matPrice = parseFloat(m.price) || 0;
-      
-      const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
-      const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || !isMatPremium;
-      
-      let fileActionHtml = '';
-      if (!canAccess) {
-        // Red Lock Button pta amount
-        fileActionHtml = `<button class="btn btn-warning btn-sm" style="background:#b91c1c; color:#fff; border:none;" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock for ₹${matPrice}</button>`;
-      } else {
-        if (hasFile) {
-          if (currentUser.role === 'admin') fileActionHtml = `<a href="${m.fileData}" download="${m.fileName || 'download'}" class="btn btn-primary btn-sm"><i class="fas fa-download"></i> Download</a> <button class="btn btn-outline btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View</button>`;
-          else fileActionHtml = `<button class="btn btn-primary btn-sm" onclick="viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-eye"></i> View Content</button>`;
-        }
-        if (hasUrl) fileActionHtml += ` <a href="${m.url}" target="_blank" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
-      }
-
-      // PRO/FREE TAG with Amount
-      const badgeHtml = isMatPremium 
-        ? `<span style="font-size:10px; background:#f0b429; color:#0b1a33; padding:3px 8px; border-radius:12px; font-weight:bold;"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>` 
-        : `<span style="font-size:10px; background:#10b981; color:white; padding:3px 8px; border-radius:12px; font-weight:bold;">FREE</span>`;
-
-      html += `
-        <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
-          ${currentUser.role === 'admin' ? `
-            <button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
-            <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
-          ` : ''}
-          <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
-            <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
-            ${badgeHtml}
-          </div>
-          <h4>${m.title}</h4>
-          <div class="mat-desc">${m.description || ''}</div>
-          <div class="mat-actions" style="margin-top:10px;">
-            ${fileActionHtml}
-          </div>
-        </div>
-      `;
-    });
-    html += `</div>`;
-  }
-  courseDetailContent.innerHTML = html;
-}
-// ================================================================
-// Q&A / DOUBT SYSTEM (Student Ask & Admin Reply)
-// ================================================================
 
 async function askDoubt(courseId) {
-  const textarea = document.getElementById('newDoubtText');
-  if (!textarea) return;
+  const textarea = $('newDoubtText'); if (!textarea) return;
   const question = textarea.value.trim();
-  
-  if (!question) {
-    showToast('Please type your doubt or question first.', 'error');
-    return;
-  }
-
+  if (!question) return showToast('Please type your doubt or question first.', 'error');
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        studentName: currentUser.fullName || currentUser.username,
-        studentUsername: currentUser.username, // Extra Detail
-        studentEmail: currentUser.email || '', // Extra Detail
-        question: question
-      })
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ studentName: currentUser.fullName || currentUser.username, studentUsername: currentUser.username, studentEmail: currentUser.email || '', question: question })
     });
     const data = await response.json();
-    if (data.success) {
-      showToast('❓ Doubt submitted successfully!', 'success');
-      textarea.value = ''; 
-      fetchCoursesFromDB(); // UI ko refresh karne ke liye taaki doubt turant dikhe
-    } else {
-      showToast(data.message || 'Error submitting doubt', 'error');
-    }
-  } catch (error) {
-    showToast('Server error while submitting doubt.', 'error');
-  }
+    if (data.success) { showToast('❓ Doubt submitted successfully!', 'success'); textarea.value = ''; fetchCoursesFromDB(); } 
+    else { showToast(data.message || 'Error submitting doubt', 'error'); }
+  } catch (error) { showToast('Server error while submitting doubt.', 'error'); }
 }
 
 async function replyDoubt(courseId, doubtId) {
   const answer = prompt("Enter your reply/solution for this student:");
   if (answer === null || answer.trim() === '') return;
-
   try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answer: answer.trim() })
-    });
+    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answer: answer.trim() }) });
     const data = await response.json();
-    if (data.success) {
-      showToast('💡 Answer posted successfully!', 'success');
-      fetchCoursesFromDB(); // UI ko refresh karne ke liye
-    } else {
-      showToast(data.message || 'Error posting answer', 'error');
-    }
-  } catch (error) {
-    showToast('Server error while posting answer.', 'error');
-  }
+    if (data.success) { showToast('💡 Answer posted successfully!', 'success'); fetchCoursesFromDB(); } 
+    else { showToast(data.message || 'Error posting answer', 'error'); }
+  } catch (error) { showToast('Server error while posting answer.', 'error'); }
 }
+
+async function showPaymentModal(courseId, materialId = null) {
+  const course = findCourse(courseId); if (!course) return;
+  let amount = course.price || 0; let itemName = course.name; let purchaseId = course.id; 
+  if (materialId) {
+    const mat = course.materials.find(m => m.id === materialId);
+    if (mat) { amount = mat.price || 0; itemName = mat.title; purchaseId = mat.id; }
+  }
+  showToast(`Initiating secure payment for ${itemName}...`, 'info');
+  try {
+    const response = await fetch('https://aerospace-portal.onrender.com/api/create-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: amount }) });
+    const data = await response.json();
+    if (!data.success) return showToast('Error creating order.', 'error');
+    const options = {
+      "key": "rzp_test_TaPfJOdu1PgUed", "amount": data.order.amount, "currency": "INR", "name": "Aerospace EdTech", "description": `Purchase: ${itemName}`, "order_id": data.order.id,
+      "handler": async function (response) {
+        showToast('Verifying payment...', 'info');
+        const verifyRes = await fetch('https://aerospace-portal.onrender.com/api/verify-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ razorpay_order_id: response.razorpay_order_id, razorpay_payment_id: response.razorpay_payment_id, razorpay_signature: response.razorpay_signature, courseId: purchaseId, userId: currentUser._id }) });
+        const verifyData = await verifyRes.json();
+        if (verifyData.success) {
+          if (!currentUser.purchases) currentUser.purchases = [];
+          if (!currentUser.purchases.includes(purchaseId)) currentUser.purchases.push(purchaseId);
+          localStorage.setItem('aero_user', JSON.stringify(currentUser));
+          showToast('🎉 Payment Successful! Content Unlocked.', 'success'); renderApp(); 
+        } else { showToast('Payment verification failed!', 'error'); }
+      },
+      "prefill": { "name": currentUser.username, "email": currentUser.email || "student@aerospace.com", "contact": "9999999999" }, "theme": { "color": "#2563eb" }
+    };
+    new Razorpay(options).open();
+  } catch (error) { showToast('Server error during payment initialization.', 'error'); }
+}
+
+function exportData() { showToast('Export feature is coming soon!', 'info'); }
+function openModal(id) { document.getElementById(id).classList.add('active'); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+document.querySelectorAll('.modal-overlay').forEach(overlay => { overlay.addEventListener('click', function(e) { if (e.target === this) this.classList.remove('active'); }); });
+
+function showToast(message, type = 'info') {
+  const container = $('toastContainer'); const toast = document.createElement('div');
+  toast.className = `toast ${type}`; toast.innerHTML = `<i class="fas fa-info-circle"></i> ${message}`;
+  container.appendChild(toast);
+  setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateX(30px)'; setTimeout(() => toast.remove(), 350); }, 3500);
+}
+
+async function initApp() {
+  const savedUser = localStorage.getItem('aero_user');
+  if (savedUser) { currentUser = JSON.parse(savedUser); if(currentUser.role === 'admin') adminTab = 'courses'; }
+  renderApp(); await fetchCoursesFromDB();
+}
+initApp();
