@@ -40,6 +40,18 @@ let studentNav = 'home';
 let adminTab = 'courses';
 
 const $ = id => document.getElementById(id);
+// Mobile nav toggle
+document.addEventListener('click', (e) => {
+  const toggle = e.target.closest('#navToggle');
+  if (toggle) {
+    document.getElementById('mainNav')?.classList.toggle('open');
+    return;
+  }
+  // Close nav when a nav link is clicked
+  if (e.target.closest('.main-nav a')) {
+    document.getElementById('mainNav')?.classList.remove('open');
+  }
+});
 
 function setLoginRole(role) {
   loginRole = role;
@@ -107,8 +119,9 @@ async function verifyAndCompleteRegistration(otp) {
 }
 
 function navigateStudent(dest) {
-  if (dest === 'home') studentNav = 'home'; else if (dest === 'courses') studentNav = 'courses';
-  if (currentCourseId) { currentCourseId = null; renderApp(); setTimeout(() => { studentNav = dest; renderApp(); }, 50); return; }
+  currentCourseId = null;
+  window.currentSelectedCourseId = null;
+  studentNav = dest;
   renderApp();
 }
 

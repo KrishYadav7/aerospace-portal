@@ -2,11 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1a33">
   <title>Aerospace Department – Course Portal</title>
-  <!-- Font Awesome -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-  <!-- Custom CSS -->
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -20,14 +19,15 @@
           <span>Course Materials Hub</span>
         </div>
       </div>
-      <nav class="main-nav" id="mainNav">
-        <!-- Dynamic links -->
-      </nav>
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">
+        <i class="fas fa-bars"></i>
+      </button>
+      <nav class="main-nav" id="mainNav"></nav>
       <div class="user-info">
-        <span id="userDisplay">User</span>
+        <span id="userDisplay" class="user-name">User</span>
         <span class="role-badge" id="roleBadge">Student</span>
         <button class="btn-logout" onclick="logout()">
-          <i class="fas fa-sign-out-alt"></i> Logout
+          <i class="fas fa-sign-out-alt"></i><span class="logout-text"> Logout</span>
         </button>
       </div>
     </header>
@@ -52,49 +52,41 @@
           <form id="loginForm" onsubmit="handleLogin(event)">
             <div class="form-group">
               <label><i class="fas fa-user"></i> Username</label>
-              <input type="text" id="loginUsername" placeholder="Enter your username" required>
+              <input type="text" id="loginUsername" placeholder="Enter your username" required autocomplete="username">
             </div>
             <div class="form-group">
               <label><i class="fas fa-lock"></i> Password</label>
-              <input type="password" id="loginPassword" placeholder="Enter your password" required>
+              <input type="password" id="loginPassword" placeholder="Enter your password" required autocomplete="current-password">
             </div>
             <button type="submit" class="btn btn-primary btn-block">
               <i class="fas fa-sign-in-alt"></i> Sign In
             </button>
           </form>
-          <div style="text-align:center;margin-top:12px;">
-            <a href="#" onclick="showRegisterModal();return false;" style="color:#1a3a6b;font-weight:500;font-size:14px;">
+          <div style="text-align:center;margin-top:14px;">
+            <a href="#" onclick="showRegisterModal();return false;" class="link-inline">
               <i class="fas fa-user-plus"></i> Register as Student
             </a>
           </div>
-          <!-- <p class="login-hint">
-            <!-- <i class="fas fa-info-circle"></i> Default: student / student123 &nbsp;|&nbsp; admin / admin123 -->
-          </p> -->
         </div>
       </section>
 
       <!-- STUDENT HOME VIEW -->
       <section id="studentHomeView" class="view">
-        <!-- HERO -->
         <div class="hero-section">
           <div class="hero-content">
             <h1>Welcome to the Aerospace Department</h1>
             <p>Your gateway to world-class course materials, lectures, and resources.</p>
-            <a href="#" class="btn btn-primary btn-lg" onclick="navigateStudent('courses')">
+            <a href="#" class="btn btn-primary btn-lg" onclick="event.preventDefault();navigateStudent('courses')">
               <i class="fas fa-book-open"></i> Explore Courses
             </a>
           </div>
-          <div class="hero-image">
-            <i class="fas fa-rocket"></i>
-          </div>
+          <div class="hero-image"><i class="fas fa-rocket"></i></div>
         </div>
 
-        <!-- ABOUT OWNER (static) -->
         <section class="about-owner section-card">
           <h2><i class="fas fa-user-tie"></i> About the Owner</h2>
           <div class="owner-container">
             <div class="owner-image">
-              <!-- OWNER PHOTO: replace src -->
               <img src="passport.jpg" alt="Owner Photo">
             </div>
             <div class="owner-details">
@@ -106,15 +98,11 @@
           </div>
         </section>
 
-        <!-- ABOUT PROFESSORS (dynamic) -->
         <section class="about-professors section-card" id="professorsSection">
           <h2><i class="fas fa-chalkboard-teacher"></i> Our Team</h2>
-          <div class="professors-grid" id="professorsGrid">
-            <!-- Dynamically rendered by JS -->
-          </div>
+          <div class="professors-grid" id="professorsGrid"></div>
         </section>
 
-        <!-- TESTIMONIALS (static) -->
         <section class="testimonials section-card">
           <h2><i class="fas fa-star"></i> What Our Students Say</h2>
           <div class="testimonials-slider">
@@ -148,19 +136,14 @@
           <h2><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
           <div class="actions">
             <button class="btn btn-success" onclick="openAddCourseModal()">
-              <i class="fas fa-plus-circle"></i> New Course
+              <i class="fas fa-plus-circle"></i> <span class="btn-text">New Course</span>
             </button>
             <button class="btn btn-outline" onclick="exportData()">
-              <i class="fas fa-download"></i> Export
+              <i class="fas fa-download"></i> <span class="btn-text">Export</span>
             </button>
-            <button class="btn btn-outline" onclick="document.getElementById('importFileInput').click()">
-              <i class="fas fa-upload"></i> Import
-            </button>
-            <input type="file" id="importFileInput" accept=".json" style="display:none;" onchange="importData(event)">
           </div>
         </div>
 
-        <!-- Admin Tabs -->
         <div class="admin-tabs">
           <button class="admin-tab active" data-tab="courses" onclick="switchAdminTab('courses')">
             <i class="fas fa-book"></i> Courses
@@ -173,7 +156,6 @@
           </button>
         </div>
 
-        <!-- Admin Tab Content -->
         <div id="adminTabCourses" class="admin-tab-content active">
           <div class="stats-grid" id="adminStats">
             <div class="stat-card">
@@ -199,8 +181,8 @@
         </div>
 
         <div id="adminTabProfessors" class="admin-tab-content">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-            <h3 style="color:#0b1a33;"><i class="fas fa-chalkboard-teacher"></i> Manage Professors</h3>
+          <div class="tab-header">
+            <h3><i class="fas fa-chalkboard-teacher"></i> Manage Professors</h3>
             <button class="btn btn-success" onclick="openAddProfessorModal()">
               <i class="fas fa-plus-circle"></i> Add Professor
             </button>
@@ -209,7 +191,7 @@
         </div>
 
         <div id="adminTabStudents" class="admin-tab-content">
-          <h3 style="color:#0b1a33;margin-bottom:16px;"><i class="fas fa-users"></i> Registered Students</h3>
+          <h3 class="tab-title"><i class="fas fa-users"></i> Registered Students</h3>
           <div id="adminStudentList"></div>
         </div>
       </section>
@@ -219,7 +201,7 @@
         <div class="dash-header">
           <h2><i class="fas fa-graduation-cap"></i> All Courses</h2>
           <div class="actions">
-            <span style="font-size:14px;color:#6b7a8f;">
+            <span class="muted-note">
               <i class="fas fa-file-alt"></i> Browse and purchase premium courses
             </span>
           </div>
@@ -240,27 +222,23 @@
 
     </main>
 
-    <!-- FOOTER -->
     <footer class="app-footer" id="appFooter" style="display:none;">
       <p>&copy; 2026 Aerospace Department. All rights reserved.</p>
       <p>Made with <i class="fas fa-heart" style="color:#f0b429;"></i> for the future of aviation.</p>
     </footer>
   </div>
 
-<!-- MODAL: Course -->
+  <!-- MODAL: Course -->
   <div class="modal-overlay" id="courseModal">
     <div class="modal-box">
       <h3 id="courseModalTitle"><i class="fas fa-plus-circle"></i> New Course</h3>
-      <p class="modal-sub" id="courseModalSub">Enter the course details below.</p>
-      
+      <p class="modal-sub">Enter the course details below.</p>
       <form id="courseForm" onsubmit="saveCourse(event)">
         <input type="hidden" id="editCourseId">
-        
         <div class="form-group">
           <label>Course Name *</label>
           <input type="text" id="courseName" placeholder="e.g. Aerodynamics" required>
         </div>
-        
         <div class="form-row">
           <div class="form-group">
             <label>Course Code *</label>
@@ -271,55 +249,48 @@
             <input type="text" id="courseSemester" placeholder="e.g. Fall 2024">
           </div>
         </div>
-        
         <div class="form-group">
           <label>Instructor</label>
           <input type="text" id="courseInstructor" placeholder="e.g. Dr. Smith">
         </div>
-        
         <div class="form-group">
           <label>Description</label>
           <textarea id="courseDescription" placeholder="Brief description of the course" rows="3"></textarea>
         </div>
-        
-        <!-- Premium Course Toggle & Price -->
-        <div class="form-row" style="align-items: end;">
-          <div class="form-group premium-toggle" style="margin-bottom: 0;">
-            <label style="padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; width: 100%;">
+        <div class="form-row" style="align-items:end;">
+          <div class="form-group premium-toggle" style="margin-bottom:0;">
+            <label class="toggle-box">
               <input type="checkbox" id="courseIsPremium" onchange="togglePriceInput()">
-              <span style="font-weight: 600; color: #1a3a6b;"><i class="fas fa-crown"></i> Premium Course</span>
+              <span><i class="fas fa-crown"></i> Premium Course</span>
             </label>
           </div>
-          <div class="form-group" id="priceGroup" style="display:none; margin-bottom: 0;">
+          <div class="form-group" id="priceGroup" style="display:none; margin-bottom:0;">
             <label>Course Price (₹)</label>
             <input type="number" id="coursePrice" placeholder="e.g. 499" min="0" step="1">
           </div>
         </div>
-        
-        <div class="modal-actions" style="margin-top: 24px;">
+        <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('courseModal')">Cancel</button>
           <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Course</button>
         </div>
       </form>
     </div>
   </div>
- <!-- MODAL: Material -->
+
+  <!-- MODAL: Material (SINGLE COPY) -->
   <div class="modal-overlay" id="materialModal">
     <div class="modal-box">
       <h3 id="materialModalTitle"><i class="fas fa-paperclip"></i> Add Material</h3>
-      <p class="modal-sub" id="materialModalSub">Upload a file or provide a link.</p>
+      <p class="modal-sub">Upload a file or provide a link.</p>
       <form id="materialForm" onsubmit="saveMaterial(event)">
         <input type="hidden" id="editMaterialId">
         <input type="hidden" id="materialCourseId">
-        
         <div class="form-group">
           <label>Title *</label>
           <input type="text" id="materialTitle" placeholder="e.g. Lecture 1: Intro" required>
         </div>
-        
-        <!-- Type aur Premium Checkbox -->
-        <div class="form-row" style="align-items: center;">
-          <div class="form-group" style="margin-bottom: 0;">
+        <div class="form-row" style="align-items:center;">
+          <div class="form-group" style="margin-bottom:0;">
             <label>Type *</label>
             <select id="materialType" required>
               <option value="video">🎬 Video Lecture</option>
@@ -329,133 +300,34 @@
               <option value="other">📁 Other</option>
             </select>
           </div>
-          
-          <div class="form-group premium-toggle" style="margin-bottom: 0;">
-            <label style="padding: 10px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; width: 100%; cursor: pointer;">
-              <!-- ONCHANGE ZAROORI HAI YAHAN -->
+          <div class="form-group premium-toggle" style="margin-bottom:0;">
+            <label class="toggle-box pro">
               <input type="checkbox" id="materialIsPremium" onchange="toggleMaterialPriceInput()">
-              <span style="color: #be123c; font-weight: bold;"><i class="fas fa-crown"></i> PRO Material</span>
+              <span><i class="fas fa-crown"></i> PRO Material</span>
             </label>
           </div>
         </div>
-
-        <!-- YEH BOX CHHIPA HUA HAI, CHECKBOX PAR CLICK KARNE SE DIKHEGA -->
-        <div class="form-group" id="materialPriceGroup" style="display:none; margin-top: 16px;">
+        <div class="form-group" id="materialPriceGroup" style="display:none; margin-top:16px;">
           <label style="color:#b91c1c; font-weight:bold;">Material Unlock Price (₹) *</label>
           <input type="number" id="materialPrice" placeholder="e.g. 49" min="0" step="1">
         </div>
-        
-        <div class="form-group" style="margin-top: 16px;">
+        <div class="form-group" style="margin-top:16px;">
           <label>Description</label>
           <textarea id="materialDescription" placeholder="Optional description"></textarea>
         </div>
-        
         <div class="form-group">
           <label>YouTube / Link (optional)</label>
           <input type="url" id="materialUrl" placeholder="https://www.youtube.com/embed/...">
         </div>
-        
         <div class="form-group">
           <label>Or Upload File (PDF, PPT, etc.)</label>
           <input type="file" id="materialFile">
         </div>
-        
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('materialModal')">Cancel</button>
           <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save</button>
         </div>
       </form>
-    </div>
-  </div>
-<!-- MODAL: Material -->
-  <div class="modal-overlay" id="materialModal">
-    <div class="modal-box">
-      <h3 id="materialModalTitle"><i class="fas fa-paperclip"></i> Add Material</h3>
-      <p class="modal-sub" id="materialModalSub">Upload a file or provide a link.</p>
-      <form id="materialForm" onsubmit="saveMaterial(event)">
-        <input type="hidden" id="editMaterialId">
-        <input type="hidden" id="materialCourseId">
-        
-        <div class="form-group">
-          <label>Title *</label>
-          <input type="text" id="materialTitle" placeholder="e.g. Lecture 1: Intro" required>
-        </div>
-        
-        <!-- Type aur Premium Checkbox -->
-        <div class="form-row" style="align-items: center;">
-          <div class="form-group" style="margin-bottom: 0;">
-            <label>Type *</label>
-            <select id="materialType" required>
-              <option value="video">🎬 Video Lecture</option>
-              <option value="pyq">📄 Previous Year Question</option>
-              <option value="tutorial">📝 Tutorial Sheet</option>
-              <option value="slides">📊 Slides</option>
-              <option value="other">📁 Other</option>
-            </select>
-          </div>
-          
-          <div class="form-group premium-toggle" style="margin-bottom: 0;">
-            <label style="padding: 10px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; width: 100%; cursor:pointer;">
-              <input type="checkbox" id="materialIsPremium" onchange="toggleMaterialPriceInput()">
-              <span style="color: #be123c; font-weight: bold;"><i class="fas fa-crown"></i> PRO Material</span>
-            </label>
-          </div>
-        </div>
-
-        <!-- AMOUNT ADD KARNE KA BOX -->
-        <div class="form-group" id="materialPriceGroup" style="display:none; margin-top: 16px;">
-          <label style="color:#b91c1c; font-weight:bold;">Unlock Amount (₹) *</label>
-          <input type="number" id="materialPrice" placeholder="e.g. 49" min="0" step="1">
-        </div>
-        
-        <div class="form-group" style="margin-top: 16px;">
-          <label>Description</label>
-          <textarea id="materialDescription" placeholder="Optional description"></textarea>
-        </div>
-        
-        <div class="form-group">
-          <label>YouTube / Link (optional)</label>
-          <input type="url" id="materialUrl" placeholder="https://www.youtube.com/embed/...">
-        </div>
-        
-        <div class="form-group">
-          <label>Or Upload File (PDF, PPT, etc.)</label>
-          <input type="file" id="materialFile">
-        </div>
-        
-        <div class="modal-actions">
-          <button type="button" class="btn btn-outline" onclick="closeModal('materialModal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Content</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- MODAL: Payment -->
-  <div class="modal-overlay" id="paymentModal">
-    <div class="modal-box payment-modal">
-      <h3><i class="fas fa-lock"></i> Premium Course</h3>
-      <p class="modal-sub">Pay to unlock all materials for this course.</p>
-      <div id="paymentCourseInfo" style="margin-bottom:16px;">
-        <strong id="paymentCourseName"></strong><br>
-        <span id="paymentCoursePrice"></span>
-      </div>
-      <div class="payment-qr" id="paymentQrContainer">
-        <p><i class="fas fa-qrcode"></i> Scan to pay via UPI</p>
-        <img id="paymentQRCode" src="" alt="UPI QR Code" style="width:180px;height:180px;border:1px solid #ddd;border-radius:12px;">
-        <p style="font-size:12px;color:#6b7a8f;margin-top:6px;">UPI ID: <span id="paymentUpiDisplay"></span></p>
-      </div>
-      <!-- Verification overlay (hidden by default) -->
-      <div id="paymentVerification" style="display:none;text-align:center;padding:20px 0;">
-        <i class="fas fa-spinner fa-spin" style="font-size:48px;color:#f0b429;"></i>
-        <p style="margin-top:12px;font-weight:500;">Verifying payment... Please wait.</p>
-      </div>
-      <div class="payment-actions" id="paymentActions">
-        <button class="btn btn-success" onclick="confirmPayment()">
-          <i class="fas fa-check-circle"></i> I have paid
-        </button>
-        <button class="btn btn-outline" onclick="closeModal('paymentModal')">Cancel</button>
-      </div>
     </div>
   </div>
 
@@ -493,7 +365,7 @@
   <div class="modal-overlay" id="professorModal">
     <div class="modal-box">
       <h3 id="professorModalTitle"><i class="fas fa-chalkboard-teacher"></i> Add Professor</h3>
-      <p class="modal-sub" id="professorModalSub">Enter professor details.</p>
+      <p class="modal-sub">Enter professor details.</p>
       <form id="professorForm" onsubmit="saveProfessor(event)">
         <input type="hidden" id="editProfessorId">
         <div class="form-group">
@@ -511,7 +383,7 @@
         <div class="form-group">
           <label>Photo (upload image)</label>
           <input type="file" id="professorPhoto" accept="image/*">
-          <span style="font-size:12px;color:#94a3b8;">Leave empty to keep current photo.</span>
+          <span class="hint">Leave empty to keep current photo.</span>
         </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('professorModal')">Cancel</button>
@@ -521,12 +393,9 @@
     </div>
   </div>
 
-  <!-- TOAST CONTAINER -->
   <div class="toast-container" id="toastContainer"></div>
-<!-- RAZORPAY CHECKOUT SCRIPT -->
-<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 
-<!-- Aapka purana app.js ka link yahan pehle se hoga -->
-<script src="app.js"></script>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
