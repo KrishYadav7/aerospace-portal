@@ -21,6 +21,61 @@ mongoose.connect(process.env.MONGO_URI)
   .catch((err) => console.log('Database Connection Error:', err));
 
 /* ============================================================
+   STREAK HELPER
+   ============================================================ */
+function todayStr() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function yesterdayStr() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function bumpStreak(user) {
+  const today = todayStr();
+  const yesterday = yesterdayStr();
+
+  if (user.lastActiveDate === today) return;   // already counted
+
+  if (user.lastActiveDate === yesterday) {
+    user.streakCount = (user.streakCount || 0) + 1;
+  } else {
+    user.streakCount = 1;
+  }
+  user.lastActiveDate = today;
+  if ((user.streakCount || 0) > (user.longestStreak || 0)) {
+    user.longestStreak = user.streakCount;
+  }
+}
+
+function serializeUser(user) {
+  return {
+    _id: user._id,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    fullName: user.fullName,
+    purchases: user.purchases || [],
+    bookmarks: user.bookmarks || [],
+    progress: Object.fromEntries(user.progress || new Map()),
+    lastActivity: user.lastActivity || null,
+    streakCount: user.streakCount || 0,
+    longestStreak: user.longestStreak || 0,
+    lastActiveDate: user.lastActiveDate || null,
+    notifications: user.notifications || []
+  };
+}
+
+/* ============================================================
    SETUP ADMIN
    ============================================================ */
 app.get('/setup-admin', async (req, res) => {
@@ -44,7 +99,7 @@ app.get('/setup-admin', async (req, res) => {
 app.get('/', (req, res) => res.send('Aerospace EdTech Backend is Running!'));
 
 /* ============================================================
-   AUTH — LOGIN
+   AUTH — LOGIN (with streak bump)
    ============================================================ */
 app.post('/api/login', async (req, res) => {
   try {
@@ -54,6 +109,12 @@ app.post('/api/login', async (req, res) => {
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ success: false, message: 'Invalid username or password.' });
+
+    // Bump streak on login (students only)
+    if (user.role === 'student') {
+      bumpStreak(user);
+      await user.save();
+    }
 
     const token = jwt.sign(
       { id: user._id, role: user.role },
@@ -65,17 +126,7 @@ app.post('/api/login', async (req, res) => {
       success: true,
       message: 'Login successful!',
       token,
-      user: {
-        _id: user._id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-        fullName: user.fullName,
-        purchases: user.purchases || [],
-        bookmarks: user.bookmarks || [],
-        progress: Object.fromEntries(user.progress || new Map()),
-        lastActivity: user.lastActivity || null
-      }
+      user: serializeUser(user)
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server error: ' + error.message });
@@ -242,16 +293,44 @@ app.post('/api/courses/:id/doubts', async (req, res) => {
   }
 });
 
+// Reply to doubt — also notifies the student
 app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
   try {
     const { answer } = req.body;
+
     await Course.updateOne(
       { _id: req.params.courseId, "doubts._id": req.params.doubtId },
       { $set: { "doubts.$.answer": answer } }
     );
+
+    // Notify the student who asked
+    const course = await Course.findById(req.params.courseId);
+    const doubt = course?.doubts?.id(req.params.doubtId);
+
+    if (doubt && doubt.studentUsername) {
+      const student = await User.findOne({ username: doubt.studentUsername });
+      if (student) {
+        if (!student.notifications) student.notifications = [];
+        student.notifications.push({
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          type: 'doubt-reply',
+          title: 'Your doubt was answered!',
+          body: `"${answer.slice(0, 100)}${answer.length > 100 ? '…' : ''}"`,
+          courseId: req.params.courseId,
+          link: `#/course/${req.params.courseId}`,
+          read: false,
+          createdAt: new Date()
+        });
+        if (student.notifications.length > 50) {
+          student.notifications = student.notifications.slice(-50);
+        }
+        await student.save();
+      }
+    }
+
     res.json({ success: true, message: 'Answer posted!' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Error posting answer' });
+    res.status(500).json({ success: false, message: 'Error posting answer: ' + error.message });
   }
 });
 
@@ -298,7 +377,7 @@ app.post('/api/verify-payment', async (req, res) => {
 });
 
 /* ============================================================
-   USER DATA — bookmarks, progress, refresh (Sprint 2)
+   USER DATA — bookmarks, progress, streaks, notifications
    ============================================================ */
 
 // Toggle bookmark on a course
@@ -325,26 +404,18 @@ app.post('/api/user/bookmarks/:courseId', async (req, res) => {
   }
 });
 
-// Get fresh user data (with bookmarks + progress + lastActivity)
+// Get fresh user data (bumps streak for students)
 app.get('/api/user/me/:userId', async (req, res) => {
   try {
     const user = await User.findById(req.params.userId).select('-password');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    res.json({
-      success: true,
-      user: {
-        _id: user._id,
-        username: user.username,
-        email: user.email,
-        role: user.role,
-        fullName: user.fullName,
-        purchases: user.purchases || [],
-        bookmarks: user.bookmarks || [],
-        progress: Object.fromEntries(user.progress || new Map()),
-        lastActivity: user.lastActivity || null
-      }
-    });
+    if (user.role === 'student') {
+      bumpStreak(user);
+      await user.save();
+    }
+
+    res.json({ success: true, user: serializeUser(user) });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -373,6 +444,7 @@ app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
 
     if (viewed !== false) {
       user.lastActivity = { courseId: cid, materialId: mid, timestamp: new Date() };
+      bumpStreak(user);
     }
 
     await user.save();
@@ -380,8 +452,50 @@ app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
     res.json({
       success: true,
       progress: Object.fromEntries(user.progress),
-      lastActivity: user.lastActivity
+      lastActivity: user.lastActivity,
+      streakCount: user.streakCount,
+      longestStreak: user.longestStreak,
+      lastActiveDate: user.lastActiveDate
     });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   NOTIFICATIONS
+   ============================================================ */
+app.get('/api/user/notifications/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('notifications');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const list = (user.notifications || [])
+      .slice()
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 30);
+
+    res.json({ success: true, notifications: list });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+app.post('/api/user/notifications/:userId/mark-read', async (req, res) => {
+  try {
+    const { notifId, all } = req.body;
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (all) {
+      user.notifications.forEach(n => { n.read = true; });
+    } else if (notifId) {
+      const n = user.notifications.find(x => x.id === notifId);
+      if (n) n.read = true;
+    }
+    await user.save();
+
+    res.json({ success: true, notifications: user.notifications });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }

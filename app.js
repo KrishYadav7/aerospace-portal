@@ -55,7 +55,7 @@ let adminTab = 'courses';
 const $ = id => document.getElementById(id);
 
 /* ============================================================
-   HELPERS — escape, hash routing, accents, theme
+   HELPERS
    ============================================================ */
 function escapeHtml(str) {
   if (str === null || str === undefined) return '';
@@ -128,7 +128,7 @@ function accentStyle(codeOrName) {
 }
 
 /* ============================================================
-   BOOKMARK & PROGRESS HELPERS
+   BOOKMARK / PROGRESS / STREAK HELPERS
    ============================================================ */
 function isBookmarked(courseId) {
   return !!(currentUser?.bookmarks?.includes(courseId));
@@ -154,7 +154,7 @@ function timeAgo(date) {
 }
 
 /* ============================================================
-   THEME (light / dark)
+   THEME
    ============================================================ */
 (function initTheme() {
   const saved = localStorage.getItem('aero_theme');
@@ -171,7 +171,7 @@ function updateThemeIcon() {
 }
 
 /* ============================================================
-   GLOBAL CLICK HANDLERS (theme + mobile nav)
+   GLOBAL CLICK HANDLERS
    ============================================================ */
 document.addEventListener('click', (e) => {
   if (e.target.closest('#themeToggle')) {
@@ -189,9 +189,33 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('.main-nav a')) {
     document.getElementById('mainNav')?.classList.remove('open');
   }
+
+  // Notification bell
+  const notifWrap = document.getElementById('notifWrap');
+  if (notifWrap) {
+    if (e.target.closest('#notifBtn')) {
+      notifWrap.classList.toggle('open');
+      if (notifWrap.classList.contains('open')) {
+        renderNotificationList();
+        loadNotifications();
+      }
+      return;
+    }
+    if (!e.target.closest('#notifWrap')) {
+      notifWrap.classList.remove('open');
+    }
+  }
 });
 
 document.addEventListener('DOMContentLoaded', updateThemeIcon);
+
+// Mark all notifications read
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#notifMarkAll')) {
+    e.stopPropagation();
+    markAllNotificationsRead();
+  }
+});
 
 /* ============================================================
    LOGIN / LOGOUT / REGISTER
@@ -227,6 +251,7 @@ async function handleLogin(e) {
 
       studentNav = 'home';
       adminTab = 'courses';
+      pushHash('#/home');
       showToast(data.message, 'success');
       renderApp();
     } else {
@@ -371,6 +396,21 @@ function renderApp() {
   $('userDisplay').textContent = currentUser.username;
   $('roleBadge').textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
   $('roleBadge').className = 'role-badge ' + currentUser.role;
+
+  // Streak badge
+  const streakEl = $('streakBadge');
+  const streakNum = $('streakCount');
+  if (streakEl && streakNum) {
+    if (currentUser.role === 'student' && (currentUser.streakCount || 0) >= 2) {
+      streakEl.style.display = 'inline-flex';
+      streakNum.textContent = currentUser.streakCount;
+      streakEl.title = `${currentUser.streakCount}-day streak! Best: ${currentUser.longestStreak || currentUser.streakCount}`;
+    } else {
+      streakEl.style.display = 'none';
+    }
+  }
+
+  renderNotificationBadge();
   buildNav();
 
   if (currentCourseId) {
@@ -413,6 +453,125 @@ function buildNav() {
     <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-book"></i> Courses</a>
     <a href="#" class="${savedActive}" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> Saved${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
   `;
+}
+
+/* ============================================================
+   NOTIFICATIONS
+   ============================================================ */
+function getUnreadCount() {
+  return (currentUser?.notifications || []).filter(n => !n.read).length;
+}
+
+function renderNotificationBadge() {
+  const badge = document.getElementById('notifBadge');
+  if (!badge) return;
+  const count = getUnreadCount();
+  if (count > 0) {
+    badge.textContent = count > 9 ? '9+' : count;
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function renderNotificationList() {
+  const list = document.getElementById('notifList');
+  const markAll = document.getElementById('notifMarkAll');
+  if (!list) return;
+
+  const notifs = (currentUser?.notifications || [])
+    .slice()
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  if (notifs.length === 0) {
+    list.innerHTML = `
+      <div class="notif-empty">
+        <i class="fas fa-bell-slash"></i>
+        <p>No notifications yet.</p>
+      </div>`;
+    if (markAll) markAll.style.display = 'none';
+    return;
+  }
+
+  const unread = notifs.filter(n => !n.read).length;
+  if (markAll) markAll.style.display = unread > 0 ? 'inline-block' : 'none';
+
+  let html = '';
+  notifs.forEach(n => {
+    const ago = timeAgo(n.createdAt);
+    const icon = n.type === 'doubt-reply' ? 'fa-comment-dots' : 'fa-bell';
+    html += `
+      <div class="notif-item ${n.read ? '' : 'unread'}" onclick="openNotification('${n.id}')">
+        <div class="notif-icon"><i class="fas ${icon}"></i></div>
+        <div class="notif-content">
+          <div class="notif-title">${escapeHtml(n.title)}</div>
+          <div class="notif-body">${escapeHtml(n.body)}</div>
+          <div class="notif-time">${ago}</div>
+        </div>
+        ${!n.read ? '<span class="notif-dot"></span>' : ''}
+      </div>`;
+  });
+  list.innerHTML = html;
+}
+
+async function openNotification(notifId) {
+  const n = (currentUser?.notifications || []).find(x => x.id === notifId);
+  if (!n) return;
+
+  if (!n.read) {
+    try {
+      const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notifId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        currentUser.notifications = data.notifications;
+        localStorage.setItem('aero_user', JSON.stringify(currentUser));
+        renderNotificationBadge();
+        renderNotificationList();
+      }
+    } catch { /* silent */ }
+  }
+
+  document.getElementById('notifWrap')?.classList.remove('open');
+  if (n.link) location.hash = n.link;
+}
+
+async function markAllNotificationsRead() {
+  if (!currentUser?._id) return;
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true })
+    });
+    const data = await res.json();
+    if (data.success) {
+      currentUser.notifications = data.notifications;
+      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      renderNotificationBadge();
+      renderNotificationList();
+      showToast('All notifications marked read.', 'success');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
+}
+
+async function loadNotifications() {
+  if (!currentUser?._id) return;
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}`);
+    const data = await res.json();
+    if (data.success) {
+      currentUser.notifications = data.notifications;
+      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      renderNotificationBadge();
+      renderNotificationList();
+    }
+  } catch { /* silent */ }
 }
 
 /* ============================================================
@@ -566,6 +725,7 @@ async function renderAdminStudents() {
    STUDENT HOME
    ============================================================ */
 function renderStudentHome() {
+  renderStreakCard();
   renderContinueCard();
 
   const professors = getProfessors();
@@ -587,6 +747,53 @@ function renderStudentHome() {
     });
     $('professorsGrid').innerHTML = html;
   }
+}
+
+function renderStreakCard() {
+  const container = document.getElementById('streakCardContainer');
+  if (!container) return;
+
+  if (currentUser.role !== 'student') {
+    container.innerHTML = '';
+    return;
+  }
+
+  const streak = currentUser.streakCount || 0;
+  const longest = currentUser.longestStreak || 0;
+
+  if (streak === 0 && longest === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  let message = '';
+  let icon = 'fa-fire';
+  let tone = 'warm';
+
+  if (streak === 0) {
+    message = `Welcome back! Start a new streak today. Your best was ${longest} day${longest > 1 ? 's' : ''}.`;
+    icon = 'fa-hourglass-start';
+    tone = 'cool';
+  } else if (streak < 3) {
+    message = `You're on a ${streak}-day streak. Keep it going!`;
+  } else if (streak < 7) {
+    message = `🔥 ${streak} days strong! You're building momentum.`;
+  } else if (streak < 30) {
+    message = `🚀 ${streak}-day streak! That's serious consistency.`;
+  } else {
+    message = `🏆 ${streak} days! You're in the top tier of learners.`;
+  }
+
+  container.innerHTML = `
+    <div class="streak-card ${tone}">
+      <div class="streak-flame"><i class="fas ${icon}"></i></div>
+      <div class="streak-info">
+        <span class="streak-label">Daily Streak</span>
+        <h3>${streak} day${streak === 1 ? '' : 's'}</h3>
+        <p>${message}${longest > streak ? ` · Best: ${longest} days` : ''}</p>
+      </div>
+    </div>
+  `;
 }
 
 function renderContinueCard() {
@@ -768,6 +975,27 @@ function renderCourseDetail(courseId) {
       </div>`;
   }
 
+  // Certificate earned banner
+  if (currentUser.role === 'student') {
+    const viewedCount = getProgress(course.id).length;
+    const totalMats = (course.materials || []).length;
+    const canAccess = !isPremiumCourse || isPurchased;
+
+    if (canAccess && totalMats > 0 && viewedCount >= totalMats) {
+      html += `
+        <div class="cert-earned-banner">
+          <div class="cert-earned-icon"><i class="fas fa-award"></i></div>
+          <div class="cert-earned-info">
+            <h4>🎉 Course Completed!</h4>
+            <p>You've finished all ${totalMats} materials. Claim your certificate.</p>
+          </div>
+          <button class="btn btn-accent" onclick="generateCertificate('${course.id}')">
+            <i class="fas fa-download"></i> Get Certificate
+          </button>
+        </div>`;
+    }
+  }
+
   const materials = course.materials || [];
   const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
   const types = ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
@@ -902,6 +1130,249 @@ function renderCourseDetail(courseId) {
 }
 
 /* ============================================================
+   CERTIFICATE
+   ============================================================ */
+function generateCertificate(courseId) {
+  const course = findCourse(courseId);
+  if (!course) return;
+
+  const viewedCount = getProgress(course.id).length;
+  const totalMats = (course.materials || []).length;
+  if (totalMats === 0 || viewedCount < totalMats) {
+    return showToast('Complete all materials to earn a certificate.', 'error');
+  }
+
+  const studentName = currentUser.fullName || currentUser.username;
+  const completionDate = new Date().toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'long', year: 'numeric'
+  });
+
+  const certId = 'AERO-' +
+    (course.code || 'CRS').toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' +
+    String(currentUser._id).slice(-4).toUpperCase() + '-' +
+    Date.now().toString(36).toUpperCase();
+
+  const acc = getCourseAccent(course.code || course.name);
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Certificate — ${escapeHtml(course.name)}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #f0f4f8;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 30px 20px;
+    }
+    .toolbar {
+      position: fixed;
+      top: 20px; right: 20px;
+      z-index: 100;
+    }
+    .btn-print {
+      padding: 12px 22px;
+      border: none;
+      border-radius: 10px;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: .2s;
+      background: linear-gradient(135deg, #4f46e5, #6366f1);
+      color: #fff;
+      box-shadow: 0 6px 18px rgba(79,70,229,.35);
+    }
+    .btn-print:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(79,70,229,.45); }
+    .cert {
+      position: relative;
+      width: 100%;
+      max-width: 1000px;
+      aspect-ratio: 1.414 / 1;
+      background: #fff;
+      box-shadow: 0 20px 60px rgba(15,23,42,.15);
+      overflow: hidden;
+      border-radius: 8px;
+    }
+    .cert-bg { position: absolute; inset: 0; pointer-events: none; }
+    .cert-bg::before {
+      content: ""; position: absolute; top: -20%; right: -15%;
+      width: 500px; height: 500px; border-radius: 50%;
+      background: radial-gradient(circle, ${acc.solid}22, transparent 70%);
+    }
+    .cert-bg::after {
+      content: ""; position: absolute; bottom: -25%; left: -12%;
+      width: 460px; height: 460px; border-radius: 50%;
+      background: radial-gradient(circle, #f59e0b1a, transparent 70%);
+    }
+    .cert-inner {
+      position: absolute; inset: 20px;
+      border: 3px solid #0f172a; border-radius: 6px;
+      padding: 40px 60px;
+      display: flex; flex-direction: column;
+      align-items: center; text-align: center; z-index: 1;
+    }
+    .cert-inner::before {
+      content: ""; position: absolute; inset: 6px;
+      border: 1px solid #cbd5e1; border-radius: 4px; pointer-events: none;
+    }
+    .corner { position: absolute; width: 40px; height: 40px; border: 3px solid ${acc.solid}; }
+    .corner.tl { top: 8px; left: 8px; border-right: none; border-bottom: none; }
+    .corner.tr { top: 8px; right: 8px; border-left: none; border-bottom: none; }
+    .corner.bl { bottom: 8px; left: 8px; border-right: none; border-top: none; }
+    .corner.br { bottom: 8px; right: 8px; border-left: none; border-top: none; }
+    .cert-header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+    .cert-logo {
+      width: 52px; height: 52px; border-radius: 12px;
+      background: linear-gradient(135deg, ${acc.from}, ${acc.to});
+      display: flex; align-items: center; justify-content: center;
+      font-size: 26px; color: #fff;
+      box-shadow: 0 8px 20px ${acc.solid}44;
+    }
+    .cert-dept { text-align: left; }
+    .cert-dept h1 { font-size: 20px; font-weight: 800; color: #0f172a; letter-spacing: -.3px; }
+    .cert-dept span { font-size: 12px; color: #64748b; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; }
+    .cert-title {
+      font-family: 'Playfair Display', serif;
+      font-size: 46px; font-weight: 800;
+      color: #0f172a; letter-spacing: -.5px;
+      margin: 22px 0 6px; line-height: 1;
+    }
+    .cert-subtitle {
+      font-size: 13px; color: #64748b;
+      letter-spacing: 3px; text-transform: uppercase;
+      font-weight: 600; margin-bottom: 24px;
+    }
+    .cert-presented { font-size: 14px; color: #475569; margin-bottom: 8px; }
+    .cert-name {
+      font-family: 'Playfair Display', serif;
+      font-size: 42px; font-weight: 700;
+      color: ${acc.solid}; letter-spacing: -.3px;
+      margin: 4px 0 14px; padding-bottom: 8px;
+      border-bottom: 2px solid #e2e8f0;
+      min-width: 400px; display: inline-block;
+    }
+    .cert-completed { font-size: 14px; color: #475569; margin-bottom: 10px; }
+    .cert-course { font-size: 22px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
+    .cert-code {
+      font-size: 12px; color: #64748b;
+      letter-spacing: 2px; text-transform: uppercase;
+      font-weight: 600; margin-bottom: 34px;
+    }
+    .cert-footer {
+      margin-top: auto; width: 100%;
+      display: flex; justify-content: space-between;
+      align-items: flex-end; padding-top: 20px;
+      border-top: 1px solid #e2e8f0;
+    }
+    .cert-sign { text-align: center; min-width: 180px; }
+    .cert-sign-line {
+      font-family: 'Playfair Display', serif;
+      font-size: 22px; font-style: italic;
+      color: #0f172a; margin-bottom: 4px;
+      border-bottom: 1.5px solid #cbd5e1; padding-bottom: 4px;
+    }
+    .cert-sign-role {
+      font-size: 11px; color: #64748b;
+      text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;
+    }
+    .cert-meta { text-align: center; font-size: 11px; color: #94a3b8; letter-spacing: .5px; }
+    .cert-meta strong {
+      color: #475569; font-weight: 700;
+      font-family: 'Courier New', monospace;
+      font-size: 12px; letter-spacing: 1px;
+    }
+    .cert-seal {
+      position: absolute; bottom: 28px; right: 42px;
+      width: 92px; height: 92px; border-radius: 50%;
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 10px; font-weight: 800;
+      letter-spacing: 1px; text-align: center;
+      box-shadow: 0 8px 24px rgba(245,158,11,.4);
+      border: 3px solid #fff; transform: rotate(-8deg);
+    }
+    .cert-seal-inner { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .cert-seal i { font-size: 20px; }
+    @page { size: A4 landscape; margin: 0; }
+    @media print {
+      body { background: #fff; padding: 0; }
+      .toolbar { display: none !important; }
+      .cert { box-shadow: none; border-radius: 0; width: 100vw; height: 100vh; max-width: none; aspect-ratio: auto; }
+    }
+    @media (max-width: 800px) {
+      .cert { aspect-ratio: auto; min-height: 600px; }
+      .cert-inner { padding: 20px 24px; position: relative; inset: auto; }
+      .cert-title { font-size: 32px; }
+      .cert-name { font-size: 28px; min-width: 260px; }
+      .cert-course { font-size: 18px; }
+      .cert-footer { flex-direction: column; gap: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button class="btn-print" onclick="window.print()">
+      <i class="fas fa-download"></i> Print / Save as PDF
+    </button>
+  </div>
+  <div class="cert">
+    <div class="cert-bg"></div>
+    <div class="cert-inner">
+      <div class="corner tl"></div>
+      <div class="corner tr"></div>
+      <div class="corner bl"></div>
+      <div class="corner br"></div>
+      <div class="cert-header">
+        <div class="cert-logo"><i class="fas fa-rocket"></i></div>
+        <div class="cert-dept">
+          <h1>Aerospace Department</h1>
+          <span>IIT Kharagpur</span>
+        </div>
+      </div>
+      <div class="cert-title">Certificate</div>
+      <div class="cert-subtitle">of Completion</div>
+      <div class="cert-presented">This certificate is proudly presented to</div>
+      <div class="cert-name">${escapeHtml(studentName)}</div>
+      <div class="cert-completed">for successfully completing</div>
+      <div class="cert-course">${escapeHtml(course.name)}</div>
+      <div class="cert-code">${escapeHtml(course.code) || ''} · Completed on ${completionDate}</div>
+      <div class="cert-footer">
+        <div class="cert-meta">
+          Certificate ID<br>
+          <strong>${certId}</strong>
+        </div>
+        <div class="cert-sign">
+          <div class="cert-sign-line">Krish Yadav</div>
+          <div class="cert-sign-role">Course Director</div>
+        </div>
+      </div>
+    </div>
+    <div class="cert-seal">
+      <div class="cert-seal-inner">
+        <i class="fas fa-check-circle"></i>
+        <div>VERIFIED</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank');
+  if (!win) return showToast('Please allow popups to view your certificate.', 'error');
+  win.document.write(html);
+  win.document.close();
+  showToast('🎓 Certificate generated!', 'success');
+}
+
+/* ============================================================
    FILE VIEWER
    ============================================================ */
 async function viewFileOnline(courseId, materialId) {
@@ -964,6 +1435,9 @@ async function toggleMaterialViewed(e, courseId, materialId) {
     if (data.success) {
       currentUser.progress = data.progress;
       currentUser.lastActivity = data.lastActivity;
+      if (data.streakCount !== undefined) currentUser.streakCount = data.streakCount;
+      if (data.longestStreak !== undefined) currentUser.longestStreak = data.longestStreak;
+      if (data.lastActiveDate) currentUser.lastActiveDate = data.lastActiveDate;
       localStorage.setItem('aero_user', JSON.stringify(currentUser));
       renderApp();
     } else {
@@ -1216,7 +1690,7 @@ async function deleteMaterial(courseId, materialId) {
 }
 
 /* ============================================================
-   PROFESSORS (admin — still localStorage)
+   PROFESSORS (admin — localStorage)
    ============================================================ */
 function openAddProfessorModal() {
   $('editProfessorId').value = '';
@@ -1433,6 +1907,7 @@ async function initApp() {
   renderApp();
   await fetchCoursesFromDB();
   await refreshUserData();
+  await loadNotifications();
   renderApp();
 }
 
