@@ -221,8 +221,12 @@ app.delete('/api/courses/:id', async (req, res) => {
 // 1. Course Edit karne ki API
 app.put('/api/courses/:id', async (req, res) => {
   try {
-    const { name, description, price } = req.body;
-    await Course.findByIdAndUpdate(req.params.id, { name, description, price });
+    // Yahan hum isPremium ko bhi body se accept kar rahe hain
+    const { name, description, price, isPremium } = req.body;
+    
+    // Database mein isPremium bhi update hoga
+    await Course.findByIdAndUpdate(req.params.id, { name, description, price, isPremium });
+    
     res.json({ success: true, message: 'Course updated successfully!' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error updating course.' });

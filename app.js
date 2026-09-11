@@ -994,24 +994,38 @@ async function editCourse(courseId) {
 
   const newTitle = prompt("Update Course Name:", course.name);
   if (newTitle === null) return;
+  
   const newDesc = prompt("Update Course Description:", course.description || '');
   if (newDesc === null) return;
-  const newPrice = prompt("Update Course Price (₹):", course.price || 0);
+  
+  let newPrice = prompt("Update Course Price (₹):", course.price || 0);
   if (newPrice === null) return;
+
+  // Naya Logic: Price ko number mein convert karo
+  newPrice = parseFloat(newPrice) || 0;
+  
+  // Agar price 0 se zyada hai, toh isPremium automatically true ho jayega
+  const isPremium = newPrice > 0; 
 
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newTitle, description: newDesc, price: newPrice })
+      method: 'PUT', 
+      headers: { 'Content-Type': 'application/json' },
+      // Yahan hum isPremium bhi backend ko bhej rahe hain
+      body: JSON.stringify({ name: newTitle, description: newDesc, price: newPrice, isPremium: isPremium })
     });
+    
     const data = await response.json();
     if (data.success) {
       showToast('✏️ ' + data.message, 'success');
-      fetchCoursesFromDB();
-    } else showToast(data.message, 'error');
-  } catch (error) { showToast('Error connecting to server.', 'error'); }
+      fetchCoursesFromDB(); // Data refresh karne ke liye
+    } else {
+      showToast(data.message, 'error');
+    }
+  } catch (error) { 
+    showToast('Error connecting to server.', 'error'); 
+  }
 }
-
 async function editMaterial(courseId, materialId) {
   const course = findCourse(courseId);
   if (!course) return;
