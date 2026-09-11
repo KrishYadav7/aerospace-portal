@@ -10,10 +10,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
   <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.json">
 </head>
 <body>
   <div id="app">
-    <!-- HEADER -->
     <header id="appHeader" style="display:none;">
       <div class="brand">
         <div class="brand-icon"><i class="fas fa-rocket"></i></div>
@@ -41,17 +41,12 @@
               <button class="notif-mark-all" id="notifMarkAll" style="display:none;">Mark all read</button>
             </div>
             <div class="notif-list" id="notifList">
-              <div class="notif-empty">
-                <i class="fas fa-bell-slash"></i>
-                <p>No notifications yet.</p>
-              </div>
+              <div class="notif-empty"><i class="fas fa-bell-slash"></i><p>No notifications yet.</p></div>
             </div>
           </div>
         </div>
 
-        <button class="icon-btn theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle theme">
-          <i class="fas fa-moon"></i>
-        </button>
+        <button class="icon-btn theme-toggle" id="themeToggle" title="Toggle theme"><i class="fas fa-moon"></i></button>
 
         <span class="streak-badge" id="streakBadge" style="display:none;" title="Daily streak">
           <i class="fas fa-fire"></i> <span id="streakCount">0</span>
@@ -65,7 +60,6 @@
       </div>
     </header>
 
-    <!-- MAIN -->
     <main class="main-content">
 
       <!-- LOGIN -->
@@ -85,16 +79,14 @@
           <form id="loginForm" onsubmit="handleLogin(event)">
             <div class="form-group">
               <label>Username</label>
-              <div class="input-wrap">
-                <i class="fas fa-user"></i>
-                <input type="text" id="loginUsername" placeholder="Enter your username" required autocomplete="username">
+              <div class="input-wrap"><i class="fas fa-user"></i>
+                <input type="text" id="loginUsername" placeholder="Enter your username" required>
               </div>
             </div>
             <div class="form-group">
               <label>Password</label>
-              <div class="input-wrap">
-                <i class="fas fa-lock"></i>
-                <input type="password" id="loginPassword" placeholder="Enter your password" required autocomplete="current-password">
+              <div class="input-wrap"><i class="fas fa-lock"></i>
+                <input type="password" id="loginPassword" placeholder="Enter your password" required>
               </div>
             </div>
             <button type="submit" class="btn btn-primary btn-block btn-lg">
@@ -125,27 +117,21 @@
               <i class="fas fa-book-open"></i> Explore Courses
             </a>
           </div>
-          <div class="hero-image">
-            <i class="fas fa-rocket"></i>
-          </div>
+          <div class="hero-image"><i class="fas fa-rocket"></i></div>
         </div>
 
         <section class="about-owner section-card">
           <h2><i class="fas fa-user-tie"></i> About the Owner</h2>
           <div class="owner-container">
-            <div class="owner-image">
-              <img src="passport.jpg" alt="Owner Photo">
-            </div>
+            <div class="owner-image"><img src="passport.jpg" alt="Owner Photo"></div>
             <div class="owner-details">
               <h3>Krish Yadav</h3>
-              <p>
-                Academic achiever and experienced educator currently pursuing Aerospace Engineering at IIT Kharagpur. Passionate about translating complex mathematical and engineering principles into accessible concepts. Proven track record in mentoring 2,000+ students and producing structured academic content across core engineering subjects and competitive mathematics.
-              </p>
+              <p>Academic achiever and experienced educator currently pursuing Aerospace Engineering at IIT Kharagpur. Passionate about translating complex mathematical and engineering principles into accessible concepts. Proven track record in mentoring 2,000+ students and producing structured academic content across core engineering subjects and competitive mathematics.</p>
             </div>
           </div>
         </section>
 
-        <section class="about-professors section-card" id="professorsSection">
+        <section class="about-professors section-card">
           <h2><i class="fas fa-chalkboard-teacher"></i> Our Team</h2>
           <div class="professors-grid" id="professorsGrid"></div>
         </section>
@@ -153,31 +139,15 @@
         <section class="testimonials section-card">
           <h2><i class="fas fa-star"></i> What Our Students Say</h2>
           <div class="testimonials-slider">
-            <div class="testimonial-card">
-              <i class="fas fa-quote-left"></i>
-              <p>"The course materials are incredibly well-organized. I could easily access video lectures and past papers – helped me ace my exams!"</p>
-              <h4>– Amit Kumar</h4>
-            </div>
-            <div class="testimonial-card">
-              <i class="fas fa-quote-left"></i>
-              <p>"The premium courses are worth every penny. The interactive content and detailed explanations gave me an edge in my projects."</p>
-              <h4>– Priya Sharma</h4>
-            </div>
-            <div class="testimonial-card">
-              <i class="fas fa-quote-left"></i>
-              <p>"I love the professor introductions – they really helped me choose my electives. The portal is a game-changer for aerospace students."</p>
-              <h4>– Rahul Verma</h4>
-            </div>
-            <div class="testimonial-card">
-              <i class="fas fa-quote-left"></i>
-              <p>"From tutorials to question banks, everything is in one place. The payment process was smooth and instant access was great."</p>
-              <h4>– Sneha Patil</h4>
-            </div>
+            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"The course materials are incredibly well-organized. I could easily access video lectures and past papers – helped me ace my exams!"</p><h4>– Amit Kumar</h4></div>
+            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"The premium courses are worth every penny. The interactive content and detailed explanations gave me an edge in my projects."</p><h4>– Priya Sharma</h4></div>
+            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"I love the professor introductions – they really helped me choose my electives. The portal is a game-changer for aerospace students."</p><h4>– Rahul Verma</h4></div>
+            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"From tutorials to question banks, everything is in one place. The payment process was smooth and instant access was great."</p><h4>– Sneha Patil</h4></div>
           </div>
         </section>
       </section>
 
-      <!-- ADMIN -->
+      <!-- ADMIN DASHBOARD -->
       <section id="adminView" class="view">
         <div class="dash-header">
           <h2><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
@@ -185,50 +155,22 @@
             <button class="btn btn-success" onclick="openAddCourseModal()">
               <i class="fas fa-plus-circle"></i> <span class="btn-text">New Course</span>
             </button>
-            <button class="btn btn-outline" onclick="exportData()">
-              <i class="fas fa-download"></i> <span class="btn-text">Export</span>
-            </button>
           </div>
         </div>
 
         <div class="admin-tabs">
-          <button class="admin-tab active" data-tab="courses" onclick="switchAdminTab('courses')">
-            <i class="fas fa-book"></i> Courses
-          </button>
-          <button class="admin-tab" data-tab="professors" onclick="switchAdminTab('professors')">
-            <i class="fas fa-chalkboard-teacher"></i> Professors
-          </button>
-          <button class="admin-tab" data-tab="students" onclick="switchAdminTab('students')">
-            <i class="fas fa-users"></i> Students
-          </button>
+          <button class="admin-tab active" data-tab="courses" onclick="switchAdminTab('courses')"><i class="fas fa-book"></i> Courses</button>
+          <button class="admin-tab" data-tab="professors" onclick="switchAdminTab('professors')"><i class="fas fa-chalkboard-teacher"></i> Professors</button>
+          <button class="admin-tab" data-tab="students" onclick="switchAdminTab('students')"><i class="fas fa-users"></i> Students</button>
         </div>
 
         <div id="adminTabCourses" class="admin-tab-content active">
           <div class="stats-grid">
-            <div class="stat-card">
-              <div class="stat-icon tone-brand"><i class="fas fa-book-open"></i></div>
-              <div>
-                <div class="num" id="statCourses">0</div>
-                <div class="label">Total Courses</div>
-              </div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon tone-cyan"><i class="fas fa-file-alt"></i></div>
-              <div>
-                <div class="num" id="statMaterials">0</div>
-                <div class="label">Total Materials</div>
-              </div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon tone-gold"><i class="fas fa-users"></i></div>
-              <div>
-                <div class="num" id="statStudents">0</div>
-                <div class="label">Students</div>
-              </div>
-            </div>
+            <div class="stat-card"><div class="stat-icon tone-brand"><i class="fas fa-book-open"></i></div><div><div class="num" id="statCourses">0</div><div class="label">Total Courses</div></div></div>
+            <div class="stat-card"><div class="stat-icon tone-cyan"><i class="fas fa-file-alt"></i></div><div><div class="num" id="statMaterials">0</div><div class="label">Total Materials</div></div></div>
+            <div class="stat-card"><div class="stat-icon tone-gold"><i class="fas fa-users"></i></div><div><div class="num" id="statStudents">0</div><div class="label">Students</div></div></div>
           </div>
-          <div class="search-bar">
-            <i class="fas fa-search"></i>
+          <div class="search-bar"><i class="fas fa-search"></i>
             <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="renderAdminCourses()">
           </div>
           <div id="adminCourseList"></div>
@@ -237,9 +179,7 @@
         <div id="adminTabProfessors" class="admin-tab-content">
           <div class="tab-header">
             <h3><i class="fas fa-chalkboard-teacher"></i> Manage Professors</h3>
-            <button class="btn btn-success" onclick="openAddProfessorModal()">
-              <i class="fas fa-plus-circle"></i> Add Professor
-            </button>
+            <button class="btn btn-success" onclick="openAddProfessorModal()"><i class="fas fa-plus-circle"></i> Add Professor</button>
           </div>
           <div id="adminProfessorList"></div>
         </div>
@@ -250,14 +190,46 @@
         </div>
       </section>
 
+      <!-- ADMIN COURSE EDITOR (new) -->
+      <section id="adminEditView" class="view">
+        <button class="back-link" onclick="closeCourseEditor()">
+          <i class="fas fa-arrow-left"></i> Back to Dashboard
+        </button>
+        <div id="courseEditorContent"></div>
+      </section>
+
       <!-- STUDENT COURSES -->
       <section id="studentCoursesView" class="view">
         <div class="dash-header">
           <h2><i class="fas fa-graduation-cap"></i> All Courses</h2>
         </div>
-        <div class="search-bar">
-          <i class="fas fa-search"></i>
+        <div class="search-bar"><i class="fas fa-search"></i>
           <input type="text" id="studentCourseSearch" placeholder="Search courses..." oninput="renderStudentCourses()">
+        </div>
+        <div class="filter-bar" id="studentFilterBar">
+          <select id="filterCategory" onchange="renderStudentCourses()">
+            <option value="">All Categories</option>
+            <option value="Aerodynamics">Aerodynamics</option>
+            <option value="Propulsion">Propulsion</option>
+            <option value="Structures">Structures</option>
+            <option value="Avionics">Avionics</option>
+            <option value="Mathematics">Mathematics</option>
+            <option value="General">General</option>
+          </select>
+          <select id="filterDifficulty" onchange="renderStudentCourses()">
+            <option value="">All Levels</option>
+            <option value="Beginner">Beginner</option>
+            <option value="Intermediate">Intermediate</option>
+            <option value="Advanced">Advanced</option>
+          </select>
+          <select id="filterPrice" onchange="renderStudentCourses()">
+            <option value="">All Prices</option>
+            <option value="free">Free</option>
+            <option value="premium">Premium</option>
+          </select>
+          <button class="btn btn-outline btn-sm" onclick="clearCourseFilters()">
+            <i class="fas fa-times"></i> Clear
+          </button>
         </div>
         <div id="studentCourseList"></div>
       </section>
@@ -290,30 +262,44 @@
   <div class="modal-overlay" id="courseModal">
     <div class="modal-box">
       <h3 id="courseModalTitle"><i class="fas fa-plus-circle"></i> New Course</h3>
-      <p class="modal-sub">Enter the course details below.</p>
+      <p class="modal-sub">Enter the course details below. You can add more details after creating it.</p>
       <form id="courseForm" onsubmit="saveCourse(event)">
         <input type="hidden" id="editCourseId">
-        <div class="form-group">
-          <label>Course Name *</label>
+        <div class="form-group"><label>Course Name *</label>
           <input type="text" id="courseName" placeholder="e.g. Aerodynamics" required>
         </div>
         <div class="form-row">
-          <div class="form-group">
-            <label>Course Code *</label>
+          <div class="form-group"><label>Course Code *</label>
             <input type="text" id="courseCode" placeholder="e.g. AE101" required>
           </div>
-          <div class="form-group">
-            <label>Semester</label>
+          <div class="form-group"><label>Semester</label>
             <input type="text" id="courseSemester" placeholder="e.g. Fall 2024">
           </div>
         </div>
-        <div class="form-group">
-          <label>Instructor</label>
+        <div class="form-group"><label>Instructor</label>
           <input type="text" id="courseInstructor" placeholder="e.g. Dr. Smith">
         </div>
-        <div class="form-group">
-          <label>Description</label>
+        <div class="form-group"><label>Description</label>
           <textarea id="courseDescription" placeholder="Brief description of the course" rows="3"></textarea>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Category</label>
+            <select id="courseCategory">
+              <option value="Aerodynamics">Aerodynamics</option>
+              <option value="Propulsion">Propulsion</option>
+              <option value="Structures">Structures</option>
+              <option value="Avionics">Avionics</option>
+              <option value="Mathematics">Mathematics</option>
+              <option value="General" selected>General</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Difficulty</label>
+            <select id="courseDifficulty">
+              <option value="Beginner">Beginner</option>
+              <option value="Intermediate" selected>Intermediate</option>
+              <option value="Advanced">Advanced</option>
+            </select>
+          </div>
         </div>
         <div class="form-row" style="align-items:end;">
           <div class="form-group premium-toggle" style="margin-bottom:0;">
@@ -329,22 +315,21 @@
         </div>
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('courseModal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save Course</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Create Course</button>
         </div>
       </form>
     </div>
   </div>
 
-  <!-- Material Modal -->
+  <!-- Material Modal (still used for adding NEW materials from dashboard) -->
   <div class="modal-overlay" id="materialModal">
     <div class="modal-box">
       <h3 id="materialModalTitle"><i class="fas fa-paperclip"></i> Add Material</h3>
-      <p class="modal-sub" id="materialModalSub">Upload a file or provide a link.</p>
+      <p class="modal-sub">Upload a file or provide a link.</p>
       <form id="materialForm" onsubmit="saveMaterial(event)">
         <input type="hidden" id="editMaterialId">
         <input type="hidden" id="materialCourseId">
-        <div class="form-group">
-          <label>Title *</label>
+        <div class="form-group"><label>Title *</label>
           <input type="text" id="materialTitle" placeholder="e.g. Lecture 1: Intro" required>
         </div>
         <div class="form-row" style="align-items:center;">
@@ -369,16 +354,13 @@
           <label>Material Unlock Price (₹) *</label>
           <input type="number" id="materialPrice" placeholder="e.g. 49" min="0" step="1">
         </div>
-        <div class="form-group" style="margin-top:16px;">
-          <label>Description</label>
+        <div class="form-group" style="margin-top:16px;"><label>Description</label>
           <textarea id="materialDescription" placeholder="Optional description"></textarea>
         </div>
-        <div class="form-group">
-          <label>YouTube / Link (optional)</label>
-          <input type="url" id="materialUrl" placeholder="https://www.youtube.com/embed/...">
+        <div class="form-group"><label>YouTube / Link (optional)</label>
+          <input type="url" id="materialUrl" placeholder="https://...">
         </div>
-        <div class="form-group">
-          <label>Or Upload File (PDF, PPT, etc.)</label>
+        <div class="form-group"><label>Or Upload File (PDF, PPT, etc.)</label>
           <input type="file" id="materialFile">
         </div>
         <div class="modal-actions">
@@ -395,22 +377,10 @@
       <h3><i class="fas fa-user-plus"></i> Student Registration</h3>
       <p class="modal-sub">Create a new student account.</p>
       <form id="registerForm" onsubmit="registerStudent(event)">
-        <div class="form-group">
-          <label>Full Name *</label>
-          <input type="text" id="regFullName" placeholder="e.g. John Doe" required>
-        </div>
-        <div class="form-group">
-          <label>Username *</label>
-          <input type="text" id="regUsername" placeholder="Choose a username" required>
-        </div>
-        <div class="form-group">
-          <label>Email *</label>
-          <input type="email" id="regEmail" placeholder="your@email.com" required>
-        </div>
-        <div class="form-group">
-          <label>Password *</label>
-          <input type="password" id="regPassword" placeholder="Choose a password" required>
-        </div>
+        <div class="form-group"><label>Full Name *</label><input type="text" id="regFullName" placeholder="e.g. John Doe" required></div>
+        <div class="form-group"><label>Username *</label><input type="text" id="regUsername" placeholder="Choose a username" required></div>
+        <div class="form-group"><label>Email *</label><input type="email" id="regEmail" placeholder="your@email.com" required></div>
+        <div class="form-group"><label>Password *</label><input type="password" id="regPassword" placeholder="Choose a password" required></div>
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('registerModal')">Cancel</button>
           <button type="submit" class="btn btn-primary"><i class="fas fa-user-check"></i> Register</button>
@@ -423,24 +393,13 @@
   <div class="modal-overlay" id="professorModal">
     <div class="modal-box">
       <h3 id="professorModalTitle"><i class="fas fa-chalkboard-teacher"></i> Add Professor</h3>
-      <p class="modal-sub" id="professorModalSub">Enter professor details.</p>
+      <p class="modal-sub">Enter professor details.</p>
       <form id="professorForm" onsubmit="saveProfessor(event)">
         <input type="hidden" id="editProfessorId">
-        <div class="form-group">
-          <label>Full Name *</label>
-          <input type="text" id="professorName" placeholder="e.g. Dr. S. K. Mehta" required>
-        </div>
-        <div class="form-group">
-          <label>Title / Role *</label>
-          <input type="text" id="professorTitle" placeholder="e.g. Aerodynamics & Fluid Mechanics" required>
-        </div>
-        <div class="form-group">
-          <label>Description</label>
-          <textarea id="professorDescription" placeholder="Brief bio..."></textarea>
-        </div>
-        <div class="form-group">
-          <label>Photo (upload image)</label>
-          <input type="file" id="professorPhoto" accept="image/*">
+        <div class="form-group"><label>Full Name *</label><input type="text" id="professorName" placeholder="e.g. Dr. S. K. Mehta" required></div>
+        <div class="form-group"><label>Title / Role *</label><input type="text" id="professorTitle" placeholder="e.g. Aerodynamics & Fluid Mechanics" required></div>
+        <div class="form-group"><label>Description</label><textarea id="professorDescription" placeholder="Brief bio..."></textarea></div>
+        <div class="form-group"><label>Photo (upload image)</label><input type="file" id="professorPhoto" accept="image/*">
           <span class="hint">Leave empty to keep current photo.</span>
         </div>
         <div class="modal-actions">
@@ -451,8 +410,7 @@
     </div>
   </div>
 
-  <div class="toast-container" id="toastContainer"></div>
-  <!-- Quiz Modal (admin) -->
+  <!-- Quiz Modal -->
   <div class="modal-overlay" id="quizModal">
     <div class="modal-box" style="max-width: 700px;">
       <h3 id="quizModalTitle"><i class="fas fa-question-circle"></i> Manage Quiz</h3>
@@ -473,7 +431,7 @@
     </div>
   </div>
 
-  <!-- Quiz Player Modal (student) -->
+  <!-- Quiz Player Modal -->
   <div class="modal-overlay" id="quizPlayerModal">
     <div class="modal-box" style="max-width: 640px;">
       <h3 id="quizPlayerTitle"><i class="fas fa-question-circle"></i> Quiz</h3>
@@ -482,7 +440,17 @@
       <div class="modal-actions" id="quizPlayerActions"></div>
     </div>
   </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(() => {});
+      });
+    }
+  </script>
 </body>
 </html>

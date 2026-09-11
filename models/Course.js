@@ -19,7 +19,6 @@ const materialSchema = new mongoose.Schema({
   }]
 });
 
-// Sprint 4 — peer Q&A replies
 const replySchema = new mongoose.Schema({
   authorName:     String,
   authorUsername: String,
@@ -39,16 +38,39 @@ const doubtSchema = new mongoose.Schema({
   replies: [replySchema]
 });
 
+const announcementSchema = new mongoose.Schema({
+  id:         String,
+  title:      String,
+  body:       String,
+  authorName: String,
+  date:       { type: Date, default: Date.now }
+});
+
 const courseSchema = new mongoose.Schema({
+  // Core
   name: { type: String, required: true },
   code: { type: String, required: true },
   semester: String,
   instructor: String,
   description: String,
+
+  // Sprint 5 — rich metadata
+  category:   { type: String, default: 'General' },
+  difficulty: { type: String, default: 'Intermediate' },  // Beginner | Intermediate | Advanced
+  duration:   { type: String, default: '' },
+  learningOutcomes: { type: [String], default: [] },
+  thumbnail:  { type: String, default: '' },
+  status:     { type: String, default: 'published' },     // draft | published | archived
+  featured:   { type: Boolean, default: false },
+
+  // Monetization
   isPremium: { type: Boolean, default: false },
-  price: { type: Number, default: 0 },
+  price:     { type: Number, default: 0 },
+
+  // Content
   materials: [materialSchema],
-  doubts: [doubtSchema]
+  doubts:    [doubtSchema],
+  announcements: [announcementSchema]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Course', courseSchema);
