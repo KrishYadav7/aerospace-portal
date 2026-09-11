@@ -20,6 +20,30 @@ function getProfessors() { return loadData().professors; }
 function generateId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
 /* ============================================================
+   SESSION HELPERS  (per-tab auth — do NOT use localStorage here)
+   ============================================================ */
+const SESSION_USER_KEY  = 'aero_user';
+const SESSION_TOKEN_KEY = 'aero_token';
+
+function saveSession(user, token) {
+  if (user)  sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+  if (token) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+}
+function saveSessionUser(user) {
+  if (user) sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+}
+function loadSessionUser() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function clearSession() {
+  sessionStorage.removeItem(SESSION_USER_KEY);
+  sessionStorage.removeItem(SESSION_TOKEN_KEY);
+}
+
+/* ============================================================
    COURSES
    ============================================================ */
 let liveCourses = [];
@@ -246,8 +270,8 @@ async function handleLogin(e) {
       if (loginRole === 'admin' && data.user.role !== 'admin') return showToast('Not an admin account.', 'error');
       if (loginRole === 'student' && data.user.role !== 'student') return showToast('Not a student account.', 'error');
       currentUser = data.user;
-      localStorage.setItem('aero_token', data.token);
-      localStorage.setItem('aero_user', JSON.stringify(data.user));
+      // Session-scoped (per-tab) — prevents cross-tab clobbering
+      saveSession(data.user, data.token);
       studentNav = 'home';
       adminTab = 'overview';
       editingCourseId = null;
@@ -262,7 +286,7 @@ function logout() {
   currentUser = null; currentCourseId = null; editingCourseId = null;
   window.currentSelectedCourseId = null;
   currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
-  localStorage.removeItem('aero_token'); localStorage.removeItem('aero_user');
+  clearSession();
   pushHash('#/home'); renderApp(); showToast('Logged out.', 'info');
 }
 
@@ -513,7 +537,7 @@ async function openNotification(notifId) {
       const data = await res.json();
       if (data.success) {
         currentUser.notifications = data.notifications;
-        localStorage.setItem('aero_user', JSON.stringify(currentUser));
+        saveSessionUser(currentUser);
         renderNotificationBadge();
         renderNotificationList();
       }
@@ -534,7 +558,7 @@ async function markAllNotificationsRead() {
     const data = await res.json();
     if (data.success) {
       currentUser.notifications = data.notifications;
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      saveSessionUser(currentUser);
       renderNotificationBadge();
       renderNotificationList();
       showToast('All notifications marked read.', 'success');
@@ -549,7 +573,7 @@ async function loadNotifications() {
     const data = await res.json();
     if (data.success) {
       currentUser.notifications = data.notifications;
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      saveSessionUser(currentUser);
       renderNotificationBadge();
       renderNotificationList();
     }
@@ -2375,7 +2399,7 @@ async function submitQuiz() {
       st.submitted = true; st.response = data;
       if (!currentUser.quizResults) currentUser.quizResults = {};
       currentUser.quizResults[st.materialId] = { score: data.score, total: data.total, attempts: data.attempts, lastAttemptAt: new Date().toISOString() };
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      saveSessionUser(currentUser);
       renderQuizPlayer();
       const pct = data.percent;
       if (pct === 100) showToast('🏆 Perfect!', 'success');
@@ -2461,7 +2485,7 @@ async function toggleBookmark(e, courseId) {
     const data = await res.json();
     if (data.success) {
       currentUser.bookmarks = data.bookmarks;
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      saveSessionUser(currentUser);
       showToast(data.bookmarked ? '★ Saved' : 'Removed', 'success');
       renderApp();
     } else showToast(data.message || 'Failed.', 'error');
@@ -2483,7 +2507,7 @@ async function toggleMaterialViewed(e, courseId, materialId) {
       if (data.streakCount !== undefined) currentUser.streakCount = data.streakCount;
       if (data.longestStreak !== undefined) currentUser.longestStreak = data.longestStreak;
       if (data.lastActiveDate) currentUser.lastActiveDate = data.lastActiveDate;
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      saveSessionUser(currentUser);
       renderApp();
     } else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
@@ -2496,7 +2520,7 @@ async function refreshUserData() {
     const data = await res.json();
     if (data.success) {
       currentUser = data.user;
-      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      saveSessionUser(currentUser);
     }
   } catch {}
 }
@@ -2782,7 +2806,7 @@ async function showPaymentModal(courseId, materialId = null) {
         if (verifyData.success) {
           if (!currentUser.purchases) currentUser.purchases = [];
           if (!currentUser.purchases.includes(purchaseId)) currentUser.purchases.push(purchaseId);
-          localStorage.setItem('aero_user', JSON.stringify(currentUser));
+          saveSessionUser(currentUser);
           showToast('🎉 Payment Successful!', 'success');
           renderApp();
         } else showToast('Verification failed!', 'error');
@@ -2828,9 +2852,10 @@ function showToast(message, type = 'info') {
    INIT
    ============================================================ */
 async function initApp() {
-  const savedUser = localStorage.getItem('aero_user');
+  // Per-tab session — each browser tab gets its own logged-in user.
+  const savedUser = loadSessionUser();
   if (savedUser) {
-    currentUser = JSON.parse(savedUser);
+    currentUser = savedUser;
     if (currentUser.role === 'admin') adminTab = 'overview';
   }
   syncHashToState();
