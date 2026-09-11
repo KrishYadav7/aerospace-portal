@@ -1079,19 +1079,31 @@ async function editMaterial(courseId, materialId) {
 
   const newTitle = prompt("Update Material Title:", mat.title);
   if (newTitle === null) return;
+  
   const newDesc = prompt("Update Material Description:", mat.description || '');
   if (newDesc === null) return;
+
+  // NAYA: Ab yeh tumse amount bhi poochega
+  let newPrice = prompt("Update Material Unlock Price (₹) - [Type 0 to make it FREE]:", mat.price || 0);
+  if (newPrice === null) return;
+
+  newPrice = parseFloat(newPrice) || 0;
+  const isPremium = newPrice > 0; // Agar amount 0 se zyada hai to automatic premium ban jayega
 
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: newTitle, description: newDesc })
+      // Backend ko naya price aur premium status bhej raha hai
+      body: JSON.stringify({ title: newTitle, description: newDesc, isPremium: isPremium, price: newPrice })
     });
+    
     const data = await response.json();
     if (data.success) {
-      showToast('✏️ ' + data.message, 'success');
-      fetchCoursesFromDB();
-    } else showToast(data.message, 'error');
+      showToast('✏️ Material properly updated with amount!', 'success');
+      fetchCoursesFromDB(); // UI ko refresh karega jisse logo dikhe
+    } else {
+      showToast(data.message, 'error');
+    }
   } catch (error) { showToast('Error connecting to server.', 'error'); }
 }
 // app.js mein render function ka basic logic check karo

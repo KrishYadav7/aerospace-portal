@@ -1,17 +1,16 @@
 const mongoose = require('mongoose');
 
-// Material ka structure (PDFs, Videos, etc.)
 const materialSchema = new mongoose.Schema({
   title: { type: String, required: true },
-  type: { type: String, required: true }, // video, pyq, tutorial, slides
+  type: { type: String, required: true },
   description: String,
   url: String,
   fileData: String,
   fileName: String,
-  date: { type: Date, default: Date.now }
+  isPremium: { type: Boolean, default: false }, // <-- Database ab isko save karega
+  price: { type: Number, default: 0 }           // <-- Database ab amount save karega
 });
 
-// Main Course ka structure
 const courseSchema = new mongoose.Schema({
   name: { type: String, required: true },
   code: { type: String, required: true },
@@ -20,24 +19,12 @@ const courseSchema = new mongoose.Schema({
   description: String,
   isPremium: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
-  materials: [materialSchema] // Course ke andar uske saare materials ki list
-}, { timestamps: true });
-// Purana materials array yahan hoga...
+  materials: [materialSchema],
   doubts: [{
     studentName: String,
     question: String,
-    answer: { type: String, default: "" }, // Admin ka jawaab
-    date: { type: Date, default: Date.now }
+    answer: String
   }]
-materials: [{
-    title: { type: String, required: true },
-    type: { type: String, required: true },
-    description: String,
-    url: String,
-    fileData: String,
-    fileName: String,
-    // YEH DO NAYI LINES ADD KARNA BAHUT ZAROORI HAI
-    isPremium: { type: Boolean, default: false },
-    price: { type: Number, default: 0 }
-  }],
+}, { timestamps: true });
+
 module.exports = mongoose.model('Course', courseSchema);

@@ -238,10 +238,18 @@ app.put('/api/courses/:id', async (req, res) => {
 // 2. Material Edit karne ki API (Course ke andar)
 app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
   try {
-    const { title, description } = req.body;
+    // Ab hum isPremium aur price dono frontend se le rahe hain
+    const { title, description, isPremium, price } = req.body;
+    
     await Course.updateOne(
       { _id: req.params.courseId, "materials._id": req.params.materialId },
-      { $set: { "materials.$.title": title, "materials.$.description": description } }
+      { $set: { 
+          "materials.$.title": title, 
+          "materials.$.description": description,
+          "materials.$.isPremium": isPremium, // Backend mein update
+          "materials.$.price": price          // Amount update
+        } 
+      }
     );
     res.json({ success: true, message: 'Material updated successfully!' });
   } catch (error) {
