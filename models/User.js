@@ -22,19 +22,22 @@ const userSchema = new mongoose.Schema({
   // Sprint 3 — streaks
   streakCount:    { type: Number, default: 0 },
   longestStreak:  { type: Number, default: 0 },
-  lastActiveDate: { type: String, default: null },   // 'YYYY-MM-DD'
+  lastActiveDate: { type: String, default: null },
 
   // Sprint 3 — notifications
   notifications: [{
     id:        { type: String },
-    type:      { type: String, default: 'info' },   // 'doubt-reply' | 'system'
+    type:      { type: String, default: 'info' },
     title:     { type: String },
     body:      { type: String },
     courseId:  { type: String, default: null },
     link:      { type: String, default: null },
     read:      { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now }
-  }]
+  }],
+
+  // Sprint 4 — quiz results per material
+  quizResults: { type: Map, of: Object, default: {} }
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

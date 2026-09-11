@@ -44,7 +44,7 @@ function bumpStreak(user) {
   const today = todayStr();
   const yesterday = yesterdayStr();
 
-  if (user.lastActiveDate === today) return;   // already counted
+  if (user.lastActiveDate === today) return;
 
   if (user.lastActiveDate === yesterday) {
     user.streakCount = (user.streakCount || 0) + 1;
@@ -71,7 +71,8 @@ function serializeUser(user) {
     streakCount: user.streakCount || 0,
     longestStreak: user.longestStreak || 0,
     lastActiveDate: user.lastActiveDate || null,
-    notifications: user.notifications || []
+    notifications: user.notifications || [],
+    quizResults: Object.fromEntries(user.quizResults || new Map())
   };
 }
 
@@ -110,7 +111,6 @@ app.post('/api/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ success: false, message: 'Invalid username or password.' });
 
-    // Bump streak on login (students only)
     if (user.role === 'student') {
       bumpStreak(user);
       await user.save();
@@ -293,7 +293,7 @@ app.post('/api/courses/:id/doubts', async (req, res) => {
   }
 });
 
-// Reply to doubt — also notifies the student
+// Legacy: admin reply via the older method — still supported
 app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
   try {
     const { answer } = req.body;
@@ -303,7 +303,6 @@ app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
       { $set: { "doubts.$.answer": answer } }
     );
 
-    // Notify the student who asked
     const course = await Course.findById(req.params.courseId);
     const doubt = course?.doubts?.id(req.params.doubtId);
 
@@ -331,6 +330,172 @@ app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
     res.json({ success: true, message: 'Answer posted!' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error posting answer: ' + error.message });
+  }
+});
+
+/* ============================================================
+   PEER Q&A — replies (Sprint 4)
+   ============================================================ */
+app.post('/api/courses/:courseId/doubts/:doubtId/replies', async (req, res) => {
+  try {
+    const { authorName, authorUsername, authorRole, text } = req.body;
+    if (!text || !text.trim()) return res.status(400).json({ success: false, message: 'Reply text required' });
+
+    await Course.updateOne(
+      { _id: req.params.courseId, "doubts._id": req.params.doubtId },
+      { $push: { "doubts.$.replies": {
+        authorName,
+        authorUsername,
+        authorRole: authorRole || 'student',
+        text: text.trim(),
+        date: new Date(),
+        isAccepted: false
+      } } }
+    );
+
+    const course = await Course.findById(req.params.courseId);
+    const doubt = course?.doubts?.id(req.params.doubtId);
+    if (doubt && doubt.studentUsername && doubt.studentUsername !== authorUsername) {
+      const asker = await User.findOne({ username: doubt.studentUsername });
+      if (asker) {
+        if (!asker.notifications) asker.notifications = [];
+        asker.notifications.push({
+          id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          type: 'doubt-reply',
+          title: `${authorName || authorUsername} replied to your doubt`,
+          body: `"${text.slice(0, 100)}${text.length > 100 ? '…' : ''}"`,
+          courseId: req.params.courseId,
+          link: `#/course/${req.params.courseId}`,
+          read: false,
+          createdAt: new Date()
+        });
+        if (asker.notifications.length > 50) {
+          asker.notifications = asker.notifications.slice(-50);
+        }
+        await asker.save();
+      }
+    }
+
+    res.json({ success: true, message: 'Reply posted!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error posting reply: ' + error.message });
+  }
+});
+
+app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', async (req, res) => {
+  try {
+    const { acceptedBy } = req.body;
+
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+    const doubt = course.doubts.id(req.params.doubtId);
+    if (!doubt) return res.status(404).json({ success: false, message: 'Doubt not found' });
+
+    const isAsker = doubt.studentUsername === acceptedBy;
+    const acceptor = await User.findOne({ username: acceptedBy });
+    const isAdmin = acceptor?.role === 'admin';
+
+    if (!isAsker && !isAdmin) {
+      return res.status(403).json({ success: false, message: 'Only the asker or an admin can accept' });
+    }
+
+    doubt.replies.forEach(r => { r.isAccepted = false; });
+    const reply = doubt.replies.id(req.params.replyId);
+    if (!reply) return res.status(404).json({ success: false, message: 'Reply not found' });
+    reply.isAccepted = true;
+
+    await course.save();
+    res.json({ success: true, message: 'Answer accepted!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error accepting reply: ' + error.message });
+  }
+});
+
+/* ============================================================
+   QUIZ (Sprint 4)
+   ============================================================ */
+app.post('/api/courses/:courseId/materials/:materialId/quiz', async (req, res) => {
+  try {
+    const { quiz } = req.body;
+    if (!Array.isArray(quiz)) return res.status(400).json({ success: false, message: 'quiz must be an array' });
+
+    await Course.updateOne(
+      { _id: req.params.courseId, "materials._id": req.params.materialId },
+      { $set: { "materials.$.quiz": quiz } }
+    );
+
+    res.json({ success: true, message: 'Quiz saved successfully!' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error saving quiz: ' + error.message });
+  }
+});
+
+app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
+  try {
+    const { userId, answers } = req.body;
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+    if (!Array.isArray(answers)) return res.status(400).json({ success: false, message: 'answers must be an array' });
+
+    const course = await Course.findById(req.params.courseId);
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+    const mat = course.materials.id(req.params.materialId);
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+
+    const quiz = mat.quiz || [];
+    if (quiz.length === 0) return res.status(400).json({ success: false, message: 'This material has no quiz' });
+
+    let score = 0;
+    const results = quiz.map((q, i) => {
+      const chosen = answers[i];
+      const isCorrect = chosen === q.correctIndex;
+      if (isCorrect) score++;
+      return {
+        correct: isCorrect,
+        chosen,
+        correctIndex: q.correctIndex,
+        explanation: q.explanation || ''
+      };
+    });
+
+    const total = quiz.length;
+    const pct = Math.round((score / total) * 100);
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user.quizResults) user.quizResults = new Map();
+
+    const prev = user.quizResults.get(req.params.materialId) || { attempts: 0 };
+    user.quizResults.set(req.params.materialId, {
+      score,
+      total,
+      attempts: (prev.attempts || 0) + 1,
+      lastAttemptAt: new Date()
+    });
+    await user.save();
+
+    res.json({
+      success: true,
+      score,
+      total,
+      percent: pct,
+      results,
+      attempts: (prev.attempts || 0) + 1
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Error grading quiz: ' + error.message });
+  }
+});
+
+app.get('/api/user/quiz-results/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('quizResults');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    res.json({ success: true, results: Object.fromEntries(user.quizResults || new Map()) });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
   }
 });
 
@@ -379,8 +544,6 @@ app.post('/api/verify-payment', async (req, res) => {
 /* ============================================================
    USER DATA — bookmarks, progress, streaks, notifications
    ============================================================ */
-
-// Toggle bookmark on a course
 app.post('/api/user/bookmarks/:courseId', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -404,7 +567,6 @@ app.post('/api/user/bookmarks/:courseId', async (req, res) => {
   }
 });
 
-// Get fresh user data (bumps streak for students)
 app.get('/api/user/me/:userId', async (req, res) => {
   try {
     const user = await User.findById(req.params.userId).select('-password');
@@ -421,7 +583,6 @@ app.get('/api/user/me/:userId', async (req, res) => {
   }
 });
 
-// Mark a material as viewed / unviewed
 app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
   try {
     const { userId, viewed } = req.body;

@@ -8,17 +8,35 @@ const materialSchema = new mongoose.Schema({
   fileData: String,
   fileName: String,
   isPremium: { type: Boolean, default: false },
-  price: { type: Number, default: 0 }
+  price: { type: Number, default: 0 },
+
+  // Sprint 4 — quiz
+  quiz: [{
+    question:     { type: String, required: true },
+    options:      { type: [String], default: [] },
+    correctIndex: { type: Number, default: 0 },
+    explanation:  { type: String, default: '' }
+  }]
 });
 
-// Naya: Student ki basic details save karne ke liye
+// Sprint 4 — peer Q&A replies
+const replySchema = new mongoose.Schema({
+  authorName:     String,
+  authorUsername: String,
+  authorRole:     { type: String, default: 'student' },
+  text:           { type: String, required: true },
+  date:           { type: Date, default: Date.now },
+  isAccepted:     { type: Boolean, default: false }
+});
+
 const doubtSchema = new mongoose.Schema({
   studentName: String,
   studentUsername: String,
   studentEmail: String,
   question: String,
   answer: String,
-  date: { type: Date, default: Date.now }
+  date: { type: Date, default: Date.now },
+  replies: [replySchema]
 });
 
 const courseSchema = new mongoose.Schema({

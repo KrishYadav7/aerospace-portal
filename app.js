@@ -1,5 +1,5 @@
 /* ============================================================
-   STORAGE — Professors (still localStorage)
+   STORAGE — Professors (localStorage)
    ============================================================ */
 const STORAGE_KEY = 'aerospace_data';
 
@@ -21,7 +21,7 @@ function getProfessors() { return loadData().professors; }
 function generateId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
 /* ============================================================
-   COURSES — live from DB
+   COURSES
    ============================================================ */
 let liveCourses = [];
 function getCourses() { return liveCourses; }
@@ -127,9 +127,6 @@ function accentStyle(codeOrName) {
   return `--accent-1:${a.from};--accent-2:${a.to};--accent-solid:${a.solid};--accent-soft:${a.soft};--accent-glow:${a.glow};`;
 }
 
-/* ============================================================
-   BOOKMARK / PROGRESS / STREAK HELPERS
-   ============================================================ */
 function isBookmarked(courseId) {
   return !!(currentUser?.bookmarks?.includes(courseId));
 }
@@ -190,7 +187,6 @@ document.addEventListener('click', (e) => {
     document.getElementById('mainNav')?.classList.remove('open');
   }
 
-  // Notification bell
   const notifWrap = document.getElementById('notifWrap');
   if (notifWrap) {
     if (e.target.closest('#notifBtn')) {
@@ -209,11 +205,17 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('DOMContentLoaded', updateThemeIcon);
 
-// Mark all notifications read
 document.addEventListener('click', (e) => {
   if (e.target.closest('#notifMarkAll')) {
     e.stopPropagation();
     markAllNotificationsRead();
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#quizAddQuestionBtn')) {
+    e.preventDefault();
+    addQuizQuestion();
   }
 });
 
@@ -397,7 +399,6 @@ function renderApp() {
   $('roleBadge').textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
   $('roleBadge').className = 'role-badge ' + currentUser.role;
 
-  // Streak badge
   const streakEl = $('streakBadge');
   const streakNum = $('streakCount');
   if (streakEl && streakNum) {
@@ -623,7 +624,12 @@ async function renderAdminCourses() {
     const matCount = c.materials ? c.materials.length : 0;
     const premiumLabel = c.isPremium ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>` : '';
 
-    const pendingDoubts = (c.doubts || []).filter(d => !d.answer).length;
+    const pendingDoubts = (c.doubts || []).filter(d => {
+      const hasLegacy = d.answer && d.answer.trim();
+      const hasReply = d.replies && d.replies.length > 0;
+      return !hasLegacy && !hasReply;
+    }).length;
+
     const alertHtml = pendingDoubts > 0 ? `
       <div class="admin-alert">
         <span><i class="fas fa-bell"></i> ${pendingDoubts} Pending Doubt(s)</span>
@@ -943,6 +949,12 @@ function renderSavedCourses() {
 /* ============================================================
    COURSE DETAIL
    ============================================================ */
+function hasAnyAnswer(doubt) {
+  if (doubt.answer && doubt.answer.trim()) return true;
+  if (doubt.replies && doubt.replies.length > 0) return true;
+  return false;
+}
+
 function renderCourseDetail(courseId) {
   const course = findCourse(courseId);
   if (!course) {
@@ -975,7 +987,6 @@ function renderCourseDetail(courseId) {
       </div>`;
   }
 
-  // Certificate earned banner
   if (currentUser.role === 'student') {
     const viewedCount = getProgress(course.id).length;
     const totalMats = (course.materials || []).length;
@@ -1011,7 +1022,7 @@ function renderCourseDetail(courseId) {
   });
   html += `</div>`;
 
-  /* ===== Q&A section ===== */
+  /* ===== Q&A section (Sprint 4 — Peer Q&A) ===== */
   if (currentMaterialFilter === 'qa') {
     const doubts = [...(course.doubts || [])];
     html += `<div class="qa-section">
@@ -1030,37 +1041,81 @@ function renderCourseDetail(courseId) {
       html += `<div class="empty-state" style="padding: 20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet.</p></div>`;
     } else {
       doubts.sort((a, b) => {
-        if (!a.answer && b.answer) return -1;
-        if (a.answer && !b.answer) return 1;
-        return 0;
+        const aHas = hasAnyAnswer(a);
+        const bHas = hasAnyAnswer(b);
+        if (!aHas && bHas) return -1;
+        if (aHas && !bHas) return 1;
+        return new Date(b.date) - new Date(a.date);
       });
 
       doubts.forEach(d => {
-        const isAnswered = !!d.answer;
-        const statusBadge = isAnswered
-          ? `<span class="qa-status solved">SOLVED</span>`
-          : `<span class="qa-status pending">PENDING</span>`;
+        const answered = hasAnyAnswer(d);
+        const statusBadge = answered
+          ? `<span class="qa-status solved">ANSWERED</span>`
+          : `<span class="qa-status pending">OPEN</span>`;
 
         const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
         const emailText = d.studentEmail ? escapeHtml(d.studentEmail) : 'No Email';
         const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
 
+        const isAsker = d.studentUsername === currentUser.username;
+        const isAdmin = currentUser.role === 'admin';
+        const canReply = isAdmin || currentUser.role === 'student';
+
+        const replies = d.replies || [];
+        let repliesHtml = '';
+        if (replies.length > 0) {
+          repliesHtml = `<div class="qa-replies">`;
+          replies.forEach(r => {
+            const rDate = r.date ? new Date(r.date).toLocaleDateString() : '';
+            const isAdminReply = r.authorRole === 'admin';
+            const canAccept = (isAsker || isAdmin) && !r.isAccepted;
+
+            repliesHtml += `
+              <div class="qa-reply ${isAdminReply ? 'admin-reply' : ''} ${r.isAccepted ? 'accepted' : ''}">
+                <div class="qa-reply-head">
+                  <strong>
+                    <i class="fas ${isAdminReply ? 'fa-user-shield' : 'fa-user-circle'}"></i>
+                    ${escapeHtml(r.authorName || r.authorUsername)}
+                  </strong>
+                  ${isAdminReply ? '<span class="qa-reply-tag">Instructor</span>' : ''}
+                  ${r.isAccepted ? '<span class="qa-reply-tag accepted-tag"><i class="fas fa-check-circle"></i> Accepted</span>' : ''}
+                  <span class="qa-reply-date">${rDate}</span>
+                </div>
+                <div class="qa-reply-text">${escapeHtml(r.text)}</div>
+                ${canAccept ? `<button class="qa-accept-btn" onclick="acceptReply('${course.id}', '${d._id}', '${r._id}')">
+                  <i class="fas fa-check"></i> Accept this answer
+                </button>` : ''}
+              </div>`;
+          });
+          repliesHtml += `</div>`;
+        }
+
+        const legacyAnswerHtml = (!replies.length && d.answer)
+          ? `<div class="qa-answer"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${escapeHtml(d.answer)}</div>`
+          : '';
+
+        const replyFormHtml = canReply ? `
+          <div class="qa-reply-form" id="replyForm-${d._id}">
+            <textarea id="replyText-${d._id}" placeholder="${isAdmin ? 'Write an official answer...' : 'Share what you know...'}"></textarea>
+            <button class="btn ${isAdmin ? 'btn-success' : 'btn-primary'} btn-sm" onclick="postReply('${course.id}', '${d._id}')">
+              <i class="fas fa-reply"></i> ${isAdmin ? 'Post Answer' : 'Post Reply'}
+            </button>
+          </div>` : '';
+
         html += `
-          <div class="qa-item ${isAnswered ? 'solved' : 'pending'}">
+          <div class="qa-item ${answered ? 'solved' : 'pending'}">
             <div class="qa-head">
               <div>
                 <strong><i class="fas fa-user-circle"></i> ${escapeHtml(d.studentName)} <span class="qa-username">${usernameText}</span></strong>
-                ${currentUser.role === 'admin' ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
+                ${isAdmin ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
               </div>
               <div>${statusBadge} <span class="qa-date">${dateText}</span></div>
             </div>
             <p class="qa-question"><strong>Q:</strong> ${escapeHtml(d.question)}</p>
-            ${isAnswered
-              ? `<div class="qa-answer"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${escapeHtml(d.answer)}</div>`
-              : (currentUser.role === 'admin'
-                  ? `<button class="btn btn-success btn-sm" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Give Reply</button>`
-                  : `<div class="qa-waiting"><i class="fas fa-clock"></i> Waiting for admin's reply...</div>`)
-            }
+            ${legacyAnswerHtml}
+            ${repliesHtml}
+            ${replyFormHtml}
           </div>`;
       });
     }
@@ -1102,6 +1157,15 @@ function renderCourseDetail(courseId) {
         progressBtnHtml = `<button class="btn ${viewed ? 'btn-success' : 'btn-outline'} btn-sm" onclick="event.stopPropagation();toggleMaterialViewed(event, '${course.id}', '${m.id}')">
           <i class="fas ${viewed ? 'fa-check-circle' : 'fa-circle'}"></i> ${viewed ? 'Completed' : 'Mark done'}
         </button>`;
+
+        const quizCount = (m.quiz || []).length;
+        if (quizCount > 0) {
+          const qr = (currentUser.quizResults || {})[m.id];
+          const label = qr ? `Retake Quiz (${qr.score}/${qr.total})` : `Take Quiz (${quizCount})`;
+          progressBtnHtml += ` <button class="btn btn-accent btn-sm" onclick="event.stopPropagation();openQuizPlayer('${course.id}', '${m.id}')">
+            <i class="fas fa-question-circle"></i> ${label}
+          </button>`;
+        }
       }
 
       const badgeHtml = isMatPremium
@@ -1111,6 +1175,7 @@ function renderCourseDetail(courseId) {
       html += `
         <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
           ${currentUser.role === 'admin' ? `
+            <button class="delete-mat-btn quiz" onclick="openQuizModal('${course.id}', '${m.id}')" title="Manage Quiz"><i class="fas fa-question-circle"></i></button>
             <button class="delete-mat-btn edit" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button>
             <button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>
           ` : ''}
@@ -1163,158 +1228,45 @@ function generateCertificate(courseId) {
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
   <style>
     * { margin:0; padding:0; box-sizing:border-box; }
-    body {
-      font-family: 'Inter', sans-serif;
-      background: #f0f4f8;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 30px 20px;
-    }
-    .toolbar {
-      position: fixed;
-      top: 20px; right: 20px;
-      z-index: 100;
-    }
-    .btn-print {
-      padding: 12px 22px;
-      border: none;
-      border-radius: 10px;
-      font-family: inherit;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: .2s;
-      background: linear-gradient(135deg, #4f46e5, #6366f1);
-      color: #fff;
-      box-shadow: 0 6px 18px rgba(79,70,229,.35);
-    }
+    body { font-family: 'Inter', sans-serif; background: #f0f4f8; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 30px 20px; }
+    .toolbar { position: fixed; top: 20px; right: 20px; z-index: 100; }
+    .btn-print { padding: 12px 22px; border: none; border-radius: 10px; font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: .2s; background: linear-gradient(135deg, #4f46e5, #6366f1); color: #fff; box-shadow: 0 6px 18px rgba(79,70,229,.35); }
     .btn-print:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(79,70,229,.45); }
-    .cert {
-      position: relative;
-      width: 100%;
-      max-width: 1000px;
-      aspect-ratio: 1.414 / 1;
-      background: #fff;
-      box-shadow: 0 20px 60px rgba(15,23,42,.15);
-      overflow: hidden;
-      border-radius: 8px;
-    }
+    .cert { position: relative; width: 100%; max-width: 1000px; aspect-ratio: 1.414 / 1; background: #fff; box-shadow: 0 20px 60px rgba(15,23,42,.15); overflow: hidden; border-radius: 8px; }
     .cert-bg { position: absolute; inset: 0; pointer-events: none; }
-    .cert-bg::before {
-      content: ""; position: absolute; top: -20%; right: -15%;
-      width: 500px; height: 500px; border-radius: 50%;
-      background: radial-gradient(circle, ${acc.solid}22, transparent 70%);
-    }
-    .cert-bg::after {
-      content: ""; position: absolute; bottom: -25%; left: -12%;
-      width: 460px; height: 460px; border-radius: 50%;
-      background: radial-gradient(circle, #f59e0b1a, transparent 70%);
-    }
-    .cert-inner {
-      position: absolute; inset: 20px;
-      border: 3px solid #0f172a; border-radius: 6px;
-      padding: 40px 60px;
-      display: flex; flex-direction: column;
-      align-items: center; text-align: center; z-index: 1;
-    }
-    .cert-inner::before {
-      content: ""; position: absolute; inset: 6px;
-      border: 1px solid #cbd5e1; border-radius: 4px; pointer-events: none;
-    }
+    .cert-bg::before { content: ""; position: absolute; top: -20%; right: -15%; width: 500px; height: 500px; border-radius: 50%; background: radial-gradient(circle, ${acc.solid}22, transparent 70%); }
+    .cert-bg::after { content: ""; position: absolute; bottom: -25%; left: -12%; width: 460px; height: 460px; border-radius: 50%; background: radial-gradient(circle, #f59e0b1a, transparent 70%); }
+    .cert-inner { position: absolute; inset: 20px; border: 3px solid #0f172a; border-radius: 6px; padding: 40px 60px; display: flex; flex-direction: column; align-items: center; text-align: center; z-index: 1; }
+    .cert-inner::before { content: ""; position: absolute; inset: 6px; border: 1px solid #cbd5e1; border-radius: 4px; pointer-events: none; }
     .corner { position: absolute; width: 40px; height: 40px; border: 3px solid ${acc.solid}; }
     .corner.tl { top: 8px; left: 8px; border-right: none; border-bottom: none; }
     .corner.tr { top: 8px; right: 8px; border-left: none; border-bottom: none; }
     .corner.bl { bottom: 8px; left: 8px; border-right: none; border-top: none; }
     .corner.br { bottom: 8px; right: 8px; border-left: none; border-top: none; }
     .cert-header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
-    .cert-logo {
-      width: 52px; height: 52px; border-radius: 12px;
-      background: linear-gradient(135deg, ${acc.from}, ${acc.to});
-      display: flex; align-items: center; justify-content: center;
-      font-size: 26px; color: #fff;
-      box-shadow: 0 8px 20px ${acc.solid}44;
-    }
+    .cert-logo { width: 52px; height: 52px; border-radius: 12px; background: linear-gradient(135deg, ${acc.from}, ${acc.to}); display: flex; align-items: center; justify-content: center; font-size: 26px; color: #fff; box-shadow: 0 8px 20px ${acc.solid}44; }
     .cert-dept { text-align: left; }
     .cert-dept h1 { font-size: 20px; font-weight: 800; color: #0f172a; letter-spacing: -.3px; }
     .cert-dept span { font-size: 12px; color: #64748b; font-weight: 500; letter-spacing: 1px; text-transform: uppercase; }
-    .cert-title {
-      font-family: 'Playfair Display', serif;
-      font-size: 46px; font-weight: 800;
-      color: #0f172a; letter-spacing: -.5px;
-      margin: 22px 0 6px; line-height: 1;
-    }
-    .cert-subtitle {
-      font-size: 13px; color: #64748b;
-      letter-spacing: 3px; text-transform: uppercase;
-      font-weight: 600; margin-bottom: 24px;
-    }
+    .cert-title { font-family: 'Playfair Display', serif; font-size: 46px; font-weight: 800; color: #0f172a; letter-spacing: -.5px; margin: 22px 0 6px; line-height: 1; }
+    .cert-subtitle { font-size: 13px; color: #64748b; letter-spacing: 3px; text-transform: uppercase; font-weight: 600; margin-bottom: 24px; }
     .cert-presented { font-size: 14px; color: #475569; margin-bottom: 8px; }
-    .cert-name {
-      font-family: 'Playfair Display', serif;
-      font-size: 42px; font-weight: 700;
-      color: ${acc.solid}; letter-spacing: -.3px;
-      margin: 4px 0 14px; padding-bottom: 8px;
-      border-bottom: 2px solid #e2e8f0;
-      min-width: 400px; display: inline-block;
-    }
+    .cert-name { font-family: 'Playfair Display', serif; font-size: 42px; font-weight: 700; color: ${acc.solid}; letter-spacing: -.3px; margin: 4px 0 14px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; min-width: 400px; display: inline-block; }
     .cert-completed { font-size: 14px; color: #475569; margin-bottom: 10px; }
     .cert-course { font-size: 22px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }
-    .cert-code {
-      font-size: 12px; color: #64748b;
-      letter-spacing: 2px; text-transform: uppercase;
-      font-weight: 600; margin-bottom: 34px;
-    }
-    .cert-footer {
-      margin-top: auto; width: 100%;
-      display: flex; justify-content: space-between;
-      align-items: flex-end; padding-top: 20px;
-      border-top: 1px solid #e2e8f0;
-    }
+    .cert-code { font-size: 12px; color: #64748b; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; margin-bottom: 34px; }
+    .cert-footer { margin-top: auto; width: 100%; display: flex; justify-content: space-between; align-items: flex-end; padding-top: 20px; border-top: 1px solid #e2e8f0; }
     .cert-sign { text-align: center; min-width: 180px; }
-    .cert-sign-line {
-      font-family: 'Playfair Display', serif;
-      font-size: 22px; font-style: italic;
-      color: #0f172a; margin-bottom: 4px;
-      border-bottom: 1.5px solid #cbd5e1; padding-bottom: 4px;
-    }
-    .cert-sign-role {
-      font-size: 11px; color: #64748b;
-      text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600;
-    }
+    .cert-sign-line { font-family: 'Playfair Display', serif; font-size: 22px; font-style: italic; color: #0f172a; margin-bottom: 4px; border-bottom: 1.5px solid #cbd5e1; padding-bottom: 4px; }
+    .cert-sign-role { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; }
     .cert-meta { text-align: center; font-size: 11px; color: #94a3b8; letter-spacing: .5px; }
-    .cert-meta strong {
-      color: #475569; font-weight: 700;
-      font-family: 'Courier New', monospace;
-      font-size: 12px; letter-spacing: 1px;
-    }
-    .cert-seal {
-      position: absolute; bottom: 28px; right: 42px;
-      width: 92px; height: 92px; border-radius: 50%;
-      background: linear-gradient(135deg, #f59e0b, #d97706);
-      display: flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 10px; font-weight: 800;
-      letter-spacing: 1px; text-align: center;
-      box-shadow: 0 8px 24px rgba(245,158,11,.4);
-      border: 3px solid #fff; transform: rotate(-8deg);
-    }
+    .cert-meta strong { color: #475569; font-weight: 700; font-family: 'Courier New', monospace; font-size: 12px; letter-spacing: 1px; }
+    .cert-seal { position: absolute; bottom: 28px; right: 42px; width: 92px; height: 92px; border-radius: 50%; background: linear-gradient(135deg, #f59e0b, #d97706); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-align: center; box-shadow: 0 8px 24px rgba(245,158,11,.4); border: 3px solid #fff; transform: rotate(-8deg); }
     .cert-seal-inner { display: flex; flex-direction: column; align-items: center; gap: 2px; }
     .cert-seal i { font-size: 20px; }
     @page { size: A4 landscape; margin: 0; }
-    @media print {
-      body { background: #fff; padding: 0; }
-      .toolbar { display: none !important; }
-      .cert { box-shadow: none; border-radius: 0; width: 100vw; height: 100vh; max-width: none; aspect-ratio: auto; }
-    }
-    @media (max-width: 800px) {
-      .cert { aspect-ratio: auto; min-height: 600px; }
-      .cert-inner { padding: 20px 24px; position: relative; inset: auto; }
-      .cert-title { font-size: 32px; }
-      .cert-name { font-size: 28px; min-width: 260px; }
-      .cert-course { font-size: 18px; }
-      .cert-footer { flex-direction: column; gap: 14px; }
-    }
+    @media print { body { background: #fff; padding: 0; } .toolbar { display: none !important; } .cert { box-shadow: none; border-radius: 0; width: 100vw; height: 100vh; max-width: none; aspect-ratio: auto; } }
+    @media (max-width: 800px) { .cert { aspect-ratio: auto; min-height: 600px; } .cert-inner { padding: 20px 24px; position: relative; inset: auto; } .cert-title { font-size: 32px; } .cert-name { font-size: 28px; min-width: 260px; } .cert-course { font-size: 18px; } .cert-footer { flex-direction: column; gap: 14px; } }
   </style>
 </head>
 <body>
@@ -1370,6 +1322,288 @@ function generateCertificate(courseId) {
   win.document.write(html);
   win.document.close();
   showToast('🎓 Certificate generated!', 'success');
+}
+
+/* ============================================================
+   QUIZ — ADMIN
+   ============================================================ */
+let quizDraft = [];
+
+function openQuizModal(courseId, materialId) {
+  const course = findCourse(courseId);
+  if (!course) return;
+  const mat = course.materials.find(m => m.id === materialId);
+  if (!mat) return;
+
+  $('quizCourseId').value = courseId;
+  $('quizMaterialId').value = materialId;
+  quizDraft = JSON.parse(JSON.stringify(mat.quiz || []));
+  renderQuizDraft();
+  openModal('quizModal');
+}
+
+function renderQuizDraft() {
+  const list = $('quizQuestionsList');
+  if (quizDraft.length === 0) {
+    list.innerHTML = `<div class="empty-state" style="padding:20px;margin-bottom:14px;"><i class="fas fa-question-circle"></i><p>No questions yet. Click "Add Question" below.</p></div>`;
+    return;
+  }
+
+  let html = '';
+  quizDraft.forEach((q, qi) => {
+    html += `
+      <div class="quiz-edit-card" data-qindex="${qi}">
+        <div class="quiz-edit-head">
+          <strong>Question ${qi + 1}</strong>
+          <button type="button" class="quiz-remove" onclick="removeQuizQuestion(${qi})" title="Remove">
+            <i class="fas fa-trash-alt"></i>
+          </button>
+        </div>
+
+        <div class="form-group" style="margin-bottom:10px;">
+          <input type="text" placeholder="Question text" value="${escapeHtml(q.question)}"
+                 oninput="updateQuizField(${qi}, 'question', this.value)">
+        </div>
+
+        <div class="quiz-options">
+          ${(q.options || ['', '', '', '']).map((opt, oi) => `
+            <div class="quiz-option-row">
+              <label class="quiz-radio">
+                <input type="radio" name="correct-${qi}" ${q.correctIndex === oi ? 'checked' : ''}
+                       onchange="updateQuizCorrect(${qi}, ${oi})">
+                <span class="quiz-radio-dot"></span>
+              </label>
+              <input type="text" placeholder="Option ${oi + 1}" value="${escapeHtml(opt)}"
+                     oninput="updateQuizOption(${qi}, ${oi}, this.value)">
+            </div>
+          `).join('')}
+        </div>
+
+        <div class="form-group" style="margin:10px 0 0;">
+          <input type="text" placeholder="Explanation (optional)" value="${escapeHtml(q.explanation || '')}"
+                 oninput="updateQuizField(${qi}, 'explanation', this.value)">
+        </div>
+      </div>
+    `;
+  });
+  list.innerHTML = html;
+}
+
+function addQuizQuestion() {
+  quizDraft.push({
+    question: '',
+    options: ['', '', '', ''],
+    correctIndex: 0,
+    explanation: ''
+  });
+  renderQuizDraft();
+}
+
+function removeQuizQuestion(qi) {
+  quizDraft.splice(qi, 1);
+  renderQuizDraft();
+}
+
+function updateQuizField(qi, field, val) {
+  quizDraft[qi][field] = val;
+}
+
+function updateQuizOption(qi, oi, val) {
+  quizDraft[qi].options[oi] = val;
+}
+
+function updateQuizCorrect(qi, oi) {
+  quizDraft[qi].correctIndex = oi;
+}
+
+async function saveQuiz() {
+  for (let i = 0; i < quizDraft.length; i++) {
+    const q = quizDraft[i];
+    if (!q.question.trim()) return showToast(`Question ${i + 1} has no text.`, 'error');
+    if (q.options.length < 2) return showToast(`Question ${i + 1} needs at least 2 options.`, 'error');
+    if (q.options.some(o => !o.trim())) return showToast(`Question ${i + 1} has empty options.`, 'error');
+  }
+
+  const courseId = $('quizCourseId').value;
+  const materialId = $('quizMaterialId').value;
+
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}/quiz`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quiz: quizDraft })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('✅ Quiz saved!', 'success');
+      closeModal('quizModal');
+      fetchCoursesFromDB();
+    } else {
+      showToast(data.message || 'Failed to save quiz.', 'error');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
+}
+
+/* ============================================================
+   QUIZ PLAYER — student
+   ============================================================ */
+let quizPlayerState = null;
+
+function openQuizPlayer(courseId, materialId) {
+  const course = findCourse(courseId);
+  if (!course) return;
+  const mat = course.materials.find(m => m.id === materialId);
+  if (!mat) return;
+
+  const quiz = mat.quiz || [];
+  if (quiz.length === 0) return showToast('This material has no quiz.', 'info');
+
+  quizPlayerState = {
+    courseId,
+    materialId,
+    materialTitle: mat.title,
+    quiz,
+    answers: new Array(quiz.length).fill(-1),
+    submitted: false,
+    response: null
+  };
+
+  renderQuizPlayer();
+  openModal('quizPlayerModal');
+}
+
+function renderQuizPlayer() {
+  const st = quizPlayerState;
+  if (!st) return;
+
+  $('quizPlayerTitle').innerHTML = `<i class="fas fa-question-circle"></i> ${escapeHtml(st.materialTitle)}`;
+
+  if (!st.submitted) {
+    $('quizPlayerSub').textContent = `${st.quiz.length} question${st.quiz.length > 1 ? 's' : ''} · Choose one option per question`;
+    $('quizPlayerActions').innerHTML = `
+      <button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">Cancel</button>
+      <button type="button" class="btn btn-primary" id="quizSubmitBtn" onclick="submitQuiz()">
+        <i class="fas fa-paper-plane"></i> Submit Answers
+      </button>`;
+
+    let html = '';
+    st.quiz.forEach((q, qi) => {
+      html += `
+        <div class="quiz-play-card">
+          <div class="quiz-play-qnum">Question ${qi + 1} of ${st.quiz.length}</div>
+          <h4 class="quiz-play-question">${escapeHtml(q.question)}</h4>
+          <div class="quiz-play-options">
+            ${q.options.map((opt, oi) => `
+              <label class="quiz-play-option ${st.answers[qi] === oi ? 'selected' : ''}"
+                     onclick="selectQuizAnswer(${qi}, ${oi})">
+                <span class="quiz-play-letter">${String.fromCharCode(65 + oi)}</span>
+                <span class="quiz-play-text">${escapeHtml(opt)}</span>
+              </label>
+            `).join('')}
+          </div>
+        </div>`;
+    });
+    $('quizPlayerBody').innerHTML = html;
+  } else {
+    const { score, total, percent, results, attempts } = st.response;
+    const isPerfect = score === total;
+    const isPass = percent >= 60;
+    const emoji = isPerfect ? '🏆' : isPass ? '🎉' : '📚';
+    const headline = isPerfect ? 'Perfect Score!' : isPass ? 'Well done!' : 'Keep practicing!';
+
+    $('quizPlayerSub').textContent = `Attempt #${attempts}`;
+    $('quizPlayerActions').innerHTML = `
+      <button type="button" class="btn btn-outline" onclick="openQuizPlayer('${st.courseId}', '${st.materialId}')">
+        <i class="fas fa-redo"></i> Retake
+      </button>
+      <button type="button" class="btn btn-primary" onclick="closeModal('quizPlayerModal')">
+        <i class="fas fa-check"></i> Done
+      </button>`;
+
+    let html = `
+      <div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
+        <div class="quiz-result-emoji">${emoji}</div>
+        <div class="quiz-result-score">${score} / ${total}</div>
+        <div class="quiz-result-pct">${percent}%</div>
+        <div class="quiz-result-headline">${headline}</div>
+      </div>
+    `;
+
+    st.quiz.forEach((q, qi) => {
+      const r = results[qi];
+      const ok = r.correct;
+      html += `
+        <div class="quiz-result-item ${ok ? 'ok' : 'bad'}">
+          <div class="quiz-result-head">
+            <span class="quiz-result-badge ${ok ? 'ok' : 'bad'}">
+              <i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i>
+            </span>
+            <strong>Q${qi + 1}.</strong> ${escapeHtml(q.question)}
+          </div>
+          <div class="quiz-result-body">
+            <div class="quiz-answer-row">
+              <span class="quiz-answer-label">Your answer:</span>
+              <span class="${ok ? 'ok-text' : 'bad-text'}">${escapeHtml(q.options[r.chosen] ?? '—')}</span>
+            </div>
+            ${!ok ? `
+              <div class="quiz-answer-row">
+                <span class="quiz-answer-label">Correct answer:</span>
+                <span class="ok-text">${escapeHtml(q.options[r.correctIndex])}</span>
+              </div>` : ''}
+            ${r.explanation ? `<div class="quiz-explain"><i class="fas fa-lightbulb"></i> ${escapeHtml(r.explanation)}</div>` : ''}
+          </div>
+        </div>`;
+    });
+    $('quizPlayerBody').innerHTML = html;
+  }
+}
+
+function selectQuizAnswer(qi, oi) {
+  if (!quizPlayerState || quizPlayerState.submitted) return;
+  quizPlayerState.answers[qi] = oi;
+  renderQuizPlayer();
+}
+
+async function submitQuiz() {
+  const st = quizPlayerState;
+  if (!st) return;
+
+  const unanswered = st.answers.filter(a => a < 0).length;
+  if (unanswered > 0) return showToast(`Please answer all questions (${unanswered} left).`, 'error');
+
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser._id, answers: st.answers })
+    });
+    const data = await res.json();
+    if (data.success) {
+      st.submitted = true;
+      st.response = data;
+
+      if (!currentUser.quizResults) currentUser.quizResults = {};
+      currentUser.quizResults[st.materialId] = {
+        score: data.score,
+        total: data.total,
+        attempts: data.attempts,
+        lastAttemptAt: new Date().toISOString()
+      };
+      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+
+      renderQuizPlayer();
+      const pct = data.percent;
+      if (pct === 100) showToast('🏆 Perfect score!', 'success');
+      else if (pct >= 60) showToast(`🎉 You scored ${data.score}/${data.total}!`, 'success');
+      else showToast(`📚 Scored ${data.score}/${data.total}. Review and retake.`, 'info');
+    } else {
+      showToast(data.message || 'Failed to grade quiz.', 'error');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
 }
 
 /* ============================================================
@@ -1793,6 +2027,55 @@ async function replyDoubt(courseId, doubtId) {
   }
 }
 
+async function postReply(courseId, doubtId) {
+  const ta = document.getElementById(`replyText-${doubtId}`);
+  if (!ta) return;
+  const text = ta.value.trim();
+  if (!text) return showToast('Please type a reply.', 'error');
+
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}/replies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        authorName: currentUser.fullName || currentUser.username,
+        authorUsername: currentUser.username,
+        authorRole: currentUser.role,
+        text
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('💬 Reply posted!', 'success');
+      ta.value = '';
+      fetchCoursesFromDB();
+    } else {
+      showToast(data.message || 'Failed to post reply.', 'error');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
+}
+
+async function acceptReply(courseId, doubtId, replyId) {
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}/replies/${replyId}/accept`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acceptedBy: currentUser.username })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('✅ Answer accepted!', 'success');
+      fetchCoursesFromDB();
+    } else {
+      showToast(data.message || 'Failed to accept.', 'error');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
+}
+
 /* ============================================================
    PAYMENT
    ============================================================ */
@@ -1893,6 +2176,53 @@ function showToast(message, type = 'info') {
     setTimeout(() => toast.remove(), 350);
   }, 3500);
 }
+
+/* ============================================================
+   PWA — install prompt
+   ============================================================ */
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+
+  if (!localStorage.getItem('aero_pwa_dismissed')) {
+    setTimeout(() => {
+      const container = document.getElementById('toastContainer');
+      if (!container) return;
+      const toast = document.createElement('div');
+      toast.className = 'toast info pwa-toast';
+      toast.innerHTML = `
+        <i class="fas fa-download"></i>
+        <span style="flex:1;">Install this app for faster access</span>
+        <button class="pwa-install-btn" id="pwaInstallBtn">Install</button>
+        <button class="pwa-dismiss-btn" id="pwaDismissBtn" aria-label="Dismiss">×</button>
+      `;
+      container.appendChild(toast);
+      setTimeout(() => toast.remove(), 12000);
+
+      document.getElementById('pwaInstallBtn')?.addEventListener('click', async () => {
+        toast.remove();
+        if (!deferredInstallPrompt) return;
+        deferredInstallPrompt.prompt();
+        const { outcome } = await deferredInstallPrompt.userChoice;
+        if (outcome === 'accepted') showToast('🎉 App installed!', 'success');
+        deferredInstallPrompt = null;
+        localStorage.setItem('aero_pwa_dismissed', '1');
+      });
+
+      document.getElementById('pwaDismissBtn')?.addEventListener('click', () => {
+        toast.remove();
+        localStorage.setItem('aero_pwa_dismissed', '1');
+      });
+    }, 3000);
+  }
+});
+
+window.addEventListener('appinstalled', () => {
+  showToast('🎉 Aerospace Portal installed!', 'success');
+  deferredInstallPrompt = null;
+});
 
 /* ============================================================
    INIT
