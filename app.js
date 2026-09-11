@@ -777,6 +777,23 @@ function openAddMaterialModal(courseId) {
   openModal('materialModal');
 }
 
+// Naya Toggle Function
+function toggleMaterialPriceInput() {
+  const isPremium = $('materialIsPremium').checked;
+  $('materialPriceGroup').style.display = isPremium ? 'block' : 'none';
+}
+
+function openAddMaterialModal(courseId) {
+  $('materialModalTitle').textContent = '📎 Add Material';
+  $('editMaterialId').value = ''; $('materialCourseId').value = courseId;
+  $('materialTitle').value = ''; $('materialType').value = 'video';
+  $('materialDescription').value = ''; $('materialUrl').value = ''; $('materialFile').value = '';
+  $('materialIsPremium').checked = false;
+  if($('materialPrice')) $('materialPrice').value = '';
+  toggleMaterialPriceInput(); 
+  openModal('materialModal');
+}
+
 async function saveMaterial(e) {
   e.preventDefault();
   const courseId = $('materialCourseId').value;
@@ -789,7 +806,8 @@ async function saveMaterial(e) {
       type: $('materialType').value,
       description: $('materialDescription').value.trim(), 
       url: $('materialUrl').value.trim(),
-      isPremium: $('materialIsPremium').checked, // <-- Naya data jo DB mein jayega
+      isPremium: $('materialIsPremium').checked,
+      price: parseFloat($('materialPrice').value) || 0, // <-- Price ab save hoga
       fileData, 
       fileName
     };
@@ -870,38 +888,43 @@ function deleteProfessor(professorId) {
 // ASLI RAZORPAY PAYMENT INTEGRATION
 // ================================================================
 
-async function showPaymentModal(courseId) {
+async function showPaymentModal(courseId, materialId = null) {
   const course = findCourse(courseId);
   if (!course) return;
 
-  showToast('Initiating secure payment...', 'info');
+  let amount = course.price || 0;
+  let itemName = course.name;
+  let purchaseId = course.id; 
+
+  if (materialId) {
+    const mat = course.materials.find(m => m.id === materialId);
+    if (mat) {
+      amount = mat.price || 0;
+      itemName = mat.title;
+      purchaseId = mat.id; 
+    }
+  }
+
+  showToast(`Initiating secure payment for ${itemName}...`, 'info');
 
   try {
-    // 1. Backend se Order create karwana
     const response = await fetch('https://aerospace-portal.onrender.com/api/create-order', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount: course.price })
+      body: JSON.stringify({ amount: amount }) 
     });
     const data = await response.json();
+    if (!data.success) { showToast('Error creating order.', 'error'); return; }
 
-    if (!data.success) {
-      showToast('Error creating order. Is server running?', 'error');
-      return;
-    }
-
-    // 2. Razorpay Popup ki Settings
     const options = {
-      "key": rzp_test_TaPfJOdu1PgUed, // ⚠️ Apna Test Key ID yahan paste karein
+      "key": "rzp_test_TaPfJOdu1PgUed",
       "amount": data.order.amount,
       "currency": "INR",
       "name": "Aerospace EdTech",
-      "description": `Purchase: ${course.name}`,
+      "description": `Purchase: ${itemName}`,
       "order_id": data.order.id,
       "handler": async function (response) {
-        // 3. Payment hone ke baad Backend se Verify karna
         showToast('Verifying payment...', 'info');
-        
         const verifyRes = await fetch('https://aerospace-portal.onrender.com/api/verify-payment', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -909,39 +932,28 @@ async function showPaymentModal(courseId) {
             razorpay_order_id: response.razorpay_order_id,
             razorpay_payment_id: response.razorpay_payment_id,
             razorpay_signature: response.razorpay_signature,
-            courseId: courseId,
-            userId: currentUser._id // <--- Humne ye nayi line jodi hai
+            courseId: purchaseId, 
+            userId: currentUser._id 
           })
         });
         
         const verifyData = await verifyRes.json();
-        
         if (verifyData.success) {
-          // Payment Success! Course ko user ki list mein add karna
           if (!currentUser.purchases) currentUser.purchases = [];
-          if (!currentUser.purchases.includes(courseId)) currentUser.purchases.push(courseId);
+          if (!currentUser.purchases.includes(purchaseId)) currentUser.purchases.push(purchaseId);
           localStorage.setItem('aero_user', JSON.stringify(currentUser));
-          
-          showToast('🎉 Payment Successful! Course Unlocked.', 'success');
-          renderApp(); // Screen refresh karke lock hata dega
+          showToast('🎉 Payment Successful! Content Unlocked.', 'success');
+          renderApp(); 
         } else {
           showToast('Payment verification failed!', 'error');
         }
       },
-      "prefill": {
-        "name": currentUser.username,
-        "email": currentUser.email || "student@aerospace.com",
-        "contact": "9999999999" // Test mode mein koi bhi number chalta hai
-      },
-      "theme": {
-        "color": "#2563eb" // Aapke portal ka blue color
-      }
+      "prefill": { "name": currentUser.username, "email": currentUser.email || "student@aerospace.com", "contact": "9999999999" },
+      "theme": { "color": "#2563eb" }
     };
 
-    // 4. Razorpay Popup Open Karna
     const rzp1 = new Razorpay(options);
     rzp1.open();
-
   } catch (error) {
     showToast('Server error during payment initialization.', 'error');
   }

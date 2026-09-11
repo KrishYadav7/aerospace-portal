@@ -36,6 +36,7 @@ materials: [{
   url: String,
   fileData: String,
   fileName: String,
-  isPremium: { type: Boolean, default: false } // <-- ये नई लाइन ऐड करनी है
-}],
+  isPremium: { type: Boolean, default: false },
+  price: { type: Number, default: 0 } // <-- Yeh line add karni hai
+}]
 module.exports = mongoose.model('Course', courseSchema);

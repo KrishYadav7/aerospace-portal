@@ -283,12 +283,33 @@
         
         <!-- Systematic Premium Toggle & Price Grid -->
         <div class="form-row" style="align-items: end;">
+          <!-- Systematic Type, Premium Checkbox & Price Grid -->
+        <div class="form-row" style="align-items: end;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label>Type *</label>
+            <select id="materialType" required>
+              <option value="video">🎬 Video Lecture</option>
+              <option value="pyq">📄 Previous Year Question</option>
+              <option value="tutorial">📝 Tutorial Sheet</option>
+              <option value="slides">📊 Slides</option>
+              <option value="other">📁 Other</option>
+            </select>
+          </div>
+          
           <div class="form-group premium-toggle" style="margin-bottom: 0;">
-            <label style="padding: 10px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; width: 100%;">
-              <input type="checkbox" id="courseIsPremium" onchange="togglePriceInput()">
-              <span style="font-weight: 600; color: #1a3a6b;"><i class="fas fa-crown"></i> Premium Course</span>
+            <label style="padding: 10px; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; width: 100%;">
+              <!-- YAHAN ONCHANGE ADD HUA HAI -->
+              <input type="checkbox" id="materialIsPremium" onchange="toggleMaterialPriceInput()">
+              <span style="color: #be123c; font-weight: bold;"><i class="fas fa-crown"></i> PRO Material</span>
             </label>
           </div>
+        </div>
+
+        <!-- YEH NAYA PRICE BOX HAI -->
+        <div class="form-group" id="materialPriceGroup" style="display:none; margin-top: 16px;">
+          <label style="color:#b91c1c; font-weight:bold;">Material Unlock Price (₹)</label>
+          <input type="number" id="materialPrice" placeholder="e.g. 49" min="0" step="1">
+        </div>
           <div class="form-group" id="priceGroup" style="display:none; margin-bottom: 0;">
             <label>Price (₹)</label>
             <input type="number" id="coursePrice" placeholder="e.g. 499" min="0" step="1">
