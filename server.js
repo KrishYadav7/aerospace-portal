@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const User = require('./models/User'); 
 const Course = require('./models/Course'); 
 
+
 const app = express();
 
 app.use(cors());
@@ -41,7 +42,19 @@ app.post('/api/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ success: false, message: 'Invalid username or password.' });
     const token = jwt.sign({ id: user._id, role: user.role }, 'SuperSecretAeroKey', { expiresIn: '1d' });
-    res.json({ success: true, message: 'Login successful!', token, user: { username: user.username, email: user.email, role: user.role, fullName: user.fullName } });
+    res.json({
+  success: true,
+  message: 'Login successful!',
+  token,
+  user: {
+    _id: user._id,
+    username: user.username,
+    email: user.email,
+    role: user.role,
+    fullName: user.fullName,
+    purchases: user.purchases || []   // ← ADD THIS
+  }
+});
   } catch (error) { res.status(500).json({ success: false, message: 'Server error: ' + error.message }); }
 });
 
@@ -193,6 +206,7 @@ app.get('/api/students', async (req, res) => {
     res.json({ success: true, students });
   } catch (error) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
+
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`✅ Server is running on port ${PORT}`));

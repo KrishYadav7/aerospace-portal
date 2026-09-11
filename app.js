@@ -40,6 +40,46 @@ let studentNav = 'home';
 let adminTab = 'courses';
 
 const $ = id => document.getElementById(id);
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+/* ============================================================
+   HASH ROUTING — keeps page state on refresh
+   ============================================================ */
+function syncHashToState() {
+  const hash = location.hash || '#/home';
+  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+
+  // #/course/abc123  → open that course detail
+  if (parts[0] === 'course' && parts[1]) {
+    currentCourseId = parts[1];
+    window.currentSelectedCourseId = parts[1];
+    return;
+  }
+
+  currentCourseId = null;
+  window.currentSelectedCourseId = null;
+
+  if (parts[0] === 'admin') {
+    adminTab = parts[1] || 'courses';
+  } else if (parts[0] === 'courses') {
+    studentNav = 'courses';
+  } else {
+    studentNav = 'home';
+  }
+}
+
+function pushHash(path) {
+  if (location.hash !== path) {
+    history.pushState(null, '', path);
+  }
+}
 /* ============================================================
    COURSE ACCENT SYSTEM
    Each course code hashes to one of 8 curated gradient palettes.
@@ -157,11 +197,18 @@ async function handleLogin(e) {
 }
 
 function logout() {
-  currentUser = null; currentCourseId = null; studentNav = 'home';
-  localStorage.removeItem('aero_token'); localStorage.removeItem('aero_user');
-  renderApp(); showToast('Logged out.', 'info');
+  currentUser = null;
+  currentCourseId = null;
+  window.currentSelectedCourseId = null;
+  currentMaterialFilter = 'all';
+  studentNav = 'home';
+  adminTab = 'courses';
+  localStorage.removeItem('aero_token');
+  localStorage.removeItem('aero_user');
+  pushHash('#/home');
+  renderApp();
+  showToast('Logged out.', 'info');
 }
-
 function showRegisterModal() {
   $('regFullName').value = ''; $('regUsername').value = ''; $('regEmail').value = ''; $('regPassword').value = '';
   openModal('registerModal');
@@ -198,6 +245,8 @@ async function verifyAndCompleteRegistration(otp) {
 function navigateStudent(dest) {
   currentCourseId = null;
   window.currentSelectedCourseId = null;
+  currentMaterialFilter = 'all';
+  pushHash(dest === 'courses' ? '#/courses' : '#/home');
   studentNav = dest;
   renderApp();
 }
@@ -231,6 +280,7 @@ function buildNav() {
 
 function switchAdminTab(tab) {
   adminTab = tab;
+  pushHash(`#/admin/${tab}`);
   document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
   document.querySelector(`.admin-tab[data-tab="${tab}"]`).classList.add('active');
   document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
@@ -280,11 +330,11 @@ async function renderAdminCourses() {
         <div class="course-card" style="${accentStyle(c.code || c.name)}">
         <button class="delete-course-btn" onclick="deleteCourse('${c.id}')" title="Delete course"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${c.code || 'N/A'} ${premiumLabel}</div>
-        <h3>${c.name}</h3>
+        <h3>${escapeHtml(c.name)}</h3>
         ${alertHtml}
         <div class="course-meta">
-          <span><i class="fas fa-user"></i> ${c.instructor || '—'}</span>
-          <span><i class="fas fa-calendar-alt"></i> ${c.semester || '—'}</span>
+          <span><i class="fas fa-user"></i> ${escapeHtml(c.instructor) || '—'}</span>
+          <span><i class="fas fa-calendar-alt"></i> ${escapeHtml(c.semester) || '—'}</span>
           ${c.isPremium ? `<span><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>` : ''}
         </div>
         <div class="material-count"><i class="fas fa-file-alt"></i> ${matCount} materials</div>
@@ -306,7 +356,7 @@ function renderAdminProfessors() {
   let html = '';
   professors.forEach(p => {
     const photoHtml = p.photo ? `<img src="${p.photo}" alt="${p.name}">` : `<div style="width:60px;height:60px;border-radius:50%;background:#dce1e8;display:flex;align-items:center;justify-content:center;font-size:24px;color:#6b7a8f;"><i class="fas fa-user"></i></div>`;
-    html += `<div class="admin-professor-item">${photoHtml}<div class="info"><h4>${p.name}</h4><div class="title">${p.title}</div><div style="font-size:13px;color:#6b7a8f;margin-top:2px;">${p.description || ''}</div></div><div class="actions"><button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')"><i class="fas fa-trash"></i></button></div></div>`;
+    html += `<div class="admin-professor-item">${photoHtml}<div class="info"><h4>${escapeHtml(p.name)}</h4><div class="title">${p.title}</div><div style="font-size:13px;color:#6b7a8f;margin-top:2px;">${p.description || ''}</div></div><div class="actions"><button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')"><i class="fas fa-trash"></i></button></div></div>`;
   });
   $('adminProfessorList').innerHTML = html;
 }
@@ -322,7 +372,7 @@ async function renderAdminStudents() {
       if (data.students.length === 0) { container.innerHTML = `<div class="empty-state"><i class="fas fa-users"></i><p>No students registered yet.</p></div>`; return; }
       let html = '';
       data.students.forEach(s => {
-        html += `<div class="student-list-item" style="background: #fff; padding: 15px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;"><div class="student-info"><h4 style="margin: 0 0 5px 0; color: #1e293b;">${s.fullName || s.username}</h4><div style="font-size: 13px; color: #64748b;"><strong>Username:</strong> @${s.username} <br>${s.email ? `<strong>Email:</strong> ${s.email}` : '<span style="color:#ef4444">No email provided</span>'}</div></div><div class="student-purchases" style="background: #f1f5f9; padding: 8px 12px; border-radius: 20px; font-size: 13px; color: #3b82f6; font-weight: bold;"><i class="fas fa-check-circle"></i> Registered</div></div>`;
+        html += `<div class="student-list-item" style="background: #fff; padding: 15px; margin-bottom: 10px; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center;"><div class="student-info"><h4 style="margin: 0 0 5px 0; color: #1e293b;">${escapeHtml(s.fullName || s.username)}</h4><div style="font-size: 13px; color: #64748b;"><strong>Username:</strong> @${escapeHtml(s.username)} <br>${s.email ? `<strong>Email:</strong> ${escapeHtml(s.email)}` : '<span style="color:#ef4444">No email provided</span>'}</div></div><div class="student-purchases" style="background: #f1f5f9; padding: 8px 12px; border-radius: 20px; font-size: 13px; color: #3b82f6; font-weight: bold;"><i class="fas fa-check-circle"></i> Registered</div></div>`;
       });
       container.innerHTML = html;
     }
@@ -356,7 +406,7 @@ function renderStudentCourses() {
     html += `
   <div class="course-card" style="${accentStyle(c.code || c.name)}" onclick="viewCourseDetail('${c.id}')">
         <div class="course-code">${c.code || 'N/A'} ${badge}</div>
-        <h3>${c.name}</h3>
+        <h3>${escapeHtml(c.name)}</h3>
         <div class="course-meta">
           <span><i class="fas fa-user"></i> ${c.instructor || '—'}</span>
           <span><i class="fas fa-calendar-alt"></i> ${c.semester || '—'}</span>
@@ -371,8 +421,24 @@ function renderStudentCourses() {
   $('studentCourseList').innerHTML = html;
 }
 
-function viewCourseDetail(courseId) { currentCourseId = courseId; window.currentSelectedCourseId = courseId; renderApp(); }
-function goBackFromDetail() { currentCourseId = null; renderApp(); }
+function viewCourseDetail(courseId) {
+  currentCourseId = courseId;
+  window.currentSelectedCourseId = courseId;
+  currentMaterialFilter = 'all';
+  pushHash(`#/course/${courseId}`);
+  renderApp();
+}
+
+function goBackFromDetail() {
+  if (history.length > 1) {
+    history.back();
+  } else {
+    currentCourseId = null;
+    window.currentSelectedCourseId = null;
+    pushHash('#/home');
+    renderApp();
+  }
+}
 
 function setMaterialFilter(type) {
   currentMaterialFilter = type;
@@ -388,13 +454,13 @@ function renderCourseDetail(courseId) {
   
 let html = `
   <div class="course-detail-header" style="${accentStyle(course.code || course.name)}">
-    <h2>${course.name} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
+    <h2>${escapeHtml(course.name)} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium Course</span>' : ''}</h2>
       <div class="meta">
         <span><i class="fas fa-code"></i> ${course.code || 'N/A'}</span>
         <span><i class="fas fa-user"></i> ${course.instructor || '—'}</span>
         ${isPremiumCourse ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
       </div>
-      <p style="margin-top:6px;color:#475569;">${course.description || ''}</p>
+      <p style="margin-top:6px;color:#475569;">${escapeHtml(course.description) || ''}</p>
     </div>
   `;
 
@@ -457,14 +523,14 @@ let html = `
           <div style="background:#fff; padding:16px; margin-bottom:14px; border-left: 4px solid ${isAnswered ? '#10b981' : '#f59e0b'}; border-radius:8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); border: 1px solid #f1f5f9;">
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px; flex-wrap:wrap; gap:10px;">
               <div>
-                <strong style="color:#0b1a33; font-size:15px;"><i class="fas fa-user-circle"></i> ${d.studentName} <span style="color:#64748b; font-size:13px; font-weight:normal;">${usernameText}</span></strong>
+                <strong style="color:#0b1a33; font-size:15px;"><i class="fas fa-user-circle"></i> ${escapeHtml(d.studentName)} <span style="color:#64748b; font-size:13px; font-weight:normal;">${usernameText}</span></strong>
                 ${currentUser.role === 'admin' ? `<div style="font-size:12px; color:#64748b; margin-top:2px;"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
               </div>
               <div>${statusBadge} <span style="font-size:11px; color:#94a3b8; margin-left:8px;">${dateText}</span></div>
             </div>
-            <p style="margin:8px 0; color:#334155; font-size:14px; background:#f8fafc; padding:10px; border-radius:6px;"><strong>Q:</strong> ${d.question}</p>
+            <p style="margin:8px 0; color:#334155; font-size:14px; background:#f8fafc; padding:10px; border-radius:6px;"><strong>Q:</strong> ${escapeHtml(d.question)}</p>
             ${isAnswered 
-              ? `<div style="background:#eff6ff; padding:12px; border-radius:6px; color:#1e3a8a; margin-top:10px; font-size:14px; border-left: 3px solid #3b82f6;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${d.answer}</div>` 
+              ? `<div style="background:#eff6ff; padding:12px; border-radius:6px; color:#1e3a8a; margin-top:10px; font-size:14px; border-left: 3px solid #3b82f6;"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin Reply:</strong> ${escapeHtml(d.answer)}</div>` 
               : (currentUser.role === 'admin' ? `<button class="btn btn-success btn-sm" style="margin-top:10px;" onclick="replyDoubt('${course.id}', '${d._id || d.id}')"><i class="fas fa-reply"></i> Give Reply</button>` : `<div style="font-size:13px; color:#d97706; margin-top:10px; font-weight:500;"><i class="fas fa-clock"></i> Waiting for admin's reply...</div>`)
             }
           </div>`;
@@ -501,8 +567,8 @@ let html = `
         <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
           ${currentUser.role === 'admin' ? `<button class="delete-mat-btn" style="right: 45px; color: #f59e0b; background: none; border: none; font-size: 18px;" onclick="editMaterial('${course.id}', '${m.id}')" title="Edit"><i class="fas fa-edit"></i></button><button class="delete-mat-btn" onclick="deleteMaterial('${course.id}','${m.id}')" title="Delete"><i class="fas fa-times-circle"></i></button>` : ''}
           <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;"><div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>${badgeHtml}</div>
-          <h4>${m.title}</h4>
-          <div class="mat-desc">${m.description || ''}</div>
+          <h4>${escapeHtml(m.title)}</h4>
+         <div class="mat-desc">${escapeHtml(m.description) || ''}</div>
           <div class="mat-actions" style="margin-top:10px;">${fileActionHtml}</div>
         </div>
       `;
@@ -544,7 +610,13 @@ async function saveCourse(e) {
     else {
       const response = await fetch('https://aerospace-portal.onrender.com/api/courses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(courseData) });
       const data = await response.json();
-      if (data.success) { showToast('🎉 Course created!', 'success'); closeModal('courseModal'); fetchCoursesFromDB(); }
+      if (data.success) {
+  showToast('🎉 Course created!', 'success');
+  closeModal('courseModal');
+  fetchCoursesFromDB();
+} else {
+  showToast(data.message || 'Failed to create course.', 'error');
+}
     }
   } catch (error) { showToast('Server error.', 'error'); }
 }
@@ -554,8 +626,13 @@ async function deleteCourse(courseId) {
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, { method: 'DELETE' });
     const data = await response.json();
-    if (data.success) { if (currentCourseId === courseId) currentCourseId = null; showToast('🗑️ Course deleted.', 'info'); fetchCoursesFromDB(); }
-  } catch (error) { showToast('Server error.', 'error'); }
+if (data.success) {
+  if (currentCourseId === courseId) currentCourseId = null;
+  showToast('🗑️ Course deleted.', 'info');
+  fetchCoursesFromDB();
+} else {
+  showToast(data.message || 'Failed to delete course.', 'error');
+}  } catch (error) { showToast('Server error.', 'error'); }
 }
 
 async function editCourse(courseId) {
@@ -600,8 +677,13 @@ async function saveMaterial(e) {
       try {
         const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(materialData) });
         const data = await response.json();
-        if (data.success) { showToast('📎 Content successfully uploaded!', 'success'); closeModal('materialModal'); fetchCoursesFromDB(); }
-      } catch (error) { showToast('Server error.', 'error'); }
+if (data.success) {
+  showToast('📎 Content successfully uploaded!', 'success');
+  closeModal('materialModal');
+  fetchCoursesFromDB();
+} else {
+  showToast(data.message || 'Failed to upload material.', 'error');
+}      } catch (error) { showToast('Server error.', 'error'); }
     }
   };
   if (file) { const reader = new FileReader(); reader.onload = ev => processSave(ev.target.result, file.name); reader.readAsDataURL(file); } 
@@ -627,8 +709,12 @@ async function deleteMaterial(courseId, materialId) {
   try {
     const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, { method: 'DELETE' });
     const data = await response.json();
-    if (data.success) { showToast('Material deleted.', 'info'); fetchCoursesFromDB(); }
-  } catch (error) { showToast('Server error.', 'error'); }
+if (data.success) {
+  showToast('Material deleted.', 'info');
+  fetchCoursesFromDB();
+} else {
+  showToast(data.message || 'Failed to delete material.', 'error');
+}  } catch (error) { showToast('Server error.', 'error'); }
 }
 
 function openAddProfessorModal() {
@@ -708,15 +794,38 @@ function closeModal(id) { document.getElementById(id).classList.remove('active')
 document.querySelectorAll('.modal-overlay').forEach(overlay => { overlay.addEventListener('click', function(e) { if (e.target === this) this.classList.remove('active'); }); });
 
 function showToast(message, type = 'info') {
-  const container = $('toastContainer'); const toast = document.createElement('div');
-  toast.className = `toast ${type}`; toast.innerHTML = `<i class="fas fa-info-circle"></i> ${message}`;
+  const container = $('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+
+  const iconMap = {
+    success: 'fa-check-circle',
+    error:   'fa-exclamation-circle',
+    info:    'fa-info-circle'
+  };
+  const icon = iconMap[type] || 'fa-info-circle';
+
+  toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
   container.appendChild(toast);
-  setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateX(30px)'; setTimeout(() => toast.remove(), 350); }, 3500);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(30px)';
+    setTimeout(() => toast.remove(), 350);
+  }, 3500);
 }
 
 async function initApp() {
   const savedUser = localStorage.getItem('aero_user');
-  if (savedUser) { currentUser = JSON.parse(savedUser); if(currentUser.role === 'admin') adminTab = 'courses'; }
-  renderApp(); await fetchCoursesFromDB();
+  if (savedUser) {
+    currentUser = JSON.parse(savedUser);
+    if (currentUser.role === 'admin') adminTab = 'courses';
+  }
+  syncHashToState();
+  renderApp();
+  await fetchCoursesFromDB();
 }
+window.addEventListener('hashchange', () => {
+  syncHashToState();
+  renderApp();
+});
 initApp();
