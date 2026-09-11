@@ -150,7 +150,7 @@ function difficultyColor(d) {
   return { bg: 'rgba(245,158,11,.14)', fg: '#d97706' };
 }
 
-/* Robust clipboard helper (works on HTTP + HTTPS) */
+/* Robust clipboard helper */
 async function copyToClipboard(text) {
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -307,7 +307,7 @@ async function verifyAndCompleteRegistration(otp) {
 }
 
 /* ============================================================
-   ADMIN — Manual Student Registration (NEW)
+   ADMIN — Manual Student Registration
    ============================================================ */
 function openStudentRegModal() {
   ['newStuFullName', 'newStuUsername', 'newStuEmail', 'newStuPassword'].forEach(id => {
@@ -327,10 +327,6 @@ function autoGeneratePassword() {
   pass += symbols[Math.floor(Math.random() * symbols.length)];
   pass += Math.floor(Math.random() * 90 + 10);
   $('newStuPassword').value = pass;
-}
-
-function generatePreviewPassword() {
-  // No-op helper (kept for hook compatibility)
 }
 
 async function saveNewStudent(e) {
@@ -359,7 +355,6 @@ async function saveNewStudent(e) {
     if (data.success) {
       closeModal('studentRegModal');
       showCredentialsCard(data.student);
-      // Refresh the students list if we're on that tab
       if (adminTab === 'students') renderAdminStudents();
     } else {
       showToast(data.message || 'Failed to create student.', 'error');
@@ -417,9 +412,7 @@ function showCredentialsCard(student) {
     </div>` : ''}
   `;
 
-  // Store for "copy all"
   window.__lastCreatedStudent = student;
-
   openModal('credentialsModal');
 }
 
@@ -440,13 +433,128 @@ async function copyAllCredentials() {
     `Password: ${s.password}`,
     s.email ? `Email: ${s.email}` : '',
     '',
-    'Login at: https://aerospace-portal.onrender.com',
+    'Login at: https://krishyadav7.github.io/aerospace-portal/',
     'Please change your password after first login.'
   ].filter(Boolean).join('\n');
 
   const ok = await copyToClipboard(text);
   if (ok) showToast('✓ Full credentials copied!', 'success');
   else showToast('Copy failed.', 'error');
+}
+
+/* ============================================================
+   NOTIFICATIONS (RESTORED — this was missing!)
+   ============================================================ */
+function getUnreadCount() {
+  return (currentUser?.notifications || []).filter(n => !n.read).length;
+}
+
+function renderNotificationBadge() {
+  const badge = document.getElementById('notifBadge');
+  if (!badge) return;
+  const count = getUnreadCount();
+  if (count > 0) {
+    badge.textContent = count > 9 ? '9+' : count;
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function renderNotificationList() {
+  const list = document.getElementById('notifList');
+  const markAll = document.getElementById('notifMarkAll');
+  if (!list) return;
+
+  const notifs = (currentUser?.notifications || [])
+    .slice()
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  if (notifs.length === 0) {
+    list.innerHTML = `
+      <div class="notif-empty">
+        <i class="fas fa-bell-slash"></i>
+        <p>No notifications yet.</p>
+      </div>`;
+    if (markAll) markAll.style.display = 'none';
+    return;
+  }
+
+  const unread = notifs.filter(n => !n.read).length;
+  if (markAll) markAll.style.display = unread > 0 ? 'inline-block' : 'none';
+
+  let html = '';
+  notifs.forEach(n => {
+    const ago = timeAgo(n.createdAt);
+    const icon = n.type === 'doubt-reply' ? 'fa-comment-dots' : 'fa-bell';
+    html += `
+      <div class="notif-item ${n.read ? '' : 'unread'}" onclick="openNotification('${n.id}')">
+        <div class="notif-icon"><i class="fas ${icon}"></i></div>
+        <div class="notif-content">
+          <div class="notif-title">${escapeHtml(n.title)}</div>
+          <div class="notif-body">${escapeHtml(n.body)}</div>
+          <div class="notif-time">${ago}</div>
+        </div>
+        ${!n.read ? '<span class="notif-dot"></span>' : ''}
+      </div>`;
+  });
+  list.innerHTML = html;
+}
+
+async function openNotification(notifId) {
+  const n = (currentUser?.notifications || []).find(x => x.id === notifId);
+  if (!n) return;
+
+  if (!n.read) {
+    try {
+      const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notifId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        currentUser.notifications = data.notifications;
+        localStorage.setItem('aero_user', JSON.stringify(currentUser));
+        renderNotificationBadge();
+        renderNotificationList();
+      }
+    } catch { /* silent */ }
+  }
+
+  document.getElementById('notifWrap')?.classList.remove('open');
+  if (n.link) location.hash = n.link;
+}
+
+async function markAllNotificationsRead() {
+  if (!currentUser?._id) return;
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ all: true })
+    });
+    const data = await res.json();
+    if (data.success) {
+      currentUser.notifications = data.notifications;
+      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      renderNotificationBadge();
+      renderNotificationList();
+      showToast('All notifications marked read.', 'success');
+    }
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function loadNotifications() {
+  if (!currentUser?._id) return;
+  try {
+    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}`);
+    const data = await res.json();
+    if (data.success) {
+      currentUser.notifications = data.notifications;
+      localStorage.setItem('aero_user', JSON.stringify(currentUser));
+      renderNotificationBadge();
+      renderNotificationList();
+    }
+  } catch { /* silent */ }
 }
 
 /* ============================================================
@@ -498,7 +606,9 @@ function renderApp() {
       streakEl.title = `${currentUser.streakCount}-day streak! Best: ${currentUser.longestStreak || currentUser.streakCount}`;
     } else streakEl.style.display = 'none';
   }
-  renderNotificationBadge(); buildNav();
+
+  renderNotificationBadge();
+  buildNav();
 
   if (editingCourseId && currentUser.role === 'admin') {
     $('adminEditView').classList.add('active');
@@ -547,17 +657,14 @@ function switchAdminTab(tab) {
 }
 
 function updateAdminTabUI() {
-  // Update tab button active state
   document.querySelectorAll('.admin-tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === adminTab));
 
-  // Update tab content visibility — ONLY the active tab is shown
   document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
   const contentId = `adminTab${adminTab.charAt(0).toUpperCase() + adminTab.slice(1)}`;
   const content = document.getElementById(contentId);
   if (content) content.classList.add('active');
 
-  // Update page title + header actions
   const titleEl = $('adminPageTitle');
   const actionsEl = $('adminHeaderActions');
   const titleMap = {
@@ -816,7 +923,7 @@ async function deleteStudent(userId, name) {
 }
 
 /* ============================================================
-   COURSE EDITOR (unchanged from previous version)
+   COURSE EDITOR
    ============================================================ */
 function openCourseEditor(courseId) {
   editingCourseId = courseId;
@@ -1084,9 +1191,6 @@ function renderEditorAnnouncements(course) {
   return html;
 }
 
-/* ============================================================
-   COURSE EDITOR — ACTIONS
-   ============================================================ */
 async function saveCourseDetails(courseId) {
   const name = $('edName').value.trim();
   const code = $('edCode').value.trim();
@@ -2277,40 +2381,6 @@ function showToast(message, type = 'info') {
     setTimeout(() => toast.remove(), 350);
   }, 3500);
 }
-
-/* ============================================================
-   PWA
-   ============================================================ */
-let deferredInstallPrompt = null;
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredInstallPrompt = e;
-  if (!localStorage.getItem('aero_pwa_dismissed')) {
-    setTimeout(() => {
-      const container = document.getElementById('toastContainer'); if (!container) return;
-      const toast = document.createElement('div');
-      toast.className = 'toast info pwa-toast';
-      toast.innerHTML = `<i class="fas fa-download"></i><span style="flex:1;">Install for faster access</span>
-        <button class="pwa-install-btn" id="pwaInstallBtn">Install</button>
-        <button class="pwa-dismiss-btn" id="pwaDismissBtn">×</button>`;
-      container.appendChild(toast);
-      setTimeout(() => toast.remove(), 12000);
-      document.getElementById('pwaInstallBtn')?.addEventListener('click', async () => {
-        toast.remove();
-        if (!deferredInstallPrompt) return;
-        deferredInstallPrompt.prompt();
-        const { outcome } = await deferredInstallPrompt.userChoice;
-        if (outcome === 'accepted') showToast('🎉 Installed!', 'success');
-        deferredInstallPrompt = null;
-        localStorage.setItem('aero_pwa_dismissed', '1');
-      });
-      document.getElementById('pwaDismissBtn')?.addEventListener('click', () => {
-        toast.remove(); localStorage.setItem('aero_pwa_dismissed', '1');
-      });
-    }, 3000);
-  }
-});
-window.addEventListener('appinstalled', () => { showToast('🎉 Installed!', 'success'); deferredInstallPrompt = null; });
 
 /* ============================================================
    INIT
