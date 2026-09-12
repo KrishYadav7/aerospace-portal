@@ -468,13 +468,15 @@ async function handleLogin(e) {
     });
     const data = await response.json();
     if (data.success) {
-      if (loginRole === 'admin' && data.user.role !== 'admin') return showToast('Not an admin account.', 'error');
-      if (loginRole === 'student' && data.user.role !== 'student') return showToast('Not a student account.', 'error');
+      // Server has already authenticated. Trust its response — do NOT
+      // gate on the login-role toggle, which can be stale after a logout.
       currentUser = data.user;
       saveSession(data.user, data.token);
       studentNav = 'home';
       adminTab = 'overview';
       editingCourseId = null;
+      // Always reset the toggle so the next visit starts on "Student"
+      setLoginRole('student');
       pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
       showToast(data.message, 'success');
       renderApp();
@@ -487,6 +489,13 @@ function logout() {
   window.currentSelectedCourseId = null;
   currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
   clearSession();
+  // ---- Reset login role toggle so next login starts clean ----
+  loginRole = 'student';
+  try { setLoginRole('student'); } catch (e) { /* toggle may not be in DOM yet */ }
+  // ---- Clear analytics cache so a new user doesn't see old data ----
+  _analyticsCache = null;
+  _analyticsCacheAt = 0;
+  try { destroyAnalyticsCharts(); } catch (e) {}
   pushHash('#/home'); renderApp(); showToast('Logged out.', 'info');
 }
 
@@ -3094,7 +3103,9 @@ async function renderStudentAnalytics() {
   const container = document.getElementById('analyticsContent');
   if (!container) return;
 
+  // Tear down any prior chart instances + clear stale DOM
   destroyAnalyticsCharts();
+  container.innerHTML = '';   // wipe previous content so nothing overlaps
 
   // Only fetch if cache is stale
   const now = Date.now();
@@ -3139,6 +3150,10 @@ async function renderStudentAnalytics() {
 function renderAnalyticsUI(a) {
   const container = document.getElementById('analyticsContent');
   if (!container) return;
+
+  // Always wipe first so re-renders don't stack
+  container.innerHTML = '';
+  destroyAnalyticsCharts();
 
   const { summary, heatmap, weekly, quizTrend, courseProgress } = a;
 
@@ -3288,14 +3303,23 @@ function renderAnalyticsUI(a) {
     </div>
   `;
 
-  /* ---- Build charts (after DOM is in place) ---- */
-  if (typeof Chart !== 'undefined') {
+  /* ---- Build charts (after browser has finished layout) ---- */
+  // We must wait one frame so the containers have real dimensions.
+  // Otherwise Chart.js creates zero-size canvases that overlap.
+  const _buildCharts = () => {
+    if (typeof Chart === 'undefined') {
+      console.warn('Chart.js not loaded — charts skipped.');
+      return;
+    }
     try { buildWeeklyChart(weekly); } catch (e) { console.warn('Weekly chart error:', e); }
     if (quizTrend.length > 0) {
       try { buildQuizTrendChart(quizTrend); } catch (e) { console.warn('Quiz trend chart error:', e); }
     }
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(_buildCharts));
   } else {
-    console.warn('Chart.js not loaded — charts skipped.');
+    setTimeout(_buildCharts, 50);
   }
 }
 

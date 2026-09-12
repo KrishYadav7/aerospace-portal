@@ -15,9 +15,6 @@ const Course = require('./models/Course');
 
 const app = express();
 
-/* ============================================================
-   SECURITY & PERFORMANCE MIDDLEWARE
-   ============================================================ */
 app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false,
@@ -34,7 +31,7 @@ const apiLimiter = rateLimit({
   message: { success: false, message: 'Too many requests. Please slow down.' }
 });
 const authLimiter = rateLimit({
-  windowMs: 60 * 1000, max: 10,
+  windowMs: 60 * 1000, max: 20,
   standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many attempts. Please try again in a minute.' }
 });
@@ -43,17 +40,11 @@ app.use('/api/login', authLimiter);
 app.use('/api/send-otp', authLimiter);
 app.use('/api/register', authLimiter);
 
-/* ============================================================
-   JWT SECRET
-   ============================================================ */
 const JWT_SECRET = process.env.JWT_SECRET || 'SuperSecretAeroKey';
 if (!process.env.JWT_SECRET) {
   console.warn('⚠️  WARNING: JWT_SECRET not set. Using insecure fallback.');
 }
 
-/* ============================================================
-   DB
-   ============================================================ */
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('🚀 MongoDB Database Successfully Connected!'))
   .catch((err) => console.log('Database Connection Error:', err));
@@ -111,16 +102,7 @@ function extractYouTubeId(url) {
   return m ? m[1] : null;
 }
 
-/* ============================================================
-   ACTIVITY LOG HELPERS
-   ============================================================ */
 const ACTIVITY_LOG_MAX = 3000;
-
-/**
- * Append a study event to user.activityLog.
- * Deduped per (date, courseId, materialId, type) so repeated opens
- * on the same day don't bloat the log.
- */
 function logActivity(user, { type, courseId, materialId, score, total }) {
   if (!user) return;
   if (!user.activityLog) user.activityLog = [];
@@ -132,7 +114,6 @@ function logActivity(user, { type, courseId, materialId, score, total }) {
     (a.materialId || null) === (materialId || null)
   );
   if (exists) return;
-
   user.activityLog.push({
     date,
     timestamp: new Date(),
@@ -142,7 +123,6 @@ function logActivity(user, { type, courseId, materialId, score, total }) {
     score: (typeof score === 'number') ? score : null,
     total: (typeof total === 'number') ? total : null
   });
-
   if (user.activityLog.length > ACTIVITY_LOG_MAX) {
     user.activityLog = user.activityLog.slice(-ACTIVITY_LOG_MAX);
   }
@@ -164,21 +144,44 @@ app.get('/setup-admin', async (req, res) => {
 app.get('/', (req, res) => res.send('Aerospace EdTech Backend is Running!'));
 
 /* ============================================================
-   AUTH
+   AUTH — FIXED: case-insensitive username lookup
    ============================================================ */
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const user = await User.findOne({ username });
-    if (!user) return res.status(400).json({ success: false, message: 'Invalid username or password.' });
+    if (!username || !password) {
+      return res.status(400).json({ success: false, message: 'Username and password are required.' });
+    }
+
+    // ---- Case-insensitive username lookup ----
+    const cleanUsername = String(username).trim().toLowerCase();
+    const user = await User.findOne({
+      $or: [
+        { username: cleanUsername },
+        { username: String(username).trim() }   // fallback for legacy mixed-case users
+      ]
+    });
+
+    if (!user) {
+      console.log('[login] No user found for:', cleanUsername);
+      return res.status(400).json({ success: false, message: 'Invalid username or password.' });
+    }
+
     const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ success: false, message: 'Invalid username or password.' });
+    if (!isMatch) {
+      console.log('[login] Password mismatch for user:', user.username);
+      return res.status(400).json({ success: false, message: 'Invalid username or password.' });
+    }
 
     if (user.role === 'student') { bumpStreak(user); await user.save(); }
 
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
+    console.log('[login] ✅ Success:', user.username, '(' + user.role + ')');
     res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
-  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+  } catch (e) {
+    console.error('[login] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
 });
 
 /* ============================================================
@@ -193,7 +196,8 @@ const transporter = nodemailer.createTransport({
 app.post('/api/send-otp', async (req, res) => {
   try {
     const { email, username } = req.body;
-    const existingUser = await User.findOne({ $or: [{ username }, { email }] });
+    const cleanUsername = String(username || '').trim().toLowerCase();
+    const existingUser = await User.findOne({ $or: [{ username: cleanUsername }, { email }] });
     if (existingUser) return res.status(400).json({ success: false, message: 'Username or Email already exists!' });
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     otpStore[email] = otp;
@@ -211,7 +215,13 @@ app.post('/api/register', async (req, res) => {
     const { fullName, username, email, password, otp } = req.body;
     if (!otpStore[email] || otpStore[email] !== otp) return res.status(400).json({ success: false, message: 'Invalid or Expired OTP.' });
     const hashedPassword = await bcrypt.hash(password, 10);
-    await new User({ fullName, username, email, password: hashedPassword, role: 'student' }).save();
+    await new User({
+      fullName,
+      username: String(username).trim().toLowerCase(),
+      email,
+      password: hashedPassword,
+      role: 'student'
+    }).save();
     delete otpStore[email];
     res.json({ success: true, message: 'Verification successful! You can now log in.' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
@@ -226,26 +236,29 @@ app.post('/api/admin/create-student', async (req, res) => {
     if (!fullName || !username || !password) {
       return res.status(400).json({ success: false, message: 'Full name, username, and password are required.' });
     }
-    if (username.length < 3) return res.status(400).json({ success: false, message: 'Username must be at least 3 characters.' });
+    const cleanUsername = String(username).trim().toLowerCase();
+    if (cleanUsername.length < 3) return res.status(400).json({ success: false, message: 'Username must be at least 3 characters.' });
     if (password.length < 6) return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
 
-    const existingUsername = await User.findOne({ username });
+    const existingUsername = await User.findOne({ username: cleanUsername });
     if (existingUsername) return res.status(400).json({ success: false, message: 'Username is already taken.' });
 
     if (email) {
-      const existingEmail = await User.findOne({ email });
+      const existingEmail = await User.findOne({ email: String(email).trim() });
       if (existingEmail) return res.status(400).json({ success: false, message: 'Email is already registered.' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newStudent = new User({
-      fullName: fullName.trim(),
-      username: username.trim().toLowerCase(),
-      email: email ? email.trim() : '',
+      fullName: String(fullName).trim(),
+      username: cleanUsername,
+      email: email ? String(email).trim() : '',
       password: hashedPassword,
       role: 'student'
     });
     await newStudent.save();
+
+    console.log('[admin] ✅ Created student:', cleanUsername);
 
     res.json({
       success: true,
@@ -255,11 +268,12 @@ app.post('/api/admin/create-student', async (req, res) => {
         fullName: newStudent.fullName,
         username: newStudent.username,
         email: newStudent.email || '',
-        password: password,
+        password: password, // plaintext — for admin to share. Never persisted.
         createdAt: newStudent.createdAt || new Date()
       }
     });
   } catch (e) {
+    console.error('[admin create-student] Error:', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
@@ -364,13 +378,10 @@ app.delete('/api/courses/:courseId/materials/:materialId', async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
-
     course.materials = course.materials.filter(m => m._id.toString() !== req.params.materialId);
-
     (course.playlists || []).forEach(pl => {
       pl.materialIds = pl.materialIds.filter(id => id !== req.params.materialId);
     });
-
     await course.save();
     res.json({ success: true, message: 'Material deleted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error deleting material.' }); }
@@ -538,7 +549,6 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
     const prev = user.quizResults.get(req.params.materialId) || { attempts: 0 };
     user.quizResults.set(req.params.materialId, { score, total, attempts: (prev.attempts || 0) + 1, lastAttemptAt: new Date() });
 
-    // Log analytics
     logActivity(user, {
       type: 'quiz',
       courseId: req.params.courseId,
@@ -548,7 +558,6 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
     });
 
     await user.save();
-
     res.json({ success: true, score, total, percent: pct, results, attempts: (prev.attempts || 0) + 1 });
   } catch (e) { res.status(500).json({ success: false, message: 'Error grading quiz: ' + e.message }); }
 });
@@ -562,7 +571,7 @@ app.get('/api/user/quiz-results/:userId', async (req, res) => {
 });
 
 /* ============================================================
-   ANALYTICS
+   ANALYTICS — FIXED: only show courses with activity
    ============================================================ */
 app.get('/api/user/analytics/:userId', async (req, res) => {
   try {
@@ -647,25 +656,37 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
       total: a.total
     }));
 
-    /* ---- Course progress ---- */
-    const allCourses = await Course.find().select('name code materials');
-    const courseProgress = [];
-    allCourses.forEach(c => {
-      const cid = c._id.toString();
-      const completed = (progressMap[cid] || []).length;
-      const total = (c.materials || []).length;
-      if (total > 0) {
-        courseProgress.push({
-          courseId: cid,
-          courseName: c.name,
-          courseCode: c.code || '',
-          completed,
-          total,
-          percent: Math.round((completed / total) * 100)
-        });
-      }
+    /* ---- Course progress — ONLY courses the student has interacted with ---- */
+    const interactedCourseIds = new Set();
+    Object.keys(progressMap).forEach(cid => {
+      if ((progressMap[cid] || []).length > 0) interactedCourseIds.add(cid);
     });
-    courseProgress.sort((a, b) => b.percent - a.percent);
+    log.forEach(a => {
+      if (a.courseId) interactedCourseIds.add(a.courseId);
+    });
+    Object.values(quizResults).forEach(() => { /* quizResults don't carry courseId — skip */ });
+
+    const courseProgress = [];
+    if (interactedCourseIds.size > 0) {
+      const courses = await Course.find({ _id: { $in: Array.from(interactedCourseIds) } })
+        .select('name code materials');
+      courses.forEach(c => {
+        const cid = c._id.toString();
+        const completed = (progressMap[cid] || []).length;
+        const total = (c.materials || []).length;
+        if (total > 0) {
+          courseProgress.push({
+            courseId: cid,
+            courseName: c.name,
+            courseCode: c.code || '',
+            completed,
+            total,
+            percent: Math.round((completed / total) * 100)
+          });
+        }
+      });
+      courseProgress.sort((a, b) => b.percent - a.percent);
+    }
 
     res.json({
       success: true,
@@ -762,7 +783,6 @@ app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
     if (viewed !== false) {
       user.lastActivity = { courseId: cid, materialId: mid, timestamp: new Date() };
       bumpStreak(user);
-      // Log analytics event
       logActivity(user, { type: 'view', courseId: cid, materialId: mid });
     }
     await user.save();
@@ -924,11 +944,9 @@ app.put('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
     if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
     const pl = (course.playlists || []).find(p => p.id === req.params.playlistId);
     if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
-
     if (req.body.title !== undefined) pl.title = String(req.body.title).trim();
     if (req.body.description !== undefined) pl.description = String(req.body.description || '').trim();
     if (Array.isArray(req.body.materialIds)) pl.materialIds = req.body.materialIds;
-
     await course.save();
     res.json({ success: true, message: 'Playlist updated.', playlist: pl });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
@@ -952,7 +970,6 @@ app.post('/api/courses/:courseId/playlists/:playlistId/materials', async (req, r
     if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
     const pl = (course.playlists || []).find(p => p.id === req.params.playlistId);
     if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
-
     if (!pl.materialIds.includes(materialId)) pl.materialIds.push(materialId);
     await course.save();
     res.json({ success: true, message: 'Added to playlist.', playlist: pl });
@@ -965,7 +982,6 @@ app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId',
     if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
     const pl = (course.playlists || []).find(p => p.id === req.params.playlistId);
     if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
-
     pl.materialIds = pl.materialIds.filter(id => id !== req.params.materialId);
     await course.save();
     res.json({ success: true, message: 'Removed from playlist.', playlist: pl });
