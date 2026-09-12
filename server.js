@@ -985,29 +985,25 @@ const razorpay = new Razorpay({
 
 app.post('/api/create-order', async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount, userId, itemId } = req.body; // Accept userId and itemId
     const order = await razorpay.orders.create({
       amount: amount * 100, currency: 'INR',
-      receipt: 'aero_receipt_' + Math.random().toString(36).substring(7)
+      receipt: 'aero_receipt_' + Math.random().toString(36).substring(7),
+      notes: { userId, itemId } // Add notes for the webhook to read
     });
-    res.json({ success: true, order });
-  } catch (e) { res.status(500).json({ success: false, message: 'Server error creating order' }); }
+    
+    // Send the public Key ID to the frontend securely
+    res.json({ 
+      success: true, 
+      order,
+      key_id: process.env.RAZORPAY_KEY_ID 
+    });
+  } catch (e) { 
+    res.status(500).json({ success: false, message: 'Server error creating order' }); 
+  }
 });
 
-app.post('/api/verify-payment', async (req, res) => {
-  try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, courseId, userId } = req.body;
-    const sign = razorpay_order_id + '|' + razorpay_payment_id;
-    const expectedSign = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(sign.toString()).digest('hex');
-    if (razorpay_signature === expectedSign) {
-      await User.findByIdAndUpdate(userId, { $addToSet: { purchases: courseId } });
-      res.json({ success: true, message: 'Payment verified & Course saved!' });
-    } else {
-      res.status(400).json({ success: false, message: 'Invalid payment signature!' });
-    }
-  } catch (e) { res.status(500).json({ success: false, message: 'Verification error' }); }
-});
-
+/api/verify-payment
 /* ============================================================
    USER DATA
    ============================================================ */

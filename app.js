@@ -3756,21 +3756,31 @@ async function showPaymentModal(courseId, materialId = null) {
   let amount = course.price || 0;
   let itemName = course.name;
   let purchaseId = course.id;
+  
   if (materialId) {
     const mat = course.materials.find(m => m.id === materialId);
     if (mat) { amount = mat.price || 0; itemName = mat.title; purchaseId = mat.id; }
   }
+  
   showToast(`Initiating payment for ${itemName}...`, 'info');
+  
   try {
+    // Send userId and itemId to backend so they can be put in Razorpay "notes"
     const response = await fetch('https://aerospace-portal.onrender.com/api/create-order', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount })
+      body: JSON.stringify({ 
+        amount, 
+        userId: currentUser._id, 
+        itemId: purchaseId 
+      })
     });
+    
     const data = await response.json();
     if (!data.success) return showToast('Error creating order.', 'error');
 
     const options = {
-      key: 'rzp_test_TaPfJOdu1PgUed',
+      // USE THE KEY FROM THE BACKEND, NOT A HARDCODED STRING
+      key: data.key_id, 
       amount: data.order.amount,
       currency: 'INR',
       name: 'Aerospace EdTech',
@@ -3796,11 +3806,17 @@ async function showPaymentModal(courseId, materialId = null) {
           renderApp();
         } else showToast('Verification failed!', 'error');
       },
-      prefill: { name: currentUser.username, email: currentUser.email || 'student@aerospace.com', contact: '9999999999' },
+      prefill: { 
+        name: currentUser.username, 
+        email: currentUser.email || 'student@aerospace.com', 
+        contact: '9999999999' 
+      },
       theme: { color: '#4f46e5' }
     };
     new Razorpay(options).open();
-  } catch { showToast('Server error during payment.', 'error'); }
+  } catch { 
+    showToast('Server error during payment.', 'error'); 
+  }
 }
 
 /* ============================================================
