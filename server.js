@@ -35,10 +35,16 @@ const authLimiter = rateLimit({
   standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many attempts. Please try again in a minute.' }
 });
+const bulkEmailLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, max: 10,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many bulk emails sent. Please wait 5 minutes.' }
+});
 app.use('/api/', apiLimiter);
 app.use('/api/login', authLimiter);
 app.use('/api/send-otp', authLimiter);
 app.use('/api/register', authLimiter);
+app.use('/api/admin/send-email', bulkEmailLimiter);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'SuperSecretAeroKey';
 if (!process.env.JWT_SECRET) {
@@ -100,6 +106,19 @@ function extractYouTubeId(url) {
     /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
   );
   return m ? m[1] : null;
+}
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function nl2br(s) {
+  return escapeHtml(s).replace(/\r?\n/g, '<br/>');
 }
 
 const ACTIVITY_LOG_MAX = 3000;
@@ -987,7 +1006,121 @@ app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId',
     res.json({ success: true, message: 'Removed from playlist.', playlist: pl });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
+/* ============================================================
+   ADMIN — BULK EMAIL TO STUDENTS
+   ============================================================ */
+app.post('/api/admin/send-email', async (req, res) => {
+  try {
+    const { adminId, recipientIds, subject, body } = req.body || {};
 
+    // ---- Verify admin ----
+    if (!adminId) {
+      return res.status(400).json({ success: false, message: 'Admin identity required.' });
+    }
+    const admin = await User.findById(adminId).select('role fullName username');
+    if (!admin || admin.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Only admins can send bulk emails.' });
+    }
+
+    // ---- Validate payload ----
+    if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No recipients selected.' });
+    }
+    if (recipientIds.length > 500) {
+      return res.status(400).json({ success: false, message: 'Too many recipients in one batch (max 500).' });
+    }
+    const cleanSubject = String(subject || '').trim();
+    const cleanBody = String(body || '').trim();
+    if (!cleanSubject) return res.status(400).json({ success: false, message: 'Subject is required.' });
+    if (!cleanBody) return res.status(400).json({ success: false, message: 'Message body is required.' });
+    if (cleanSubject.length > 200) return res.status(400).json({ success: false, message: 'Subject too long (max 200 chars).' });
+    if (cleanBody.length > 10000) return res.status(400).json({ success: false, message: 'Message too long (max 10,000 chars).' });
+
+    // ---- Fetch only eligible students with valid emails ----
+    const students = await User.find({
+      _id: { $in: recipientIds },
+      role: 'student',
+      email: { $exists: true, $nin: ['', null] }
+    }).select('fullName username email');
+
+    const skipped = recipientIds.length - students.length;
+    if (students.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'None of the selected students have a valid email address.'
+      });
+    }
+
+    const fromAddress = process.env.EMAIL_USER;
+    if (!fromAddress) {
+      return res.status(500).json({ success: false, message: 'Server email is not configured.' });
+    }
+
+    // ---- Send individually (personalized, privacy-preserving) ----
+    const sendOne = async (student) => {
+      const firstName = (student.fullName || student.username || 'Student').split(' ')[0];
+      const greeting = `Hi ${firstName},`;
+
+      const textBody =
+        `${greeting}\n\n${cleanBody}\n\n— Aerospace Department\nIIT Kharagpur`;
+
+      const htmlBody = `
+        <div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px 20px;color:#14161c;line-height:1.6;background:#ffffff;">
+          <div style="border-left:4px solid #6366f1;padding-left:14px;margin-bottom:22px;">
+            <div style="font-size:18px;font-weight:700;color:#14161c;">Aerospace Department</div>
+            <div style="font-size:12px;color:#8b8d98;letter-spacing:.5px;">IIT KHARAGPUR</div>
+          </div>
+          <p style="font-size:15px;margin:0 0 14px;">${escapeHtml(greeting)}</p>
+          <div style="font-size:15px;white-space:pre-wrap;margin-bottom:28px;">${nl2br(cleanBody)}</div>
+          <div style="border-top:1px solid #ebe7e0;padding-top:16px;font-size:12.5px;color:#8b8d98;">
+            — Aerospace Department<br/>IIT Kharagpur
+          </div>
+        </div>
+      `;
+
+      return transporter.sendMail({
+        from: `"Aerospace Department" <${fromAddress}>`,
+        to: student.email,
+        replyTo: fromAddress,
+        subject: cleanSubject,
+        text: textBody,
+        html: htmlBody
+      });
+    };
+
+    const results = await Promise.allSettled(students.map(sendOne));
+
+    let sent = 0;
+    const failures = [];
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') {
+        sent++;
+      } else {
+        failures.push({
+          email: students[i].email,
+          name: students[i].fullName || students[i].username,
+          error: String((r.reason && r.reason.message) || r.reason || 'Unknown error')
+        });
+      }
+    });
+
+    const failed = failures.length;
+    console.log(`[bulk-email] admin=${admin.username} sent=${sent}/${students.length} skipped=${skipped} failed=${failed}`);
+
+    res.json({
+      success: true,
+      message: `Email sent to ${sent} of ${students.length} student${students.length === 1 ? '' : 's'}.${skipped > 0 ? ' ' + skipped + ' skipped (no email).' : ''}`,
+      sent,
+      failed,
+      skipped,
+      total: students.length,
+      failures
+    });
+  } catch (e) {
+    console.error('[bulk-email] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
 /* ============================================================
    LISTEN
    ============================================================ */

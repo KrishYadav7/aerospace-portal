@@ -77,6 +77,9 @@ let adminTab = 'overview';
 let editingCourseId = null;
 let editingTab = 'details';
 
+// ---- Bulk email selection (in-memory only; cleared on tab switch / logout) ----
+let _emailSelectedIds = new Set();
+
 const $ = id => document.getElementById(id);
 
 /* ============================================================
@@ -492,6 +495,8 @@ function logout() {
   // ---- Reset login role toggle so next login starts clean ----
   loginRole = 'student';
   try { setLoginRole('student'); } catch (e) { /* toggle may not be in DOM yet */ }
+  // ---- Clear any pending email selection ----
+  try { _emailSelectedIds.clear(); } catch (e) {}
   // ---- Clear analytics cache so a new user doesn't see old data ----
   _analyticsCache = null;
   _analyticsCacheAt = 0;
@@ -887,6 +892,10 @@ function buildNav() {
    ADMIN DASHBOARD
    ============================================================ */
 function switchAdminTab(tab) {
+  // Clear email selection when leaving the students tab
+  if (adminTab === 'students' && tab !== 'students') {
+    _emailSelectedIds.clear();
+  }
   adminTab = tab;
   pushHash(`#/admin/${tab}`);
   updateAdminTabUI();
@@ -1071,61 +1080,272 @@ async function renderAdminStudents() {
     const data = await response.json();
     const countEl = $('studentCountLabel');
 
-    if (data.success) {
-      if (countEl) countEl.textContent = `${data.students.length} student${data.students.length === 1 ? '' : 's'}`;
+    if (!data.success) throw new Error('Failed to load students');
 
-      if (data.students.length === 0) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <i class="fas fa-user-graduate"></i>
-            <p>No students registered yet.</p>
-            <button class="btn btn-success" style="margin-top:16px;" onclick="openStudentRegModal()">
-              <i class="fas fa-user-plus"></i> Register First Student
-            </button>
-          </div>`;
-        return;
-      }
+    if (countEl) countEl.textContent = `${data.students.length} student${data.students.length === 1 ? '' : 's'}`;
 
-      let html = `<div class="student-grid">`;
-      data.students.forEach(s => {
-        const initials = (s.fullName || s.username || '?')
-          .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-        const created = s.createdAt ? new Date(s.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
-
-        html += `
-          <div class="student-card">
-            <div class="student-card-header">
-              <div class="student-avatar">${initials}</div>
-              <div class="student-card-info">
-                <h4>${escapeHtml(s.fullName || s.username)}</h4>
-                <div class="student-username">@${escapeHtml(s.username)}</div>
-              </div>
-            </div>
-            <div class="student-card-body">
-              <div class="student-meta-row">
-                <i class="fas fa-envelope"></i>
-                <span>${s.email ? escapeHtml(s.email) : '<em style="color:var(--text-tertiary);">No email</em>'}</span>
-              </div>
-              <div class="student-meta-row">
-                <i class="fas fa-calendar-plus"></i>
-                <span>Joined ${created}</span>
-              </div>
-            </div>
-            <div class="student-card-actions">
-              <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${s._id}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
-                <i class="fas fa-key"></i> Reset Password
-              </button>
-              <button class="btn btn-danger btn-sm" onclick="deleteStudent('${s._id}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
-                <i class="fas fa-trash"></i>
-              </button>
-            </div>
-          </div>`;
-      });
-      html += `</div>`;
-      container.innerHTML = html;
+    if (data.students.length === 0) {
+      renderStudentSelectionBar(0, 0);
+      container.innerHTML = `
+        <div class="empty-state">
+          <i class="fas fa-user-graduate"></i>
+          <p>No students registered yet.</p>
+          <button class="btn btn-success" style="margin-top:16px;" onclick="openStudentRegModal()">
+            <i class="fas fa-user-plus"></i> Register First Student
+          </button>
+        </div>`;
+      return;
     }
-  } catch {
+
+    // Prune any selected IDs that no longer exist
+    const validIds = new Set(data.students.map(s => String(s._id)));
+    Array.from(_emailSelectedIds).forEach(id => {
+      if (!validIds.has(id)) _emailSelectedIds.delete(id);
+    });
+
+    // Count students with valid emails
+    const withEmail = data.students.filter(s => s.email && s.email.trim()).length;
+
+    // ---- Selection bar ----
+    renderStudentSelectionBar(_emailSelectedIds.size, withEmail);
+
+    // ---- Student grid ----
+    let html = `<div class="student-grid">`;
+    data.students.forEach(s => {
+      const sid = String(s._id);
+      const selected = _emailSelectedIds.has(sid);
+      const hasEmail = !!(s.email && s.email.trim());
+      const initials = (s.fullName || s.username || '?')
+        .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+      const created = s.createdAt
+        ? new Date(s.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '—';
+
+      html += `
+        <div class="student-card ${selected ? 'selected' : ''} ${!hasEmail ? 'no-email' : ''}" data-student-id="${sid}">
+          <label class="student-select-checkbox" title="${hasEmail ? 'Select for email' : 'No email on file'}" onclick="event.stopPropagation();">
+            <input type="checkbox"
+                   ${selected ? 'checked' : ''}
+                   ${!hasEmail ? 'disabled' : ''}
+                   onchange="toggleStudentEmailSelection('${sid}', this.checked)">
+            <span class="student-select-box"></span>
+          </label>
+          <div class="student-card-header">
+            <div class="student-avatar">${initials}</div>
+            <div class="student-card-info">
+              <h4>${escapeHtml(s.fullName || s.username)}</h4>
+              <div class="student-username">@${escapeHtml(s.username)}</div>
+            </div>
+          </div>
+          <div class="student-card-body">
+            <div class="student-meta-row">
+              <i class="fas fa-envelope"></i>
+              <span>${hasEmail
+                ? escapeHtml(s.email)
+                : '<em style="color:var(--text-tertiary);">No email — can\'t receive bulk mail</em>'}</span>
+            </div>
+            <div class="student-meta-row">
+              <i class="fas fa-calendar-plus"></i>
+              <span>Joined ${created}</span>
+            </div>
+          </div>
+          <div class="student-card-actions">
+            <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${sid}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
+              <i class="fas fa-key"></i> Reset Password
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="deleteStudent('${sid}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>`;
+    });
+    html += `</div>`;
+    container.innerHTML = html;
+  } catch (err) {
+    console.error('renderAdminStudents:', err);
+    renderStudentSelectionBar(0, 0);
     container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading students.</p></div>`;
+  }
+}
+
+/* ---- Selection helpers ---- */
+function renderStudentSelectionBar(selectedCount, withEmailCount) {
+  const bar = $('adminStudentSelectionBar');
+  if (!bar) return;
+  const hasSelection = selectedCount > 0;
+
+  bar.innerHTML = `
+    <label class="selection-master-checkbox" title="Select all students with an email">
+      <input type="checkbox"
+             id="selectAllStudentsBox"
+             onchange="toggleSelectAllStudents(this.checked)">
+      <span class="selection-master-label">Select all</span>
+    </label>
+    <div class="selection-bar-spacer"></div>
+    <span class="selection-count">
+      ${hasSelection
+        ? `<strong>${selectedCount}</strong> selected`
+        : `${withEmailCount} reachable by email`}
+    </span>
+    <button class="btn btn-primary btn-sm" onclick="openEmailStudentsModal()" ${!hasSelection ? 'disabled' : ''}>
+      <i class="fas fa-paper-plane"></i> Send Email${hasSelection ? ' (' + selectedCount + ')' : ''}
+    </button>
+    ${hasSelection
+      ? `<button class="btn btn-outline btn-sm" onclick="clearStudentSelection()">
+           <i class="fas fa-times"></i> Clear
+         </button>`
+      : ''}
+  `;
+
+  // Sync "Select all" checkbox state
+  const master = $('selectAllStudentsBox');
+  if (master) {
+    const allStudents = document.querySelectorAll('.student-card:not(.no-email)');
+    master.checked = allStudents.length > 0 &&
+      Array.from(allStudents).every(c => _emailSelectedIds.has(c.dataset.studentId));
+    master.indeterminate = hasSelection &&
+      !master.checked;
+  }
+}
+
+function toggleStudentEmailSelection(studentId, isChecked) {
+  if (isChecked) _emailSelectedIds.add(String(studentId));
+  else _emailSelectedIds.delete(String(studentId));
+  updateStudentSelectionUI();
+}
+
+function toggleSelectAllStudents(isChecked) {
+  const cards = document.querySelectorAll('.student-card:not(.no-email)');
+  cards.forEach(c => {
+    const sid = c.dataset.studentId;
+    if (isChecked) _emailSelectedIds.add(sid);
+    else _emailSelectedIds.delete(sid);
+  });
+  updateStudentSelectionUI();
+}
+
+function clearStudentSelection() {
+  _emailSelectedIds.clear();
+  updateStudentSelectionUI();
+}
+
+function updateStudentSelectionUI() {
+  // Update each card's visual state + checkbox
+  document.querySelectorAll('.student-card').forEach(card => {
+    const sid = card.dataset.studentId;
+    const selected = _emailSelectedIds.has(sid);
+    card.classList.toggle('selected', selected);
+    const cb = card.querySelector('.student-select-checkbox input');
+    if (cb && !cb.disabled) cb.checked = selected;
+  });
+
+  // Recompute toolbar
+  const allStudents = document.querySelectorAll('.student-card:not(.no-email)').length;
+  renderStudentSelectionBar(_emailSelectedIds.size, allStudents);
+}
+
+/* ---- Open / send email modal ---- */
+function openEmailStudentsModal() {
+  if (_emailSelectedIds.size === 0) {
+    return showToast('Select at least one student first.', 'info');
+  }
+
+  const modal = $('emailStudentsModal');
+  if (!modal) return showToast('Email modal missing.', 'error');
+
+  // ---- Build recipient preview ----
+  const selectedCards = Array.from(_emailSelectedIds)
+    .map(id => document.querySelector(`.student-card[data-student-id="${id}"]`))
+    .filter(Boolean);
+
+  const names = selectedCards.map(card => {
+    const h4 = card.querySelector('.student-card-info h4');
+    return h4 ? h4.textContent.trim() : 'Student';
+  });
+
+  const preview = $('emailRecipientPreview');
+  if (preview) {
+    const MAX_CHIPS = 12;
+    const shown = names.slice(0, MAX_CHIPS);
+    const remaining = names.length - shown.length;
+    preview.innerHTML =
+      shown.map(n => `<span class="email-recipient-chip">${escapeHtml(n)}</span>`).join('') +
+      (remaining > 0 ? `<span class="email-recipient-chip more">+ ${remaining} more</span>` : '');
+  }
+
+  const summary = $('emailModalRecipientSummary');
+  if (summary) {
+    summary.textContent = `To: ${_emailSelectedIds.size} student${_emailSelectedIds.size === 1 ? '' : 's'} — individually addressed, no BCC leaks.`;
+  }
+
+  // Reset form
+  const subjectEl = $('emailSubject');
+  const bodyEl = $('emailBody');
+  const submitBtn = $('emailSubmitBtn');
+  const label = $('emailSubmitLabel');
+  if (subjectEl) subjectEl.value = '';
+  if (bodyEl) bodyEl.value = '';
+  if (submitBtn) submitBtn.disabled = false;
+  if (label) label.textContent = `Send to ${_emailSelectedIds.size}`;
+
+  openModal('emailStudentsModal');
+  setTimeout(() => subjectEl && subjectEl.focus(), 80);
+}
+
+async function sendBulkEmail(e) {
+  if (e) e.preventDefault();
+
+  const subject = $('emailSubject').value.trim();
+  const body = $('emailBody').value.trim();
+
+  if (!subject) return showToast('Subject is required.', 'error');
+  if (!body) return showToast('Message body is required.', 'error');
+
+  const recipientIds = Array.from(_emailSelectedIds);
+  if (recipientIds.length === 0) return showToast('No recipients selected.', 'error');
+
+  // ---- Final confirmation ----
+  const confirmMsg = `Send this email to ${recipientIds.length} student${recipientIds.length === 1 ? '' : 's'}?\n\nSubject: ${subject}\n\nThis cannot be undone.`;
+  if (!confirm(confirmMsg)) return;
+
+  const btn = $('emailSubmitBtn');
+  const label = $('emailSubmitLabel');
+  const originalLabel = label ? label.textContent : 'Send Email';
+  if (btn) btn.disabled = true;
+  if (label) label.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Sending…`;
+
+  try {
+    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/send-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminId: currentUser._id,
+        recipientIds,
+        subject,
+        body
+      })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      closeModal('emailStudentsModal');
+      clearStudentSelection();
+
+      if (data.failed > 0) {
+        showToast(`⚠️ Sent to ${data.sent} / ${data.total}. ${data.failed} failed — check console.`, 'info');
+        console.warn('[bulk-email] Failures:', data.failures);
+      } else {
+        showToast(`✅ ${data.message}`, 'success');
+      }
+    } else {
+      showToast(data.message || 'Failed to send email.', 'error');
+    }
+  } catch (err) {
+    console.error('[bulk-email] Error:', err);
+    showToast('Network error while sending.', 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+    if (label) label.textContent = originalLabel;
   }
 }
 

@@ -267,6 +267,10 @@
               <i class="fas fa-user-plus"></i> Register Student
             </button>
           </div>
+
+          <!-- Bulk email selection bar (JS fills this) -->
+          <div class="student-selection-bar" id="adminStudentSelectionBar"></div>
+
           <div id="adminStudentList"></div>
         </div>
       </section>
@@ -655,6 +659,50 @@
         <span><kbd>↵</kbd> Open</span>
         <span><kbd>Esc</kbd> Close</span>
       </div>
+    </div>
+  </div>
+    <!-- Send Bulk Email Modal -->
+  <div class="modal-overlay" id="emailStudentsModal">
+    <div class="modal-box email-modal">
+      <div class="email-modal-header">
+        <div class="email-modal-icon"><i class="fas fa-paper-plane"></i></div>
+        <div class="email-modal-heading">
+          <h3>Send Email to Students</h3>
+          <p class="modal-sub" id="emailModalRecipientSummary">Loading recipients…</p>
+        </div>
+        <button type="button" class="email-modal-close" onclick="closeModal('emailStudentsModal')" aria-label="Close">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+
+      <div class="email-recipient-preview" id="emailRecipientPreview">
+        <!-- JS fills chip list of recipient names -->
+      </div>
+
+      <form id="emailStudentsForm" onsubmit="sendBulkEmail(event)">
+        <div class="form-group">
+          <label><i class="fas fa-heading"></i> Subject *</label>
+          <input type="text" id="emailSubject" placeholder="e.g. New lecture uploaded — Aerodynamics" maxlength="200" required>
+        </div>
+
+        <div class="form-group">
+          <label><i class="fas fa-align-left"></i> Message *</label>
+          <textarea id="emailBody" rows="8" placeholder="Type your message here.&#10;&#10;Each student gets a personalized greeting." maxlength="10000" required></textarea>
+          <span class="hint"><i class="fas fa-info-circle"></i> A greeting ("Hi &lt;first name&gt;,") and signature are added automatically.</span>
+        </div>
+
+        <div class="email-modal-info">
+          <i class="fas fa-shield-halved"></i>
+          <span>Emails are sent individually. Students cannot see each other's addresses.</span>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('emailStudentsModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="emailSubmitBtn">
+            <i class="fas fa-paper-plane"></i> <span id="emailSubmitLabel">Send Email</span>
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 
