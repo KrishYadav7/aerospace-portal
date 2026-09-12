@@ -16,6 +16,8 @@ const Professor = require('./models/Professor');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const app = express();
+// 👇 ADD THIS LINE
+app.set('trust proxy', 1); 
 
 
 app.use(helmet({
@@ -76,20 +78,19 @@ if (!EMAIL_USER || !EMAIL_PASS) {
 }
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // true for port 465, false for port 587
   auth: { user: EMAIL_USER, pass: EMAIL_PASS },
   pool: true,
   maxConnections: 5,
   maxMessages: 50,
-  // Increased timeouts:
   connectionTimeout: 30000,
   greetingTimeout: 30000,
   socketTimeout: 30000,
-  // Debugging (will show SMTP conversation in Render logs):
   debug: true,
   logger: true
 });
-
 // ---- Verify transporter ONCE on boot ----
 // This is the single biggest diagnostic win: on startup you'll see
 // either "✅ Email transporter ready" or "❌ ... FAILED".
