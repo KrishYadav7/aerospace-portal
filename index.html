@@ -322,6 +322,24 @@
         </div>
         <div id="studentSavedList"></div>
       </section>
+            <!-- STUDENT ANALYTICS -->
+      <section id="studentAnalyticsView" class="view">
+        <div class="dash-header">
+          <h2><i class="fas fa-chart-line"></i> Your Learning Analytics</h2>
+          <div class="actions">
+            <button class="btn btn-outline btn-sm" onclick="renderStudentAnalytics()">
+              <i class="fas fa-rotate"></i> Refresh
+            </button>
+          </div>
+        </div>
+
+        <div id="analyticsContent">
+          <div class="analytics-loading">
+            <div class="pdfv-spinner"></div>
+            <p>Crunching your data…</p>
+          </div>
+        </div>
+      </section>
 
       <!-- COURSE DETAIL -->
       <section id="courseDetailView" class="view">
@@ -643,7 +661,7 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="media-viewer.js"></script>
   <script src="app.js"></script>
 </body>

@@ -1,6 +1,9 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
 const Razorpay = require('razorpay');
@@ -12,10 +15,45 @@ const Course = require('./models/Course');
 
 const app = express();
 
+/* ============================================================
+   SECURITY & PERFORMANCE MIDDLEWARE
+   ============================================================ */
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
+app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 300,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many requests. Please slow down.' }
+});
+const authLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 10,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts. Please try again in a minute.' }
+});
+app.use('/api/', apiLimiter);
+app.use('/api/login', authLimiter);
+app.use('/api/send-otp', authLimiter);
+app.use('/api/register', authLimiter);
+
+/* ============================================================
+   JWT SECRET
+   ============================================================ */
+const JWT_SECRET = process.env.JWT_SECRET || 'SuperSecretAeroKey';
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠️  WARNING: JWT_SECRET not set. Using insecure fallback.');
+}
+
+/* ============================================================
+   DB
+   ============================================================ */
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('🚀 MongoDB Database Successfully Connected!'))
   .catch((err) => console.log('Database Connection Error:', err));
@@ -31,6 +69,10 @@ function yesterdayStr() {
   const d = new Date();
   d.setDate(d.getDate() - 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function toDateKey(d) {
+  const dt = (d instanceof Date) ? d : new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 }
 function bumpStreak(user) {
   const today = todayStr();
@@ -70,6 +112,43 @@ function extractYouTubeId(url) {
 }
 
 /* ============================================================
+   ACTIVITY LOG HELPERS
+   ============================================================ */
+const ACTIVITY_LOG_MAX = 3000;
+
+/**
+ * Append a study event to user.activityLog.
+ * Deduped per (date, courseId, materialId, type) so repeated opens
+ * on the same day don't bloat the log.
+ */
+function logActivity(user, { type, courseId, materialId, score, total }) {
+  if (!user) return;
+  if (!user.activityLog) user.activityLog = [];
+  const date = todayStr();
+  const exists = user.activityLog.some(a =>
+    a.date === date &&
+    a.type === type &&
+    (a.courseId || null) === (courseId || null) &&
+    (a.materialId || null) === (materialId || null)
+  );
+  if (exists) return;
+
+  user.activityLog.push({
+    date,
+    timestamp: new Date(),
+    type: type || 'view',
+    courseId: courseId || null,
+    materialId: materialId || null,
+    score: (typeof score === 'number') ? score : null,
+    total: (typeof total === 'number') ? total : null
+  });
+
+  if (user.activityLog.length > ACTIVITY_LOG_MAX) {
+    user.activityLog = user.activityLog.slice(-ACTIVITY_LOG_MAX);
+  }
+}
+
+/* ============================================================
    SETUP
    ============================================================ */
 app.get('/setup-admin', async (req, res) => {
@@ -97,7 +176,7 @@ app.post('/api/login', async (req, res) => {
 
     if (user.role === 'student') { bumpStreak(user); await user.save(); }
 
-    const token = jwt.sign({ id: user._id, role: user.role }, 'SuperSecretAeroKey', { expiresIn: '1d' });
+    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
     res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
@@ -193,10 +272,8 @@ app.post('/api/admin/reset-password/:userId', async (req, res) => {
     }
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
-
     res.json({ success: true, message: 'Password reset successfully.', password: newPassword });
   } catch (e) {
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
@@ -460,6 +537,16 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
     if (!user.quizResults) user.quizResults = new Map();
     const prev = user.quizResults.get(req.params.materialId) || { attempts: 0 };
     user.quizResults.set(req.params.materialId, { score, total, attempts: (prev.attempts || 0) + 1, lastAttemptAt: new Date() });
+
+    // Log analytics
+    logActivity(user, {
+      type: 'quiz',
+      courseId: req.params.courseId,
+      materialId: req.params.materialId,
+      score,
+      total
+    });
+
     await user.save();
 
     res.json({ success: true, score, total, percent: pct, results, attempts: (prev.attempts || 0) + 1 });
@@ -472,6 +559,128 @@ app.get('/api/user/quiz-results/:userId', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({ success: true, results: Object.fromEntries(user.quizResults || new Map()) });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ============================================================
+   ANALYTICS
+   ============================================================ */
+app.get('/api/user/analytics/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId).select('-password');
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const log = user.activityLog || [];
+    const progressMap = user.progress ? Object.fromEntries(user.progress) : {};
+    const quizResults = user.quizResults ? Object.fromEntries(user.quizResults) : {};
+
+    /* ---- Summary ---- */
+    const uniqueDays = new Set(log.map(a => a.date));
+    const totalViews = log.filter(a => a.type === 'view').length;
+    const totalQuizzes = log.filter(a => a.type === 'quiz').length;
+
+    const quizScores = Object.values(quizResults)
+      .filter(q => q && typeof q.score === 'number' && typeof q.total === 'number' && q.total > 0)
+      .map(q => (q.score / q.total) * 100);
+    const avgQuizScore = quizScores.length
+      ? Math.round(quizScores.reduce((s, v) => s + v, 0) / quizScores.length)
+      : 0;
+
+    const totalMaterialsCompleted = Object.values(progressMap)
+      .reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
+
+    const joinedDaysAgo = user.createdAt
+      ? Math.max(1, Math.round((Date.now() - new Date(user.createdAt).getTime()) / 86400000))
+      : 0;
+
+    const summary = {
+      studyDays: uniqueDays.size,
+      totalViews,
+      totalQuizzes,
+      totalMaterialsCompleted,
+      avgQuizScore,
+      currentStreak: user.streakCount || 0,
+      longestStreak: user.longestStreak || 0,
+      joinedDaysAgo
+    };
+
+    /* ---- Heatmap — last 365 days ---- */
+    const dailyCounts = {};
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 365);
+    const cutoffStr = toDateKey(cutoff);
+    log.forEach(a => {
+      if (a.date && a.date >= cutoffStr) {
+        dailyCounts[a.date] = (dailyCounts[a.date] || 0) + 1;
+      }
+    });
+    const heatmap = Object.entries(dailyCounts).map(([date, count]) => ({ date, count }));
+
+    /* ---- Weekly activity — last 12 weeks ---- */
+    const weekly = [];
+    const now = new Date();
+    for (let w = 11; w >= 0; w--) {
+      const end = new Date(now);
+      end.setHours(23, 59, 59, 999);
+      end.setDate(end.getDate() - (w * 7));
+      const start = new Date(end);
+      start.setDate(start.getDate() - 6);
+      start.setHours(0, 0, 0, 0);
+      const startStr = toDateKey(start);
+      const endStr = toDateKey(end);
+      const inWeek = log.filter(a => a.date >= startStr && a.date <= endStr);
+      weekly.push({
+        label: start.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
+        views: inWeek.filter(a => a.type === 'view').length,
+        quizzes: inWeek.filter(a => a.type === 'quiz').length
+      });
+    }
+
+    /* ---- Quiz trend — last 20 attempts ---- */
+    const quizLog = log
+      .filter(a => a.type === 'quiz' && typeof a.score === 'number' && typeof a.total === 'number' && a.total > 0)
+      .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+      .slice(-20);
+    const quizTrend = quizLog.map(a => ({
+      date: a.date,
+      percent: Math.round((a.score / a.total) * 100),
+      score: a.score,
+      total: a.total
+    }));
+
+    /* ---- Course progress ---- */
+    const allCourses = await Course.find().select('name code materials');
+    const courseProgress = [];
+    allCourses.forEach(c => {
+      const cid = c._id.toString();
+      const completed = (progressMap[cid] || []).length;
+      const total = (c.materials || []).length;
+      if (total > 0) {
+        courseProgress.push({
+          courseId: cid,
+          courseName: c.name,
+          courseCode: c.code || '',
+          completed,
+          total,
+          percent: Math.round((completed / total) * 100)
+        });
+      }
+    });
+    courseProgress.sort((a, b) => b.percent - a.percent);
+
+    res.json({
+      success: true,
+      analytics: {
+        summary,
+        heatmap,
+        weekly,
+        quizTrend,
+        courseProgress
+      }
+    });
+  } catch (e) {
+    console.error('Analytics error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
 });
 
 /* ============================================================
@@ -553,6 +762,8 @@ app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
     if (viewed !== false) {
       user.lastActivity = { courseId: cid, materialId: mid, timestamp: new Date() };
       bumpStreak(user);
+      // Log analytics event
+      logActivity(user, { type: 'view', courseId: cid, materialId: mid });
     }
     await user.save();
     res.json({

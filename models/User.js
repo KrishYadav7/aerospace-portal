@@ -32,7 +32,22 @@ const userSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now }
   }],
 
-  quizResults: { type: Map, of: Object, default: {} }
+  quizResults: { type: Map, of: Object, default: {} },
+
+  /* ============================================================
+     ANALYTICS — rolling log of study events
+     Kept small by deduping per (date, courseId, materialId, type)
+     Capped at 3000 entries (drop oldest on overflow).
+     ============================================================ */
+  activityLog: [{
+    date:       { type: String },                          // 'YYYY-MM-DD'
+    timestamp:  { type: Date, default: Date.now },
+    type:       { type: String, default: 'view' },         // 'view' | 'quiz'
+    courseId:   { type: String, default: null },
+    materialId: { type: String, default: null },
+    score:      { type: Number, default: null },           // for quiz events
+    total:      { type: Number, default: null }            // for quiz events
+  }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

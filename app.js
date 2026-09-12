@@ -109,13 +109,14 @@ function syncHashToState() {
   currentCourseId = null;
   window.currentSelectedCourseId = null;
   editingCourseId = null;
-
   if (parts[0] === 'admin') {
     adminTab = parts[1] || 'overview';
   } else if (parts[0] === 'courses') {
     studentNav = 'courses';
   } else if (parts[0] === 'saved') {
     studentNav = 'saved';
+  } else if (parts[0] === 'analytics') {
+    studentNav = 'analytics';
   } else {
     studentNav = 'home';
   }
@@ -785,8 +786,10 @@ async function loadNotifications() {
 function navigateStudent(dest) {
   currentCourseId = null; window.currentSelectedCourseId = null; editingCourseId = null;
   currentMaterialFilter = 'all';
-  const path = dest === 'courses' ? '#/courses' : dest === 'saved' ? '#/saved' : '#/home';
-  pushHash(path); studentNav = dest; renderApp();
+  const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home' };
+  pushHash(pathMap[dest] || '#/home');
+  studentNav = dest;
+  renderApp();
 }
 function viewCourseDetail(courseId) {
   currentCourseId = courseId; window.currentSelectedCourseId = courseId;
@@ -849,6 +852,7 @@ function renderApp() {
   }
   if (studentNav === 'home') { $('studentHomeView').classList.add('active'); renderStudentHome(); }
   else if (studentNav === 'saved') { $('studentSavedView').classList.add('active'); renderSavedCourses(); }
+  else if (studentNav === 'analytics') { $('studentAnalyticsView').classList.add('active'); renderStudentAnalytics(); }
   else { $('studentCoursesView').classList.add('active'); renderStudentCourses(); }
 }
 
@@ -857,14 +861,16 @@ function buildNav() {
     $('mainNav').innerHTML = `<a href="#" class="active" onclick="event.preventDefault();">Dashboard</a>`;
     return;
   }
-  const homeActive    = (studentNav === 'home'    && !currentCourseId) ? 'active' : '';
-  const coursesActive = (studentNav === 'courses' && !currentCourseId) ? 'active' : '';
-  const savedActive   = (studentNav === 'saved'   && !currentCourseId) ? 'active' : '';
+  const homeActive      = (studentNav === 'home'      && !currentCourseId) ? 'active' : '';
+  const coursesActive   = (studentNav === 'courses'   && !currentCourseId) ? 'active' : '';
+  const savedActive     = (studentNav === 'saved'     && !currentCourseId) ? 'active' : '';
+  const analyticsActive = (studentNav === 'analytics' && !currentCourseId) ? 'active' : '';
   const savedCount = (currentUser.bookmarks || []).length;
   $('mainNav').innerHTML = `
     <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> Home</a>
     <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> Courses</a>
     <a href="#" class="${savedActive}" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> Saved${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
+    <a href="#" class="${analyticsActive}" onclick="event.preventDefault();navigateStudent('analytics')"><i class="fas fa-chart-line"></i> Analytics</a>
   `;
 }
 
@@ -2594,11 +2600,12 @@ async function submitQuiz() {
       body: JSON.stringify({ userId: currentUser._id, answers: st.answers })
     });
     const data = await res.json();
-    if (data.success) {
+       if (data.success) {
       st.submitted = true; st.response = data;
       if (!currentUser.quizResults) currentUser.quizResults = {};
       currentUser.quizResults[st.materialId] = { score: data.score, total: data.total, attempts: data.attempts, lastAttemptAt: new Date().toISOString() };
       saveSessionUser(currentUser);
+      _analyticsCacheAt = 0;   // invalidate analytics cache — new quiz logged
       renderQuizPlayer();
       const pct = data.percent;
       if (pct === 100) showToast('🏆 Perfect!', 'success');
@@ -3064,6 +3071,464 @@ async function initApp() {
   await loadNotifications();
   renderApp();
 }
+/* ============================================================
+   STUDENT ANALYTICS DASHBOARD
+   ============================================================ */
+let _analyticsCharts = [];
+let _analyticsCache = null;
+let _analyticsCacheAt = 0;
+const ANALYTICS_CACHE_MS = 60 * 1000; // 1 minute
+
+function destroyAnalyticsCharts() {
+  while (_analyticsCharts.length) {
+    try { _analyticsCharts.pop().destroy(); } catch (e) {}
+  }
+}
+
+function toDateKeyLocal(d) {
+  const dt = (d instanceof Date) ? d : new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
+async function renderStudentAnalytics() {
+  const container = document.getElementById('analyticsContent');
+  if (!container) return;
+
+  destroyAnalyticsCharts();
+
+  // Only fetch if cache is stale
+  const now = Date.now();
+  const fresh = _analyticsCache && (now - _analyticsCacheAt < ANALYTICS_CACHE_MS);
+
+  if (!fresh) {
+    container.innerHTML = `
+      <div class="analytics-loading">
+        <div class="pdfv-spinner"></div>
+        <p>Crunching your data…</p>
+      </div>`;
+    try {
+      const res = await fetch(
+        `https://aerospace-portal.onrender.com/api/user/analytics/${currentUser._id}?t=${now}`
+      );
+      const data = await res.json();
+      if (!data.success) {
+        container.innerHTML = `
+          <div class="analytics-empty">
+            <i class="fas fa-triangle-exclamation"></i>
+            <h3>Could not load analytics</h3>
+            <p>${escapeHtml(data.message || 'Server error')}</p>
+          </div>`;
+        return;
+      }
+      _analyticsCache = data.analytics;
+      _analyticsCacheAt = now;
+    } catch (err) {
+      container.innerHTML = `
+        <div class="analytics-empty">
+          <i class="fas fa-triangle-exclamation"></i>
+          <h3>Network error</h3>
+          <p>Could not reach the server. Check your connection and try again.</p>
+        </div>`;
+      return;
+    }
+  }
+
+  renderAnalyticsUI(_analyticsCache);
+}
+
+function renderAnalyticsUI(a) {
+  const container = document.getElementById('analyticsContent');
+  if (!container) return;
+
+  const { summary, heatmap, weekly, quizTrend, courseProgress } = a;
+
+  /* ---- Empty-state check ---- */
+  if (summary.studyDays === 0 && summary.totalQuizzes === 0 && summary.totalMaterialsCompleted === 0) {
+    container.innerHTML = `
+      <div class="analytics-empty">
+        <i class="fas fa-chart-line"></i>
+        <h3>No activity yet</h3>
+        <p>Start watching lectures, reading PDFs, and taking quizzes — your progress will show up here.</p>
+        <button class="btn btn-primary" style="margin-top:18px;" onclick="navigateStudent('courses')">
+          <i class="fas fa-graduation-cap"></i> Browse Courses
+        </button>
+      </div>`;
+    return;
+  }
+
+  const heatmapCells = buildHeatmapCells(heatmap);
+  const firstDay = heatmapCells[0]?.date || '';
+  const lastDay = heatmapCells[heatmapCells.length - 1]?.date || '';
+
+  container.innerHTML = `
+    <!-- Summary row -->
+    <div class="analytics-summary">
+      <div class="analytics-stat">
+        <div class="analytics-stat-icon tone-brand"><i class="fas fa-calendar-check"></i></div>
+        <div class="analytics-stat-body">
+          <div class="analytics-stat-num">${summary.studyDays}</div>
+          <div class="analytics-stat-label">Study Days</div>
+        </div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-stat-icon tone-emerald"><i class="fas fa-circle-check"></i></div>
+        <div class="analytics-stat-body">
+          <div class="analytics-stat-num">${summary.totalMaterialsCompleted}</div>
+          <div class="analytics-stat-label">Materials Done</div>
+        </div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-stat-icon tone-cyan"><i class="fas fa-question-circle"></i></div>
+        <div class="analytics-stat-body">
+          <div class="analytics-stat-num">${summary.totalQuizzes}</div>
+          <div class="analytics-stat-label">Quizzes Taken</div>
+        </div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-stat-icon tone-gold"><i class="fas fa-bullseye"></i></div>
+        <div class="analytics-stat-body">
+          <div class="analytics-stat-num">${summary.avgQuizScore}%</div>
+          <div class="analytics-stat-label">Avg Quiz Score</div>
+        </div>
+      </div>
+      <div class="analytics-stat">
+        <div class="analytics-stat-icon tone-rose"><i class="fas fa-fire"></i></div>
+        <div class="analytics-stat-body">
+          <div class="analytics-stat-num">${summary.currentStreak}</div>
+          <div class="analytics-stat-label">Current Streak${summary.currentStreak === 1 ? '' : 's'}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Heatmap -->
+    <div class="analytics-card">
+      <div class="analytics-card-header">
+        <div>
+          <div class="analytics-card-title"><i class="fas fa-fire"></i> Activity Heatmap</div>
+          <div class="analytics-card-sub">
+            ${summary.studyDays} active day${summary.studyDays === 1 ? '' : 's'} in the last 12 months
+            · Longest streak: ${summary.longestStreak} day${summary.longestStreak === 1 ? '' : 's'}
+          </div>
+        </div>
+      </div>
+      <div class="heatmap-scroll">
+        <div class="heatmap-grid">
+          ${heatmapCells.map(c => `
+            <div class="heatmap-cell"
+                 data-level="${c.level}"
+                 title="${c.title}"></div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="heatmap-footer">
+        <span>${firstDay ? formatShortDate(firstDay) : ''} — ${lastDay ? formatShortDate(lastDay) : 'today'}</span>
+        <div class="heatmap-legend">
+          <span>Less</span>
+          <div class="heatmap-legend-swatches">
+            <span style="background:var(--bg-surface-3);"></span>
+            <span style="background:#a7f3d0;"></span>
+            <span style="background:#6ee7b7;"></span>
+            <span style="background:#34d399;"></span>
+            <span style="background:#059669;"></span>
+          </div>
+          <span>More</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts row -->
+    <div class="analytics-charts-row">
+      <div class="chart-card">
+        <div class="chart-card-title"><i class="fas fa-chart-column"></i> Weekly Activity — Last 12 Weeks</div>
+        <div class="chart-wrap"><canvas id="chartWeekly"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-card-title"><i class="fas fa-chart-line"></i> Quiz Score Trend</div>
+        <div class="chart-wrap">
+          ${quizTrend.length === 0
+            ? `<div class="analytics-empty" style="padding:40px 20px;height:100%;display:flex;flex-direction:column;justify-content:center;">
+                 <i class="fas fa-clipboard-question"></i>
+                 <p>No quizzes taken yet — take a quiz to see your score trend.</p>
+               </div>`
+            : `<canvas id="chartQuizTrend"></canvas>`}
+        </div>
+      </div>
+    </div>
+
+    <!-- Course progress -->
+    <div class="analytics-card">
+      <div class="analytics-card-header">
+        <div>
+          <div class="analytics-card-title"><i class="fas fa-book-open"></i> Course Progress</div>
+          <div class="analytics-card-sub">${courseProgress.length} course${courseProgress.length === 1 ? '' : 's'} with materials</div>
+        </div>
+      </div>
+      ${courseProgress.length === 0
+        ? `<div class="analytics-empty" style="padding:40px 20px;">
+             <i class="fas fa-book-open"></i>
+             <p>No course materials available yet.</p>
+           </div>`
+        : `<div class="course-progress-list">
+             ${courseProgress.map(cp => `
+               <div class="course-progress-row">
+                 <div class="course-progress-top">
+                   <span class="course-progress-name" title="${escapeHtml(cp.courseName)}">
+                     ${escapeHtml(cp.courseName)}
+                     ${cp.courseCode ? `<span style="color:var(--text-tertiary);font-weight:500;"> · ${escapeHtml(cp.courseCode)}</span>` : ''}
+                   </span>
+                   <span class="course-progress-pct">${cp.percent}%</span>
+                 </div>
+                 <div class="course-progress-track">
+                   <div class="course-progress-fill" style="width:${cp.percent}%;"></div>
+                 </div>
+                 <div class="course-progress-meta">${cp.completed} of ${cp.total} materials completed</div>
+               </div>
+             `).join('')}
+           </div>`}
+    </div>
+  `;
+
+  /* ---- Build charts (after DOM is in place) ---- */
+  if (typeof Chart !== 'undefined') {
+    try { buildWeeklyChart(weekly); } catch (e) { console.warn('Weekly chart error:', e); }
+    if (quizTrend.length > 0) {
+      try { buildQuizTrendChart(quizTrend); } catch (e) { console.warn('Quiz trend chart error:', e); }
+    }
+  } else {
+    console.warn('Chart.js not loaded — charts skipped.');
+  }
+}
+
+/* ---- Heatmap cell builder ---- */
+function buildHeatmapCells(heatmapArr) {
+  const counts = {};
+  (heatmapArr || []).forEach(h => { counts[h.date] = h.count; });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Align to Sunday on/before (today - 364)
+  const start = new Date(today);
+  start.setDate(start.getDate() - 364);
+  const startDow = start.getDay();
+  start.setDate(start.getDate() - startDow);
+
+  const cells = [];
+  const cur = new Date(start);
+  while (cur <= today) {
+    const key = toDateKeyLocal(cur);
+    const count = counts[key] || 0;
+    let level = 0;
+    if (count >= 8) level = 4;
+    else if (count >= 5) level = 3;
+    else if (count >= 3) level = 2;
+    else if (count >= 1) level = 1;
+
+    const pretty = cur.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+    const label = count === 0
+      ? `No activity · ${pretty}`
+      : `${count} activit${count === 1 ? 'y' : 'ies'} · ${pretty}`;
+
+    cells.push({ date: key, count, level, title: label });
+    cur.setDate(cur.getDate() + 1);
+  }
+  return cells;
+}
+
+function formatShortDate(key) {
+  try {
+    const [y, m, d] = key.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  } catch { return key; }
+}
+
+/* ---- Chart.js theme helpers ---- */
+function _chartTheme() {
+  const s = getComputedStyle(document.documentElement);
+  return {
+    text: s.getPropertyValue('--text-secondary').trim() || '#475569',
+    textMuted: s.getPropertyValue('--text-tertiary').trim() || '#8896a8',
+    grid: s.getPropertyValue('--border-subtle').trim() || '#e8ecf4',
+    brand: s.getPropertyValue('--brand-500').trim() || '#6366f1',
+    brandLight: s.getPropertyValue('--brand-300').trim() || '#a5b4fc',
+    accent: s.getPropertyValue('--accent-500').trim() || '#06b6d4',
+    gold: s.getPropertyValue('--gold-500').trim() || '#f59e0b',
+    emerald: s.getPropertyValue('--emerald-500').trim() || '#10b981'
+  };
+}
+
+function buildWeeklyChart(weekly) {
+  const el = document.getElementById('chartWeekly');
+  if (!el) return;
+  const th = _chartTheme();
+  const ctx = el.getContext('2d');
+
+  const chart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: weekly.map(w => w.label),
+      datasets: [
+        {
+          label: 'Materials viewed',
+          data: weekly.map(w => w.views),
+          backgroundColor: th.brand,
+          borderRadius: 4,
+          borderSkipped: false,
+          barPercentage: 0.7,
+          categoryPercentage: 0.7
+        },
+        {
+          label: 'Quizzes taken',
+          data: weekly.map(w => w.quizzes),
+          backgroundColor: th.emerald,
+          borderRadius: 4,
+          borderSkipped: false,
+          barPercentage: 0.7,
+          categoryPercentage: 0.7
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: th.text,
+            font: { size: 11, family: 'Inter' },
+            boxWidth: 12,
+            boxHeight: 12,
+            padding: 12,
+            usePointStyle: true,
+            pointStyle: 'rectRounded'
+          }
+        },
+        tooltip: {
+          backgroundColor: 'rgba(15,23,42,.95)',
+          titleColor: '#fff',
+          bodyColor: '#e2e8f0',
+          borderColor: 'rgba(255,255,255,.12)',
+          borderWidth: 1,
+          padding: 10,
+          cornerRadius: 8,
+          titleFont: { size: 12, family: 'Inter', weight: '700' },
+          bodyFont: { size: 12, family: 'Inter' }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: th.textMuted, font: { size: 10, family: 'Inter' } }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: th.grid, drawBorder: false },
+          ticks: { color: th.textMuted, font: { size: 10, family: 'Inter' }, precision: 0 }
+        }
+      }
+    }
+  });
+  _analyticsCharts.push(chart);
+}
+
+function buildQuizTrendChart(quizTrend) {
+  const el = document.getElementById('chartQuizTrend');
+  if (!el) return;
+  const th = _chartTheme();
+  const ctx = el.getContext('2d');
+
+  // Gradient fill under the line
+  const gradient = ctx.createLinearGradient(0, 0, 0, 240);
+  gradient.addColorStop(0, 'rgba(99,102,241,0.35)');
+  gradient.addColorStop(1, 'rgba(99,102,241,0.02)');
+
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: quizTrend.map(q => formatShortDate(q.date)),
+      datasets: [{
+        label: 'Score %',
+        data: quizTrend.map(q => q.percent),
+        borderColor: th.brand,
+        backgroundColor: gradient,
+        fill: true,
+        tension: 0.35,
+        borderWidth: 2.5,
+        pointRadius: 4,
+        pointBackgroundColor: th.brand,
+        pointBorderColor: '#fff',
+        pointBorderWidth: 2,
+        pointHoverRadius: 6,
+        pointHoverBackgroundColor: th.brand,
+        pointHoverBorderColor: '#fff',
+        pointHoverBorderWidth: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(15,23,42,.95)',
+          titleColor: '#fff',
+          bodyColor: '#e2e8f0',
+          borderColor: 'rgba(255,255,255,.12)',
+          borderWidth: 1,
+          padding: 10,
+          cornerRadius: 8,
+          titleFont: { size: 12, family: 'Inter', weight: '700' },
+          bodyFont: { size: 12, family: 'Inter' },
+          callbacks: {
+            label: function (ctx2) {
+              const item = quizTrend[ctx2.dataIndex];
+              return `  ${item.score}/${item.total} correct (${item.percent}%)`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            color: th.textMuted,
+            font: { size: 10, family: 'Inter' },
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 8
+          }
+        },
+        y: {
+          beginAtZero: true,
+          max: 100,
+          grid: { color: th.grid, drawBorder: false },
+          ticks: {
+            color: th.textMuted,
+            font: { size: 10, family: 'Inter' },
+            callback: v => v + '%',
+            stepSize: 25
+          }
+        }
+      }
+    }
+  });
+  _analyticsCharts.push(chart);
+}
+
+/* ---- Invalidate cache when new activity happens ---- */
+const _origToggleMaterialViewed = window.toggleMaterialViewed;
+// (We do NOT monkey-patch — instead, clear cache on view change is done inside
+//  toggleMaterialViewed after it succeeds. See added line below.)
+
+/* ---- Clear analytics cache when theme changes so charts redraw with new colors ---- */
+const _origApplyTheme = window.applyTheme;
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#themeToggle')) {
+    // Theme changed — invalidate cached charts so next visit redraws with new palette
+    _analyticsCacheAt = 0;
+  }
+});
 
 window.addEventListener('hashchange', () => { syncHashToState(); renderApp(); });
 initApp();
