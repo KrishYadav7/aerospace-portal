@@ -12,7 +12,8 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
 const Course = require('./models/Course');
-
+const { ImapFlow } = require('imapflow');
+const { simpleParser } = require('mailparser');
 const app = express();
 
 app.use(helmet({
@@ -106,7 +107,17 @@ const transporter = nodemailer.createTransport({
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('🚀 MongoDB Database Successfully Connected!'))
   .catch((err) => console.log('Database Connection Error:', err));
-
+/* ============================================================
+   EMAIL REPLIES SCHEMA
+   ============================================================ */
+const emailReplySchema = new mongoose.Schema({
+  from: { type: String, required: true },
+  subject: { type: String, default: '(No Subject)' },
+  text: { type: String, default: '' },
+  date: { type: Date, default: Date.now },
+  isRead: { type: Boolean, default: false }
+});
+const EmailReply = mongoose.model('EmailReply', emailReplySchema);
 /* ============================================================
    HELPERS
    ============================================================ */
@@ -245,7 +256,7 @@ app.get('/', (req, res) => res.send('Aerospace EdTech Backend is Running!'));
    ============================================================ */
 app.post('/api/login', async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, role } = req.body; // Added role
     if (!username || !password) {
       return res.status(400).json({ success: false, message: 'Username and password are required.' });
     }
@@ -265,6 +276,16 @@ app.post('/api/login', async (req, res) => {
       console.log('[login] Password mismatch for user:', user.username);
       return res.status(400).json({ success: false, message: 'Invalid username or password.' });
     }
+
+    // ---- ROLE CHECK ----
+    if (role && user.role !== role) {
+      console.log(`[login] ⛔ Role mismatch: User is ${user.role} but tried to log in as ${role}`);
+      return res.status(403).json({ 
+        success: false, 
+        message: `Access denied. You are not registered as an ${role}.` 
+      });
+    }
+
     if (user.role === 'student') { bumpStreak(user); await user.save(); }
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
     console.log('[login] ✅ Success:', user.username, '(' + user.role + ')');
@@ -1225,6 +1246,61 @@ app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId',
     await course.save();
     res.json({ success: true, message: 'Removed from playlist.', playlist: pl });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+/* ============================================================
+   EMAIL REPLY FETCHER (IMAP)
+   ============================================================ */
+const fetchEmailReplies = async () => {
+  if (!EMAIL_USER || !EMAIL_PASS) return;
+  
+  const client = new ImapFlow({
+    host: 'imap.gmail.com',
+    port: 993,
+    secure: true,
+    auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+    logger: false
+  });
+
+  try {
+    await client.connect();
+    let lock = await client.getMailboxLock('INBOX');
+    try {
+      // Fetch unseen emails
+      for await (let message of client.fetch({ seen: false }, { envelope: true, source: true })) {
+        const parsed = await simpleParser(message.source);
+        
+        // Save to database
+        await EmailReply.create({
+          from: parsed.from?.text || 'Unknown Sender',
+          subject: parsed.subject || '(No Subject)',
+          text: parsed.text || parsed.html || 'No content',
+          date: parsed.date || new Date()
+        });
+
+        // Mark as seen so we don't fetch it again
+        await client.messageFlagsAdd(message.uid, ['\\Seen']);
+        console.log(`[IMAP] Saved reply from: ${parsed.from?.text}`);
+      }
+    } finally {
+      lock.release();
+    }
+    await client.logout();
+  } catch (err) {
+    console.error('[IMAP] Error fetching replies:', err.message);
+  }
+};
+
+// Run every 3 minutes
+setInterval(fetchEmailReplies, 3 * 60 * 1000);
+
+// API Endpoint for admin dashboard
+app.get('/api/admin/email-replies', async (req, res) => {
+  try {
+    const replies = await EmailReply.find().sort({ date: -1 }).limit(50);
+    res.json({ success: true, replies });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 /* ============================================================

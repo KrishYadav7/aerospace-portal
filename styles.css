@@ -3710,3 +3710,87 @@ input, textarea, select { font-family: inherit; }
   .email-report-stats { grid-template-columns: repeat(2, 1fr); gap: 14px; }
   .email-report-stat .num { font-size: 20px; }
 }
+/* ============================================================
+   41. EMAIL REPLIES DASHBOARD
+   ============================================================ */
+.email-reply-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.email-reply-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  transition: .25s var(--ease);
+  box-shadow: var(--shadow-xs);
+}
+
+.email-reply-card:hover {
+  border-color: var(--brand-300);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+[data-theme="dark"] .email-reply-card:hover,
+[data-theme="dim"] .email-reply-card:hover {
+  border-color: var(--brand-500);
+}
+
+.email-reply-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.email-reply-from {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.email-reply-from i {
+  color: var(--brand-500);
+  font-size: 16px;
+}
+
+.email-reply-date {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.email-reply-subject {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed var(--border-subtle);
+}
+
+.email-reply-subject i {
+  color: var(--brand-400);
+  font-size: 12px;
+  margin-right: 6px;
+}
+
+.email-reply-body {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 640px) {
+  .email-reply-card { padding: 16px 18px; }
+  .email-reply-header { flex-direction: column; align-items: flex-start; gap: 4px; }
+}

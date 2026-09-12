@@ -154,12 +154,24 @@
 
       <!-- ADMIN DASHBOARD -->
       <section id="adminView" class="view">
+                <div id="adminTabReplies" class="admin-tab-content">
+          <div class="tab-toolbar">
+            <div class="tab-toolbar-text">
+              <h3><i class="fas fa-envelope-open-text"></i> Student Email Replies</h3>
+              <span class="tab-toolbar-sub" id="replyCountLabel">0 replies</span>
+            </div>
+            <button class="btn btn-outline" onclick="renderAdminEmailReplies()">
+              <i class="fas fa-rotate"></i> Refresh
+            </button>
+          </div>
+          <div id="adminEmailReplyList"></div>
+        </div>
         <div class="dash-header">
           <h2 id="adminPageTitle"><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
           <div class="actions" id="adminHeaderActions"></div>
         </div>
 
-        <div class="admin-tabs">
+                <div class="admin-tabs">
           <button class="admin-tab" data-tab="overview" onclick="switchAdminTab('overview')">
             <i class="fas fa-chart-pie"></i> Overview
           </button>
@@ -171,6 +183,9 @@
           </button>
           <button class="admin-tab" data-tab="students" onclick="switchAdminTab('students')">
             <i class="fas fa-user-graduate"></i> Students
+          </button>
+          <button class="admin-tab" data-tab="replies" onclick="switchAdminTab('replies')">
+            <i class="fas fa-envelope-open-text"></i> Email Replies
           </button>
         </div>
 

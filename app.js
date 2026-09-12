@@ -467,7 +467,7 @@ async function handleLogin(e) {
   try {
     const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password, role: loginRole })
     });
     const data = await response.json();
     if (data.success) {
@@ -917,7 +917,8 @@ function updateAdminTabUI() {
     overview:   { icon: 'fa-tachometer-alt', text: 'Admin Dashboard' },
     courses:    { icon: 'fa-graduation-cap', text: 'Manage Courses' },
     professors: { icon: 'fa-user-tie',       text: 'Manage Professors' },
-    students:   { icon: 'fa-user-graduate',  text: 'Manage Students' }
+    students:   { icon: 'fa-user-graduate',  text: 'Manage Students' },
+    replies:    { icon: 'fa-envelope-open-text', text: 'Email Replies' } // Add this
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -929,7 +930,10 @@ function updateAdminTabUI() {
       <button class="btn btn-success" onclick="openAddProfessorModal()"><i class="fas fa-user-plus"></i> <span class="btn-text">Add Professor</span></button>`,
     students: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
-      <button class="btn btn-success" onclick="openStudentRegModal()"><i class="fas fa-user-plus"></i> <span class="btn-text">Register Student</span></button>`
+      <button class="btn btn-success" onclick="openStudentRegModal()"><i class="fas fa-user-plus"></i> <span class="btn-text">Register Student</span></button>`,
+    replies: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminEmailReplies()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh Replies</span></button>`
   };
   const meta = titleMap[adminTab] || titleMap.overview;
   if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
@@ -942,6 +946,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'courses') renderAdminCourses();
   else if (adminTab === 'professors') renderAdminProfessors();
   else if (adminTab === 'students') renderAdminStudents();
+  else if (adminTab === 'replies') renderAdminEmailReplies(); // Add this
 }
 
 async function renderAdminOverview() {
@@ -1165,6 +1170,59 @@ async function renderAdminStudents() {
     console.error('renderAdminStudents:', err);
     renderStudentSelectionBar(0, 0);
     container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading students.</p></div>`;
+  }
+}
+async function renderAdminEmailReplies() {
+  const container = $('adminEmailReplyList');
+  if (!container) return;
+  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading replies...</p></div>`;
+
+  try {
+    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/email-replies');
+    const data = await res.json();
+    
+    const countEl = $('replyCountLabel');
+    if (countEl) countEl.textContent = `${data.replies.length} repl${data.replies.length === 1 ? 'y' : 'ies'}`;
+
+    if (data.replies.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <i class="fas fa-envelope-open-text"></i>
+          <p>No email replies received yet.</p>
+          <p style="margin-top:8px;font-size:13px;">When students reply to your bulk emails, they will appear here.</p>
+        </div>`;
+      return;
+    }
+
+    let html = `<div class="email-reply-list">`;
+    data.replies.forEach(r => {
+      const dateStr = new Date(r.date).toLocaleString('en-IN', { 
+        day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' 
+      });
+      
+      html += `
+        <div class="email-reply-card">
+          <div class="email-reply-header">
+            <div class="email-reply-from">
+              <i class="fas fa-user-circle"></i> 
+              <strong>${escapeHtml(r.from)}</strong>
+            </div>
+            <div class="email-reply-date">${dateStr}</div>
+          </div>
+          <div class="email-reply-subject">
+            <i class="fas fa-heading"></i> ${escapeHtml(r.subject)}
+          </div>
+          <div class="email-reply-body">
+            ${escapeHtml(r.text).replace(/\n/g, '<br/>')}
+          </div>
+        </div>`;
+    });
+    html += `</div>`;
+    container.innerHTML = html;
+
+  } catch (err) {
+    console.error('renderAdminEmailReplies:', err);
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading replies.</p></div>`;
   }
 }
 
