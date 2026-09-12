@@ -20,7 +20,7 @@ function getProfessors() { return loadData().professors; }
 function generateId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
 /* ============================================================
-   SESSION HELPERS  (per-tab auth — do NOT use localStorage here)
+   SESSION HELPERS (per-tab auth — do NOT use localStorage here)
    ============================================================ */
 const SESSION_USER_KEY  = 'aero_user';
 const SESSION_TOKEN_KEY = 'aero_token';
@@ -195,30 +195,54 @@ async function copyToClipboard(text) {
 }
 
 /* ============================================================
-   THEME
+   THEME — three-way cycle: light → dim → dark
    ============================================================ */
-(function initTheme() {
-  const saved = localStorage.getItem('aero_theme');
-  const prefers = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  document.documentElement.setAttribute('data-theme', saved || (prefers ? 'dark' : 'light'));
-})();
+const THEME_CYCLE = ['light', 'dim', 'dark'];
+const THEME_ICONS = {
+  light: { icon: 'fa-sun',                label: 'Light mode — click for dim' },
+  dim:   { icon: 'fa-circle-half-stroke', label: 'Dim mode — click for dark' },
+  dark:  { icon: 'fa-moon',               label: 'Dark mode — click for light' }
+};
+
+function getCurrentTheme() {
+  return document.documentElement.getAttribute('data-theme') || 'light';
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem('aero_theme', theme); } catch {}
+  updateThemeIcon();
+}
+function cycleTheme() {
+  const cur = getCurrentTheme();
+  const idx = THEME_CYCLE.indexOf(cur);
+  const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length];
+  applyTheme(next);
+}
 function updateThemeIcon() {
   const btn = document.getElementById('themeToggle');
   if (!btn) return;
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-  btn.innerHTML = isDark ? '<i class="fas fa-sun"></i>' : '<i class="fas fa-moon"></i>';
+  const t = getCurrentTheme();
+  const meta = THEME_ICONS[t] || THEME_ICONS.light;
+  btn.innerHTML = `<i class="fas ${meta.icon}" aria-hidden="true"></i>`;
+  btn.setAttribute('aria-label', meta.label);
+  btn.setAttribute('title', meta.label);
 }
+
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem('aero_theme'); } catch {}
+  const valid = ['light', 'dim', 'dark'];
+  const prefers = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const initial = valid.includes(saved) ? saved : (prefers ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', initial);
+})();
 
 /* ============================================================
    GLOBAL CLICK HANDLERS
    ============================================================ */
 document.addEventListener('click', (e) => {
   if (e.target.closest('#themeToggle')) {
-    const cur = document.documentElement.getAttribute('data-theme');
-    const next = cur === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('aero_theme', next);
-    updateThemeIcon();
+    cycleTheme();
     return;
   }
   if (e.target.closest('#navToggle')) {
@@ -247,6 +271,182 @@ document.addEventListener('click', (e) => {
 });
 
 /* ============================================================
+   GLOBAL SEARCH (Cmd/Ctrl + K)
+   ============================================================ */
+let _searchFocusedIndex = 0;
+let _searchResults = [];
+
+function openGlobalSearch() {
+  const el = document.getElementById('globalSearchOverlay');
+  if (!el) return;
+  el.classList.add('active');
+  const input = document.getElementById('globalSearchInput');
+  if (input) {
+    input.value = '';
+    setTimeout(() => input.focus(), 30);
+  }
+  runGlobalSearch('');
+}
+function closeGlobalSearch() {
+  document.getElementById('globalSearchOverlay')?.classList.remove('active');
+}
+function runGlobalSearch(query) {
+  const q = (query || '').trim().toLowerCase();
+  const results = [];
+  const courses = getCourses();
+
+  if (!q) {
+    // Show nothing (or recently viewed)
+    const cont = document.getElementById('globalSearchResults');
+    if (cont) cont.innerHTML = `<div class="global-search-empty">
+      <i class="fas fa-search"></i>
+      Start typing to search across all courses, materials, and doubts
+    </div>`;
+    _searchResults = [];
+    _searchFocusedIndex = 0;
+    return;
+  }
+
+  // Courses
+  courses.slice(0, 8).forEach(c => {
+    const hay = (c.name + ' ' + (c.code || '') + ' ' + (c.instructor || '')).toLowerCase();
+    if (hay.includes(q)) {
+      results.push({
+        kind: 'course', id: c.id,
+        title: c.name, meta: `${c.code || ''} · ${c.instructor || 'Instructor'}`,
+        icon: 'fa-graduation-cap'
+      });
+    }
+  });
+
+  // Materials
+  courses.forEach(c => {
+    (c.materials || []).forEach(m => {
+      const hay = (m.title + ' ' + (m.description || '')).toLowerCase();
+      if (hay.includes(q)) {
+        results.push({
+          kind: 'material', courseId: c.id, id: m.id,
+          title: m.title,
+          meta: `${c.name} · ${(m.type || '').toUpperCase()}`,
+          icon: 'fa-layer-group'
+        });
+      }
+    });
+  });
+
+  // Doubts
+  courses.forEach(c => {
+    (c.doubts || []).forEach(d => {
+      if ((d.question || '').toLowerCase().includes(q)) {
+        results.push({
+          kind: 'doubt', courseId: c.id,
+          title: d.question,
+          meta: `${c.name} · asked by ${d.studentName || 'student'}`,
+          icon: 'fa-comment-dots'
+        });
+      }
+    });
+  });
+
+  _searchResults = results.slice(0, 30);
+  _searchFocusedIndex = 0;
+  renderGlobalSearchResults(q);
+}
+
+function renderGlobalSearchResults(query) {
+  const cont = document.getElementById('globalSearchResults');
+  if (!cont) return;
+  if (_searchResults.length === 0) {
+    cont.innerHTML = `<div class="global-search-empty">
+      <i class="fas fa-inbox"></i>
+      No results for "${escapeHtml(query)}"
+    </div>`;
+    return;
+  }
+
+  let html = '<div class="global-search-section-label">Results</div>';
+  _searchResults.forEach((r, i) => {
+    const t = highlightMatch(r.title, query);
+    const m = highlightMatch(r.meta, query);
+    html += `<div class="global-search-item${i === _searchFocusedIndex ? ' focused' : ''}" data-idx="${i}">
+      <div class="global-search-item-icon"><i class="fas ${r.icon}"></i></div>
+      <div class="global-search-item-body">
+        <div class="global-search-item-title">${t}</div>
+        <div class="global-search-item-meta">${m}</div>
+      </div>
+    </div>`;
+  });
+  cont.innerHTML = html;
+
+  cont.querySelectorAll('.global-search-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.dataset.idx, 10);
+      openSearchResult(_searchResults[idx]);
+    });
+  });
+}
+
+function highlightMatch(text, query) {
+  const safe = escapeHtml(text || '');
+  if (!query) return safe;
+  const safeQ = escapeHtml(query).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  try {
+    return safe.replace(new RegExp('(' + safeQ + ')', 'ig'), '<mark>$1</mark>');
+  } catch { return safe; }
+}
+
+function openSearchResult(r) {
+  if (!r) return;
+  closeGlobalSearch();
+  if (r.kind === 'course') {
+    viewCourseDetail(r.id);
+  } else if (r.kind === 'material') {
+    viewCourseDetail(r.courseId);
+  } else if (r.kind === 'doubt') {
+    currentMaterialFilter = 'qa';
+    viewCourseDetail(r.courseId);
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  // Ctrl/Cmd + K
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    const overlay = document.getElementById('globalSearchOverlay');
+    if (overlay?.classList.contains('active')) closeGlobalSearch();
+    else openGlobalSearch();
+    return;
+  }
+  const overlay = document.getElementById('globalSearchOverlay');
+  if (!overlay?.classList.contains('active')) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeGlobalSearch(); return; }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _searchFocusedIndex = Math.min(_searchResults.length - 1, _searchFocusedIndex + 1);
+    renderGlobalSearchResults(document.getElementById('globalSearchInput')?.value || '');
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _searchFocusedIndex = Math.max(0, _searchFocusedIndex - 1);
+    renderGlobalSearchResults(document.getElementById('globalSearchInput')?.value || '');
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    if (_searchResults[_searchFocusedIndex]) openSearchResult(_searchResults[_searchFocusedIndex]);
+  }
+});
+
+document.addEventListener('input', (e) => {
+  if (e.target && e.target.id === 'globalSearchInput') {
+    runGlobalSearch(e.target.value);
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'globalSearchOverlay') closeGlobalSearch();
+  if (e.target.closest('#globalSearchCloseBtn')) closeGlobalSearch();
+  if (e.target.closest('#globalSearchTrigger')) { e.preventDefault(); openGlobalSearch(); }
+});
+
+/* ============================================================
    AUTH
    ============================================================ */
 function setLoginRole(role) {
@@ -270,7 +470,6 @@ async function handleLogin(e) {
       if (loginRole === 'admin' && data.user.role !== 'admin') return showToast('Not an admin account.', 'error');
       if (loginRole === 'student' && data.user.role !== 'student') return showToast('Not a student account.', 'error');
       currentUser = data.user;
-      // Session-scoped (per-tab) — prevents cross-tab clobbering
       saveSession(data.user, data.token);
       studentNav = 'home';
       adminTab = 'overview';
@@ -400,7 +599,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-id-card"></i> Full Name</div>
       <div class="cred-value-group">
         <span class="cred-value">${escapeHtml(student.fullName)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('name', '${escapeHtml(student.fullName).replace(/'/g, "\\'")}')" title="Copy">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('name', '${escapeHtml(student.fullName).replace(/'/g, "\\'")}')" title="Copy" aria-label="Copy name">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -409,7 +608,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-at"></i> Username</div>
       <div class="cred-value-group">
         <span class="cred-value cred-code">${escapeHtml(student.username)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('username', '${escapeHtml(student.username)}')" title="Copy">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('username', '${escapeHtml(student.username)}')" title="Copy" aria-label="Copy username">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -418,7 +617,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-key"></i> Password</div>
       <div class="cred-value-group">
         <span class="cred-value cred-code">${escapeHtml(student.password)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('password', '${escapeHtml(student.password)}')" title="Copy">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('password', '${escapeHtml(student.password)}')" title="Copy" aria-label="Copy password">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -428,7 +627,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-envelope"></i> Email</div>
       <div class="cred-value-group">
         <span class="cred-value">${escapeHtml(student.email)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('email', '${escapeHtml(student.email)}')" title="Copy">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('email', '${escapeHtml(student.email)}')" title="Copy" aria-label="Copy email">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -776,12 +975,12 @@ async function renderAdminCourses() {
         </button>
       </div>` : '';
 
-    const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt=""></div>` : '';
+    const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy"></div>` : '';
 
     html += `
       <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}">
         ${thumbHtml}
-        <button class="delete-course-btn" onclick="event.stopPropagation();deleteCourse('${c.id}')" title="Delete"><i class="fas fa-trash-alt"></i></button>
+        <button class="delete-course-btn" onclick="event.stopPropagation();deleteCourse('${c.id}')" title="Delete" aria-label="Delete course"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${premiumLabel} ${statusBadge} ${featuredBadge}</div>
         <h3>${escapeHtml(c.name)}</h3>
         ${alertHtml}
@@ -825,7 +1024,7 @@ function renderAdminProfessors() {
   let html = `<div class="admin-professor-grid">`;
   professors.forEach(p => {
     const photoHtml = p.photo
-      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}">`
+      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" loading="lazy">`
       : `<div class="avatar-placeholder"><i class="fas fa-user-tie"></i></div>`;
 
     html += `
@@ -837,7 +1036,7 @@ function renderAdminProfessors() {
           <div class="desc">${escapeHtml(p.description) || ''}</div>
         </div>
         <div class="actions">
-          <button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')" title="Delete">
+          <button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')" title="Delete" aria-label="Delete professor">
             <i class="fas fa-trash"></i>
           </button>
         </div>
@@ -1098,7 +1297,7 @@ function renderEditorDetails(course) {
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-image"></i> Thumbnail</h3>
       <div class="thumbnail-editor">
-        ${course.thumbnail ? `<img src="${course.thumbnail}" class="thumbnail-preview" alt="">` : '<div class="thumbnail-preview-empty"><i class="fas fa-image"></i><span>No thumbnail</span></div>'}
+        ${course.thumbnail ? `<img src="${course.thumbnail}" class="thumbnail-preview" alt="" loading="lazy">` : '<div class="thumbnail-preview-empty"><i class="fas fa-image"></i><span>No thumbnail</span></div>'}
         <div class="thumbnail-actions">
           <input type="file" id="edThumbnailFile" accept="image/*" style="display:none;" onchange="handleThumbnailUpload(this)">
           <button class="btn btn-outline btn-sm" onclick="document.getElementById('edThumbnailFile').click()"><i class="fas fa-upload"></i> Upload</button>
@@ -1213,7 +1412,7 @@ function renderEditorAnnouncements(course) {
       html += `<div class="ann-card">
         <div class="ann-card-head">
           <div><strong>${escapeHtml(a.title)}</strong><span class="ann-meta">by ${escapeHtml(a.authorName)} · ${d}</span></div>
-          <button class="ann-delete" onclick="deleteAnnouncement('${course.id}', '${a.id}')"><i class="fas fa-trash-alt"></i></button>
+          <button class="ann-delete" onclick="deleteAnnouncement('${course.id}', '${a.id}')" aria-label="Delete announcement"><i class="fas fa-trash-alt"></i></button>
         </div>
         ${a.body ? `<p class="ann-body">${escapeHtml(a.body)}</p>` : ''}
       </div>`;
@@ -1291,7 +1490,7 @@ function renderEditorPlaylists(course) {
               <div class="playlist-item-row">
                 <span class="playlist-item-index">${idx + 1}</span>
                 <span class="playlist-item-title">${escapeHtml(m.title)}</span>
-                <button class="playlist-item-remove" onclick="removeVideoFromPlaylist('${course.id}', '${pl.id}', '${m.id}')" title="Remove from playlist">
+                <button class="playlist-item-remove" onclick="removeVideoFromPlaylist('${course.id}', '${pl.id}', '${m.id}')" title="Remove from playlist" aria-label="Remove from playlist">
                   <i class="fas fa-times"></i>
                 </button>
               </div>
@@ -1620,7 +1819,7 @@ function renderStudentHome() {
     let html = '';
     professors.forEach(p => {
       const photoHtml = p.photo
-        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="professor-avatar">`
+        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="professor-avatar" loading="lazy">`
         : `<div class="professor-avatar avatar-placeholder-lg"><i class="fas fa-user-tie"></i></div>`;
       html += `<div class="professor-card">${photoHtml}<h3>${escapeHtml(p.name)}</h3><div class="prof-title">${escapeHtml(p.title)}</div><p>${escapeHtml(p.description) || ''}</p></div>`;
     });
@@ -1740,13 +1939,13 @@ function renderStudentCourseCard(c) {
     ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>${!isPurchased ? ` <span class="premium-badge premium-locked"><i class="fas fa-lock"></i> Locked</span>` : ''}`
     : '';
 
-  const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt=""></div>` : '';
+  const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy"></div>` : '';
   const plCount = (c.playlists || []).length;
 
   return `
     <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}" onclick="viewCourseDetail('${c.id}')">
       ${thumbHtml}
-      <button class="bookmark-btn ${saved ? 'saved' : ''}" onclick="toggleBookmark(event, '${c.id}')" title="${saved ? 'Remove' : 'Save'}">
+      <button class="bookmark-btn ${saved ? 'saved' : ''}" onclick="toggleBookmark(event, '${c.id}')" title="${saved ? 'Remove' : 'Save'}" aria-label="${saved ? 'Remove bookmark' : 'Save course'}">
         <i class="fas fa-bookmark"></i>
       </button>
       <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${featuredBadge} ${badge}</div>
@@ -1813,7 +2012,7 @@ function renderCourseDetail(courseId) {
 
   let html = `
     <div class="course-detail-header" style="${acc}">
-      ${course.thumbnail ? `<img src="${course.thumbnail}" class="cd-thumb" alt="">` : ''}
+      ${course.thumbnail ? `<img src="${course.thumbnail}" class="cd-thumb" alt="" loading="lazy">` : ''}
       <div class="cd-content">
         <h2>${escapeHtml(course.name)} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>' : ''}</h2>
         <div class="cd-chips">
@@ -2276,7 +2475,7 @@ function renderQuizDraft() {
   quizDraft.forEach((q, qi) => {
     html += `<div class="quiz-edit-card">
       <div class="quiz-edit-head"><strong>Question ${qi + 1}</strong>
-        <button type="button" class="quiz-remove" onclick="removeQuizQuestion(${qi})"><i class="fas fa-trash-alt"></i></button>
+        <button type="button" class="quiz-remove" onclick="removeQuizQuestion(${qi})" aria-label="Remove question"><i class="fas fa-trash-alt"></i></button>
       </div>
       <div class="form-group" style="margin-bottom:10px;">
         <input type="text" placeholder="Question text" value="${escapeHtml(q.question)}" oninput="updateQuizField(${qi}, 'question', this.value)">
@@ -2852,12 +3051,12 @@ function showToast(message, type = 'info') {
    INIT
    ============================================================ */
 async function initApp() {
-  // Per-tab session — each browser tab gets its own logged-in user.
   const savedUser = loadSessionUser();
   if (savedUser) {
     currentUser = savedUser;
     if (currentUser.role === 'admin') adminTab = 'overview';
   }
+  updateThemeIcon();
   syncHashToState();
   renderApp();
   await fetchCoursesFromDB();

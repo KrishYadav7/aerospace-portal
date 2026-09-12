@@ -1,7 +1,7 @@
 /* ============================================================
    SERVICE WORKER — offline shell caching
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v2';   // bumped so old caches are dropped
+const CACHE_NAME = 'aero-shell-v3';   // bumped: new color system + search
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -41,17 +41,14 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Never cache API calls or Razorpay
   if (url.pathname.startsWith('/api/') || url.hostname.includes('razorpay')) return;
   if (request.method !== 'GET') return;
 
-  // Hosts we're allowed to cache third-party assets from
   const CACHEABLE_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) {
-        // Background refresh (stale-while-revalidate)
         fetch(request).then((res) => {
           if (res.ok) caches.open(CACHE_NAME).then((c) => c.put(request, res.clone()));
         }).catch(() => {});

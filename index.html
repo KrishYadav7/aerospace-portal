@@ -22,13 +22,17 @@
         </div>
       </div>
 
-      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
         <i class="fas fa-bars"></i>
       </button>
 
       <nav class="main-nav" id="mainNav"></nav>
 
       <div class="user-info">
+        <button class="icon-btn" id="globalSearchTrigger" aria-label="Global search (Ctrl+K)" title="Search (Ctrl+K)">
+          <i class="fas fa-search"></i>
+        </button>
+
         <div class="notif-wrap" id="notifWrap">
           <button class="icon-btn notif-btn" id="notifBtn" aria-label="Notifications">
             <i class="fas fa-bell"></i>
@@ -45,7 +49,9 @@
           </div>
         </div>
 
-        <button class="icon-btn theme-toggle" id="themeToggle" title="Toggle theme"><i class="fas fa-moon"></i></button>
+        <button class="icon-btn theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
+          <i class="fas fa-moon"></i>
+        </button>
 
         <span class="streak-badge" id="streakBadge" style="display:none;" title="Daily streak">
           <i class="fas fa-fire"></i> <span id="streakCount">0</span>
@@ -613,6 +619,24 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Global Search Overlay (Cmd/Ctrl + K) -->
+  <div class="global-search-overlay" id="globalSearchOverlay">
+    <div class="global-search-box">
+      <div class="global-search-input-wrap">
+        <i class="fas fa-search"></i>
+        <input type="text" class="global-search-input" id="globalSearchInput"
+               placeholder="Search courses, materials, doubts..." autocomplete="off">
+        <span class="global-search-kbd">ESC</span>
+      </div>
+      <div class="global-search-results" id="globalSearchResults"></div>
+      <div class="global-search-hint">
+        <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+        <span><kbd>↵</kbd> Open</span>
+        <span><kbd>Esc</kbd> Close</span>
+      </div>
     </div>
   </div>
 
