@@ -1304,7 +1304,6 @@ async function sendBulkEmail(e) {
   const recipientIds = Array.from(_emailSelectedIds);
   if (recipientIds.length === 0) return showToast('No recipients selected.', 'error');
 
-  // ---- Final confirmation ----
   const confirmMsg = `Send this email to ${recipientIds.length} student${recipientIds.length === 1 ? '' : 's'}?\n\nSubject: ${subject}\n\nThis cannot be undone.`;
   if (!confirm(confirmMsg)) return;
 
@@ -1314,7 +1313,6 @@ async function sendBulkEmail(e) {
   if (btn) btn.disabled = true;
   if (label) label.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Sending ${recipientIds.length} email${recipientIds.length === 1 ? '' : 's'}…`;
 
-  // ---- 90-second client-side timeout so the UI can never hang forever ----
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(), 90000);
 
@@ -1333,7 +1331,6 @@ async function sendBulkEmail(e) {
 
     clearTimeout(abortTimer);
 
-    // ---- Handle non-JSON responses (e.g. 502 from proxy) ----
     let data;
     const rawText = await res.text();
     try {
@@ -1347,29 +1344,143 @@ async function sendBulkEmail(e) {
       closeModal('emailStudentsModal');
       clearStudentSelection();
 
-      if (data.failed > 0) {
-        showToast(`⚠️ Sent ${data.sent}/${data.total}. ${data.failed} failed — see console.`, 'info');
-        console.warn('[bulk-email] Failures:', data.failures);
-      } else if (data.skipped > 0) {
+      // ✅ Full success
+      if (data.failed === 0 && data.skipped === 0) {
         showToast(`✅ ${data.message}`, 'success');
-      } else {
-        showToast(`✅ ${data.message}`, 'success');
+        return;
       }
+
+      // ⚠️ Partial success — show detailed report
+      showEmailReport(data);
     } else {
       showToast(data.message || 'Failed to send email.', 'error');
     }
   } catch (err) {
     clearTimeout(abortTimer);
     if (err.name === 'AbortError') {
-      showToast('Request timed out (90s). Try sending in smaller batches.', 'error');
+      showToast('Request timed out (90s). Try smaller batches.', 'error');
     } else {
       console.error('[bulk-email] Error:', err);
-      showToast('Network error while sending. Check your connection.', 'error');
+      showToast('Network error while sending.', 'error');
     }
   } finally {
     if (btn) btn.disabled = false;
     if (label) label.textContent = originalLabel;
   }
+}
+
+/* ------------------------------------------------------------
+   Show a detailed report of successes / skips / failures
+   ------------------------------------------------------------ */
+function showEmailReport(data) {
+  const { sent, failed, skipped, total, failures } = data;
+
+  // Build a small alert-style modal
+  const old = document.getElementById('emailReportModal');
+  if (old) old.remove();
+
+  const failureRows = (failures || []).map(f => `
+    <div class="email-report-row error">
+      <div class="email-report-row-icon"><i class="fas fa-circle-xmark"></i></div>
+      <div class="email-report-row-body">
+        <div class="email-report-row-title">${escapeHtml(f.name || 'Student')}</div>
+        <div class="email-report-row-meta">${escapeHtml(f.email)}</div>
+        <div class="email-report-row-error">${escapeHtml(f.error || 'Unknown error')}</div>
+      </div>
+    </div>
+  `).join('');
+
+  const el = document.createElement('div');
+  el.id = 'emailReportModal';
+  el.className = 'modal-overlay active';
+  el.innerHTML = `
+    <div class="modal-box email-report-modal">
+      <div class="email-report-header">
+        <div class="email-report-icon ${failed > 0 ? 'warn' : 'ok'}">
+          <i class="fas ${failed > 0 ? 'fa-triangle-exclamation' : 'fa-check'}"></i>
+        </div>
+        <div>
+          <h3>${failed > 0 ? 'Email Partially Sent' : 'Email Sent'}</h3>
+          <p class="modal-sub" style="margin:4px 0 0;">${escapeHtml(data.message)}</p>
+        </div>
+      </div>
+
+      <div class="email-report-stats">
+        <div class="email-report-stat">
+          <div class="num ok">${sent}</div>
+          <div class="label">Sent</div>
+        </div>
+        <div class="email-report-stat">
+          <div class="num skip">${skipped || 0}</div>
+          <div class="label">Skipped</div>
+        </div>
+        <div class="email-report-stat">
+          <div class="num bad">${failed || 0}</div>
+          <div class="label">Failed</div>
+        </div>
+        <div class="email-report-stat">
+          <div class="num">${total}</div>
+          <div class="label">Total</div>
+        </div>
+      </div>
+
+      ${failures && failures.length > 0 ? `
+        <div class="email-report-section">
+          <div class="email-report-section-title">
+            <i class="fas fa-circle-xmark"></i> Which failed and why
+          </div>
+          <div class="email-report-list">${failureRows}</div>
+        </div>
+        <div class="email-report-hint">
+          <i class="fas fa-lightbulb"></i>
+          <div>
+            <strong>How to fix:</strong> Check the "error" text on each row above. Common causes:
+            <ul style="margin:6px 0 0 18px; padding:0;">
+              <li><strong>550 / User unknown</strong> — email address is wrong</li>
+              <li><strong>535 / Username and Password not accepted</strong> — server's Gmail App Password is expired</li>
+              <li><strong>timed out</strong> — Gmail was slow; just retry</li>
+              <li><strong>421 / Service not available</strong> — rate limited; wait 5 min</li>
+            </ul>
+          </div>
+        </div>
+      ` : ''}
+
+      ${skipped > 0 ? `
+        <div class="email-report-section">
+          <div class="email-report-section-title">
+            <i class="fas fa-user-slash"></i> Skipped (no email on file)
+          </div>
+          <p class="email-report-hint-text">${skipped} student${skipped === 1 ? '' : 's'} had no email address. Add their email via Edit → then retry.</p>
+        </div>
+      ` : ''}
+
+      <div class="modal-actions">
+        ${failures && failures.length > 0 ? `
+          <button type="button" class="btn btn-outline" onclick="copyEmailFailures()">
+            <i class="fas fa-copy"></i> Copy Failure List
+          </button>
+        ` : ''}
+        <button type="button" class="btn btn-primary" onclick="document.getElementById('emailReportModal').remove()">
+          <i class="fas fa-check"></i> Done
+        </button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(el);
+  window.__lastEmailFailures = failures || [];
+
+  el.addEventListener('click', (ev) => {
+    if (ev.target === el) el.remove();
+  });
+}
+
+async function copyEmailFailures() {
+  const failures = window.__lastEmailFailures || [];
+  if (failures.length === 0) return;
+  const text = failures.map(f => `${f.name} <${f.email}> — ${f.error}`).join('\n');
+  const ok = await copyToClipboard(text);
+  showToast(ok ? '✓ Failure list copied.' : 'Copy failed.', ok ? 'success' : 'error');
 }
 
 /* ---- Optional: Email status diagnostic (call from admin UI if needed) ---- */
