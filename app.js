@@ -1,23 +1,26 @@
 /* ============================================================
-   STORAGE — Professors (localStorage)
+   API CONFIGURATION
    ============================================================ */
-const STORAGE_KEY = 'aerospace_data';
+const API_BASE = 'https://aerospace-portal.onrender.com/api';
 
-function getDefaultData() {
-  return {
-    professors: [
-      { id: 'p1', name: 'Prof. S. K. Mehta', title: 'Aerodynamics', description: 'Ph.D. from MIT', photo: '' },
-      { id: 'p2', name: 'Prof. R. N. Sharma', title: 'Propulsion', description: 'Former ISRO scientist.', photo: '' }
-    ]
-  };
-}
-function loadData() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || getDefaultData(); }
-  catch { return getDefaultData(); }
-}
-function saveData(data) { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
-function getProfessors() { return loadData().professors; }
+/* ============================================================
+   PROFESSORS (MongoDB — centralized database)
+   ============================================================ */
+let liveProfessors = [];
+function getProfessors() { return liveProfessors; }
 function generateId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+async function fetchProfessorsFromDB() {
+  try {
+    const response = await fetch(`${API_BASE}/professors?t=${Date.now()}`);
+    const data = await response.json();
+    if (data.success) {
+      liveProfessors = data.professors;
+    }
+  } catch (error) {
+    console.error('Error fetching professors:', error);
+  }
+}
 
 /* ============================================================
    SESSION HELPERS (per-tab auth — do NOT use localStorage here)
@@ -794,15 +797,14 @@ function previewProfPhoto(input) {
   reader.readAsDataURL(file);
 }
 
-function saveNewProfessorPage() {
+async function saveNewProfessorPage() {
   const name = $('newProfName').value.trim();
   const title = $('newProfTitle').value.trim();
   if (!name || !title) return showToast('Name and Title are required.', 'error');
 
   const processSave = async (photoData) => {
     const payload = {
-      name,
-      title,
+      name, title,
       description: $('newProfDescription').value.trim(),
       email: $('newProfEmail').value.trim(),
       phone: $('newProfPhone').value.trim(),
@@ -822,7 +824,7 @@ function saveNewProfessorPage() {
       if (data.success) {
         showToast('✓ Professor added successfully!', 'success');
         addingProfessor = false;
-        await fetchProfessorsFromDB();
+        await fetchProfessorsFromDB(); // Fetch updated list from DB
         switchAdminTab('professors');
       } else {
         showToast(data.message || 'Failed to add professor.', 'error');
@@ -3618,22 +3620,36 @@ function openAddProfessorModal() {
   pushHash('#/admin/professor/new');
   renderApp();
 }
-function saveProfessor(e) {
+async function saveProfessor(e) {
   e.preventDefault();
-  const data = loadData();
   const name = $('professorName').value.trim();
-  const processSave = (photoData) => {
-    data.professors.push({
-      id: generateId(), name,
-      title: $('professorTitle').value.trim(),
+  const title = $('professorTitle').value.trim();
+  if (!name || !title) return showToast('Name and Title are required.', 'error');
+
+  const processSave = async (photoData) => {
+    const payload = {
+      name, title,
       description: $('professorDescription').value.trim(),
       photo: photoData || ''
-    });
-    saveData(data);
-    showToast('✓ Professor added!', 'success');
-    closeModal('professorModal');
-    renderApp();
+    };
+    try {
+      const res = await fetch(`${API_BASE}/professors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('✓ Professor added!', 'success');
+        closeModal('professorModal');
+        await fetchProfessorsFromDB();
+        renderApp();
+      } else {
+        showToast(data.message || 'Failed.', 'error');
+      }
+    } catch { showToast('Server error.', 'error'); }
   };
+
   const photoFile = $('professorPhoto').files ? $('professorPhoto').files[0] : null;
   if (photoFile) {
     const reader = new FileReader();
@@ -3788,8 +3804,8 @@ async function showPaymentModal(courseId, materialId = null) {
     const data = await response.json();
     if (!data.success) return showToast('Error creating order.', 'error');
 
-    const options = {
-      key: '',
+       const options = {
+      key: data.key_id, // <-- FIXED: Use the key sent from the backend
       amount: data.order.amount,
       currency: 'INR',
       name: 'Aerospace EdTech',
