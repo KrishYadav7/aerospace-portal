@@ -1,7 +1,7 @@
 /* ============================================================
    SERVICE WORKER — offline shell caching
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v3';   // bumped: new color system + search
+const CACHE_NAME = 'aero-shell-v4';   // bumped: full-page forms + bug fixes
 const SHELL_ASSETS = [
   './',
   './index.html',

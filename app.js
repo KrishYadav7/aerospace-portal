@@ -79,6 +79,7 @@ let editingTab = 'details';
 let addingCourse = false;
 let addingProfessor = false;
 let addingMaterialCourseId = null;
+let addingStudent = false;
 
 // ---- Bulk email selection (in-memory only; cleared on tab switch / logout) ----
 let _emailSelectedIds = new Set();
@@ -113,22 +114,26 @@ function syncHashToState() {
   }
 
   if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] === 'new') {
-    addingCourse = true; addingProfessor = false; addingMaterialCourseId = null;
+    addingCourse = true; addingProfessor = false; addingMaterialCourseId = null; addingStudent = false;
     currentCourseId = null; editingCourseId = null; return;
   }
   if (parts[0] === 'admin' && parts[1] === 'professor' && parts[2] === 'new') {
-    addingProfessor = true; addingCourse = false; addingMaterialCourseId = null;
+    addingProfessor = true; addingCourse = false; addingMaterialCourseId = null; addingStudent = false;
     currentCourseId = null; editingCourseId = null; return;
   }
   if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] && parts[3] === 'material' && parts[4] === 'new') {
-    addingMaterialCourseId = parts[2]; addingCourse = false; addingProfessor = false;
+    addingMaterialCourseId = parts[2]; addingCourse = false; addingProfessor = false; addingStudent = false;
+    currentCourseId = null; editingCourseId = null; return;
+  }
+  if (parts[0] === 'admin' && parts[1] === 'student' && parts[2] === 'new') {
+    addingStudent = true; addingCourse = false; addingProfessor = false; addingMaterialCourseId = null;
     currentCourseId = null; editingCourseId = null; return;
   }
 
   currentCourseId = null;
   window.currentSelectedCourseId = null;
   editingCourseId = null;
-  addingCourse = false; addingProfessor = false; addingMaterialCourseId = null;
+  addingCourse = false; addingProfessor = false; addingMaterialCourseId = null; addingStudent = false;
   if (parts[0] === 'admin') {
     adminTab = parts[1] || 'overview';
   } else if (parts[0] === 'courses') {
@@ -140,22 +145,6 @@ function syncHashToState() {
   } else {
     studentNav = 'home';
   }
-    // Add these checks inside syncHashToState()
-  if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] === 'new') {
-    addingCourse = true; addingProfessor = false; addingMaterialCourseId = null;
-    currentCourseId = null; editingCourseId = null; return;
-  }
-  if (parts[0] === 'admin' && parts[1] === 'professor' && parts[2] === 'new') {
-    addingProfessor = true; addingCourse = false; addingMaterialCourseId = null;
-    currentCourseId = null; editingCourseId = null; return;
-  }
-  if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] && parts[3] === 'material' && parts[4] === 'new') {
-    addingMaterialCourseId = parts[2]; addingCourse = false; addingProfessor = false;
-    currentCourseId = null; editingCourseId = null; return;
-  }
-
-  // Reset these in the fallback block
-  addingCourse = false; addingProfessor = false; addingMaterialCourseId = null;
 }
 
 function pushHash(path) {
@@ -333,7 +322,6 @@ function runGlobalSearch(query) {
   const courses = getCourses();
 
   if (!q) {
-    // Show nothing (or recently viewed)
     const cont = document.getElementById('globalSearchResults');
     if (cont) cont.innerHTML = `<div class="global-search-empty">
       <i class="fas fa-search"></i>
@@ -344,7 +332,6 @@ function runGlobalSearch(query) {
     return;
   }
 
-  // Courses
   courses.slice(0, 8).forEach(c => {
     const hay = (c.name + ' ' + (c.code || '') + ' ' + (c.instructor || '')).toLowerCase();
     if (hay.includes(q)) {
@@ -356,7 +343,6 @@ function runGlobalSearch(query) {
     }
   });
 
-  // Materials
   courses.forEach(c => {
     (c.materials || []).forEach(m => {
       const hay = (m.title + ' ' + (m.description || '')).toLowerCase();
@@ -371,7 +357,6 @@ function runGlobalSearch(query) {
     });
   });
 
-  // Doubts
   courses.forEach(c => {
     (c.doubts || []).forEach(d => {
       if ((d.question || '').toLowerCase().includes(q)) {
@@ -446,7 +431,6 @@ function openSearchResult(r) {
 }
 
 document.addEventListener('keydown', (e) => {
-  // Ctrl/Cmd + K
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
     e.preventDefault();
     const overlay = document.getElementById('globalSearchOverlay');
@@ -504,14 +488,11 @@ async function handleLogin(e) {
     });
     const data = await response.json();
     if (data.success) {
-      // Server has already authenticated. Trust its response — do NOT
-      // gate on the login-role toggle, which can be stale after a logout.
       currentUser = data.user;
       saveSession(data.user, data.token);
       studentNav = 'home';
       adminTab = 'overview';
       editingCourseId = null;
-      // Always reset the toggle so the next visit starts on "Student"
       setLoginRole('student');
       pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
       showToast(data.message, 'success');
@@ -525,12 +506,9 @@ function logout() {
   window.currentSelectedCourseId = null;
   currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
   clearSession();
-  // ---- Reset login role toggle so next login starts clean ----
   loginRole = 'student';
-  try { setLoginRole('student'); } catch (e) { /* toggle may not be in DOM yet */ }
-  // ---- Clear any pending email selection ----
+  try { setLoginRole('student'); } catch (e) { }
   try { _emailSelectedIds.clear(); } catch (e) {}
-  // ---- Clear analytics cache so a new user doesn't see old data ----
   _analyticsCache = null;
   _analyticsCacheAt = 0;
   try { destroyAnalyticsCharts(); } catch (e) {}
@@ -580,13 +558,12 @@ async function verifyAndCompleteRegistration(otp) {
    ADMIN — Manual Student Registration
    ============================================================ */
 function openStudentRegModal() {
-  ['newStuFullName', 'newStuUsername', 'newStuEmail', 'newStuPassword'].forEach(id => {
-    const el = $(id); if (el) el.value = '';
-  });
-  const btn = $('studentRegSubmitBtn');
-  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Student'; }
-  openModal('studentRegModal');
-  setTimeout(() => $('newStuFullName')?.focus(), 100);
+  addingStudent = true;
+  addingCourse = false;
+  addingProfessor = false;
+  addingMaterialCourseId = null;
+  pushHash('#/admin/student/new');
+  renderApp();
 }
 
 function autoGeneratePassword() {
@@ -599,8 +576,7 @@ function autoGeneratePassword() {
   $('newStuPassword').value = pass;
 }
 
-async function saveNewStudent(e) {
-  e.preventDefault();
+async function saveNewStudentPage() {
   const fullName = $('newStuFullName').value.trim();
   const username = $('newStuUsername').value.trim().toLowerCase();
   const email = $('newStuEmail').value.trim();
@@ -611,10 +587,6 @@ async function saveNewStudent(e) {
   if (password.length < 6) return showToast('Password must be at least 6 characters.', 'error');
   if (!/^[a-z0-9._-]+$/.test(username)) return showToast('Username may only contain letters, numbers, dots, underscores, or hyphens.', 'error');
 
-  const btn = $('studentRegSubmitBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
-
   try {
     const res = await fetch('https://aerospace-portal.onrender.com/api/admin/create-student', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -623,18 +595,15 @@ async function saveNewStudent(e) {
     const data = await res.json();
 
     if (data.success) {
-      closeModal('studentRegModal');
+      showToast('🎉 Student created successfully!', 'success');
+      addingStudent = false;
       showCredentialsCard(data.student);
-      if (adminTab === 'students') renderAdminStudents();
+      switchAdminTab('students');
     } else {
       showToast(data.message || 'Failed to create student.', 'error');
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Student';
     }
   } catch (err) {
     showToast('Server error.', 'error');
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-user-plus"></i> Create Student';
   }
 }
 
@@ -857,7 +826,7 @@ function setMaterialFilter(type) {
    RENDER APP
    ============================================================ */
 function renderApp() {
-  ['loginView', 'adminView', 'adminEditView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'courseDetailView']
+  ['loginView', 'adminView', 'adminEditView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView']
     .forEach(id => { const el = $(id); if (el) el.classList.remove('active'); });
   $('appHeader').style.display = 'none';
   $('appFooter').style.display = 'none';
@@ -897,6 +866,11 @@ function renderApp() {
     renderAdminAddMaterial(addingMaterialCourseId);
     return;
   }
+  if (addingStudent) {
+    $('adminAddStudentView').classList.add('active');
+    renderAdminAddStudent();
+    return;
+  }
   if (editingCourseId && currentUser.role === 'admin') {
     $('adminEditView').classList.add('active');
     renderCourseEditor(editingCourseId);
@@ -916,21 +890,7 @@ function renderApp() {
   else if (studentNav === 'saved') { $('studentSavedView').classList.add('active'); renderSavedCourses(); }
   else if (studentNav === 'analytics') { $('studentAnalyticsView').classList.add('active'); renderStudentAnalytics(); }
   else { $('studentCoursesView').classList.add('active'); renderStudentCourses(); }
-  if (addingCourse) {
-    $('adminAddCourseView').classList.add('active');
-    renderAdminAddCourse();
-    return;
-  }
-  if (addingProfessor) {
-    $('adminAddProfessorView').classList.add('active');
-    renderAdminAddProfessor();
-    return;
-  }
-  if (addingMaterialCourseId) {
-    $('adminAddMaterialView').classList.add('active');
-    renderAdminAddMaterial(addingMaterialCourseId);
-    return;
-  }}
+}
 
 function buildNav() {
   if (currentUser.role === 'admin') {
@@ -954,11 +914,14 @@ function buildNav() {
    ADMIN DASHBOARD
    ============================================================ */
 function switchAdminTab(tab) {
-  // Clear email selection when leaving the students tab
   if (adminTab === 'students' && tab !== 'students') {
     _emailSelectedIds.clear();
   }
   adminTab = tab;
+  addingCourse = false;
+  addingProfessor = false;
+  addingMaterialCourseId = null;
+  addingStudent = false;
   pushHash(`#/admin/${tab}`);
   updateAdminTabUI();
   renderAdminDashboard();
@@ -980,7 +943,7 @@ function updateAdminTabUI() {
     courses:    { icon: 'fa-graduation-cap', text: 'Manage Courses' },
     professors: { icon: 'fa-user-tie',       text: 'Manage Professors' },
     students:   { icon: 'fa-user-graduate',  text: 'Manage Students' },
-    replies:    { icon: 'fa-envelope-open-text', text: 'Email Replies' } // Add this
+    replies:    { icon: 'fa-envelope-open-text', text: 'Email Replies' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -1008,7 +971,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'courses') renderAdminCourses();
   else if (adminTab === 'professors') renderAdminProfessors();
   else if (adminTab === 'students') renderAdminStudents();
-  else if (adminTab === 'replies') renderAdminEmailReplies(); // Add this
+  else if (adminTab === 'replies') renderAdminEmailReplies();
 }
 
 async function renderAdminOverview() {
@@ -1118,7 +1081,6 @@ function renderAdminProfessors() {
       ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" loading="lazy">`
       : `<div class="avatar-placeholder"><i class="fas fa-user-tie"></i></div>`;
 
-    // Build contact info block
     let contactHtml = '';
     if (p.email) contactHtml += `<div class="prof-contact-item"><i class="fas fa-envelope"></i> ${escapeHtml(p.email)}</div>`;
     if (p.phone) contactHtml += `<div class="prof-contact-item"><i class="fas fa-phone"></i> ${escapeHtml(p.phone)}</div>`;
@@ -1171,19 +1133,15 @@ async function renderAdminStudents() {
       return;
     }
 
-    // Prune any selected IDs that no longer exist
     const validIds = new Set(data.students.map(s => String(s._id)));
     Array.from(_emailSelectedIds).forEach(id => {
       if (!validIds.has(id)) _emailSelectedIds.delete(id);
     });
 
-    // Count students with valid emails
     const withEmail = data.students.filter(s => s.email && s.email.trim()).length;
 
-    // ---- Selection bar ----
     renderStudentSelectionBar(_emailSelectedIds.size, withEmail);
 
-    // ---- Student grid ----
     let html = `<div class="student-grid">`;
     data.students.forEach(s => {
       const sid = String(s._id);
@@ -1241,6 +1199,7 @@ async function renderAdminStudents() {
     container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading students.</p></div>`;
   }
 }
+
 async function renderAdminEmailReplies() {
   const container = $('adminEmailReplyList');
   if (!container) return;
@@ -1324,7 +1283,6 @@ function renderStudentSelectionBar(selectedCount, withEmailCount) {
       : ''}
   `;
 
-  // Sync "Select all" checkbox state
   const master = $('selectAllStudentsBox');
   if (master) {
     const allStudents = document.querySelectorAll('.student-card:not(.no-email)');
@@ -1357,7 +1315,6 @@ function clearStudentSelection() {
 }
 
 function updateStudentSelectionUI() {
-  // Update each card's visual state + checkbox
   document.querySelectorAll('.student-card').forEach(card => {
     const sid = card.dataset.studentId;
     const selected = _emailSelectedIds.has(sid);
@@ -1366,7 +1323,6 @@ function updateStudentSelectionUI() {
     if (cb && !cb.disabled) cb.checked = selected;
   });
 
-  // Recompute toolbar
   const allStudents = document.querySelectorAll('.student-card:not(.no-email)').length;
   renderStudentSelectionBar(_emailSelectedIds.size, allStudents);
 }
@@ -1380,7 +1336,6 @@ function openEmailStudentsModal() {
   const modal = $('emailStudentsModal');
   if (!modal) return showToast('Email modal missing.', 'error');
 
-  // ---- Build recipient preview ----
   const selectedCards = Array.from(_emailSelectedIds)
     .map(id => document.querySelector(`.student-card[data-student-id="${id}"]`))
     .filter(Boolean);
@@ -1405,7 +1360,6 @@ function openEmailStudentsModal() {
     summary.textContent = `To: ${_emailSelectedIds.size} student${_emailSelectedIds.size === 1 ? '' : 's'} — individually addressed, no BCC leaks.`;
   }
 
-  // Reset form
   const subjectEl = $('emailSubject');
   const bodyEl = $('emailBody');
   const submitBtn = $('emailSubmitBtn');
@@ -1471,13 +1425,11 @@ async function sendBulkEmail(e) {
       closeModal('emailStudentsModal');
       clearStudentSelection();
 
-      // ✅ Full success
       if (data.failed === 0 && data.skipped === 0) {
         showToast(`✅ ${data.message}`, 'success');
         return;
       }
 
-      // ⚠️ Partial success — show detailed report
       showEmailReport(data);
     } else {
       showToast(data.message || 'Failed to send email.', 'error');
@@ -1496,13 +1448,9 @@ async function sendBulkEmail(e) {
   }
 }
 
-/* ------------------------------------------------------------
-   Show a detailed report of successes / skips / failures
-   ------------------------------------------------------------ */
 function showEmailReport(data) {
   const { sent, failed, skipped, total, failures } = data;
 
-  // Build a small alert-style modal
   const old = document.getElementById('emailReportModal');
   if (old) old.remove();
 
@@ -1610,7 +1558,6 @@ async function copyEmailFailures() {
   showToast(ok ? '✓ Failure list copied.' : 'Copy failed.', ok ? 'success' : 'error');
 }
 
-/* ---- Optional: Email status diagnostic (call from admin UI if needed) ---- */
 async function checkEmailStatus() {
   try {
     const res = await fetch('https://aerospace-portal.onrender.com/api/admin/email-status');
@@ -3119,7 +3066,7 @@ async function submitQuiz() {
       if (!currentUser.quizResults) currentUser.quizResults = {};
       currentUser.quizResults[st.materialId] = { score: data.score, total: data.total, attempts: data.attempts, lastAttemptAt: new Date().toISOString() };
       saveSessionUser(currentUser);
-      _analyticsCacheAt = 0;   // invalidate analytics cache — new quiz logged
+      _analyticsCacheAt = 0;
       renderQuizPlayer();
       const pct = data.percent;
       if (pct === 100) showToast('🏆 Perfect!', 'success');
@@ -3252,6 +3199,7 @@ function openAddCourseModal() {
   addingCourse = true;
   addingProfessor = false;
   addingMaterialCourseId = null;
+  addingStudent = false;
   pushHash('#/admin/course/new');
   renderApp();
 }
@@ -3331,6 +3279,7 @@ function openAddProfessorModal() {
   addingProfessor = true;
   addingCourse = false;
   addingMaterialCourseId = null;
+  addingStudent = false;
   pushHash('#/admin/professor/new');
   renderApp();
 }
@@ -3379,6 +3328,7 @@ function openAddMaterialModal(courseId) {
   addingMaterialCourseId = courseId;
   addingCourse = false;
   addingProfessor = false;
+  addingStudent = false;
   pushHash(`#/admin/course/${courseId}/material/new`);
   renderApp();
 }
@@ -3584,7 +3534,7 @@ async function initApp() {
 let _analyticsCharts = [];
 let _analyticsCache = null;
 let _analyticsCacheAt = 0;
-const ANALYTICS_CACHE_MS = 60 * 1000; // 1 minute
+const ANALYTICS_CACHE_MS = 60 * 1000;
 
 function destroyAnalyticsCharts() {
   while (_analyticsCharts.length) {
@@ -3601,11 +3551,9 @@ async function renderStudentAnalytics() {
   const container = document.getElementById('analyticsContent');
   if (!container) return;
 
-  // Tear down any prior chart instances + clear stale DOM
   destroyAnalyticsCharts();
-  container.innerHTML = '';   // wipe previous content so nothing overlaps
+  container.innerHTML = '';
 
-  // Only fetch if cache is stale
   const now = Date.now();
   const fresh = _analyticsCache && (now - _analyticsCacheAt < ANALYTICS_CACHE_MS);
 
@@ -3649,13 +3597,11 @@ function renderAnalyticsUI(a) {
   const container = document.getElementById('analyticsContent');
   if (!container) return;
 
-  // Always wipe first so re-renders don't stack
   container.innerHTML = '';
   destroyAnalyticsCharts();
 
   const { summary, heatmap, weekly, quizTrend, courseProgress } = a;
 
-  /* ---- Empty-state check ---- */
   if (summary.studyDays === 0 && summary.totalQuizzes === 0 && summary.totalMaterialsCompleted === 0) {
     container.innerHTML = `
       <div class="analytics-empty">
@@ -3674,7 +3620,6 @@ function renderAnalyticsUI(a) {
   const lastDay = heatmapCells[heatmapCells.length - 1]?.date || '';
 
   container.innerHTML = `
-    <!-- Summary row -->
     <div class="analytics-summary">
       <div class="analytics-stat">
         <div class="analytics-stat-icon tone-brand"><i class="fas fa-calendar-check"></i></div>
@@ -3713,7 +3658,6 @@ function renderAnalyticsUI(a) {
       </div>
     </div>
 
-    <!-- Heatmap -->
     <div class="analytics-card">
       <div class="analytics-card-header">
         <div>
@@ -3749,7 +3693,6 @@ function renderAnalyticsUI(a) {
       </div>
     </div>
 
-    <!-- Charts row -->
     <div class="analytics-charts-row">
       <div class="chart-card">
         <div class="chart-card-title"><i class="fas fa-chart-column"></i> Weekly Activity — Last 12 Weeks</div>
@@ -3768,7 +3711,6 @@ function renderAnalyticsUI(a) {
       </div>
     </div>
 
-    <!-- Course progress -->
     <div class="analytics-card">
       <div class="analytics-card-header">
         <div>
@@ -3801,9 +3743,6 @@ function renderAnalyticsUI(a) {
     </div>
   `;
 
-  /* ---- Build charts (after browser has finished layout) ---- */
-  // We must wait one frame so the containers have real dimensions.
-  // Otherwise Chart.js creates zero-size canvases that overlap.
   const _buildCharts = () => {
     if (typeof Chart === 'undefined') {
       console.warn('Chart.js not loaded — charts skipped.');
@@ -3821,7 +3760,6 @@ function renderAnalyticsUI(a) {
   }
 }
 
-/* ---- Heatmap cell builder ---- */
 function buildHeatmapCells(heatmapArr) {
   const counts = {};
   (heatmapArr || []).forEach(h => { counts[h.date] = h.count; });
@@ -3829,7 +3767,6 @@ function buildHeatmapCells(heatmapArr) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  // Align to Sunday on/before (today - 364)
   const start = new Date(today);
   start.setDate(start.getDate() - 364);
   const startDow = start.getDay();
@@ -3864,7 +3801,6 @@ function formatShortDate(key) {
   } catch { return key; }
 }
 
-/* ---- Chart.js theme helpers ---- */
 function _chartTheme() {
   const s = getComputedStyle(document.documentElement);
   return {
@@ -3960,7 +3896,6 @@ function buildQuizTrendChart(quizTrend) {
   const th = _chartTheme();
   const ctx = el.getContext('2d');
 
-  // Gradient fill under the line
   const gradient = ctx.createLinearGradient(0, 0, 0, 240);
   gradient.addColorStop(0, 'rgba(99,102,241,0.35)');
   gradient.addColorStop(1, 'rgba(99,102,241,0.02)');
@@ -4038,16 +3973,10 @@ function buildQuizTrendChart(quizTrend) {
   _analyticsCharts.push(chart);
 }
 
-/* ---- Invalidate cache when new activity happens ---- */
 const _origToggleMaterialViewed = window.toggleMaterialViewed;
-// (We do NOT monkey-patch — instead, clear cache on view change is done inside
-//  toggleMaterialViewed after it succeeds. See added line below.)
-
-/* ---- Clear analytics cache when theme changes so charts redraw with new colors ---- */
 const _origApplyTheme = window.applyTheme;
 document.addEventListener('click', (e) => {
   if (e.target.closest('#themeToggle')) {
-    // Theme changed — invalidate cached charts so next visit redraws with new palette
     _analyticsCacheAt = 0;
   }
 });

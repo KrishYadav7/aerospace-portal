@@ -154,7 +154,7 @@
 
       <!-- ADMIN DASHBOARD -->
       <section id="adminView" class="view">
-                <div id="adminTabReplies" class="admin-tab-content">
+        <div id="adminTabReplies" class="admin-tab-content">
           <div class="tab-toolbar">
             <div class="tab-toolbar-text">
               <h3><i class="fas fa-envelope-open-text"></i> Student Email Replies</h3>
@@ -171,7 +171,7 @@
           <div class="actions" id="adminHeaderActions"></div>
         </div>
 
-                <div class="admin-tabs">
+        <div class="admin-tabs">
           <button class="admin-tab" data-tab="overview" onclick="switchAdminTab('overview')">
             <i class="fas fa-chart-pie"></i> Overview
           </button>
@@ -283,7 +283,6 @@
             </button>
           </div>
 
-          <!-- Bulk email selection bar (JS fills this) -->
           <div class="student-selection-bar" id="adminStudentSelectionBar"></div>
 
           <div id="adminStudentList"></div>
@@ -297,7 +296,8 @@
         </button>
         <div id="courseEditorContent"></div>
       </section>
-            <!-- ADMIN ADD COURSE VIEW -->
+
+      <!-- ADMIN ADD COURSE VIEW -->
       <section id="adminAddCourseView" class="view">
         <button class="back-link" onclick="switchAdminTab('courses')">
           <i class="fas fa-arrow-left"></i> Back to Courses
@@ -309,9 +309,7 @@
             <button class="btn btn-primary" onclick="saveNewCoursePage()"><i class="fas fa-save"></i> Create Course</button>
           </div>
         </div>
-        <div class="editor-body" id="addCourseFormContent">
-          <!-- Filled by app.js -->
-        </div>
+        <div class="editor-body" id="addCourseFormContent"></div>
       </section>
 
       <!-- ADMIN ADD PROFESSOR VIEW -->
@@ -326,9 +324,7 @@
             <button class="btn btn-primary" onclick="saveNewProfessorPage()"><i class="fas fa-save"></i> Save Professor</button>
           </div>
         </div>
-        <div class="editor-body" id="addProfessorFormContent">
-          <!-- Filled by app.js -->
-        </div>
+        <div class="editor-body" id="addProfessorFormContent"></div>
       </section>
 
       <!-- ADMIN ADD MATERIAL VIEW -->
@@ -343,9 +339,22 @@
             <button class="btn btn-primary" onclick="saveNewMaterialPage()"><i class="fas fa-save"></i> Save Material</button>
           </div>
         </div>
-        <div class="editor-body" id="addMaterialFormContent">
-          <!-- Filled by app.js -->
+        <div class="editor-body" id="addMaterialFormContent"></div>
+      </section>
+
+      <!-- ADMIN ADD STUDENT VIEW -->
+      <section id="adminAddStudentView" class="view">
+        <button class="back-link" onclick="switchAdminTab('students')">
+          <i class="fas fa-arrow-left"></i> Back to Students
+        </button>
+        <div class="dash-header">
+          <h2><i class="fas fa-user-graduate"></i> Register New Student</h2>
+          <div class="actions">
+            <button class="btn btn-outline" onclick="switchAdminTab('students')">Cancel</button>
+            <button class="btn btn-primary" onclick="saveNewStudentPage()"><i class="fas fa-save"></i> Create Student</button>
+          </div>
         </div>
+        <div class="editor-body" id="addStudentFormContent"></div>
       </section>
 
       <!-- STUDENT COURSES -->
@@ -391,7 +400,8 @@
         </div>
         <div id="studentSavedList"></div>
       </section>
-            <!-- STUDENT ANALYTICS -->
+
+      <!-- STUDENT ANALYTICS -->
       <section id="studentAnalyticsView" class="view">
         <div class="dash-header">
           <h2><i class="fas fa-chart-line"></i> Your Learning Analytics</h2>
@@ -427,9 +437,6 @@
 
   <!-- ============ MODALS ============ -->
 
-  <!-- Course Modal -->
-
-
   <!-- Register Modal -->
   <div class="modal-overlay" id="registerModal">
     <div class="modal-box">
@@ -443,51 +450,6 @@
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('registerModal')">Cancel</button>
           <button type="submit" class="btn btn-primary"><i class="fas fa-user-check"></i> Register</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
-  <!-- Admin: Register Student Modal -->
-  <div class="modal-overlay" id="studentRegModal">
-    <div class="modal-box">
-      <div class="modal-icon-header">
-        <div class="modal-icon-tile tone-emerald"><i class="fas fa-user-graduate"></i></div>
-        <div>
-          <h3>Register New Student</h3>
-          <p class="modal-sub" style="margin:4px 0 0;">Create login credentials manually. You can share them with the student.</p>
-        </div>
-      </div>
-      <form id="studentRegForm" onsubmit="saveNewStudent(event)">
-        <div class="form-group">
-          <label><i class="fas fa-id-card"></i> Full Name *</label>
-          <input type="text" id="newStuFullName" placeholder="e.g. Rohan Verma" required autocomplete="off">
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label><i class="fas fa-at"></i> Username *</label>
-            <input type="text" id="newStuUsername" placeholder="e.g. rohan.v" required autocomplete="off">
-          </div>
-          <div class="form-group">
-            <label><i class="fas fa-envelope"></i> Email (optional)</label>
-            <input type="email" id="newStuEmail" placeholder="rohan@example.com" autocomplete="off">
-          </div>
-        </div>
-        <div class="form-group">
-          <label><i class="fas fa-key"></i> Password *</label>
-          <div class="password-field-row">
-            <input type="text" id="newStuPassword" placeholder="Min. 6 characters" required minlength="6" autocomplete="off">
-            <button type="button" class="btn btn-outline btn-sm" onclick="autoGeneratePassword()" title="Auto-generate">
-              <i class="fas fa-wand-magic-sparkles"></i> Generate
-            </button>
-          </div>
-          <span class="hint">You'll see this password once after creating. Copy it and share it with the student.</span>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-outline" onclick="closeModal('studentRegModal')">Cancel</button>
-          <button type="submit" class="btn btn-success" id="studentRegSubmitBtn">
-            <i class="fas fa-user-plus"></i> Create Student
-          </button>
         </div>
       </form>
     </div>
@@ -519,9 +481,6 @@
       </div>
     </div>
   </div>
-
-  <!-- Professor Modal -->
-
 
   <!-- Quiz Modal -->
   <div class="modal-overlay" id="quizModal">
@@ -598,7 +557,8 @@
       </div>
     </div>
   </div>
-    <!-- Send Bulk Email Modal -->
+
+  <!-- Send Bulk Email Modal -->
   <div class="modal-overlay" id="emailStudentsModal">
     <div class="modal-box email-modal">
       <div class="email-modal-header">
@@ -612,9 +572,7 @@
         </button>
       </div>
 
-      <div class="email-recipient-preview" id="emailRecipientPreview">
-        <!-- JS fills chip list of recipient names -->
-      </div>
+      <div class="email-recipient-preview" id="emailRecipientPreview"></div>
 
       <form id="emailStudentsForm" onsubmit="sendBulkEmail(event)">
         <div class="form-group">
@@ -646,7 +604,8 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="media-viewer.js"></script>
   <script src="app.js"></script>
 </body>
