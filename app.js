@@ -555,7 +555,7 @@ async function verifyAndCompleteRegistration(otp) {
 }
 
 /* ============================================================
-   ADMIN — Manual Student Registration
+   ADMIN — Manual Student Registration (Full Page)
    ============================================================ */
 function openStudentRegModal() {
   addingStudent = true;
@@ -574,6 +574,28 @@ function autoGeneratePassword() {
   pass += symbols[Math.floor(Math.random() * symbols.length)];
   pass += Math.floor(Math.random() * 90 + 10);
   $('newStuPassword').value = pass;
+}
+
+function renderAdminAddStudent() {
+  const container = $('addStudentFormContent');
+  if (!container) return;
+  container.innerHTML = `
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-user-graduate"></i> Student Details</h3>
+      <div class="editor-grid-2">
+        <div class="form-group"><label>Full Name *</label><input type="text" id="newStuFullName" placeholder="e.g. Rohan Verma" required autocomplete="off"></div>
+        <div class="form-group"><label>Username *</label><input type="text" id="newStuUsername" placeholder="e.g. rohan.v" required autocomplete="off"></div>
+        <div class="form-group"><label>Email (optional)</label><input type="email" id="newStuEmail" placeholder="rohan@example.com" autocomplete="off"></div>
+        <div class="form-group"><label>Password *</label>
+          <div class="password-field-row">
+            <input type="text" id="newStuPassword" placeholder="Min. 6 characters" required minlength="6" autocomplete="off">
+            <button type="button" class="btn btn-outline btn-sm" onclick="autoGeneratePassword()" title="Auto-generate"><i class="fas fa-wand-magic-sparkles"></i> Generate</button>
+          </div>
+          <span class="hint">You'll see this password once after creating. Copy it and share it with the student.</span>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 async function saveNewStudentPage() {
@@ -607,78 +629,304 @@ async function saveNewStudentPage() {
   }
 }
 
-function showCredentialsCard(student) {
-  const card = $('credentialsCard');
-  if (!card) return;
+/* ============================================================
+   ADMIN — COURSE & PROFESSOR FULL PAGES
+   ============================================================ */
+function renderAdminAddCourse() {
+  const container = $('addCourseFormContent');
+  if (!container) return;
 
-  card.innerHTML = `
-    <div class="cred-row">
-      <div class="cred-label"><i class="fas fa-id-card"></i> Full Name</div>
-      <div class="cred-value-group">
-        <span class="cred-value">${escapeHtml(student.fullName)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('name', '${escapeHtml(student.fullName).replace(/'/g, "\\'")}')" title="Copy" aria-label="Copy name">
-          <i class="fas fa-copy"></i>
-        </button>
+  container.innerHTML = `
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-info-circle"></i> Basic Information</h3>
+      <div class="editor-grid-2">
+        <div class="form-group"><label>Course Name *</label><input type="text" id="newCourseName" placeholder="e.g. Aerodynamics" required></div>
+        <div class="form-group"><label>Course Code *</label><input type="text" id="newCourseCode" placeholder="e.g. AE101" required></div>
+        <div class="form-group"><label>Semester</label><input type="text" id="newCourseSemester" placeholder="e.g. Fall 2024"></div>
+        <div class="form-group"><label>Instructor</label><input type="text" id="newCourseInstructor" placeholder="e.g. Dr. Smith"></div>
+      </div>
+      <div class="form-group"><label>Description</label><textarea id="newCourseDescription" rows="4" placeholder="Brief description of the course..."></textarea></div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-layer-group"></i> Classification & Details</h3>
+      <div class="editor-grid-3">
+        <div class="form-group"><label>Category</label>
+          <select id="newCourseCategory">
+            <option value="Aerodynamics">Aerodynamics</option>
+            <option value="Propulsion">Propulsion</option>
+            <option value="Structures">Structures</option>
+            <option value="Avionics">Avionics</option>
+            <option value="Mathematics">Mathematics</option>
+            <option value="General" selected>General</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Difficulty</label>
+          <select id="newCourseDifficulty">
+            <option value="Beginner">Beginner</option>
+            <option value="Intermediate" selected>Intermediate</option>
+            <option value="Advanced">Advanced</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Duration</label><input type="text" id="newCourseDuration" placeholder="e.g. 12 hours"></div>
+        <div class="form-group"><label>Credits (Optional)</label><input type="number" id="newCourseCredits" placeholder="e.g. 3" min="0" step="1"></div>
+        <div class="form-group"><label>Language (Optional)</label><input type="text" id="newCourseLanguage" placeholder="e.g. English"></div>
       </div>
     </div>
-    <div class="cred-row">
-      <div class="cred-label"><i class="fas fa-at"></i> Username</div>
-      <div class="cred-value-group">
-        <span class="cred-value cred-code">${escapeHtml(student.username)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('username', '${escapeHtml(student.username)}')" title="Copy" aria-label="Copy username">
-          <i class="fas fa-copy"></i>
-        </button>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-bullseye"></i> Learning Outcomes</h3>
+      <p class="editor-hint">One outcome per line. These will be displayed as bullet points on the course page.</p>
+      <textarea id="newCourseOutcomes" rows="5" placeholder="Understand aerodynamic principles&#10;Apply Bernoulli's equation..."></textarea>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-cog"></i> Status & Monetization</h3>
+      <div class="editor-grid-3">
+        <div class="form-group"><label>Status</label>
+          <select id="newCourseStatus">
+            <option value="published" selected>✅ Published</option>
+            <option value="draft">📝 Draft</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Featured</label>
+          <label class="toggle-box" style="margin-top:6px;"><input type="checkbox" id="newCourseFeatured"><span><i class="fas fa-star"></i> Featured</span></label>
+        </div>
+        <div class="form-group"><label>Premium</label>
+          <label class="toggle-box pro" style="margin-top:6px;"><input type="checkbox" id="newCoursePremium" onchange="document.getElementById('newCoursePriceGroup').style.display=this.checked?'block':'none'"><span><i class="fas fa-crown"></i> Premium Course</span></label>
+        </div>
+      </div>
+      <div class="form-group" id="newCoursePriceGroup" style="display:none; margin-top:10px;">
+        <label>Price (₹)</label><input type="number" id="newCoursePrice" placeholder="e.g. 499" min="0" step="1">
       </div>
     </div>
-    <div class="cred-row">
-      <div class="cred-label"><i class="fas fa-key"></i> Password</div>
-      <div class="cred-value-group">
-        <span class="cred-value cred-code">${escapeHtml(student.password)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('password', '${escapeHtml(student.password)}')" title="Copy" aria-label="Copy password">
-          <i class="fas fa-copy"></i>
-        </button>
-      </div>
-    </div>
-    ${student.email ? `
-    <div class="cred-row">
-      <div class="cred-label"><i class="fas fa-envelope"></i> Email</div>
-      <div class="cred-value-group">
-        <span class="cred-value">${escapeHtml(student.email)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('email', '${escapeHtml(student.email)}')" title="Copy" aria-label="Copy email">
-          <i class="fas fa-copy"></i>
-        </button>
-      </div>
-    </div>` : ''}
   `;
-
-  window.__lastCreatedStudent = student;
-  openModal('credentialsModal');
 }
 
-async function copyCredential(field, value) {
-  const ok = await copyToClipboard(value);
-  if (ok) showToast(`✓ ${field.charAt(0).toUpperCase() + field.slice(1)} copied!`, 'success');
-  else showToast('Copy failed. Please copy manually.', 'error');
+async function saveNewCoursePage() {
+  const name = $('newCourseName').value.trim();
+  const code = $('newCourseCode').value.trim();
+  if (!name || !code) return showToast('Course Name and Code are required.', 'error');
+
+  const outcomesRaw = $('newCourseOutcomes').value;
+  const learningOutcomes = outcomesRaw.split('\n').map(l => l.trim()).filter(Boolean);
+  const isPremium = $('newCoursePremium').checked;
+
+  const payload = {
+    name, code,
+    semester: $('newCourseSemester').value.trim(),
+    instructor: $('newCourseInstructor').value.trim(),
+    description: $('newCourseDescription').value.trim(),
+    category: $('newCourseCategory').value,
+    difficulty: $('newCourseDifficulty').value,
+    duration: $('newCourseDuration').value.trim(),
+    credits: parseInt($('newCourseCredits').value) || 0,
+    language: $('newCourseLanguage').value.trim(),
+    learningOutcomes,
+    status: $('newCourseStatus').value,
+    featured: $('newCourseFeatured').checked,
+    isPremium: isPremium,
+    price: isPremium ? (parseFloat($('newCoursePrice').value) || 0) : 0
+  };
+
+  try {
+    const res = await fetch('https://aerospace-portal.onrender.com/api/courses', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('🎉 Course created successfully!', 'success');
+      addingCourse = false;
+      await fetchCoursesFromDB();
+      if (data.course && data.course._id) openCourseEditor(data.course._id);
+    } else showToast(data.message || 'Failed to create course.', 'error');
+  } catch { showToast('Server error.', 'error'); }
 }
 
-async function copyAllCredentials() {
-  const s = window.__lastCreatedStudent;
-  if (!s) return;
-  const text = [
-    '🎓 Aerospace Department — Login Credentials',
-    '',
-    `Name: ${s.fullName}`,
-    `Username: ${s.username}`,
-    `Password: ${s.password}`,
-    s.email ? `Email: ${s.email}` : '',
-    '',
-    'Login at: https://krishyadav7.github.io/aerospace-portal/',
-    'Please change your password after first login.'
-  ].filter(Boolean).join('\n');
+function renderAdminAddProfessor() {
+  const container = $('addProfessorFormContent');
+  if (!container) return;
 
-  const ok = await copyToClipboard(text);
-  if (ok) showToast('✓ Full credentials copied!', 'success');
-  else showToast('Copy failed.', 'error');
+  container.innerHTML = `
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-user-tie"></i> Basic Information</h3>
+      <div class="editor-grid-2">
+        <div class="form-group"><label>Full Name *</label><input type="text" id="newProfName" placeholder="e.g. Dr. S. K. Mehta" required></div>
+        <div class="form-group"><label>Title / Role *</label><input type="text" id="newProfTitle" placeholder="e.g. Professor of Aerodynamics" required></div>
+      </div>
+      <div class="form-group"><label>Short Bio / Description</label><textarea id="newProfDescription" rows="4" placeholder="e.g. Ph.D. from MIT, specializing in computational fluid dynamics..."></textarea></div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-address-card"></i> Contact Details (Optional)</h3>
+      <div class="editor-grid-2">
+        <div class="form-group"><label>Email Address</label><input type="email" id="newProfEmail" placeholder="e.g. s.mehta@iitkgp.ac.in"></div>
+        <div class="form-group"><label>Phone Number</label><input type="text" id="newProfPhone" placeholder="e.g. +91 98765 43210"></div>
+        <div class="form-group"><label>Office Location</label><input type="text" id="newProfOffice" placeholder="e.g. Room 204, Aerospace Building"></div>
+        <div class="form-group"><label>Department</label><input type="text" id="newProfDept" placeholder="e.g. Aerospace Engineering"></div>
+      </div>
+      <div class="form-group"><label>LinkedIn / Website URL</label><input type="url" id="newProfWebsite" placeholder="https://linkedin.com/in/..."></div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-image"></i> Profile Photo (Optional)</h3>
+      <div class="thumbnail-editor">
+        <div class="thumbnail-preview-empty" id="newProfPhotoPreview"><i class="fas fa-user-tie"></i><span>No photo selected</span></div>
+        <div class="thumbnail-actions">
+          <input type="file" id="newProfPhotoInput" accept="image/*" style="display:none;" onchange="previewProfPhoto(this)">
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('newProfPhotoInput').click()"><i class="fas fa-upload"></i> Upload Photo</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function previewProfPhoto(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) return showToast('Image too large (max 2 MB).', 'error');
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const preview = $('newProfPhotoPreview');
+    if (preview) preview.outerHTML = `<img src="${e.target.result}" class="thumbnail-preview" id="newProfPhotoPreview" alt="Preview">`;
+  };
+  reader.readAsDataURL(file);
+}
+
+function saveNewProfessorPage() {
+  const name = $('newProfName').value.trim();
+  const title = $('newProfTitle').value.trim();
+  if (!name || !title) return showToast('Name and Title are required.', 'error');
+
+  const processSave = (photoData) => {
+    const data = loadData();
+    data.professors.push({
+      id: generateId(), 
+      name, 
+      title,
+      description: $('newProfDescription').value.trim(),
+      email: $('newProfEmail').value.trim(),
+      phone: $('newProfPhone').value.trim(),
+      office: $('newProfOffice').value.trim(),
+      department: $('newProfDept').value.trim(),
+      website: $('newProfWebsite').value.trim(),
+      photo: photoData || ''
+    });
+    saveData(data);
+    showToast('✓ Professor added successfully!', 'success');
+    addingProfessor = false;
+    switchAdminTab('professors');
+  };
+
+  const photoInput = $('newProfPhotoInput');
+  const photoFile = photoInput && photoInput.files ? photoInput.files[0] : null;
+  
+  if (photoFile) {
+    const reader = new FileReader();
+    reader.onload = ev => processSave(ev.target.result);
+    reader.readAsDataURL(photoFile);
+  } else {
+    processSave(null);
+  }
+}
+
+function renderAdminAddMaterial(courseId) {
+  const container = $('addMaterialFormContent');
+  if (!container) return;
+  const course = findCourse(courseId);
+  if (!course) return showToast('Course not found.', 'error');
+
+  container.innerHTML = `
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-info-circle"></i> Material Details</h3>
+      <div class="editor-grid-2">
+        <div class="form-group"><label>Title *</label><input type="text" id="newMatTitle" placeholder="e.g. Lecture 1: Introduction" required></div>
+        <div class="form-group"><label>Type *</label>
+          <select id="newMatType">
+            <option value="video">🎬 Video Lecture</option>
+            <option value="pyq">📄 Previous Year Question</option>
+            <option value="tutorial">📝 Tutorial Sheet</option>
+            <option value="slides">📊 Slides</option>
+            <option value="other">📁 Other</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group"><label>Description</label><textarea id="newMatDescription" rows="3" placeholder="Brief description of the material..."></textarea></div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-link"></i> Content Source</h3>
+      <div class="form-group"><label>External URL / YouTube Link (Optional)</label><input type="text" id="newMatUrl" placeholder="https://... or youtube.com/..."></div>
+      <div class="form-group" style="margin-top:16px;">
+        <label>Or Upload File (PDF, PPT, DOCX) (Optional)</label>
+        <input type="file" id="newMatFile" style="margin-top:6px;">
+        <span class="hint">Max file size: 10 MB. Uploading a file will override the URL.</span>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-cog"></i> Access & Settings</h3>
+      <div class="editor-grid-3">
+        <div class="form-group"><label>Access Level</label>
+          <label class="toggle-box pro" style="margin-top:6px;"><input type="checkbox" id="newMatPremium" onchange="document.getElementById('newMatPriceGroup').style.display=this.checked?'block':'none'"><span><i class="fas fa-crown"></i> PRO Material</span></label>
+        </div>
+        <div class="form-group"><label>Estimated Time (Optional)</label><input type="text" id="newMatTime" placeholder="e.g. 45 mins"></div>
+        <div class="form-group"><label>Tags (Optional)</label><input type="text" id="newMatTags" placeholder="e.g. aerodynamics, basics"></div>
+      </div>
+      <div class="form-group" id="newMatPriceGroup" style="display:none; margin-top:10px;">
+        <label>Unlock Price (₹)</label><input type="number" id="newMatPrice" placeholder="e.g. 49" min="0" step="1">
+      </div>
+    </div>
+  `;
+}
+
+async function saveNewMaterialPage() {
+  const title = $('newMatTitle').value.trim();
+  if (!title) return showToast('Title is required.', 'error');
+
+  const courseId = addingMaterialCourseId;
+  const fileInput = $('newMatFile');
+  const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+  const isPremium = $('newMatPremium').checked;
+
+  const processSave = async (fileData, fileName) => {
+    const payload = {
+      title,
+      type: $('newMatType').value,
+      description: $('newMatDescription').value.trim(),
+      url: $('newMatUrl').value.trim(),
+      isPremium: isPremium,
+      price: isPremium ? (parseFloat($('newMatPrice').value) || 0) : 0,
+      estimatedTime: $('newMatTime').value.trim(),
+      tags: $('newMatTags').value.trim(),
+      fileData: fileData || '',
+      fileName: fileName || ''
+    };
+
+    try {
+      const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('📎 Material added successfully!', 'success');
+        addingMaterialCourseId = null;
+        await fetchCoursesFromDB();
+        openCourseEditor(courseId);
+      } else showToast(data.message || 'Failed to add material.', 'error');
+    } catch { showToast('Server error.', 'error'); }
+  };
+
+  if (file) {
+    if (file.size > 10 * 1024 * 1024) return showToast('File too large (max 10 MB).', 'error');
+    const reader = new FileReader();
+    reader.onload = ev => processSave(ev.target.result, file.name);
+    reader.readAsDataURL(file);
+  } else {
+    processSave('', '');
+  }
 }
 
 /* ============================================================
@@ -1607,6 +1855,80 @@ async function deleteStudent(userId, name) {
       renderAdminStudents();
     } else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
+}
+
+function showCredentialsCard(student) {
+  const card = $('credentialsCard');
+  if (!card) return;
+
+  card.innerHTML = `
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-id-card"></i> Full Name</div>
+      <div class="cred-value-group">
+        <span class="cred-value">${escapeHtml(student.fullName)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('name', '${escapeHtml(student.fullName).replace(/'/g, "\\'")}')" title="Copy" aria-label="Copy name">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-at"></i> Username</div>
+      <div class="cred-value-group">
+        <span class="cred-value cred-code">${escapeHtml(student.username)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('username', '${escapeHtml(student.username)}')" title="Copy" aria-label="Copy username">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-key"></i> Password</div>
+      <div class="cred-value-group">
+        <span class="cred-value cred-code">${escapeHtml(student.password)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('password', '${escapeHtml(student.password)}')" title="Copy" aria-label="Copy password">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>
+    ${student.email ? `
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-envelope"></i> Email</div>
+      <div class="cred-value-group">
+        <span class="cred-value">${escapeHtml(student.email)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('email', '${escapeHtml(student.email)}')" title="Copy" aria-label="Copy email">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>` : ''}
+  `;
+
+  window.__lastCreatedStudent = student;
+  openModal('credentialsModal');
+}
+
+async function copyCredential(field, value) {
+  const ok = await copyToClipboard(value);
+  if (ok) showToast(`✓ ${field.charAt(0).toUpperCase() + field.slice(1)} copied!`, 'success');
+  else showToast('Copy failed. Please copy manually.', 'error');
+}
+
+async function copyAllCredentials() {
+  const s = window.__lastCreatedStudent;
+  if (!s) return;
+  const text = [
+    '🎓 Aerospace Department — Login Credentials',
+    '',
+    `Name: ${s.fullName}`,
+    `Username: ${s.username}`,
+    `Password: ${s.password}`,
+    s.email ? `Email: ${s.email}` : '',
+    '',
+    'Login at: https://krishyadav7.github.io/aerospace-portal/',
+    'Please change your password after first login.'
+  ].filter(Boolean).join('\n');
+
+  const ok = await copyToClipboard(text);
+  if (ok) showToast('✓ Full credentials copied!', 'success');
+  else showToast('Copy failed.', 'error');
 }
 
 /* ============================================================
