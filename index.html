@@ -297,6 +297,56 @@
         </button>
         <div id="courseEditorContent"></div>
       </section>
+            <!-- ADMIN ADD COURSE VIEW -->
+      <section id="adminAddCourseView" class="view">
+        <button class="back-link" onclick="switchAdminTab('courses')">
+          <i class="fas fa-arrow-left"></i> Back to Courses
+        </button>
+        <div class="dash-header">
+          <h2><i class="fas fa-graduation-cap"></i> Create New Course</h2>
+          <div class="actions">
+            <button class="btn btn-outline" onclick="switchAdminTab('courses')">Cancel</button>
+            <button class="btn btn-primary" onclick="saveNewCoursePage()"><i class="fas fa-save"></i> Create Course</button>
+          </div>
+        </div>
+        <div class="editor-body" id="addCourseFormContent">
+          <!-- Filled by app.js -->
+        </div>
+      </section>
+
+      <!-- ADMIN ADD PROFESSOR VIEW -->
+      <section id="adminAddProfessorView" class="view">
+        <button class="back-link" onclick="switchAdminTab('professors')">
+          <i class="fas fa-arrow-left"></i> Back to Professors
+        </button>
+        <div class="dash-header">
+          <h2><i class="fas fa-user-tie"></i> Add New Professor</h2>
+          <div class="actions">
+            <button class="btn btn-outline" onclick="switchAdminTab('professors')">Cancel</button>
+            <button class="btn btn-primary" onclick="saveNewProfessorPage()"><i class="fas fa-save"></i> Save Professor</button>
+          </div>
+        </div>
+        <div class="editor-body" id="addProfessorFormContent">
+          <!-- Filled by app.js -->
+        </div>
+      </section>
+
+      <!-- ADMIN ADD MATERIAL VIEW -->
+      <section id="adminAddMaterialView" class="view">
+        <button class="back-link" onclick="goBackToCourseEditorFromMaterial()">
+          <i class="fas fa-arrow-left"></i> Back to Course Editor
+        </button>
+        <div class="dash-header">
+          <h2><i class="fas fa-paperclip"></i> Add New Material</h2>
+          <div class="actions">
+            <button class="btn btn-outline" onclick="goBackToCourseEditorFromMaterial()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveNewMaterialPage()"><i class="fas fa-save"></i> Save Material</button>
+          </div>
+        </div>
+        <div class="editor-body" id="addMaterialFormContent">
+          <!-- Filled by app.js -->
+        </div>
+      </section>
 
       <!-- STUDENT COURSES -->
       <section id="studentCoursesView" class="view">
@@ -378,117 +428,7 @@
   <!-- ============ MODALS ============ -->
 
   <!-- Course Modal -->
-  <div class="modal-overlay" id="courseModal">
-    <div class="modal-box">
-      <h3 id="courseModalTitle"><i class="fas fa-plus-circle"></i> New Course</h3>
-      <p class="modal-sub">Enter the course details below.</p>
-      <form id="courseForm" onsubmit="saveCourse(event)">
-        <input type="hidden" id="editCourseId">
-        <div class="form-group"><label>Course Name *</label>
-          <input type="text" id="courseName" placeholder="e.g. Aerodynamics" required>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Course Code *</label>
-            <input type="text" id="courseCode" placeholder="e.g. AE101" required>
-          </div>
-          <div class="form-group"><label>Semester</label>
-            <input type="text" id="courseSemester" placeholder="e.g. Fall 2024">
-          </div>
-        </div>
-        <div class="form-group"><label>Instructor</label>
-          <input type="text" id="courseInstructor" placeholder="e.g. Dr. Smith">
-        </div>
-        <div class="form-group"><label>Description</label>
-          <textarea id="courseDescription" placeholder="Brief description" rows="3"></textarea>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Category</label>
-            <select id="courseCategory">
-              <option value="Aerodynamics">Aerodynamics</option>
-              <option value="Propulsion">Propulsion</option>
-              <option value="Structures">Structures</option>
-              <option value="Avionics">Avionics</option>
-              <option value="Mathematics">Mathematics</option>
-              <option value="General" selected>General</option>
-            </select>
-          </div>
-          <div class="form-group"><label>Difficulty</label>
-            <select id="courseDifficulty">
-              <option value="Beginner">Beginner</option>
-              <option value="Intermediate" selected>Intermediate</option>
-              <option value="Advanced">Advanced</option>
-            </select>
-          </div>
-        </div>
-        <div class="form-row" style="align-items:end;">
-          <div class="form-group premium-toggle" style="margin-bottom:0;">
-            <label class="toggle-box">
-              <input type="checkbox" id="courseIsPremium" onchange="togglePriceInput()">
-              <span><i class="fas fa-crown"></i> Premium Course</span>
-            </label>
-          </div>
-          <div class="form-group" id="priceGroup" style="display:none; margin-bottom:0;">
-            <label>Course Price (₹)</label>
-            <input type="number" id="coursePrice" placeholder="e.g. 499" min="0" step="1">
-          </div>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-outline" onclick="closeModal('courseModal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Create Course</button>
-        </div>
-      </form>
-    </div>
-  </div>
 
-  <!-- Material Modal -->
-  <div class="modal-overlay" id="materialModal">
-    <div class="modal-box">
-      <h3 id="materialModalTitle"><i class="fas fa-paperclip"></i> Add Material</h3>
-      <p class="modal-sub">Upload a file or provide a link.</p>
-      <form id="materialForm" onsubmit="saveMaterial(event)">
-        <input type="hidden" id="editMaterialId">
-        <input type="hidden" id="materialCourseId">
-        <div class="form-group"><label>Title *</label>
-          <input type="text" id="materialTitle" placeholder="e.g. Lecture 1: Intro" required>
-        </div>
-        <div class="form-row" style="align-items:center;">
-          <div class="form-group" style="margin-bottom:0;">
-            <label>Type *</label>
-            <select id="materialType" required>
-              <option value="video">🎬 Video Lecture</option>
-              <option value="pyq">📄 Previous Year Question</option>
-              <option value="tutorial">📝 Tutorial Sheet</option>
-              <option value="slides">📊 Slides</option>
-              <option value="other">📁 Other</option>
-            </select>
-          </div>
-          <div class="form-group premium-toggle" style="margin-bottom:0;">
-            <label class="toggle-box pro">
-              <input type="checkbox" id="materialIsPremium" onchange="toggleMaterialPriceInput()">
-              <span><i class="fas fa-crown"></i> PRO Material</span>
-            </label>
-          </div>
-        </div>
-        <div class="form-group" id="materialPriceGroup" style="display:none; margin-top:16px;">
-          <label>Material Unlock Price (₹) *</label>
-          <input type="number" id="materialPrice" placeholder="e.g. 49" min="0" step="1">
-        </div>
-        <div class="form-group" style="margin-top:16px;"><label>Description</label>
-          <textarea id="materialDescription" placeholder="Optional description"></textarea>
-        </div>
-        <div class="form-group"><label>YouTube / Link (optional)</label>
-          <input type="text" id="materialUrl" placeholder="https://... or youtube.com/...">
-        </div>
-        <div class="form-group"><label>Or Upload File (PDF, PPT, etc.)</label>
-          <input type="file" id="materialFile">
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-outline" onclick="closeModal('materialModal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save</button>
-        </div>
-      </form>
-    </div>
-  </div>
 
   <!-- Register Modal -->
   <div class="modal-overlay" id="registerModal">
@@ -581,25 +521,7 @@
   </div>
 
   <!-- Professor Modal -->
-  <div class="modal-overlay" id="professorModal">
-    <div class="modal-box">
-      <h3 id="professorModalTitle"><i class="fas fa-user-tie"></i> Add Professor</h3>
-      <p class="modal-sub">Enter professor details.</p>
-      <form id="professorForm" onsubmit="saveProfessor(event)">
-        <input type="hidden" id="editProfessorId">
-        <div class="form-group"><label>Full Name *</label><input type="text" id="professorName" placeholder="e.g. Dr. S. K. Mehta" required></div>
-        <div class="form-group"><label>Title / Role *</label><input type="text" id="professorTitle" placeholder="e.g. Aerodynamics & Fluid Mechanics" required></div>
-        <div class="form-group"><label>Description</label><textarea id="professorDescription" placeholder="Brief bio..."></textarea></div>
-        <div class="form-group"><label>Photo (upload image)</label><input type="file" id="professorPhoto" accept="image/*">
-          <span class="hint">Leave empty to keep current photo.</span>
-        </div>
-        <div class="modal-actions">
-          <button type="button" class="btn btn-outline" onclick="closeModal('professorModal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Save</button>
-        </div>
-      </form>
-    </div>
-  </div>
+
 
   <!-- Quiz Modal -->
   <div class="modal-overlay" id="quizModal">

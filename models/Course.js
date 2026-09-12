@@ -9,6 +9,8 @@ const materialSchema = new mongoose.Schema({
   fileName: String,
   isPremium: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
+  estimatedTime: { type: String, default: '' },
+  tags: { type: String, default: '' },
 
   quiz: [{
     question:     { type: String, required: true },
@@ -63,6 +65,8 @@ const courseSchema = new mongoose.Schema({
   category:   { type: String, default: 'General' },
   difficulty: { type: String, default: 'Intermediate' },
   duration:   { type: String, default: '' },
+  credits:    { type: Number, default: 0 },
+  language:   { type: String, default: '' },
   learningOutcomes: { type: [String], default: [] },
   thumbnail:  { type: String, default: '' },
   status:     { type: String, default: 'published' },

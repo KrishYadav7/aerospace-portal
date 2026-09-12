@@ -76,6 +76,9 @@ let studentNav = 'home';
 let adminTab = 'overview';
 let editingCourseId = null;
 let editingTab = 'details';
+let addingCourse = false;
+let addingProfessor = false;
+let addingMaterialCourseId = null;
 
 // ---- Bulk email selection (in-memory only; cleared on tab switch / logout) ----
 let _emailSelectedIds = new Set();
@@ -109,9 +112,23 @@ function syncHashToState() {
     return;
   }
 
+  if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] === 'new') {
+    addingCourse = true; addingProfessor = false; addingMaterialCourseId = null;
+    currentCourseId = null; editingCourseId = null; return;
+  }
+  if (parts[0] === 'admin' && parts[1] === 'professor' && parts[2] === 'new') {
+    addingProfessor = true; addingCourse = false; addingMaterialCourseId = null;
+    currentCourseId = null; editingCourseId = null; return;
+  }
+  if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] && parts[3] === 'material' && parts[4] === 'new') {
+    addingMaterialCourseId = parts[2]; addingCourse = false; addingProfessor = false;
+    currentCourseId = null; editingCourseId = null; return;
+  }
+
   currentCourseId = null;
   window.currentSelectedCourseId = null;
   editingCourseId = null;
+  addingCourse = false; addingProfessor = false; addingMaterialCourseId = null;
   if (parts[0] === 'admin') {
     adminTab = parts[1] || 'overview';
   } else if (parts[0] === 'courses') {
@@ -123,6 +140,22 @@ function syncHashToState() {
   } else {
     studentNav = 'home';
   }
+    // Add these checks inside syncHashToState()
+  if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] === 'new') {
+    addingCourse = true; addingProfessor = false; addingMaterialCourseId = null;
+    currentCourseId = null; editingCourseId = null; return;
+  }
+  if (parts[0] === 'admin' && parts[1] === 'professor' && parts[2] === 'new') {
+    addingProfessor = true; addingCourse = false; addingMaterialCourseId = null;
+    currentCourseId = null; editingCourseId = null; return;
+  }
+  if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] && parts[3] === 'material' && parts[4] === 'new') {
+    addingMaterialCourseId = parts[2]; addingCourse = false; addingProfessor = false;
+    currentCourseId = null; editingCourseId = null; return;
+  }
+
+  // Reset these in the fallback block
+  addingCourse = false; addingProfessor = false; addingMaterialCourseId = null;
 }
 
 function pushHash(path) {
@@ -849,6 +882,21 @@ function renderApp() {
   renderNotificationBadge();
   buildNav();
 
+  if (addingCourse) {
+    $('adminAddCourseView').classList.add('active');
+    renderAdminAddCourse();
+    return;
+  }
+  if (addingProfessor) {
+    $('adminAddProfessorView').classList.add('active');
+    renderAdminAddProfessor();
+    return;
+  }
+  if (addingMaterialCourseId) {
+    $('adminAddMaterialView').classList.add('active');
+    renderAdminAddMaterial(addingMaterialCourseId);
+    return;
+  }
   if (editingCourseId && currentUser.role === 'admin') {
     $('adminEditView').classList.add('active');
     renderCourseEditor(editingCourseId);
@@ -868,7 +916,21 @@ function renderApp() {
   else if (studentNav === 'saved') { $('studentSavedView').classList.add('active'); renderSavedCourses(); }
   else if (studentNav === 'analytics') { $('studentAnalyticsView').classList.add('active'); renderStudentAnalytics(); }
   else { $('studentCoursesView').classList.add('active'); renderStudentCourses(); }
-}
+  if (addingCourse) {
+    $('adminAddCourseView').classList.add('active');
+    renderAdminAddCourse();
+    return;
+  }
+  if (addingProfessor) {
+    $('adminAddProfessorView').classList.add('active');
+    renderAdminAddProfessor();
+    return;
+  }
+  if (addingMaterialCourseId) {
+    $('adminAddMaterialView').classList.add('active');
+    renderAdminAddMaterial(addingMaterialCourseId);
+    return;
+  }}
 
 function buildNav() {
   if (currentUser.role === 'admin') {
@@ -1056,6 +1118,12 @@ function renderAdminProfessors() {
       ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" loading="lazy">`
       : `<div class="avatar-placeholder"><i class="fas fa-user-tie"></i></div>`;
 
+    // Build contact info block
+    let contactHtml = '';
+    if (p.email) contactHtml += `<div class="prof-contact-item"><i class="fas fa-envelope"></i> ${escapeHtml(p.email)}</div>`;
+    if (p.phone) contactHtml += `<div class="prof-contact-item"><i class="fas fa-phone"></i> ${escapeHtml(p.phone)}</div>`;
+    if (p.office) contactHtml += `<div class="prof-contact-item"><i class="fas fa-map-marker-alt"></i> ${escapeHtml(p.office)}</div>`;
+
     html += `
       <div class="admin-professor-item">
         ${photoHtml}
@@ -1063,6 +1131,7 @@ function renderAdminProfessors() {
           <h4>${escapeHtml(p.name)}</h4>
           <div class="title">${escapeHtml(p.title)}</div>
           <div class="desc">${escapeHtml(p.description) || ''}</div>
+          ${contactHtml ? `<div class="prof-contact-block">${contactHtml}</div>` : ''}
         </div>
         <div class="actions">
           <button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')" title="Delete" aria-label="Delete professor">
@@ -1703,6 +1772,12 @@ function renderEditorDetails(course) {
         <div class="form-group"><label>Duration</label>
           <input type="text" id="edDuration" value="${escapeHtml(course.duration) || ''}" placeholder="e.g. 12 hours">
         </div>
+        <div class="form-group"><label>Credits (Optional)</label>
+          <input type="number" id="edCredits" value="${course.credits || 0}" min="0" step="1">
+        </div>
+        <div class="form-group"><label>Language (Optional)</label>
+          <input type="text" id="edLanguage" value="${escapeHtml(course.language) || ''}" placeholder="e.g. English">
+        </div>
       </div>
     </div>
     <div class="editor-section">
@@ -2107,6 +2182,8 @@ async function saveCourseDetails(courseId) {
     category: $('edCategory').value,
     difficulty: $('edDifficulty').value,
     duration: $('edDuration').value.trim(),
+    credits: parseInt($('edCredits').value) || 0,
+    language: $('edLanguage').value.trim(),
     learningOutcomes,
     status: $('edStatus').value,
     featured: $('edFeatured').checked,
@@ -3172,19 +3249,11 @@ async function refreshUserData() {
    COURSE MODAL
    ============================================================ */
 function openAddCourseModal() {
-  $('courseModalTitle').textContent = '📚 New Course';
-  $('editCourseId').value = '';
-  $('courseName').value = '';
-  $('courseCode').value = '';
-  $('courseSemester').value = '';
-  $('courseInstructor').value = '';
-  $('courseDescription').value = '';
-  if ($('courseCategory')) $('courseCategory').value = 'General';
-  if ($('courseDifficulty')) $('courseDifficulty').value = 'Intermediate';
-  const pc = $('courseIsPremium'); if (pc) pc.checked = false;
-  const pi = $('coursePrice'); if (pi) pi.value = '';
-  const pg = $('priceGroup'); if (pg) pg.style.display = 'none';
-  openModal('courseModal');
+  addingCourse = true;
+  addingProfessor = false;
+  addingMaterialCourseId = null;
+  pushHash('#/admin/course/new');
+  renderApp();
 }
 
 function togglePriceInput() {
@@ -3259,9 +3328,11 @@ async function publishCourse(courseId) {
    PROFESSORS
    ============================================================ */
 function openAddProfessorModal() {
-  ['editProfessorId', 'professorName', 'professorTitle', 'professorDescription', 'professorPhoto']
-    .forEach(id => { const el = $(id); if (el) el.value = ''; });
-  openModal('professorModal');
+  addingProfessor = true;
+  addingCourse = false;
+  addingMaterialCourseId = null;
+  pushHash('#/admin/professor/new');
+  renderApp();
 }
 function saveProfessor(e) {
   e.preventDefault();
@@ -3305,18 +3376,17 @@ window.toggleMaterialPriceInput = function () {
 };
 
 function openAddMaterialModal(courseId) {
-  $('materialModalTitle').textContent = '📎 Add Material';
-  $('editMaterialId').value = '';
-  $('materialCourseId').value = courseId;
-  $('materialTitle').value = '';
-  $('materialType').value = 'video';
-  $('materialDescription').value = '';
-  $('materialUrl').value = '';
-  $('materialFile').value = '';
-  if ($('materialIsPremium')) $('materialIsPremium').checked = false;
-  if ($('materialPrice')) $('materialPrice').value = '';
-  toggleMaterialPriceInput();
-  openModal('materialModal');
+  addingMaterialCourseId = courseId;
+  addingCourse = false;
+  addingProfessor = false;
+  pushHash(`#/admin/course/${courseId}/material/new`);
+  renderApp();
+}
+
+function goBackToCourseEditorFromMaterial() {
+  const courseId = addingMaterialCourseId;
+  addingMaterialCourseId = null;
+  openCourseEditor(courseId);
 }
 
 async function saveMaterial(e) {
