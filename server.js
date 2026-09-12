@@ -1042,8 +1042,47 @@ app.post('/api/verify-payment', async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error verifying payment.' });
   }
 });
+/* ============================================================
+   VERIFY PAYMENT
+   ============================================================ */
+app.post('/api/verify-payment', async (req, res) => {
+  try {
+    const { 
+      razorpay_order_id, 
+      razorpay_payment_id, 
+      razorpay_signature, 
+      courseId, 
+      userId 
+    } = req.body;
 
-/api/verify-payment
+    // 1. Verify the signature to ensure payment is genuine
+    const sign = razorpay_order_id + "|" + razorpay_payment_id;
+    const expectedSign = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(sign.toString())
+      .digest("hex");
+
+    if (razorpay_signature !== expectedSign) {
+      return res.status(400).json({ success: false, message: 'Invalid payment signature!' });
+    }
+
+    // 2. Update the user's purchases array in the database
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    if (!user.purchases) user.purchases = [];
+    if (!user.purchases.includes(courseId)) {
+      user.purchases.push(courseId);
+      await user.save();
+    }
+
+    res.json({ success: true, message: 'Payment verified successfully!' });
+  } catch (error) {
+    console.error('[verify-payment] Error:', error);
+    res.status(500).json({ success: false, message: 'Server error verifying payment.' });
+  }
+});
+
 /* ============================================================
    USER DATA
    ============================================================ */
