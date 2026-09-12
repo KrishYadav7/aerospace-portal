@@ -15,14 +15,16 @@ async function fetchProfessorsFromDB() {
     const response = await fetch(`${API_BASE}/professors?t=${Date.now()}`);
     const data = await response.json();
     if (data.success) {
-      // Map _id to id so it works consistently with the rest of the app
-      liveProfessors = data.professors.map(p => ({ ...p, id: p._id })); 
+      // Map _id (from MongoDB) to id (for the frontend)
+      liveProfessors = data.professors.map(p => ({ 
+        ...p, 
+        id: p._id || p.id 
+      }));
     }
   } catch (error) {
     console.error('Error fetching professors:', error);
   }
 }
-
 /* ============================================================
    SESSION HELPERS (per-tab auth — do NOT use localStorage here)
    ============================================================ */
