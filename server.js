@@ -79,9 +79,13 @@ const transporter = nodemailer.createTransport({
   pool: true,
   maxConnections: 5,
   maxMessages: 50,
-  connectionTimeout: 8000,
-  greetingTimeout: 8000,
-  socketTimeout: 12000
+  // Increased timeouts:
+  connectionTimeout: 30000,
+  greetingTimeout: 30000,
+  socketTimeout: 30000,
+  // Debugging (will show SMTP conversation in Render logs):
+  debug: true,
+  logger: true
 });
 
 // ---- Verify transporter ONCE on boot ----
@@ -456,7 +460,7 @@ app.get('/api/admin/email-status', async (req, res) => {
      • Uses the SAME EMAIL_USER as OTP
    ============================================================ */
 const BULK_CONCURRENCY = 8;
-const PER_SEND_TIMEOUT_MS = 8000;
+const PER_SEND_TIMEOUT_MS = 30000; // Changed from 8000
 const TOTAL_BUDGET_MS = 45000;
 
 app.post('/api/admin/send-email', async (req, res) => {
