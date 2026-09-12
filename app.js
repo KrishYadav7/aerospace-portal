@@ -4339,5 +4339,8 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// Listen for both hash changes and browser back/forward buttons
 window.addEventListener('hashchange', () => { syncHashToState(); renderApp(); });
+window.addEventListener('popstate', () => { syncHashToState(); renderApp(); });
+
 initApp();
