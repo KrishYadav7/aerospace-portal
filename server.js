@@ -616,10 +616,21 @@ app.post('/api/professors', async (req, res) => {
 
 app.delete('/api/professors/:id', async (req, res) => {
   try {
-    await Professor.findByIdAndDelete(req.params.id);
+    // Safety check: ensure the ID is a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid professor ID format.' });
+    }
+    
+    const deletedProf = await Professor.findByIdAndDelete(req.params.id);
+    
+    if (!deletedProf) {
+      return res.status(404).json({ success: false, message: 'Professor not found.' });
+    }
+    
     res.json({ success: true, message: 'Professor deleted successfully!' });
   } catch (e) {
-    res.status(500).json({ success: false, message: 'Error deleting professor' });
+    console.error('[delete-professor] Error:', e);
+    res.status(500).json({ success: false, message: 'Error deleting professor: ' + e.message });
   }
 });
 /* ============================================================

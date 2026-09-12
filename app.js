@@ -15,7 +15,8 @@ async function fetchProfessorsFromDB() {
     const response = await fetch(`${API_BASE}/professors?t=${Date.now()}`);
     const data = await response.json();
     if (data.success) {
-      liveProfessors = data.professors;
+      // Map _id to id so it works consistently with the rest of the app
+      liveProfessors = data.professors.map(p => ({ ...p, id: p._id })); 
     }
   } catch (error) {
     console.error('Error fetching professors:', error);
@@ -1359,8 +1360,7 @@ function renderAdminProfessors() {
           ${contactHtml ? `<div class="prof-contact-block">${contactHtml}</div>` : ''}
         </div>
         <div class="actions">
-          <button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p.id}')" title="Delete" aria-label="Delete professor">
-            <i class="fas fa-trash"></i>
+<button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p._id}')" title="Delete" aria-label="Delete professor">            <i class="fas fa-trash"></i>
           </button>
         </div>
       </div>`;
