@@ -1084,6 +1084,55 @@ app.post('/api/verify-payment', async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error verifying payment.' });
   }
 });
+/* ============================================================
+   RAZORPAY WEBHOOK — Auto-capture payments (ADD THIS BLOCK)
+   ============================================================ */
+app.post('/api/razorpay-webhook', express.json(), async (req, res) => {
+  try {
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers['x-razorpay-signature'];
+
+    // 1. Verify the webhook signature to ensure it's from Razorpay
+    const expectedSignature = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
+
+    if (signature !== expectedSignature) {
+      console.error('[Webhook] Invalid signature');
+      return res.status(400).send('Invalid signature');
+    }
+
+    // 2. Handle the payment.captured event
+    const event = req.body.event;
+    if (event === 'payment.captured') {
+      const payment = req.body.payload.payment.entity;
+      const orderId = payment.order_id;
+      const paymentId = payment.id;
+
+      console.log(`[Webhook] Payment captured: ${paymentId} for order ${orderId}`);
+
+      // 3. Update the user's purchases in the database
+      const order = await razorpay.orders.fetch(orderId);
+      const userId = order.notes.userId;
+      const itemId = order.notes.itemId;
+
+      if (userId && itemId) {
+        const user = await User.findById(userId);
+        if (user && !user.purchases.includes(itemId)) {
+          user.purchases.push(itemId);
+          await user.save();
+          console.log(`[Webhook] Unlocked item ${itemId} for user ${userId}`);
+        }
+      }
+    }
+
+    res.status(200).json({ status: 'ok' });
+  } catch (error) {
+    console.error('[Webhook] Error:', error);
+    res.status(500).json({ status: 'error' });
+  }
+});
 
 /* ============================================================
    USER DATA
