@@ -799,11 +799,9 @@ function saveNewProfessorPage() {
   const title = $('newProfTitle').value.trim();
   if (!name || !title) return showToast('Name and Title are required.', 'error');
 
-  const processSave = (photoData) => {
-    const data = loadData();
-    data.professors.push({
-      id: generateId(), 
-      name, 
+  const processSave = async (photoData) => {
+    const payload = {
+      name,
       title,
       description: $('newProfDescription').value.trim(),
       email: $('newProfEmail').value.trim(),
@@ -812,11 +810,26 @@ function saveNewProfessorPage() {
       department: $('newProfDept').value.trim(),
       website: $('newProfWebsite').value.trim(),
       photo: photoData || ''
-    });
-    saveData(data);
-    showToast('✓ Professor added successfully!', 'success');
-    addingProfessor = false;
-    switchAdminTab('professors');
+    };
+
+    try {
+      const res = await fetch(`${API_BASE}/professors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('✓ Professor added successfully!', 'success');
+        addingProfessor = false;
+        await fetchProfessorsFromDB();
+        switchAdminTab('professors');
+      } else {
+        showToast(data.message || 'Failed to add professor.', 'error');
+      }
+    } catch (err) {
+      showToast('Server error.', 'error');
+    }
   };
 
   const photoInput = $('newProfPhotoInput');
@@ -3628,13 +3641,19 @@ function saveProfessor(e) {
     reader.readAsDataURL(photoFile);
   } else processSave(null);
 }
-function deleteProfessor(professorId) {
+async function deleteProfessor(professorId) {
   if (!confirm('Delete this professor?')) return;
-  const data = loadData();
-  data.professors = data.professors.filter(p => p.id !== professorId);
-  saveData(data);
-  showToast('Deleted.', 'info');
-  renderApp();
+  try {
+    const res = await fetch(`${API_BASE}/professors/${professorId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('Deleted.', 'info');
+      await fetchProfessorsFromDB();
+      renderApp();
+    } else {
+      showToast(data.message || 'Failed.', 'error');
+    }
+  } catch { showToast('Server error.', 'error'); }
 }
 
 /* ============================================================
@@ -3756,31 +3775,21 @@ async function showPaymentModal(courseId, materialId = null) {
   let amount = course.price || 0;
   let itemName = course.name;
   let purchaseId = course.id;
-  
   if (materialId) {
     const mat = course.materials.find(m => m.id === materialId);
     if (mat) { amount = mat.price || 0; itemName = mat.title; purchaseId = mat.id; }
   }
-  
   showToast(`Initiating payment for ${itemName}...`, 'info');
-  
   try {
-    // Send userId and itemId to backend so they can be put in Razorpay "notes"
     const response = await fetch('https://aerospace-portal.onrender.com/api/create-order', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        amount, 
-        userId: currentUser._id, 
-        itemId: purchaseId 
-      })
+      body: JSON.stringify({ amount })
     });
-    
     const data = await response.json();
     if (!data.success) return showToast('Error creating order.', 'error');
 
     const options = {
-      // USE THE KEY FROM THE BACKEND, NOT A HARDCODED STRING
-      key: data.key_id, 
+      key: '',
       amount: data.order.amount,
       currency: 'INR',
       name: 'Aerospace EdTech',
@@ -3806,17 +3815,11 @@ async function showPaymentModal(courseId, materialId = null) {
           renderApp();
         } else showToast('Verification failed!', 'error');
       },
-      prefill: { 
-        name: currentUser.username, 
-        email: currentUser.email || 'student@aerospace.com', 
-        contact: '9999999999' 
-      },
+      prefill: { name: currentUser.username, email: currentUser.email || 'student@aerospace.com', contact: '9999999999' },
       theme: { color: '#4f46e5' }
     };
     new Razorpay(options).open();
-  } catch { 
-    showToast('Server error during payment.', 'error'); 
-  }
+  } catch { showToast('Server error during payment.', 'error'); }
 }
 
 /* ============================================================
@@ -3862,6 +3865,7 @@ async function initApp() {
   syncHashToState();
   renderApp();
   await fetchCoursesFromDB();
+  await fetchProfessorsFromDB();
   await refreshUserData();
   await loadNotifications();
   renderApp();

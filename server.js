@@ -12,6 +12,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
 const Course = require('./models/Course');
+const Professor = require('./models/Professor');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const app = express();
@@ -590,7 +591,36 @@ app.post('/api/admin/send-email', async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+/* ============================================================
+   PROFESSORS — CRUD
+   ============================================================ */
+app.get('/api/professors', async (req, res) => {
+  try {
+    const professors = await Professor.find().sort({ createdAt: 1 });
+    res.json({ success: true, professors });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
 
+app.post('/api/professors', async (req, res) => {
+  try {
+    const newProf = new Professor(req.body);
+    await newProf.save();
+    res.json({ success: true, message: 'Professor added successfully!', professor: newProf });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Error adding professor: ' + e.message });
+  }
+});
+
+app.delete('/api/professors/:id', async (req, res) => {
+  try {
+    await Professor.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Professor deleted successfully!' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Error deleting professor' });
+  }
+});
 /* ============================================================
    COURSES — CRUD
    ============================================================ */
