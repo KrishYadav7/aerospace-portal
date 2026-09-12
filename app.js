@@ -1312,12 +1312,17 @@ async function sendBulkEmail(e) {
   const label = $('emailSubmitLabel');
   const originalLabel = label ? label.textContent : 'Send Email';
   if (btn) btn.disabled = true;
-  if (label) label.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Sending…`;
+  if (label) label.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Sending ${recipientIds.length} email${recipientIds.length === 1 ? '' : 's'}…`;
+
+  // ---- 90-second client-side timeout so the UI can never hang forever ----
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => controller.abort(), 90000);
 
   try {
     const res = await fetch('https://aerospace-portal.onrender.com/api/admin/send-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
         adminId: currentUser._id,
         recipientIds,
@@ -1325,15 +1330,28 @@ async function sendBulkEmail(e) {
         body
       })
     });
-    const data = await res.json();
+
+    clearTimeout(abortTimer);
+
+    // ---- Handle non-JSON responses (e.g. 502 from proxy) ----
+    let data;
+    const rawText = await res.text();
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      console.error('[bulk-email] Non-JSON response:', res.status, rawText.slice(0, 300));
+      return showToast(`Server error (${res.status}). Try a smaller batch.`, 'error');
+    }
 
     if (data.success) {
       closeModal('emailStudentsModal');
       clearStudentSelection();
 
       if (data.failed > 0) {
-        showToast(`⚠️ Sent to ${data.sent} / ${data.total}. ${data.failed} failed — check console.`, 'info');
+        showToast(`⚠️ Sent ${data.sent}/${data.total}. ${data.failed} failed — see console.`, 'info');
         console.warn('[bulk-email] Failures:', data.failures);
+      } else if (data.skipped > 0) {
+        showToast(`✅ ${data.message}`, 'success');
       } else {
         showToast(`✅ ${data.message}`, 'success');
       }
@@ -1341,11 +1359,32 @@ async function sendBulkEmail(e) {
       showToast(data.message || 'Failed to send email.', 'error');
     }
   } catch (err) {
-    console.error('[bulk-email] Error:', err);
-    showToast('Network error while sending.', 'error');
+    clearTimeout(abortTimer);
+    if (err.name === 'AbortError') {
+      showToast('Request timed out (90s). Try sending in smaller batches.', 'error');
+    } else {
+      console.error('[bulk-email] Error:', err);
+      showToast('Network error while sending. Check your connection.', 'error');
+    }
   } finally {
     if (btn) btn.disabled = false;
     if (label) label.textContent = originalLabel;
+  }
+}
+
+/* ---- Optional: Email status diagnostic (call from admin UI if needed) ---- */
+async function checkEmailStatus() {
+  try {
+    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/email-status');
+    const data = await res.json();
+    if (data.ready) {
+      showToast(`✅ Email ready — sending as ${data.from}`, 'success');
+    } else {
+      showToast(`❌ ${data.message}`, 'error');
+    }
+    console.log('[email-status]', data);
+  } catch (e) {
+    showToast('Could not check email status.', 'error');
   }
 }
 

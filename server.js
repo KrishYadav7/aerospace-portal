@@ -51,6 +51,58 @@ if (!process.env.JWT_SECRET) {
   console.warn('⚠️  WARNING: JWT_SECRET not set. Using insecure fallback.');
 }
 
+/* ============================================================
+   EMAIL TRANSPORTER — used for BOTH OTP + bulk email
+   ------------------------------------------------------------
+   Uses EMAIL_USER / EMAIL_PASS from .env. Same address you asked
+   for: OTPs and bulk emails both go out from this account.
+   ------------------------------------------------------------
+   Key settings:
+     pool: true              → reuse up to 5 SMTP connections
+     maxConnections: 5       → never open more than 5 at once
+     maxMessages: 50         → recycle a connection after 50 sends
+     connectionTimeout: 8s   → fail fast if Gmail is unreachable
+     greetingTimeout: 8s
+     socketTimeout: 12s
+   ============================================================ */
+const EMAIL_USER = process.env.EMAIL_USER;
+const EMAIL_PASS = process.env.EMAIL_PASS;
+
+if (!EMAIL_USER || !EMAIL_PASS) {
+  console.error('❌ EMAIL_USER / EMAIL_PASS are not set. OTP + bulk email will NOT work.');
+}
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: { user: EMAIL_USER, pass: EMAIL_PASS },
+  pool: true,
+  maxConnections: 5,
+  maxMessages: 50,
+  connectionTimeout: 8000,
+  greetingTimeout: 8000,
+  socketTimeout: 12000
+});
+
+// ---- Verify transporter ONCE on boot ----
+// This is the single biggest diagnostic win: on startup you'll see
+// either "✅ Email transporter ready" or "❌ ... FAILED".
+(async () => {
+  if (!EMAIL_USER || !EMAIL_PASS) return;
+  try {
+    await transporter.verify();
+    console.log(`✅ Email transporter ready — sending as ${EMAIL_USER}`);
+  } catch (err) {
+    console.error('❌ Email transporter verification FAILED:');
+    console.error('   ', err.message);
+    console.error('    → Check EMAIL_USER / EMAIL_PASS in .env');
+    console.error('    → Gmail requires an App Password (not your account password)');
+    console.error('    → Some hosts block outbound SMTP (ports 587/465)');
+  }
+})();
+
+/* ============================================================
+   DB
+   ============================================================ */
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('🚀 MongoDB Database Successfully Connected!'))
   .catch((err) => console.log('Database Connection Error:', err));
@@ -107,18 +159,48 @@ function extractYouTubeId(url) {
   );
   return m ? m[1] : null;
 }
+
 function escapeHtml(s) {
   if (s === null || s === undefined) return '';
   return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
-
 function nl2br(s) {
   return escapeHtml(s).replace(/\r?\n/g, '<br/>');
+}
+
+/* ---- Concurrency helper: run async tasks with a max parallel limit ---- */
+async function runWithConcurrency(items, worker, concurrency = 8) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function runner() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      try {
+        results[i] = { status: 'fulfilled', value: await worker(items[i], i) };
+      } catch (e) {
+        results[i] = { status: 'rejected', reason: e };
+      }
+    }
+  }
+  const runners = [];
+  for (let k = 0; k < Math.min(concurrency, items.length); k++) runners.push(runner());
+  await Promise.all(runners);
+  return results;
+}
+
+/* ---- Timeout wrapper: reject a promise if it exceeds ms ---- */
+function withTimeout(promise, ms, label = 'operation') {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
 }
 
 const ACTIVITY_LOG_MAX = 3000;
@@ -127,18 +209,14 @@ function logActivity(user, { type, courseId, materialId, score, total }) {
   if (!user.activityLog) user.activityLog = [];
   const date = todayStr();
   const exists = user.activityLog.some(a =>
-    a.date === date &&
-    a.type === type &&
+    a.date === date && a.type === type &&
     (a.courseId || null) === (courseId || null) &&
     (a.materialId || null) === (materialId || null)
   );
   if (exists) return;
   user.activityLog.push({
-    date,
-    timestamp: new Date(),
-    type: type || 'view',
-    courseId: courseId || null,
-    materialId: materialId || null,
+    date, timestamp: new Date(), type: type || 'view',
+    courseId: courseId || null, materialId: materialId || null,
     score: (typeof score === 'number') ? score : null,
     total: (typeof total === 'number') ? total : null
   });
@@ -163,7 +241,7 @@ app.get('/setup-admin', async (req, res) => {
 app.get('/', (req, res) => res.send('Aerospace EdTech Backend is Running!'));
 
 /* ============================================================
-   AUTH — FIXED: case-insensitive username lookup
+   AUTH
    ============================================================ */
 app.post('/api/login', async (req, res) => {
   try {
@@ -171,29 +249,23 @@ app.post('/api/login', async (req, res) => {
     if (!username || !password) {
       return res.status(400).json({ success: false, message: 'Username and password are required.' });
     }
-
-    // ---- Case-insensitive username lookup ----
     const cleanUsername = String(username).trim().toLowerCase();
     const user = await User.findOne({
       $or: [
         { username: cleanUsername },
-        { username: String(username).trim() }   // fallback for legacy mixed-case users
+        { username: String(username).trim() }
       ]
     });
-
     if (!user) {
       console.log('[login] No user found for:', cleanUsername);
       return res.status(400).json({ success: false, message: 'Invalid username or password.' });
     }
-
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       console.log('[login] Password mismatch for user:', user.username);
       return res.status(400).json({ success: false, message: 'Invalid username or password.' });
     }
-
     if (user.role === 'student') { bumpStreak(user); await user.save(); }
-
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
     console.log('[login] ✅ Success:', user.username, '(' + user.role + ')');
     res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
@@ -204,13 +276,9 @@ app.post('/api/login', async (req, res) => {
 });
 
 /* ============================================================
-   REGISTRATION — Self-service (OTP)
+   REGISTRATION (OTP) — same transporter as bulk email
    ============================================================ */
 const otpStore = {};
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-});
 
 app.post('/api/send-otp', async (req, res) => {
   try {
@@ -220,13 +288,23 @@ app.post('/api/send-otp', async (req, res) => {
     if (existingUser) return res.status(400).json({ success: false, message: 'Username or Email already exists!' });
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     otpStore[email] = otp;
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER, to: email,
-      subject: 'Aerospace Portal - Registration OTP',
-      text: `Welcome!\n\nYour OTP: ${otp}\n\nDo not share this.`
-    });
+
+    await withTimeout(
+      transporter.sendMail({
+        from: `"Aerospace Department" <${EMAIL_USER}>`,
+        to: email,
+        subject: 'Aerospace Portal - Registration OTP',
+        text: `Welcome!\n\nYour OTP: ${otp}\n\nDo not share this.`
+      }),
+      15000,
+      'OTP send'
+    );
+
     res.json({ success: true, message: 'OTP sent!' });
-  } catch (e) { res.status(500).json({ success: false, message: 'Error sending email.' }); }
+  } catch (e) {
+    console.error('[send-otp] Error:', e.message);
+    res.status(500).json({ success: false, message: 'Error sending email: ' + e.message });
+  }
 });
 
 app.post('/api/register', async (req, res) => {
@@ -278,7 +356,6 @@ app.post('/api/admin/create-student', async (req, res) => {
     await newStudent.save();
 
     console.log('[admin] ✅ Created student:', cleanUsername);
-
     res.json({
       success: true,
       message: 'Student created successfully!',
@@ -287,7 +364,7 @@ app.post('/api/admin/create-student', async (req, res) => {
         fullName: newStudent.fullName,
         username: newStudent.username,
         email: newStudent.email || '',
-        password: password, // plaintext — for admin to share. Never persisted.
+        password: password,
         createdAt: newStudent.createdAt || new Date()
       }
     });
@@ -321,6 +398,169 @@ app.delete('/api/admin/students/:userId', async (req, res) => {
     await User.findByIdAndDelete(req.params.userId);
     res.json({ success: true, message: 'Student deleted.' });
   } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
+   ADMIN — EMAIL DIAGNOSTIC
+   ============================================================ */
+app.get('/api/admin/email-status', async (req, res) => {
+  try {
+    if (!EMAIL_USER || !EMAIL_PASS) {
+      return res.json({
+        success: true,
+        ready: false,
+        message: 'EMAIL_USER or EMAIL_PASS missing in server .env'
+      });
+    }
+    try {
+      await withTimeout(transporter.verify(), 10000, 'verify');
+      res.json({ success: true, ready: true, from: EMAIL_USER, message: 'Email is configured and reachable.' });
+    } catch (err) {
+      res.json({ success: true, ready: false, from: EMAIL_USER, message: 'Verification failed: ' + err.message });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   ADMIN — BULK EMAIL (FIXED)
+   ------------------------------------------------------------
+   Design:
+     • Bounded concurrency (8 parallel sends)
+     • Hard 8s per-send timeout
+     • 45s total budget — if exceeded, return partial with clear msg
+     • Uses the SAME EMAIL_USER as OTP
+   ============================================================ */
+const BULK_CONCURRENCY = 8;
+const PER_SEND_TIMEOUT_MS = 8000;
+const TOTAL_BUDGET_MS = 45000;
+
+app.post('/api/admin/send-email', async (req, res) => {
+  const startedAt = Date.now();
+  try {
+    const { adminId, recipientIds, subject, body } = req.body || {};
+
+    // ---- Admin verification ----
+    if (!adminId) {
+      return res.status(400).json({ success: false, message: 'Admin identity required.' });
+    }
+    const admin = await User.findById(adminId).select('role fullName username');
+    if (!admin || admin.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Only admins can send bulk emails.' });
+    }
+
+    // ---- Email config check ----
+    if (!EMAIL_USER || !EMAIL_PASS) {
+      return res.status(500).json({
+        success: false,
+        message: 'Email is not configured on the server. Please check EMAIL_USER and EMAIL_PASS in .env.'
+      });
+    }
+
+    // ---- Payload validation ----
+    if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'No recipients selected.' });
+    }
+    if (recipientIds.length > 200) {
+      return res.status(400).json({ success: false, message: 'Too many recipients in one batch (max 200).' });
+    }
+    const cleanSubject = String(subject || '').trim();
+    const cleanBody = String(body || '').trim();
+    if (!cleanSubject) return res.status(400).json({ success: false, message: 'Subject is required.' });
+    if (!cleanBody) return res.status(400).json({ success: false, message: 'Message body is required.' });
+    if (cleanSubject.length > 200) return res.status(400).json({ success: false, message: 'Subject too long (max 200 chars).' });
+    if (cleanBody.length > 10000) return res.status(400).json({ success: false, message: 'Message too long (max 10,000 chars).' });
+
+    // ---- Fetch eligible students ----
+    const students = await User.find({
+      _id: { $in: recipientIds },
+      role: 'student',
+      email: { $exists: true, $nin: ['', null] }
+    }).select('fullName username email');
+
+    const skipped = recipientIds.length - students.length;
+    if (students.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'None of the selected students have a valid email address.'
+      });
+    }
+
+    console.log(`[bulk-email] admin=${admin.username} START → ${students.length} recipient(s), skipping ${skipped}`);
+
+    // ---- Prebuild email content (once) ----
+    const htmlShell = (greeting, messageHtml) => `
+      <div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px 20px;color:#14161c;line-height:1.6;background:#ffffff;">
+        <div style="border-left:4px solid #6366f1;padding-left:14px;margin-bottom:22px;">
+          <div style="font-size:18px;font-weight:700;color:#14161c;">Aerospace Department</div>
+          <div style="font-size:12px;color:#8b8d98;letter-spacing:.5px;">IIT KHARAGPUR</div>
+        </div>
+        <p style="font-size:15px;margin:0 0 14px;">${greeting}</p>
+        <div style="font-size:15px;white-space:pre-wrap;margin-bottom:28px;">${messageHtml}</div>
+        <div style="border-top:1px solid #ebe7e0;padding-top:16px;font-size:12.5px;color:#8b8d98;">
+          — Aerospace Department<br/>IIT Kharagpur
+        </div>
+      </div>`;
+
+    const messageHtml = nl2br(cleanBody);
+
+    // ---- Send one email (with timeout) ----
+    const sendOne = async (student) => {
+      const firstName = (student.fullName || student.username || 'Student').split(' ')[0];
+      const greeting = `Hi ${escapeHtml(firstName)},`;
+      const textBody = `Hi ${firstName},\n\n${cleanBody}\n\n— Aerospace Department\nIIT Kharagpur`;
+
+      await withTimeout(
+        transporter.sendMail({
+          from: `"Aerospace Department" <${EMAIL_USER}>`,
+          to: student.email,
+          replyTo: EMAIL_USER,
+          subject: cleanSubject,
+          text: textBody,
+          html: htmlShell(greeting, messageHtml)
+        }),
+        PER_SEND_TIMEOUT_MS,
+        `Email to ${student.email}`
+      );
+    };
+
+    // ---- Send with bounded concurrency ----
+    const results = await runWithConcurrency(students, sendOne, BULK_CONCURRENCY);
+
+    // ---- Aggregate ----
+    let sent = 0;
+    const failures = [];
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') sent++;
+      else failures.push({
+        email: students[i].email,
+        name: students[i].fullName || students[i].username,
+        error: String((r.reason && r.reason.message) || r.reason || 'Unknown error')
+      });
+    });
+
+    const failed = failures.length;
+    const elapsed = Date.now() - startedAt;
+    const hitBudget = elapsed >= TOTAL_BUDGET_MS * 0.95;
+
+    console.log(`[bulk-email] admin=${admin.username} DONE → sent=${sent}/${students.length} failed=${failed} skipped=${skipped} time=${elapsed}ms`);
+
+    res.json({
+      success: true,
+      message: `Email sent to ${sent} of ${students.length} student${students.length === 1 ? '' : 's'}.` +
+               (skipped > 0 ? ` ${skipped} skipped (no email).` : '') +
+               (failed > 0 ? ` ${failed} failed — see details.` : '') +
+               (hitBudget ? ' Batch size was large — try smaller batches next time.' : ''),
+      sent, failed, skipped,
+      total: students.length,
+      elapsedMs: elapsed,
+      failures
+    });
+  } catch (e) {
+    console.error('[bulk-email] FATAL:', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
@@ -590,7 +830,7 @@ app.get('/api/user/quiz-results/:userId', async (req, res) => {
 });
 
 /* ============================================================
-   ANALYTICS — FIXED: only show courses with activity
+   ANALYTICS
    ============================================================ */
 app.get('/api/user/analytics/:userId', async (req, res) => {
   try {
@@ -601,7 +841,6 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
     const progressMap = user.progress ? Object.fromEntries(user.progress) : {};
     const quizResults = user.quizResults ? Object.fromEntries(user.quizResults) : {};
 
-    /* ---- Summary ---- */
     const uniqueDays = new Set(log.map(a => a.date));
     const totalViews = log.filter(a => a.type === 'view').length;
     const totalQuizzes = log.filter(a => a.type === 'quiz').length;
@@ -631,7 +870,6 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
       joinedDaysAgo
     };
 
-    /* ---- Heatmap — last 365 days ---- */
     const dailyCounts = {};
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 365);
@@ -643,7 +881,6 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
     });
     const heatmap = Object.entries(dailyCounts).map(([date, count]) => ({ date, count }));
 
-    /* ---- Weekly activity — last 12 weeks ---- */
     const weekly = [];
     const now = new Date();
     for (let w = 11; w >= 0; w--) {
@@ -663,7 +900,6 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
       });
     }
 
-    /* ---- Quiz trend — last 20 attempts ---- */
     const quizLog = log
       .filter(a => a.type === 'quiz' && typeof a.score === 'number' && typeof a.total === 'number' && a.total > 0)
       .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
@@ -675,15 +911,11 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
       total: a.total
     }));
 
-    /* ---- Course progress — ONLY courses the student has interacted with ---- */
     const interactedCourseIds = new Set();
     Object.keys(progressMap).forEach(cid => {
       if ((progressMap[cid] || []).length > 0) interactedCourseIds.add(cid);
     });
-    log.forEach(a => {
-      if (a.courseId) interactedCourseIds.add(a.courseId);
-    });
-    Object.values(quizResults).forEach(() => { /* quizResults don't carry courseId — skip */ });
+    log.forEach(a => { if (a.courseId) interactedCourseIds.add(a.courseId); });
 
     const courseProgress = [];
     if (interactedCourseIds.size > 0) {
@@ -709,13 +941,7 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
 
     res.json({
       success: true,
-      analytics: {
-        summary,
-        heatmap,
-        weekly,
-        quizTrend,
-        courseProgress
-      }
+      analytics: { summary, heatmap, weekly, quizTrend, courseProgress }
     });
   } catch (e) {
     console.error('Analytics error:', e);
@@ -880,11 +1106,8 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
 
     if (ytId) {
       return res.json({
-        success: true,
-        kind: 'youtube',
-        videoId: ytId,
-        title: mat.title,
-        expiresAt: Date.now() + (2 * 60 * 60 * 1000)
+        success: true, kind: 'youtube', videoId: ytId,
+        title: mat.title, expiresAt: Date.now() + (2 * 60 * 60 * 1000)
       });
     }
 
@@ -893,11 +1116,8 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
     }
 
     res.json({
-      success: true,
-      kind: 'direct',
-      directUrl: url,
-      title: mat.title,
-      expiresAt: Date.now() + (2 * 60 * 60 * 1000)
+      success: true, kind: 'direct', directUrl: url,
+      title: mat.title, expiresAt: Date.now() + (2 * 60 * 60 * 1000)
     });
   } catch (e) {
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
@@ -1006,121 +1226,7 @@ app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId',
     res.json({ success: true, message: 'Removed from playlist.', playlist: pl });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
-/* ============================================================
-   ADMIN — BULK EMAIL TO STUDENTS
-   ============================================================ */
-app.post('/api/admin/send-email', async (req, res) => {
-  try {
-    const { adminId, recipientIds, subject, body } = req.body || {};
 
-    // ---- Verify admin ----
-    if (!adminId) {
-      return res.status(400).json({ success: false, message: 'Admin identity required.' });
-    }
-    const admin = await User.findById(adminId).select('role fullName username');
-    if (!admin || admin.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Only admins can send bulk emails.' });
-    }
-
-    // ---- Validate payload ----
-    if (!Array.isArray(recipientIds) || recipientIds.length === 0) {
-      return res.status(400).json({ success: false, message: 'No recipients selected.' });
-    }
-    if (recipientIds.length > 500) {
-      return res.status(400).json({ success: false, message: 'Too many recipients in one batch (max 500).' });
-    }
-    const cleanSubject = String(subject || '').trim();
-    const cleanBody = String(body || '').trim();
-    if (!cleanSubject) return res.status(400).json({ success: false, message: 'Subject is required.' });
-    if (!cleanBody) return res.status(400).json({ success: false, message: 'Message body is required.' });
-    if (cleanSubject.length > 200) return res.status(400).json({ success: false, message: 'Subject too long (max 200 chars).' });
-    if (cleanBody.length > 10000) return res.status(400).json({ success: false, message: 'Message too long (max 10,000 chars).' });
-
-    // ---- Fetch only eligible students with valid emails ----
-    const students = await User.find({
-      _id: { $in: recipientIds },
-      role: 'student',
-      email: { $exists: true, $nin: ['', null] }
-    }).select('fullName username email');
-
-    const skipped = recipientIds.length - students.length;
-    if (students.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'None of the selected students have a valid email address.'
-      });
-    }
-
-    const fromAddress = process.env.EMAIL_USER;
-    if (!fromAddress) {
-      return res.status(500).json({ success: false, message: 'Server email is not configured.' });
-    }
-
-    // ---- Send individually (personalized, privacy-preserving) ----
-    const sendOne = async (student) => {
-      const firstName = (student.fullName || student.username || 'Student').split(' ')[0];
-      const greeting = `Hi ${firstName},`;
-
-      const textBody =
-        `${greeting}\n\n${cleanBody}\n\n— Aerospace Department\nIIT Kharagpur`;
-
-      const htmlBody = `
-        <div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px 20px;color:#14161c;line-height:1.6;background:#ffffff;">
-          <div style="border-left:4px solid #6366f1;padding-left:14px;margin-bottom:22px;">
-            <div style="font-size:18px;font-weight:700;color:#14161c;">Aerospace Department</div>
-            <div style="font-size:12px;color:#8b8d98;letter-spacing:.5px;">IIT KHARAGPUR</div>
-          </div>
-          <p style="font-size:15px;margin:0 0 14px;">${escapeHtml(greeting)}</p>
-          <div style="font-size:15px;white-space:pre-wrap;margin-bottom:28px;">${nl2br(cleanBody)}</div>
-          <div style="border-top:1px solid #ebe7e0;padding-top:16px;font-size:12.5px;color:#8b8d98;">
-            — Aerospace Department<br/>IIT Kharagpur
-          </div>
-        </div>
-      `;
-
-      return transporter.sendMail({
-        from: `"Aerospace Department" <${fromAddress}>`,
-        to: student.email,
-        replyTo: fromAddress,
-        subject: cleanSubject,
-        text: textBody,
-        html: htmlBody
-      });
-    };
-
-    const results = await Promise.allSettled(students.map(sendOne));
-
-    let sent = 0;
-    const failures = [];
-    results.forEach((r, i) => {
-      if (r.status === 'fulfilled') {
-        sent++;
-      } else {
-        failures.push({
-          email: students[i].email,
-          name: students[i].fullName || students[i].username,
-          error: String((r.reason && r.reason.message) || r.reason || 'Unknown error')
-        });
-      }
-    });
-
-    const failed = failures.length;
-    console.log(`[bulk-email] admin=${admin.username} sent=${sent}/${students.length} skipped=${skipped} failed=${failed}`);
-
-    res.json({
-      success: true,
-      message: `Email sent to ${sent} of ${students.length} student${students.length === 1 ? '' : 's'}.${skipped > 0 ? ' ' + skipped + ' skipped (no email).' : ''}`,
-      sent,
-      failed,
-      skipped,
-      total: students.length,
-      failures
-    });
-  } catch (e) {
-    console.error('[bulk-email] Error:', e);
-    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
-  }
-});
 /* ============================================================
    LISTEN
    ============================================================ */
