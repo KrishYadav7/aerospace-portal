@@ -10,20 +10,57 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
   <link rel="stylesheet" href="styles.css">
-    <!-- KaTeX for LaTeX rendering -->
-  <link rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css"
-        integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV"
-        crossorigin="anonymous">
-  <script defer
-          src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"
-          integrity="sha384-XjKyOOlGwcjNTAIQHIpgOno0Hl1YQqzUOEleOLALmuqehneUG+vnGctmUb0ZY0l8"
-          crossorigin="anonymous"></script>
-  <script defer
-          src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
-          integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax56Z4dCRWbxyPt0Koah1uHoK0o4+/RRE05"
-          crossorigin="anonymous"
-          onload="window.__katexReady=true"></script>
+  <!-- ============================================================
+       MathJax v3 — Overleaf-standard LaTeX rendering
+       Same engine Overleaf uses for HTML preview.
+       ============================================================ -->
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true,
+        processEnvironments: true,
+        processRefs: true,
+        tags: 'none',
+        packages: {
+          '[+]': [
+            'ams', 'newcommand', 'configmacros', 'noundefined', 'noerrors',
+            'mhchem', 'boldsymbol', 'html', 'textmacros', 'color',
+            'mathtools', 'physics', 'cancel', 'enclose', 'unicode'
+          ]
+        },
+        macros: {
+          // Common shorthands
+          RR: '\\mathbb{R}',
+          NN: '\\mathbb{N}',
+          ZZ: '\\mathbb{Z}',
+          CC: '\\mathbb{C}',
+          QQ: '\\mathbb{Q}',
+          dd: '\\mathrm{d}',
+          // Physicists' brackets
+          braket: ['\\left\\langle #1 \\right\\rangle', 1],
+          ket:    ['\\left| #1 \\right\\rangle', 1],
+          bra:    ['\\left\\langle #1 \\right|', 1]
+        }
+      },
+      options: {
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+        ignoreHtmlClass: 'no-mathjax',
+        enableMenu: false,
+        renderActions: { addMenu: [] }
+      },
+      chtml: {
+        scale: 1.05,
+        minScale: 0.5,
+        matchFontHeight: true
+      },
+      startup: {
+        typeset: false   // we render manually for performance
+      }
+    };
+  </script>
+  <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
   <div id="app">

@@ -686,6 +686,8 @@ function logout() {
   quizEditingMaterialId = null;
   quizDraft = [];
   quizPlayerState = null;
+  stopQuizAutosave();
+  stopQuizTimer();
   pushHash('#/home'); renderApp(); showToast('Logged out.', 'info');
 }
 
@@ -4810,28 +4812,240 @@ let quizEditingMaterialId = null;
 let quizPaperConfig = { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
 let quizDraft = [];
 
-/* ---------- KaTeX helper ---------- */
+/* ============================================================
+   MathJax v3 renderer — Overleaf-parity LaTeX
+   ============================================================ */
+window.__mathjaxReady = false;
+window.__mathjaxQueue = [];
+
 function renderMathIn(el) {
   if (!el) return;
-  if (typeof renderMathInElement !== 'function') {
-    if (!window.__katexReady) {
-      setTimeout(() => renderMathIn(el), 250);
-    }
+  if (!window.__mathjaxReady || !window.MathJax || !window.MathJax.typesetPromise) {
+    if (!window.__mathjaxQueue.includes(el)) window.__mathjaxQueue.push(el);
     return;
   }
-  try {
-    renderMathInElement(el, {
-      delimiters: [
-        { left: '$$', right: '$$', display: true },
-        { left: '$',  right: '$',  display: false },
-        { left: '\\[', right: '\\]', display: true },
-        { left: '\\(', right: '\\)', display: false }
-      ],
-      throwOnError: false,
-      errorColor: '#dc2626'
-    });
-  } catch (e) { /* silent */ }
+  try { window.MathJax.typesetClear([el]); } catch (e) {}
+  window.MathJax.typesetPromise([el]).catch(err => {
+    console.warn('[MathJax]', err && err.message ? err.message : err);
+  });
 }
+
+(function waitForMathJax() {
+  if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+    window.MathJax.startup.promise.then(() => {
+      window.__mathjaxReady = true;
+      const q = window.__mathjaxQueue.splice(0);
+      q.forEach(el => renderMathIn(el));
+    }).catch(() => {});
+  } else {
+    setTimeout(waitForMathJax, 120);
+  }
+})();
+
+/* ---------- Debounced live LaTeX preview ---------- */
+const _latexPreviewTimers = new WeakMap();
+function scheduleLatexPreview(sourceEl) {
+  const pid = sourceEl.dataset.previewId;
+  if (!pid) return;
+  const target = document.getElementById('latex-preview-' + pid);
+  if (!target) return;
+
+  const prev = _latexPreviewTimers.get(sourceEl);
+  if (prev) clearTimeout(prev);
+
+  _latexPreviewTimers.set(sourceEl, setTimeout(() => {
+    const value = sourceEl.value || '';
+    if (!value.trim()) {
+      target.innerHTML = '';
+      target.classList.add('is-empty');
+      return;
+    }
+    target.classList.remove('is-empty');
+    target.textContent = value;
+    renderMathIn(target);
+  }, 400));
+}
+
+document.addEventListener('input', (e) => {
+  const t = e.target;
+  if (t && t.classList && t.classList.contains('latex-source')) {
+    scheduleLatexPreview(t);
+  }
+});
+
+/* ---------- Live mark totals ---------- */
+function updateQuizTotals() {
+  const total = quizDraft.reduce((s, q) => s + (Number(q.marks) || 0), 0);
+  const count = quizDraft.length;
+  ['quizHeaderCount', 'quizDraftCount'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = count;
+  });
+  ['quizHeaderMarks', 'quizDraftMarks'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = total;
+  });
+  const auto = document.getElementById('qpAutoHint');
+  if (auto) auto.textContent = total;
+}
+
+/* ---------- Preview toggle ---------- */
+let _previewsVisible = true;
+function toggleLatexPreviews() {
+  _previewsVisible = !_previewsVisible;
+  document.body.classList.toggle('hide-latex-previews', !_previewsVisible);
+  const btn = document.getElementById('previewToggleBtn');
+  if (btn) {
+    btn.innerHTML = _previewsVisible
+      ? '<i class="fas fa-eye"></i> Hide Previews'
+      : '<i class="fas fa-eye-slash"></i> Show Previews';
+  }
+}
+
+/* ---------- Autosave ---------- */
+let _quizAutosaveTimer = null;
+function startQuizAutosave() {
+  stopQuizAutosave();
+  _quizAutosaveTimer = setInterval(() => {
+    if (!quizEditingCourseId || !quizEditingMaterialId) return;
+    try {
+      const payload = {
+        courseId:   quizEditingCourseId,
+        materialId: quizEditingMaterialId,
+        config: {
+          subject:    ($('qpSubject')?.value || ''),
+          paperCode:  ($('qpCode')?.value    || ''),
+          totalTime:  ($('qpTime')?.value    || ''),
+          totalMarks: parseInt($('qpMarks')?.value, 10) || 0
+        },
+        quiz: quizDraft,
+        savedAt: Date.now()
+      };
+      localStorage.setItem('aero_quiz_draft_' + quizEditingMaterialId, JSON.stringify(payload));
+    } catch (e) {}
+  }, 15000);
+}
+function stopQuizAutosave() {
+  if (_quizAutosaveTimer) { clearInterval(_quizAutosaveTimer); _quizAutosaveTimer = null; }
+}
+function getSavedQuizDraft(materialId) {
+  try {
+    const raw = localStorage.getItem('aero_quiz_draft_' + materialId);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !data.savedAt) return null;
+    if (Date.now() - data.savedAt > 24 * 60 * 60 * 1000) {
+      localStorage.removeItem('aero_quiz_draft_' + materialId);
+      return null;
+    }
+    return data;
+  } catch { return null; }
+}
+function clearSavedQuizDraft(materialId) {
+  try { localStorage.removeItem('aero_quiz_draft_' + materialId); } catch {}
+}
+
+/* ---------- Student answer persistence ---------- */
+function persistQuizAnswers() {
+  const st = quizPlayerState;
+  if (!st || st.previewMode || st.submitted) return;
+  try {
+    localStorage.setItem('aero_quiz_answers_' + st.materialId, JSON.stringify(st.answers));
+  } catch {}
+}
+function restoreQuizAnswers(materialId) {
+  try {
+    const raw = localStorage.getItem('aero_quiz_answers_' + materialId);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function clearQuizAnswers(materialId) {
+  try { localStorage.removeItem('aero_quiz_answers_' + materialId); } catch {}
+}
+
+/* ---------- Student test timer ---------- */
+let _quizTimerHandle = null;
+function parseQuizTime(s) {
+  if (!s) return 0;
+  s = String(s).toLowerCase().trim();
+  const hm = s.match(/(\d+)\s*h(?:our|r)?s?/);
+  const mm = s.match(/(\d+)\s*m(?:in(?:ute)?)?s?/);
+  let sec = 0;
+  if (hm) sec += parseInt(hm[1], 10) * 3600;
+  if (mm) sec += parseInt(mm[1], 10) * 60;
+  if (!sec) {
+    const justN = s.match(/^(\d+)$/);
+    if (justN) sec = parseInt(justN[1], 10) * 60;
+  }
+  return sec;
+}
+function formatDuration(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return (h > 0 ? String(h).padStart(2, '0') + ':' : '')
+       + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+function startQuizTimer() {
+  stopQuizTimer();
+  const st = quizPlayerState;
+  if (!st || st.previewMode || st.submitted) return;
+  const duration = parseQuizTime(st.paperConfig && st.paperConfig.totalTime);
+  if (!duration) return;
+
+  const startKey = 'aero_quiz_start_' + st.materialId;
+  let startedAt = parseInt(localStorage.getItem(startKey), 10);
+  if (!startedAt) {
+    startedAt = Date.now();
+    localStorage.setItem(startKey, String(startedAt));
+  }
+
+  const tick = () => {
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    const remaining = Math.max(0, duration - elapsed);
+    const el = document.getElementById('quizTimerDisplay');
+    if (el) {
+      el.textContent = formatDuration(remaining);
+      el.classList.toggle('warning', remaining < 60 && remaining > 0);
+      el.classList.toggle('expired', remaining === 0);
+    }
+    if (remaining === 0) {
+      stopQuizTimer();
+      try { showToast('⏰ Time is up!', 'error'); } catch (e) {}
+      submitQuiz();
+    }
+  };
+  tick();
+  _quizTimerHandle = setInterval(tick, 1000);
+}
+function stopQuizTimer() {
+  if (_quizTimerHandle) { clearInterval(_quizTimerHandle); _quizTimerHandle = null; }
+  const el = document.getElementById('quizTimerDisplay');
+  if (el) el.classList.remove('warning', 'expired');
+}
+
+/* ---------- Preview HTML escaper ---------- */
+function escapeForPreview(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/* ---------- Preview box helper ---------- */
+function latexPreviewBox(id, initialValue) {
+  const isEmpty = !initialValue || !String(initialValue).trim();
+  return `<div class="latex-preview ${isEmpty ? 'is-empty' : ''}" id="latex-preview-${id}">${escapeForPreview(initialValue || '')}</div>`;
+}
+
+/* ---------- Keyboard Ctrl+S for quiz editor ---------- */
+document.addEventListener('keydown', (e) => {
+  if (!quizEditingCourseId) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    saveQuizPaper();
+  }
+});
 /* ============================================================
    QUIZ EDITOR — Full-page open / close / render
    ============================================================ */
@@ -4844,16 +5058,30 @@ function openQuizEditor(courseId, materialId) {
   quizEditingCourseId = courseId;
   quizEditingMaterialId = materialId;
 
-  const rawQuiz = Array.isArray(mat.quiz) ? mat.quiz : [];
-  quizDraft = rawQuiz.map(q => normalizeQuestion(q));
+  const saved = getSavedQuizDraft(materialId);
+  let useSaved = false;
+  if (saved && Array.isArray(saved.quiz) && saved.quiz.length > 0) {
+    const ageMin = Math.round((Date.now() - saved.savedAt) / 60000);
+    useSaved = confirm(
+      `An unsaved draft was autosaved ${ageMin} minute${ageMin === 1 ? '' : 's'} ago.\n\n` +
+      `Restore it?\n\n[OK] Restore draft\n[Cancel] Discard and use the last SAVED version`
+    );
+  }
 
-  const cfg = mat.examConfig || {};
-  quizPaperConfig = {
-    subject:    cfg.subject    || course.name    || '',
-    paperCode:  cfg.paperCode  || (course.code ? course.code + '-' + (mat.title || '') : ''),
-    totalTime:  cfg.totalTime  || '',
-    totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0)
-  };
+  if (useSaved) {
+    quizDraft = saved.quiz.map(q => normalizeQuestion(q));
+    quizPaperConfig = saved.config || { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
+  } else {
+    const rawQuiz = Array.isArray(mat.quiz) ? mat.quiz : [];
+    quizDraft = rawQuiz.map(q => normalizeQuestion(q));
+    const cfg = mat.examConfig || {};
+    quizPaperConfig = {
+      subject:    cfg.subject    || course.name    || '',
+      paperCode:  cfg.paperCode  || (course.code ? course.code + '-' + (mat.title || '') : ''),
+      totalTime:  cfg.totalTime  || '',
+      totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0)
+    };
+  }
 
   addingCourse = false; addingProfessor = false;
   addingMaterialCourseId = null; addingStudent = false;
@@ -4865,12 +5093,18 @@ function openQuizEditor(courseId, materialId) {
 }
 
 function closeQuizEditor() {
+  const hasDraft = quizDraft.length > 0;
+  if (hasDraft) {
+    const ok = confirm('Close the paper editor?\n\nYour unsaved changes are autosaved locally and will be offered for restore next time.');
+    if (!ok) return;
+  }
+  stopQuizAutosave();
   const cid = quizEditingCourseId;
   quizEditingCourseId = null;
   quizEditingMaterialId = null;
   quizDraft = [];
   if (cid) openCourseEditor(cid);
-  else { pushHash('#/admin/courses'); renderApp(); }
+  else { pushHash('#/admin/courses'); pushHash; renderApp(); }
 }
 
 function normalizeQuestion(q) {
@@ -4904,7 +5138,7 @@ function normalizeQuestion(q) {
 }
 
 /* ============================================================
-   QUIZ EDITOR — Render
+   QUIZ EDITOR — Render (with live preview + reorder + autosave)
    ============================================================ */
 function renderQuizEditor() {
   const container = document.getElementById('quizEditorContent');
@@ -4924,11 +5158,15 @@ function renderQuizEditor() {
     <div class="dash-header">
       <h2><i class="fas fa-file-pen"></i> Question Paper Editor</h2>
       <div class="actions">
+        <button class="btn btn-outline" onclick="toggleLatexPreviews()" id="previewToggleBtn">
+          <i class="fas fa-eye"></i> Hide Previews
+        </button>
         <button class="btn btn-outline" onclick="previewQuizPaper()">
           <i class="fas fa-eye"></i> Preview as Student
         </button>
         <button class="btn btn-primary" onclick="saveQuizPaper()" id="quizSaveBtn">
           <i class="fas fa-save"></i> Save Paper
+          <span style="opacity:.7;font-size:11px;margin-left:6px;">(Ctrl+S)</span>
         </button>
       </div>
     </div>
@@ -4951,12 +5189,13 @@ function renderQuizEditor() {
         </div>
         <div class="form-group">
           <label>Total Time Duration</label>
-          <input type="text" id="qpTime" value="${escapeHtml(quizPaperConfig.totalTime)}" placeholder="e.g. 3 hours">
+          <input type="text" id="qpTime" value="${escapeHtml(quizPaperConfig.totalTime)}" placeholder="e.g. 3 hours or 90 min">
+          <span class="hint">Auto-parsed for countdown timer (e.g. "1.5 hours", "90 min", "120").</span>
         </div>
         <div class="form-group">
           <label>Total Marks</label>
           <input type="number" id="qpMarks" value="${quizPaperConfig.totalMarks || autoTotal}" min="0" step="1" placeholder="e.g. 100">
-          <span class="hint">Auto-computed from questions: <strong>${autoTotal}</strong></span>
+          <span class="hint">Auto-computed from questions: <strong id="qpAutoHint">${autoTotal}</strong></span>
         </div>
       </div>
     </div>
@@ -4964,30 +5203,24 @@ function renderQuizEditor() {
     <div class="editor-section">
       <div class="editor-section-header">
         <div class="editor-section-title">
-          <i class="fas fa-list-ol"></i> Questions (${quizDraft.length})
+          <i class="fas fa-list-ol"></i> Questions (<span id="quizHeaderCount">${quizDraft.length}</span>)
           <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
-            Total marks: ${autoTotal}
+            Total marks: <span id="quizHeaderMarks">${autoTotal}</span>
           </span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('single')">
-            <i class="fas fa-plus"></i> Single Correct
-          </button>
-          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('multiple')">
-            <i class="fas fa-plus"></i> Multiple Correct
-          </button>
-          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('integer')">
-            <i class="fas fa-plus"></i> Integer
-          </button>
-          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('matrix')">
-            <i class="fas fa-plus"></i> Matrix Match
-          </button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('single')"><i class="fas fa-plus"></i> Single Correct</button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('multiple')"><i class="fas fa-plus"></i> Multiple Correct</button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('integer')"><i class="fas fa-plus"></i> Integer</button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('matrix')"><i class="fas fa-plus"></i> Matrix Match</button>
         </div>
       </div>
 
       <p class="editor-hint">
-        Use <strong>LaTeX</strong> for equations — wrap inline math in <code>$…$</code> and display math in <code>$$…$$</code>.
-        Example: <code>$E = mc^2$</code>.
+        <strong>Overleaf-standard LaTeX is supported.</strong>
+        Inline math: <code>$E = mc^2$</code> · Display math: <code>$$\\int_0^1 x^2\\,dx$$</code> ·
+        Also supports <code>\\begin{align}</code>, <code>\\begin{pmatrix}</code>, <code>\\ce{H2O}</code>, <code>\\textcolor</code>, and all amsmath/physics macros.
+        Live preview appears below every input.
       </p>
 
       <div id="quizDraftList"></div>
@@ -5001,6 +5234,7 @@ function renderQuizEditor() {
 
   renderQuizDraft();
   renderMathIn(container);
+  startQuizAutosave();
 }
 
 function renderQuizDraft() {
@@ -5009,6 +5243,7 @@ function renderQuizDraft() {
 
   if (quizDraft.length === 0) {
     list.innerHTML = `<div class="empty-state"><i class="fas fa-question-circle"></i><p>No questions yet. Add your first question below.</p></div>`;
+    updateQuizTotals();
     return;
   }
 
@@ -5016,10 +5251,25 @@ function renderQuizDraft() {
   quizDraft.forEach((q, qi) => {
     html += `<div class="quiz-edit-card" data-qid="${qi}">
       <div class="quiz-edit-head">
-        <strong>Question ${qi + 1} <span class="mat-type" style="margin-left:8px;">${questionTypeLabel(q.type)}</span></strong>
-        <button type="button" class="quiz-remove" onclick="removeQuizQuestion(${qi})" aria-label="Remove question">
-          <i class="fas fa-trash-alt"></i>
-        </button>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <strong>Question ${qi + 1}</strong>
+          <span class="mat-type">${questionTypeLabel(q.type)}</span>
+          <span class="quiz-question-marks-badge">+${q.marks} / ${q.negativeMarks}</span>
+        </div>
+        <div class="quiz-question-controls">
+          <button type="button" class="quiz-icon-btn" onclick="moveQuizQuestion(${qi}, -1)" title="Move up" ${qi === 0 ? 'disabled' : ''}>
+            <i class="fas fa-arrow-up"></i>
+          </button>
+          <button type="button" class="quiz-icon-btn" onclick="moveQuizQuestion(${qi}, 1)" title="Move down" ${qi === quizDraft.length - 1 ? 'disabled' : ''}>
+            <i class="fas fa-arrow-down"></i>
+          </button>
+          <button type="button" class="quiz-icon-btn" onclick="duplicateQuizQuestion(${qi})" title="Duplicate">
+            <i class="fas fa-copy"></i>
+          </button>
+          <button type="button" class="quiz-icon-btn danger" onclick="removeQuizQuestion(${qi})" title="Delete">
+            <i class="fas fa-trash-alt"></i>
+          </button>
+        </div>
       </div>
 
       <div class="editor-grid-3" style="margin-bottom:12px;">
@@ -5045,23 +5295,28 @@ function renderQuizDraft() {
       </div>
 
       <div class="form-group" style="margin-bottom:14px;">
-        <label>Question Text <span class="hint" style="display:inline;">(LaTeX supported)</span></label>
-        <textarea rows="3" placeholder="e.g. Find the value of $\\int_0^1 x^2 \\, dx$"
+        <label>Question Text <span class="hint" style="display:inline;">· LaTeX supported</span></label>
+        <textarea rows="3" class="latex-source" data-preview-id="q${qi}-question"
+                  placeholder="e.g. Find $\\int_0^1 x^2 \\, dx$"
                   oninput="updateQuizField(${qi}, 'question', this.value)">${escapeHtml(q.question)}</textarea>
+        ${latexPreviewBox(`q${qi}-question`, q.question)}
       </div>
 
       ${renderAnswerArea(q, qi)}
 
       <div class="form-group" style="margin-top:12px;">
         <label>Explanation / Solution (optional · LaTeX supported)</label>
-        <textarea rows="2" placeholder="e.g. Using power rule: $\\frac{x^3}{3}\\Big|_0^1 = \\frac{1}{3}$"
+        <textarea rows="2" class="latex-source" data-preview-id="q${qi}-explanation"
+                  placeholder="e.g. Using power rule: $\\frac{x^3}{3}\\Big|_0^1 = \\frac{1}{3}$"
                   oninput="updateQuizField(${qi}, 'explanation', this.value)">${escapeHtml(q.explanation || '')}</textarea>
+        ${latexPreviewBox(`q${qi}-explanation`, q.explanation || '')}
       </div>
     </div>`;
   });
 
   list.innerHTML = html;
   renderMathIn(list);
+  updateQuizTotals();
 }
 
 function questionTypeLabel(t) {
@@ -5088,10 +5343,13 @@ function renderAnswerArea(q, qi) {
                        onchange="updateQuizCorrect(${qi}, ${oi}, this.checked, '${q.type}')">
                 <span class="quiz-radio-dot"></span>
               </label>
-              <input type="text"
-                     placeholder="Option ${String.fromCharCode(65 + oi)} · LaTeX ok"
-                     value="${escapeHtml(opt)}"
-                     oninput="updateQuizOption(${qi}, ${oi}, this.value)">
+              <div class="quiz-option-input-wrap">
+                <input type="text" class="latex-source" data-preview-id="q${qi}-opt${oi}"
+                       placeholder="Option ${String.fromCharCode(65 + oi)} · LaTeX ok"
+                       value="${escapeHtml(opt)}"
+                       oninput="updateQuizOption(${qi}, ${oi}, this.value)">
+                ${latexPreviewBox(`q${qi}-opt${oi}`, opt)}
+              </div>
               <button type="button" class="quiz-remove" style="width:24px;height:24px;"
                       onclick="removeQuizOption(${qi}, ${oi})" title="Remove option">
                 <i class="fas fa-times" style="font-size:10px;"></i>
@@ -5121,7 +5379,7 @@ function renderAnswerArea(q, qi) {
                  value="${q.integerTolerance || 0}"
                  placeholder="0 = exact match"
                  oninput="updateQuizField(${qi}, 'integerTolerance', parseFloat(this.value) || 0)">
-          <span class="hint">If set to 0.5, answers within ±0.5 are accepted (useful for decimals).</span>
+          <span class="hint">If set to 0.5, answers within ±0.5 are accepted.</span>
         </div>
       </div>`;
   }
@@ -5139,11 +5397,15 @@ function renderAnswerArea(q, qi) {
               List-I (Left Column · items to be matched)
             </label>
             ${leftItems.map((item, li) => `
-              <div class="quiz-option-row" style="margin-bottom:6px;">
+              <div class="quiz-option-row" style="margin-bottom:10px;">
                 <span class="quiz-play-letter">${String.fromCharCode(65 + li)}</span>
-                <input type="text" placeholder="Item ${String.fromCharCode(65 + li)} · LaTeX ok"
-                       value="${escapeHtml(item)}"
-                       oninput="updateMatrixItem(${qi}, 'left', ${li}, this.value)">
+                <div class="quiz-option-input-wrap">
+                  <input type="text" class="latex-source" data-preview-id="q${qi}-L${li}"
+                         placeholder="Item ${String.fromCharCode(65 + li)} · LaTeX ok"
+                         value="${escapeHtml(item)}"
+                         oninput="updateMatrixItem(${qi}, 'left', ${li}, this.value)">
+                  ${latexPreviewBox(`q${qi}-L${li}`, item)}
+                </div>
                 <button type="button" class="quiz-remove" style="width:24px;height:24px;"
                         onclick="removeMatrixItem(${qi}, 'left', ${li})" title="Remove">
                   <i class="fas fa-times" style="font-size:10px;"></i>
@@ -5158,11 +5420,15 @@ function renderAnswerArea(q, qi) {
               List-II (Right Column · items to match to)
             </label>
             ${rightItems.map((item, ri) => `
-              <div class="quiz-option-row" style="margin-bottom:6px;">
+              <div class="quiz-option-row" style="margin-bottom:10px;">
                 <span class="quiz-play-letter">${['P','Q','R','S','T','U','V','W'][ri] || (ri + 1)}</span>
-                <input type="text" placeholder="Item ${['P','Q','R','S','T','U','V','W'][ri] || (ri + 1)} · LaTeX ok"
-                       value="${escapeHtml(item)}"
-                       oninput="updateMatrixItem(${qi}, 'right', ${ri}, this.value)">
+                <div class="quiz-option-input-wrap">
+                  <input type="text" class="latex-source" data-preview-id="q${qi}-R${ri}"
+                         placeholder="Item ${['P','Q','R','S','T','U','V','W'][ri] || (ri + 1)} · LaTeX ok"
+                         value="${escapeHtml(item)}"
+                         oninput="updateMatrixItem(${qi}, 'right', ${ri}, this.value)">
+                  ${latexPreviewBox(`q${qi}-R${ri}`, item)}
+                </div>
                 <button type="button" class="quiz-remove" style="width:24px;height:24px;"
                         onclick="removeMatrixItem(${qi}, 'right', ${ri})" title="Remove">
                   <i class="fas fa-times" style="font-size:10px;"></i>
@@ -5181,10 +5447,11 @@ function renderAnswerArea(q, qi) {
           ${rows.map((r, ri) => `
             <div class="quiz-option-row" style="margin-bottom:8px;">
               <span class="quiz-play-letter">${String.fromCharCode(65 + ri)}</span>
-              <input type="text" style="flex:1;" placeholder="Row ${String.fromCharCode(65 + ri)} text (LaTeX ok)"
+              <input type="text" style="flex:1;" class="latex-source" data-preview-id="q${qi}-row${ri}"
+                     placeholder="Row ${String.fromCharCode(65 + ri)} text (LaTeX ok)"
                      value="${escapeHtml(r.text)}"
                      oninput="updateMatrixRow(${qi}, ${ri}, 'text', this.value)">
-              <span style="font-size:12px;color:var(--text-tertiary);padding:0 8px;">→ matches</span>
+              <span style="font-size:12px;color:var(--text-tertiary);padding:0 8px;">→</span>
               <select style="min-width:120px;" onchange="updateMatrixRow(${qi}, ${ri}, 'correctIndex', parseInt(this.value,10) || 0)">
                 ${(rightItems.length ? rightItems : ['P','Q','R','S']).map((_, x) => {
                   const label = ['P','Q','R','S','T','U','V','W'][x] || (x + 1);
@@ -5239,6 +5506,21 @@ function removeQuizQuestion(qi) {
   renderQuizDraft();
 }
 
+function duplicateQuizQuestion(qi) {
+  const clone = JSON.parse(JSON.stringify(quizDraft[qi]));
+  quizDraft.splice(qi + 1, 0, clone);
+  renderQuizDraft();
+  showToast(`Question ${qi + 1} duplicated.`, 'success');
+}
+
+function moveQuizQuestion(qi, delta) {
+  const target = qi + delta;
+  if (target < 0 || target >= quizDraft.length) return;
+  const [item] = quizDraft.splice(qi, 1);
+  quizDraft.splice(target, 0, item);
+  renderQuizDraft();
+}
+
 function updateQuizType(qi, newType) {
   const q = quizDraft[qi];
   if (!q) return;
@@ -5262,6 +5544,7 @@ function updateQuizType(qi, newType) {
 
 function updateQuizField(qi, field, value) {
   if (quizDraft[qi]) quizDraft[qi][field] = value;
+  if (field === 'marks' || field === 'negativeMarks') updateQuizTotals();
 }
 
 function updateQuizOption(qi, oi, value) {
@@ -5481,17 +5764,23 @@ function openQuizPlayer(courseId, materialId) {
   const normalized = quiz.map(q => normalizeQuestion(q));
   const emptyAnswer = q => q.type === 'integer' ? '' : [];
 
+  const saved = restoreQuizAnswers(materialId);
+  const initialAnswers = (saved && Array.isArray(saved) && saved.length === normalized.length)
+    ? saved
+    : normalized.map(emptyAnswer);
+
   quizPlayerState = {
     courseId, materialId,
     materialTitle: mat.title,
     quiz: normalized,
-    answers: normalized.map(emptyAnswer),
+    answers: initialAnswers,
     submitted: false,
     response: null,
     paperConfig: mat.examConfig || {}
   };
   renderQuizPlayer();
   openModal('quizPlayerModal');
+  startQuizTimer();
 }
 
 function renderQuizPlayer() {
@@ -5507,30 +5796,48 @@ function renderQuizPlayer() {
   const headerInfo = `
     <div class="quiz-paper-header">
       ${examCfg.paperCode  ? `<span><i class="fas fa-hashtag"></i> ${escapeHtml(examCfg.paperCode)}</span>` : ''}
-      ${examCfg.totalTime  ? `<span><i class="fas fa-clock"></i> ${escapeHtml(examCfg.totalTime)}</span>` : ''}
+      ${examCfg.totalTime  ? `<span><i class="fas fa-clock"></i> ${escapeHtml(examCfg.totalTime)} <span id="quizTimerDisplay">--:--</span></span>` : ''}
       <span><i class="fas fa-list-ol"></i> ${st.quiz.length} question${st.quiz.length === 1 ? '' : 's'}</span>
       ${examCfg.totalMarks ? `<span><i class="fas fa-star"></i> Max Marks: ${examCfg.totalMarks}</span>` : ''}
     </div>`;
 
   if (!st.submitted) {
+    const answered = st.quiz.reduce((s, q, i) => {
+      const a = st.answers[i];
+      if (q.type === 'integer') return s + (a !== '' && a !== null && a !== undefined && !isNaN(Number(a)) ? 1 : 0);
+      if (q.type === 'matrix') {
+        const rows = q.matrixRows || [];
+        const filled = Array.isArray(a) ? a.filter(x => x !== undefined && x !== '').length : 0;
+        return s + (filled >= rows.length ? 1 : 0);
+      }
+      return s + (Array.isArray(a) ? (a.length > 0 ? 1 : 0) : (a >= 0 ? 1 : 0));
+    }, 0);
+
     $('quizPlayerSub').innerHTML = headerInfo;
     $('quizPlayerActions').innerHTML = `
-      <button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">Cancel</button>
-      <button type="button" class="btn btn-primary" onclick="submitQuiz()" ${st.previewMode ? 'disabled title="Preview mode"' : ''}>
+      <span class="quiz-progress-indicator">${answered} / ${st.quiz.length} answered</span>
+      <button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">
+        <i class="fas fa-times"></i> Cancel
+      </button>
+      <button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()" ${st.previewMode ? 'disabled title="Preview mode"' : ''}>
         <i class="fas fa-paper-plane"></i> Submit Test
       </button>`;
 
     let html = '';
     st.quiz.forEach((q, qi) => {
       const qType = q.type || 'single';
-      html += `<div class="quiz-play-card">
-        <div class="quiz-play-qnum">Question ${qi + 1} of ${st.quiz.length}
-          <span style="margin-left:8px;font-weight:800;color:var(--text-tertiary);text-transform:uppercase;">
-            ${questionTypeLabel(qType)}
-          </span>
-          <span style="margin-left:8px;color:var(--text-tertiary);font-weight:600;">
-            (+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''})
-          </span>
+      const a = st.answers[qi];
+      const isAnswered =
+        qType === 'integer' ? (a !== '' && a !== null && a !== undefined && !isNaN(Number(a))) :
+        qType === 'matrix'  ? (Array.isArray(a) && a.filter(x => x !== undefined && x !== '').length >= (q.matrixRows || []).length) :
+                              (Array.isArray(a) ? a.length > 0 : (a >= 0));
+
+      html += `<div class="quiz-play-card ${isAnswered ? 'answered' : ''}">
+        <div class="quiz-play-qnum">
+          Question ${qi + 1} of ${st.quiz.length}
+          <span class="quiz-qtype-tag">${questionTypeLabel(qType)}</span>
+          <span class="quiz-qmark-tag">+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}</span>
+          ${isAnswered ? '<span class="quiz-answered-tag"><i class="fas fa-check-circle"></i> Answered</span>' : ''}
         </div>
         <h4 class="quiz-play-question latex-content">${escapeHtml(q.question)}</h4>
         ${renderStudentAnswerArea(q, qi)}
@@ -5577,6 +5884,7 @@ function renderQuizPlayer() {
   });
   $('quizPlayerBody').innerHTML = html;
   renderMathIn($('quizPlayerBody'));
+  stopQuizTimer();
 }
 
 function renderStudentAnswerArea(q, qi) {
@@ -5628,7 +5936,7 @@ function renderStudentAnswerArea(q, qi) {
               <option value="">— Select match —</option>
               ${right.map((rItem, ri) => {
                 const label = ['P','Q','R','S','T','U','V','W'][ri] || (ri + 1);
-                return `<option value="${ri}" ${Number(chosen[li]) === ri ? 'selected' : ''}>${label}. ${escapeHtml(rItem).slice(0, 40)}</option>`;
+                return `<option value="${ri}" ${Number(chosen[li]) === ri ? 'selected' : ''}>${label}. ${escapeHtml(rItem).slice(0, 60)}</option>`;
               }).join('')}
             </select>
           </div>
@@ -5692,31 +6000,34 @@ function renderResultDetail(q, r) {
 
 function selectQuizAnswerMulti(qi, oi, isChecked, type) {
   const st = quizPlayerState; if (!st || st.submitted) return;
-  if (type === 'single') {
-    st.answers[qi] = oi;
-  } else {
+  if (type === 'single') st.answers[qi] = oi;
+  else {
     let arr = Array.isArray(st.answers[qi]) ? st.answers[qi].slice() : [];
     if (isChecked) { if (!arr.includes(oi)) arr.push(oi); }
     else arr = arr.filter(x => x !== oi);
     st.answers[qi] = arr;
   }
+  persistQuizAnswers();
   renderQuizPlayer();
 }
 function selectQuizAnswerInteger(qi, val) {
   const st = quizPlayerState; if (!st || st.submitted) return;
   st.answers[qi] = val;
+  persistQuizAnswers();
 }
 function selectQuizAnswerMatrix(qi, li, val) {
   const st = quizPlayerState; if (!st || st.submitted) return;
   let arr = Array.isArray(st.answers[qi]) ? st.answers[qi].slice() : [];
   if (val === '') delete arr[li]; else arr[li] = parseInt(val, 10);
   st.answers[qi] = arr;
+  persistQuizAnswers();
 }
 function selectQuizAnswer(qi, oi) { selectQuizAnswerMulti(qi, oi, true, 'single'); }
 
 function retakeQuiz() {
-  const st = quizPlayerState;
-  if (!st) return;
+  const st = quizPlayerState; if (!st) return;
+  clearQuizAnswers(st.materialId);
+  try { localStorage.removeItem('aero_quiz_start_' + st.materialId); } catch (e) {}
   openQuizPlayer(st.courseId, st.materialId);
 }
 
@@ -5728,32 +6039,27 @@ async function submitQuiz() {
     const q = st.quiz[i];
     const a = st.answers[i];
     if (q.type === 'integer') {
-      if (a === '' || a === null || a === undefined || isNaN(Number(a))) {
-        return showToast(`Please answer Q${i + 1}.`, 'error');
-      }
+      if (a === '' || a === null || a === undefined || isNaN(Number(a))) return showToast(`Please answer Q${i + 1}.`, 'error');
     } else if (q.type === 'matrix') {
       const rows = q.matrixRows || [];
-      if (!Array.isArray(a) || a.filter(x => x !== undefined && x !== '').length < rows.length) {
-        return showToast(`Please match all items in Q${i + 1}.`, 'error');
-      }
+      if (!Array.isArray(a) || a.filter(x => x !== undefined && x !== '').length < rows.length) return showToast(`Please match all items in Q${i + 1}.`, 'error');
     } else {
-      if (Array.isArray(a) ? a.length === 0 : (a === null || a === undefined || a === -1)) {
-        return showToast(`Please answer Q${i + 1}.`, 'error');
-      }
+      if (Array.isArray(a) ? a.length === 0 : (a === null || a === undefined || a === -1)) return showToast(`Please answer Q${i + 1}.`, 'error');
     }
   }
 
   try {
     const res = await fetch(
       `https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`,
-      {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUser._id, answers: st.answers })
-      }
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser._id, answers: st.answers }) }
     );
     const data = await res.json();
     if (data.success) {
       st.submitted = true; st.response = data;
+      stopQuizTimer();
+      clearQuizAnswers(st.materialId);
+      try { localStorage.removeItem('aero_quiz_start_' + st.materialId); } catch (e) {}
       if (!currentUser.quizResults) currentUser.quizResults = {};
       currentUser.quizResults[st.materialId] = {
         score: data.score, total: data.total, percent: data.percent,
