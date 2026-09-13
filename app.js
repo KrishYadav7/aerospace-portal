@@ -645,7 +645,6 @@ async function handleLogin(e) {
       });
       clearTimeout(timeoutId);
 
-      // ---- SAFE JSON PARSE (fixes "Unexpected token '<'") ----
       const rawText = await response.text();
       let data;
       try {
@@ -672,7 +671,6 @@ async function handleLogin(e) {
 
       console.log('[login] response:', data);
 
-      // ---- Admin 2FA branch ----
       if (data.requires2FA && data.pendingToken) {
         _adminPendingToken = data.pendingToken;
         openOtpModal({
@@ -686,10 +684,9 @@ async function handleLogin(e) {
         return;
       }
 
-      // ---- Success ----
       if (data.success && data.user) {
         currentUser = data.user;
-        saveSession(data.user, data.token);           // now wrapped in try/catch
+        saveSession(data.user, data.token);
         studentNav = 'home';
         adminTab = 'overview';
         editingCourseId = null;
@@ -700,7 +697,6 @@ async function handleLogin(e) {
         return;
       }
 
-      // ---- Explicit backend error ----
       showToast(data.message || 'Login failed. Please try again.', 'error');
       resetBtn();
 
@@ -733,155 +729,8 @@ async function handleLogin(e) {
   };
 
   await attemptLogin();
-} {
-  e.preventDefault();
-  const username = $('loginUsername').value.trim();
-  const password = $('loginPassword').value.trim();
-  if (!username || !password) return showToast('Please enter both username and password.', 'error');
-
-  const btn = e.target.querySelector('button[type="submit"]');
-  const originalBtnText = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
-
-  const resetBtn = () => {
-    btn.disabled = false;
-    btn.innerHTML = originalBtnText;
-  };
-
-  const attemptLogin = async (retries = 2) => {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for Render cold start
-
-      const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, role: loginRole }),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      const data = await response.json();
-
-      if (data.requires2FA && data.pendingToken) {
-        _adminPendingToken = data.pendingToken;
-        openOtpModal({
-          title: 'Admin 2FA Verification',
-          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your email'}. Enter it to finish logging in.`,
-          type: 'admin-login',
-          data: { pendingToken: data.pendingToken }
-        });
-        showToast('OTP sent to your email.', 'info');
-        resetBtn();
-        return;
-      }
-
-      if (data.success) {
-        currentUser = data.user;
-        saveSession(data.user, data.token);
-        studentNav = 'home';
-        adminTab = 'overview';
-        editingCourseId = null;
-        setLoginRole('student');
-        pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
-        showToast(data.message, 'success');
-        renderApp();
-      } else {
-        showToast(data.message, 'error');
-        resetBtn();
-      }
-    } catch (err) {
-      if (err.name === 'AbortError' || err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
-        if (retries > 0) {
-          showToast(`Server is waking up... Retrying (${3 - retries}/2)`, 'info');
-          await new Promise(r => setTimeout(r, 5000));
-          return attemptLogin(retries - 1);
-        }
-        showToast('Server is taking too long to respond. Please try again.', 'error');
-      } else {
-        showToast('Network error. Check your connection.', 'error');
-      }
-      resetBtn();
-    }
-  };
-
-  await attemptLogin();
-} {
-  e.preventDefault();
-  const username = $('loginUsername').value.trim();
-  const password = $('loginPassword').value.trim();
-  if (!username || !password) return showToast('Please enter both username and password.', 'error');
-
-  const btn = e.target.querySelector('button[type="submit"]');
-  const originalBtnText = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
-
-  const resetBtn = () => {
-    btn.disabled = false;
-    btn.innerHTML = originalBtnText;
-  };
-
-  const attemptLogin = async (retries = 2) => {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for Render cold start
-
-      const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, role: loginRole }),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-
-      const data = await response.json();
-
-      if (data.requires2FA && data.pendingToken) {
-        _adminPendingToken = data.pendingToken;
-        openOtpModal({
-          title: 'Admin 2FA Verification',
-          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your email'}. Enter it to finish logging in.`,
-          type: 'admin-login',
-          data: { pendingToken: data.pendingToken }
-        });
-        showToast('OTP sent to your email.', 'info');
-        resetBtn();
-        return;
-      }
-
-      if (data.success) {
-        currentUser = data.user;
-        saveSession(data.user, data.token);
-        studentNav = 'home';
-        adminTab = 'overview';
-        editingCourseId = null;
-        setLoginRole('student');
-        pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
-        showToast(data.message, 'success');
-        renderApp();
-      } else {
-        showToast(data.message, 'error');
-        resetBtn();
-      }
-    } catch (err) {
-      if (err.name === 'AbortError' || err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
-        if (retries > 0) {
-          showToast(`Server is waking up... Retrying (${3 - retries}/2)`, 'info');
-          await new Promise(r => setTimeout(r, 5000));
-          return attemptLogin(retries - 1);
-        }
-        showToast('Server is taking too long to respond. Please try again.', 'error');
-      } else {
-        showToast('Network error. Check your connection.', 'error');
-      }
-      resetBtn();
-    }
-  };
-
-  await attemptLogin();
 }
+
 
 function logout() {
   currentUser = null; currentCourseId = null; editingCourseId = null;
@@ -6658,6 +6507,7 @@ function selectQuizAnswer(qi, oi) { selectQuizAnswerMulti(qi, oi, true, 'single'
 /* ============================================================
    PREVIEW (admin) — same shell, no proctoring
    ============================================================ */
+
 function previewQuizPaper() {
   quizPaperConfig = {
     subject:    ($('qpSubject')?.value || '').trim(),
@@ -6696,34 +6546,6 @@ function previewQuizPaper() {
   document.body.style.overflow = 'hidden';
   renderQuizExamShell();
 }
-
-  quizPaperConfig = {
-    subject:    ($('qpSubject')?.value || '').trim(),
-    paperCode:  ($('qpCode')?.value    || '').trim(),
-    totalTime:  ($('qpTime')?.value    || '').trim(),
-    totalMarks: parseInt($('qpMarks')?.value, 10) || 0
-  };
-  if (quizDraft.length === 0) return showToast('Add at least one question first.', 'info');
-
-  const course = findCourse(quizEditingCourseId);
-  const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
-
-  const emptyAnswer = q => q.type === 'integer' ? '' : [];
-  quizPlayerState = {
-    courseId: quizEditingCourseId,
-    materialId: quizEditingMaterialId,
-    materialTitle: mat ? mat.title : 'Preview',
-    quiz: JSON.parse(JSON.stringify(quizDraft)),
-    answers: quizDraft.map(emptyAnswer),
-    submitted: false,
-    response: null,
-    previewMode: true,
-    paperConfig: { ...quizPaperConfig }
-  };
-  renderQuizPlayer();
-  openModal('quizPlayerModal');
-
-
 
 /* ============================================================
    FILE VIEWER / VIDEO / BOOKMARK / PROGRESS
