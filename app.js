@@ -753,6 +753,7 @@ function openOtpModal({ title, subtitle, type, data }) {
 }
 
 /* ---- Resend the OTP for the current context ---- */
+/* ---- Resend the OTP for the current context ---- */
 async function resendOtpForCurrentContext() {
   if (!_otpContext) return;
   const btn = document.getElementById('otpResendBtn');
@@ -760,18 +761,23 @@ async function resendOtpForCurrentContext() {
 
   try {
     if (_otpContext.type === 'admin-login' && _otpContext.data?.pendingToken) {
-      const res = await fetch(`${API_BASE}/admin/login/resend-otp`, {
+      const res = await fetchJSON(`${API_BASE}/admin/login/resend-otp`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pendingToken: _otpContext.data.pendingToken })
       });
-      const data = await res.json();
-      if (data.success) showToast('✓ New OTP sent.', 'success');
-      else showToast(data.message || 'Could not resend.', 'error');
+      
+      if (res.success) {
+        // IMPORTANT: Update the pendingToken with the new one returned by the server
+        _otpContext.data.pendingToken = res.pendingToken;
+        showToast('✓ New OTP sent.', 'success');
+      } else {
+        showToast(res.message || 'Could not resend.', 'error');
+      }
     } else {
       showToast('Resend is not available for this step.', 'info');
     }
-  } catch {
-    showToast('Network error.', 'error');
+  } catch (err) {
+    showToast(err.message || 'Network error.', 'error');
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-rotate-right"></i> Resend OTP'; }
   }
@@ -835,70 +841,18 @@ async function _handleRegisterOtp(otp) {
   showToast('🎉 Registration successful! You can now log in.', 'success');
 }
 
+
 /* ---- Admin 2FA login OTP handler ---- */
 async function _handleAdminLoginOtp(otp) {
-  const res = await fetch(`${API_BASE}/admin/login/verify-otp`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const data = await fetchJSON(`${API_BASE}/admin/login/verify-otp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       pendingToken: _otpContext.data.pendingToken,
       otp
     })
   });
-  const data = await res.json();
-  if (!data.success) throw new Error(data.message || 'Invalid OTP.');
-
-  // Success — establish session
-  currentUser = data.user;
-  saveSession(data.user, data.token);
-  _adminPendingToken = null;
-  _otpContext = null;
-
-  closeModal('otpVerificationModal');
-  studentNav = 'home';
-  adminTab = 'overview';
-  editingCourseId = null;
-  pushHash('#/admin/overview');
-  showToast('🎉 Admin login successful.', 'success');
-  renderApp();
-}
-
-/* ---- Admin 2FA login OTP handler ---- */
-async function _handleAdminLoginOtp(otp) {
-  const res = await fetch(`${API_BASE}/admin/login/verify-otp`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      pendingToken: _otpContext.data.pendingToken,
-      otp
-    })
-  });
-  const data = await res.json();
-  if (!data.success) throw new Error(data.message || 'Invalid OTP.');
-
-  // Success — establish session
-  currentUser = data.user;
-  saveSession(data.user, data.token);
-  _adminPendingToken = null;
-  _otpContext = null;
-
-  closeModal('otpVerificationModal');
-  studentNav = 'home';
-  adminTab = 'overview';
-  editingCourseId = null;
-  pushHash('#/admin/overview');
-  showToast('🎉 Admin login successful.', 'success');
-  renderApp();
-}
-
-/* ---- Admin 2FA login OTP handler ---- */
-async function _handleAdminLoginOtp(otp) {
-  const res = await fetch(`${API_BASE}/admin/login/verify-otp`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      pendingToken: _otpContext.data.pendingToken,
-      otp
-    })
-  });
-  const data = await res.json();
+  
   if (!data.success) throw new Error(data.message || 'Invalid OTP.');
 
   // Success — establish session

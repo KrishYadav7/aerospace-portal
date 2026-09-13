@@ -584,9 +584,12 @@ app.get('/', (req, res) => res.send('Aerospace EdTech Backend is Running!'));
 /* ============================================================
    AUTH
    ============================================================ */
+/* ============================================================
+   AUTH
+   ============================================================ */
 app.post('/api/login', async (req, res) => {
   try {
-    const { username, password, role } = req.body; // Added role
+    const { username, password, role } = req.body;
     if (!username || !password) {
       return res.status(400).json({ success: false, message: 'Username and password are required.' });
     }
@@ -607,7 +610,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid username or password.' });
     }
 
-    // ---- ROLE CHECK ----
     if (role && user.role !== role) {
       console.log(`[login] ⛔ Role mismatch: User is ${user.role} but tried to log in as ${role}`);
       return res.status(403).json({ 
@@ -617,7 +619,7 @@ app.post('/api/login', async (req, res) => {
     }
 
     /* ============================================================
-       ADMIN 2FA — step 1 of 2
+       ADMIN 2FA — step 1 of 2 (STATELESS)
        ============================================================ */
     if (user.role === 'admin') {
       const otpDestination = (user.email || process.env.ADMIN_EMAIL || '').trim().toLowerCase();
@@ -628,23 +630,20 @@ app.post('/api/login', async (req, res) => {
         });
       }
 
-      // Self-heal: attach ADMIN_EMAIL to legacy admin with no email
       if (!user.email && process.env.ADMIN_EMAIL) {
         user.email = otpDestination;
         await user.save();
         console.log('[login] Attached ADMIN_EMAIL to legacy admin');
       }
 
-      const pendingToken = crypto.randomBytes(32).toString('hex');
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      adminLoginStore[pendingToken] = {
-        userId: user._id.toString(),
-        otp,
-        expiresAt: Date.now() + 10 * 60 * 1000,
-        attempts: 0,
-        resends: 0,
-        email: otpDestination
-      };
+      
+      // Create a stateless pendingToken using JWT
+      const pendingToken = jwt.sign(
+        { userId: user._id.toString(), otp }, 
+        JWT_SECRET, 
+        { expiresIn: '10m' }
+      );
 
       try {
         await withTimeout(
@@ -657,12 +656,11 @@ app.post('/api/login', async (req, res) => {
           'Admin 2FA OTP send'
         );
       } catch (emailErr) {
-        delete adminLoginStore[pendingToken];
         console.error('[login-2fa] Failed to send OTP:', emailErr.message);
         return res.status(500).json({ success: false, message: 'Could not send 2FA OTP. Please try again.' });
       }
 
-      console.log('[login-2fa] OTP sent to', otpDestination, '· pendingToken:', pendingToken.slice(0, 8) + '…');
+      console.log('[login-2fa] OTP sent to', otpDestination);
       return res.json({
         success: true,
         requires2FA: true,
@@ -688,6 +686,9 @@ app.post('/api/login', async (req, res) => {
 /* ============================================================
    ADMIN 2FA — step 2 of 2 (verify OTP → issue JWT)
    ============================================================ */
+/* ============================================================
+   ADMIN 2FA — step 2 of 2 (verify OTP → issue JWT)
+   ============================================================ */
 app.post('/api/admin/login/verify-otp', async (req, res) => {
   try {
     const { pendingToken, otp } = req.body || {};
@@ -695,35 +696,29 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing token or OTP.' });
     }
 
-    const record = adminLoginStore[pendingToken];
-    if (!record) {
+    // 1. Verify the stateless JWT
+    let decoded;
+    try {
+      decoded = jwt.verify(pendingToken, JWT_SECRET);
+    } catch (err) {
       return res.status(400).json({ success: false, message: 'Session expired or invalid. Please log in again.' });
     }
-    if (Date.now() > record.expiresAt) {
-      delete adminLoginStore[pendingToken];
-      return res.status(400).json({ success: false, message: 'OTP expired. Please log in again.' });
-    }
-    if (record.attempts >= 5) {
-      delete adminLoginStore[pendingToken];
-      return res.status(400).json({ success: false, message: 'Too many incorrect attempts. Please log in again.' });
-    }
-    if (String(otp).trim() !== record.otp) {
-      record.attempts++;
-      const left = 5 - record.attempts;
+
+    // 2. Check the OTP
+    if (String(otp).trim() !== decoded.otp) {
       return res.status(400).json({
         success: false,
-        message: `Incorrect OTP. ${left} attempt${left === 1 ? '' : 's'} remaining.`
+        message: 'Incorrect OTP. Please check your email and try again.'
       });
     }
 
-    // ✅ OTP verified — burn the pending token
-    delete adminLoginStore[pendingToken];
-
-    const user = await User.findById(record.userId);
+    // 3. Fetch the user
+    const user = await User.findById(decoded.userId);
     if (!user || user.role !== 'admin') {
       return res.status(401).json({ success: false, message: 'Admin account not found.' });
     }
 
+    // 4. Issue the real login token
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
     console.log('[login-2fa] ✅ Admin login success:', user.username);
     res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
@@ -734,40 +729,37 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
 });
 
 /* ============================================================
-   ADMIN 2FA — resend OTP
+   ADMIN 2FA — resend OTP (STATELESS)
    ============================================================ */
 app.post('/api/admin/login/resend-otp', async (req, res) => {
   try {
     const { pendingToken } = req.body || {};
     if (!pendingToken) return res.status(400).json({ success: false, message: 'Missing token.' });
 
-    const record = adminLoginStore[pendingToken];
-    if (!record) {
+    // 1. Verify the old token to get the user ID
+    let decoded;
+    try {
+      decoded = jwt.verify(pendingToken, JWT_SECRET);
+    } catch (err) {
       return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
-    }
-    if (Date.now() > record.expiresAt) {
-      delete adminLoginStore[pendingToken];
-      return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
-    }
-    if ((record.resends || 0) >= 3) {
-      return res.status(400).json({ success: false, message: 'Maximum resends reached. Please log in again.' });
     }
 
-    const user = await User.findById(record.userId);
+    const user = await User.findById(decoded.userId);
     if (!user) {
-      delete adminLoginStore[pendingToken];
       return res.status(404).json({ success: false, message: 'Admin account not found.' });
     }
 
+    // 2. Generate a new OTP and a new stateless token
     const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    record.otp = newOtp;
-    record.attempts = 0;
-    record.resends = (record.resends || 0) + 1;
-    record.expiresAt = Date.now() + 10 * 60 * 1000;
+    const newPendingToken = jwt.sign(
+      { userId: user._id.toString(), otp: newOtp }, 
+      JWT_SECRET, 
+      { expiresIn: '10m' }
+    );
 
     await withTimeout(
       transporter.sendMail({
-        to: record.email,
+        to: user.email || process.env.ADMIN_EMAIL,
         subject: 'Aerospace Portal — Admin Login OTP (resent)',
         text: `Hi ${user.fullName || user.username},\n\nYour new admin login OTP is: ${newOtp}\n\nValid for 10 minutes. Do not share.`
       }),
@@ -775,7 +767,7 @@ app.post('/api/admin/login/resend-otp', async (req, res) => {
       'Admin 2FA resend'
     );
 
-    res.json({ success: true, message: 'New OTP sent to your email.' });
+    res.json({ success: true, message: 'New OTP sent to your email.', pendingToken: newPendingToken });
   } catch (e) {
     console.error('[login-2fa/resend] Error:', e);
     res.status(500).json({ success: false, message: 'Could not resend OTP: ' + e.message });
