@@ -1119,18 +1119,41 @@ app.put('/api/admin/settings/subscription', async (req, res) => {
 
 /* ---- Ensure a Razorpay Plan exists matching the current amount ---- */
 async function ensureRazorpayPlan(s) {
-  const wantedAmount = Math.round(Number(s.subscriptionAmount) * 100);
+  // ---- PRIORITY 1: use a manually-configured plan_id from .env ----
+  const envPlanId = process.env.RAZORPAY_PLAN_ID;
+  if (envPlanId && envPlanId.startsWith('plan_')) {
+    // (Optional) sanity-check that the plan exists on Razorpay
+    try {
+      const plan = await razorpay.plans.fetch(envPlanId);
+      const planAmount = plan && plan.item ? Number(plan.item.amount) : null;
+      const wanted = Math.round(Number(s.subscriptionAmount) * 100);
+      if (planAmount && planAmount !== wanted) {
+        console.warn(
+          `[subscription] ⚠️ Amount mismatch — ` +
+          `Razorpay plan is ₹${planAmount / 100}/month but ` +
+          `admin setting is ₹${s.subscriptionAmount}/month. ` +
+          `Razorpay will charge ₹${planAmount / 100}. Please align them in the admin Subscriptions tab.`
+        );
+      }
+      return plan.id;
+    } catch (e) {
+      console.warn('[subscription] Could not fetch env plan_id, falling back:', e.message);
+      // fall through to the next branch
+    }
+  }
 
+  // ---- PRIORITY 2: use the plan_id already stored in Settings ----
   if (s.razorpayPlanId) {
     try {
       const plan = await razorpay.plans.fetch(s.razorpayPlanId);
-      if (plan && plan.item && Number(plan.item.amount) === wantedAmount) {
-        return s.razorpayPlanId;
-      }
+      if (plan && plan.id) return s.razorpayPlanId;
     } catch (e) {
-      console.warn('[subscription] plan fetch failed:', e.message);
+      console.warn('[subscription] Stored plan fetch failed:', e.message);
     }
   }
+
+  // ---- PRIORITY 3: auto-create a plan (original behaviour) ----
+  const wantedAmount = Math.round(Number(s.subscriptionAmount) * 100);
 
   const plan = await razorpay.plans.create({
     period: 'monthly',
