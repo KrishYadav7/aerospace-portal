@@ -2847,6 +2847,10 @@ function renderCourseEditor(courseId) {
   const featuredChip = course.featured ? '<span class="status-badge featured"><i class="fas fa-star"></i> FEATURED</span>' : '';
   const premiumChip = course.isPremium ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>' : '';
 
+  // Count total questions across all materials
+  const totalQuestions = (course.materials || []).reduce((s, m) => s + ((m.quiz || []).length), 0);
+  const quizzesCount = (course.materials || []).filter(m => (m.quiz || []).length > 0).length;
+
   let html = `
     <div class="editor-hero" style="${acc}">
       <div class="editor-hero-left">
@@ -2861,6 +2865,7 @@ function renderCourseEditor(courseId) {
           <span><i class="fas fa-signal"></i> ${escapeHtml(course.difficulty) || 'Intermediate'}</span>
           <span><i class="fas fa-clock"></i> ${escapeHtml(course.duration) || 'Not set'}</span>
           <span><i class="fas fa-layer-group"></i> ${(course.materials || []).length} materials</span>
+          <span><i class="fas fa-file-pen"></i> ${totalQuestions} question${totalQuestions === 1 ? '' : 's'} total</span>
         </div>
       </div>
       <div class="editor-hero-right">
@@ -2869,12 +2874,16 @@ function renderCourseEditor(courseId) {
         </button>
       </div>
     </div>
+
     <div class="editor-tabs">
       <button class="editor-tab ${editingTab === 'details' ? 'active' : ''}" onclick="switchEditorTab('details')">
         <i class="fas fa-info-circle"></i> Details
       </button>
       <button class="editor-tab ${editingTab === 'materials' ? 'active' : ''}" onclick="switchEditorTab('materials')">
         <i class="fas fa-layer-group"></i> Materials (${(course.materials || []).length})
+      </button>
+      <button class="editor-tab ${editingTab === 'quizzes' ? 'active' : ''}" onclick="switchEditorTab('quizzes')">
+        <i class="fas fa-file-pen"></i> Quizzes (${quizzesCount})
       </button>
       <button class="editor-tab ${editingTab === 'playlists' ? 'active' : ''}" onclick="switchEditorTab('playlists')">
         <i class="fas fa-list"></i> Playlists (${(course.playlists || []).length})
@@ -2887,6 +2896,7 @@ function renderCourseEditor(courseId) {
   `;
   if (editingTab === 'details') html += renderEditorDetails(course);
   else if (editingTab === 'materials') html += renderEditorMaterials(course);
+  else if (editingTab === 'quizzes') html += renderEditorQuizzes(course);
   else if (editingTab === 'playlists') html += renderEditorPlaylists(course);
   else if (editingTab === 'announcements') html += renderEditorAnnouncements(course);
   html += `</div>`;
@@ -2997,13 +3007,18 @@ function renderEditorMaterials(course) {
     <div class="editor-section">
       <div class="editor-section-header">
         <h3 class="editor-section-title"><i class="fas fa-layer-group"></i> Materials (${(course.materials || []).length})</h3>
-        <button class="btn btn-outline btn-sm" onclick="jumpToNewMaterialCard()">
-          <i class="fas fa-arrow-down"></i> Go to Add Form
-        </button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-outline btn-sm" onclick="switchEditorTab('quizzes')">
+            <i class="fas fa-file-pen"></i> Manage Question Papers
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="jumpToNewMaterialCard()">
+            <i class="fas fa-arrow-down"></i> Go to Add Form
+          </button>
+        </div>
       </div>
       <p class="editor-hint">
         Click any material card below to expand and edit it.
-        To add a new material — including a <strong>custom type</strong> — just scroll down to the green dashed card.
+        To attach a question paper, click the <strong>"Create Paper" / "Edit Paper"</strong> button right on the material's header row.
       </p>
     </div>
 
@@ -3089,10 +3104,117 @@ function renderEditorMaterials(course) {
     return html;
   }
 
-  // Render each existing material card below the new-material card
   course.materials.forEach((m, idx) => {
     html += renderMaterialEditorCard(course.id, m, idx);
   });
+
+  return html;
+}
+/* ============================================================
+   COURSE EDITOR — "Quizzes" tab
+   Lists every material with its quiz status + prominent buttons
+   ============================================================ */
+function renderEditorQuizzes(course) {
+  const materials = course.materials || [];
+
+  if (materials.length === 0) {
+    return `
+      <div class="empty-state">
+        <i class="fas fa-file-pen"></i>
+        <p>No materials in this course yet.</p>
+        <p style="margin-top:8px;font-size:13px;">Add at least one material first, then you can attach a question paper to it.</p>
+        <button class="btn btn-primary" style="margin-top:16px;" onclick="switchEditorTab('materials')">
+          <i class="fas fa-layer-group"></i> Go to Materials
+        </button>
+      </div>`;
+  }
+
+  let totalQuestions = 0;
+  let totalPapers = 0;
+  let totalMarks = 0;
+
+  let html = `
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-file-pen"></i> Question Papers &amp; Tests
+        </div>
+      </div>
+      <p class="editor-hint">
+        Each material can have its own question paper (test). Click <strong>Create Paper</strong>
+        next to any material below to open the full-page editor where you can add
+        single-correct, multiple-correct, integer, or matrix-match questions with full LaTeX support.
+      </p>
+    </div>
+  `;
+
+  materials.forEach((m, idx) => {
+    const quizCount = (m.quiz || []).length;
+    const cfg = m.examConfig || {};
+    const paperMarks = (m.quiz || []).reduce((s, q) => s + (Number(q.marks) || 0), 0);
+
+    totalQuestions += quizCount;
+    totalMarks += paperMarks;
+    if (quizCount > 0) totalPapers++;
+
+    const hasQuiz = quizCount > 0;
+    const statusChip = hasQuiz
+      ? `<span class="status-badge published">${quizCount} QUESTION${quizCount === 1 ? '' : 'S'}</span>`
+      : `<span class="status-badge draft">NO PAPER YET</span>`;
+
+    html += `
+      <div class="quiz-overview-card">
+        <div class="quiz-overview-left">
+          <div class="quiz-overview-icon ${hasQuiz ? 'has-quiz' : 'no-quiz'}">
+            <i class="fas ${hasQuiz ? 'fa-file-circle-check' : 'fa-file-circle-plus'}"></i>
+          </div>
+          <div class="quiz-overview-info">
+            <div class="quiz-overview-title">
+              <span class="mat-type ${materialTypeSlug(m.type)}" style="margin-right:8px;">${escapeHtml(String(m.type || 'other').toUpperCase())}</span>
+              ${escapeHtml(m.title)}
+            </div>
+            <div class="quiz-overview-meta">
+              ${statusChip}
+              ${cfg.subject ? `<span class="chip"><i class="fas fa-book"></i> ${escapeHtml(cfg.subject)}</span>` : ''}
+              ${cfg.paperCode ? `<span class="chip"><i class="fas fa-hashtag"></i> ${escapeHtml(cfg.paperCode)}</span>` : ''}
+              ${cfg.totalTime ? `<span class="chip"><i class="fas fa-clock"></i> ${escapeHtml(cfg.totalTime)}</span>` : ''}
+              ${hasQuiz ? `<span class="chip"><i class="fas fa-star"></i> ${paperMarks || cfg.totalMarks || 0} marks</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="quiz-overview-actions">
+          ${hasQuiz ? `
+            <button class="btn btn-outline btn-sm" onclick="openQuizPlayer('${course.id}', '${m.id}')" title="Preview as student">
+              <i class="fas fa-eye"></i> Preview
+            </button>
+          ` : ''}
+          <button class="btn ${hasQuiz ? 'btn-warning' : 'btn-success'}" onclick="openQuizEditor('${course.id}', '${m.id}')">
+            <i class="fas fa-file-pen"></i>
+            ${hasQuiz ? 'Edit Paper' : 'Create Paper'}
+          </button>
+        </div>
+      </div>
+    `;
+  });
+
+  html += `
+    <div class="editor-section" style="margin-top:16px;">
+      <div class="quiz-summary-tiles">
+        <div class="quiz-summary-tile">
+          <div class="quiz-summary-num">${totalPapers}</div>
+          <div class="quiz-summary-lbl">Papers Created</div>
+        </div>
+        <div class="quiz-summary-tile">
+          <div class="quiz-summary-num">${totalQuestions}</div>
+          <div class="quiz-summary-lbl">Total Questions</div>
+        </div>
+        <div class="quiz-summary-tile">
+          <div class="quiz-summary-num">${totalMarks}</div>
+          <div class="quiz-summary-lbl">Total Marks</div>
+        </div>
+      </div>
+    </div>
+  `;
 
   return html;
 }
@@ -3101,6 +3223,7 @@ function renderMaterialEditorCard(courseId, m, idx) {
   const quizCount = (m.quiz || []).length;
   const customId = 'meCustom-' + m.id;
   const isCustom = !isKnownMaterialType(m.type);
+
   return `
     <details class="material-editor" data-mat-id="${m.id}">
       <summary>
@@ -3109,9 +3232,19 @@ function renderMaterialEditorCard(courseId, m, idx) {
           <span class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</span>
           <strong>${escapeHtml(m.title)}</strong>
           ${m.isPremium ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO</span>` : '<span class="mat-badge free">FREE</span>'}
-          ${quizCount > 0 ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>` : ''}
+          ${quizCount > 0
+            ? `<span class="mat-quiz-badge"><i class="fas fa-file-pen"></i> ${quizCount} question${quizCount === 1 ? '' : 's'}</span>`
+            : `<span class="mat-quiz-badge empty"><i class="fas fa-file-circle-plus"></i> No paper</span>`}
         </div>
-        <div class="me-summary-right"><i class="fas fa-chevron-down me-chevron"></i></div>
+        <div class="me-summary-right" style="gap:8px;">
+          <button type="button"
+                  class="btn btn-sm ${quizCount > 0 ? 'btn-warning' : 'btn-success'}"
+                  onclick="event.preventDefault(); event.stopPropagation(); openQuizEditor('${courseId}', '${m.id}');"
+                  title="${quizCount > 0 ? 'Edit this question paper' : 'Create a question paper for this material'}">
+            <i class="fas fa-file-pen"></i> ${quizCount > 0 ? 'Edit Paper' : 'Create Paper'}
+          </button>
+          <i class="fas fa-chevron-down me-chevron"></i>
+        </div>
       </summary>
       <div class="me-body">
         <div class="editor-grid-2">
@@ -3149,8 +3282,11 @@ function renderMaterialEditorCard(courseId, m, idx) {
         </div>
         <div class="me-quiz-section">
           <div class="me-quiz-header">
-            <h4><i class="fas fa-question-circle"></i> Quiz (${quizCount})</h4>
-            <button class="btn btn-accent btn-sm" onclick="openQuizEditor('${courseId}', '${m.id}')"><i class="fas fa-file-pen"></i> ${quizCount > 0 ? 'Edit Paper' : 'Create Paper'}</button>
+            <h4><i class="fas fa-file-pen"></i> Question Paper (${quizCount} question${quizCount === 1 ? '' : 's'})</h4>
+            <button class="btn ${quizCount > 0 ? 'btn-warning' : 'btn-accent'} btn-sm"
+                    onclick="openQuizEditor('${courseId}', '${m.id}')">
+              <i class="fas fa-pen"></i> ${quizCount > 0 ? 'Edit Paper' : 'Create Paper'}
+            </button>
           </div>
         </div>
         <div class="me-actions">
