@@ -3373,21 +3373,118 @@ async function startSubscriptionCheckout() {
   }
 }
 
+/* ============================================================
+   SUBSCRIPTION CANCELLATION — OTP-VERIFIED
+   ------------------------------------------------------------
+   Step 1: sendCancelOtp()      → ask backend to email a code
+   Step 2: submitCancelOtp()    → verify the code and finalize
+   Step 3: closeCancelSubscriptionModal() → safe exit, no cancel
+   ============================================================ */
 async function cancelSubscription() {
-  if (!confirm('Cancel your auto-pay? You will keep access until the end of your current billing period.')) return;
+  if (!currentUser || !currentUser._id) {
+    return showToast('Please log in first.', 'error');
+  }
+  if (!currentUser.isSubscribed) {
+    return showToast('You do not have an active subscription.', 'info');
+  }
+
+  const proceed = confirm(
+    'To prevent accidental cancellation, we will send a 6-digit verification code to your registered email.\n\n' +
+    'Your subscription will only be cancelled AFTER you enter the correct code.\n\n' +
+    'Continue?'
+  );
+  if (!proceed) return;
+
+  showToast('Sending verification code…', 'info');
+
   try {
-    const res = await fetch(`${API_BASE}/subscribe/cancel`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const res = await fetch(`${API_BASE}/subscribe/cancel/send-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: currentUser._id })
     });
     const data = await res.json();
+
+    if (!data.success) {
+      return showToast(data.message || 'Could not send verification code.', 'error');
+    }
+
+    // Populate the modal
+    const maskEl = document.getElementById('cancelOtpEmailMask');
+    if (maskEl) maskEl.textContent = data.email || 'your registered email';
+
+    const input = document.getElementById('cancelOtpInput');
+    if (input) input.value = '';
+
+    const btn = document.getElementById('cancelOtpSubmitBtn');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-shield-halved"></i> Verify & Cancel';
+    }
+
+    openModal('cancelSubscriptionModal');
+    setTimeout(() => input && input.focus(), 120);
+
+    showToast('✅ Verification code sent — check your inbox.', 'success');
+  } catch (err) {
+    console.error('[cancelSubscription]', err);
+    showToast('Network error. Please try again.', 'error');
+  }
+}
+
+function closeCancelSubscriptionModal() {
+  closeModal('cancelSubscriptionModal');
+  showToast('Cancellation aborted — your subscription is still active.', 'info');
+}
+
+async function submitCancelOtp() {
+  const input = document.getElementById('cancelOtpInput');
+  const btn   = document.getElementById('cancelOtpSubmitBtn');
+  if (!input || !currentUser) return;
+
+  const otp = input.value.trim();
+  if (!/^\d{6}$/.test(otp)) {
+    return showToast('Please enter a valid 6-digit code.', 'error');
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying…';
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/subscribe/cancel/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser._id, otp })
+    });
+    const data = await res.json();
+
     if (data.success) {
       currentUser = data.user;
       saveSessionUser(currentUser);
-      showToast('Auto-pay cancelled.', 'info');
+      closeModal('cancelSubscriptionModal');
+      showToast('✅ Subscription cancelled. Access remains until the end of your billing period.', 'success');
       renderApp();
-    } else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
+    } else {
+      showToast(data.message || 'Verification failed.', 'error');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-shield-halved"></i> Verify & Cancel';
+      }
+      if (input) {
+        input.value = '';
+        input.focus();
+      }
+    }
+  } catch (err) {
+    console.error('[submitCancelOtp]', err);
+    showToast('Network error. Please try again.', 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-shield-halved"></i> Verify & Cancel';
+    }
+  }
 }
 /* ============================================================
    STUDENT COURSES

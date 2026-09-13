@@ -623,7 +623,61 @@
   </div>
 
   <div class="toast-container" id="toastContainer"></div>
+<!-- ============ CANCEL SUBSCRIPTION — OTP VERIFICATION MODAL ============ -->
+<div class="modal-overlay" id="cancelSubscriptionModal">
+  <div class="modal-box" style="max-width:480px;">
+    <div style="text-align:center; margin-bottom:14px;">
+      <div style="
+        display:inline-flex; align-items:center; justify-content:center;
+        width:64px; height:64px; border-radius:50%;
+        background:linear-gradient(135deg, var(--rose-500), var(--rose-600));
+        color:#fff; font-size:28px;
+        box-shadow:0 10px 26px rgba(239,68,68,.35);">
+        <i class="fas fa-shield-halved"></i>
+      </div>
+    </div>
 
+    <h3 style="text-align:center; justify-content:center;">
+      <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);"></i>
+      Confirm Subscription Cancellation
+    </h3>
+
+    <p class="modal-sub" style="text-align:center; margin-bottom:22px;">
+      We've emailed a 6-digit verification code to
+      <strong id="cancelOtpEmailMask" style="color:var(--brand-600);">your registered email</strong>.
+      Enter it below to confirm. <br>
+      <span style="font-size:12px; color:var(--text-tertiary);">
+        Your subscription stays active until you enter the correct code.
+      </span>
+    </p>
+
+    <div class="form-group">
+      <label style="text-align:center; display:block; margin-bottom:10px;">Verification Code</label>
+      <input type="text"
+             id="cancelOtpInput"
+             placeholder="• • • • • •"
+             inputmode="numeric"
+             autocomplete="one-time-code"
+             maxlength="6"
+             oninput="this.value = this.value.replace(/[^0-9]/g, '')"
+             onkeydown="if(event.key === 'Enter'){ event.preventDefault(); submitCancelOtp(); }"
+             style="text-align:center; font-size:24px; letter-spacing:10px; font-weight:800;
+                    padding:16px; font-family:'Courier New',monospace; border-radius:12px;">
+      <span class="hint" style="text-align:center; display:block; margin-top:8px;">
+        <i class="fas fa-clock"></i> Code expires in 10 minutes.
+      </span>
+    </div>
+
+    <div class="modal-actions" style="flex-direction:column-reverse;">
+      <button type="button" class="btn btn-outline btn-block" onclick="closeCancelSubscriptionModal()">
+        <i class="fas fa-arrow-left"></i> Keep My Subscription
+      </button>
+      <button type="button" class="btn btn-danger btn-block" id="cancelOtpSubmitBtn" onclick="submitCancelOtp()">
+        <i class="fas fa-shield-halved"></i> Verify & Cancel
+      </button>
+    </div>
+  </div>
+</div>
   <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>

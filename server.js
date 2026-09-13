@@ -1277,21 +1277,186 @@ app.post('/api/subscribe/verify', async (req, res) => {
   }
 });
 
-/* ---- Student: cancel own subscription ---- */
-app.post('/api/subscribe/cancel', async (req, res) => {
+/* ============================================================
+   SUBSCRIPTION CANCELLATION — OTP-VERIFIED
+   ------------------------------------------------------------
+   Flow:
+     1. POST /api/subscribe/cancel/send-otp  → emails a 6-digit code
+     2. POST /api/subscribe/cancel/verify    → verifies code + cancels
+
+   Security:
+     • OTP is 6 digits, expires in 10 minutes
+     • Max 5 wrong attempts before the OTP is invalidated
+     • Uses the same transporter as OTP registration / bulk email
+     • Email is masked in the response (e.g. "kr***@gmail.com")
+   ============================================================ */
+const cancelOtpStore = {}; // userId -> { otp, expiresAt, attempts, email }
+
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return 'your email';
+  const [local, domain] = email.split('@');
+  if (!domain) return email;
+  const visible = local.slice(0, 2);
+  return `${visible}${'*'.repeat(Math.max(1, local.length - 2))}@${domain}`;
+}
+
+/* ---- Step 1: send OTP ---- */
+app.post('/api/subscribe/cancel/send-otp', async (req, res) => {
   try {
     const { userId } = req.body || {};
     if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-    if (!user.subscription || !user.subscription.subscriptionId) {
-      return res.status(400).json({ success: false, message: 'No active subscription.' });
+
+    if (!user.subscription || !user.subscription.active || user.subscription.status !== 'active') {
+      return res.status(400).json({ success: false, message: 'You have no active subscription to cancel.' });
     }
 
-    try {
-      await razorpay.subscriptions.cancel(user.subscription.subscriptionId, false);
-    } catch (e) {
-      console.warn('[subscribe/cancel] razorpay cancel failed:', e.message);
+    if (!user.email || !String(user.email).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'No email address on file. Please contact support to cancel your subscription.'
+      });
+    }
+
+    if (!EMAIL_USER || !EMAIL_PASS) {
+      return res.status(500).json({
+        success: false,
+        message: 'Email service is not configured on the server.'
+      });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store / overwrite previous OTP for this user
+    cancelOtpStore[userId] = {
+      otp,
+      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+      attempts: 0,
+      email: user.email
+    };
+
+    const html = `
+      <div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:560px;margin:0 auto;padding:26px 22px;color:#14161c;line-height:1.6;background:#ffffff;">
+        <div style="border-left:4px solid #ef4444;padding-left:14px;margin-bottom:22px;">
+          <div style="font-size:18px;font-weight:700;color:#14161c;">Aerospace Department</div>
+          <div style="font-size:12px;color:#8b8d98;letter-spacing:.5px;">IIT KHARAGPUR</div>
+        </div>
+
+        <h2 style="font-size:20px;font-weight:800;color:#14161c;margin:0 0 10px;">Confirm subscription cancellation</h2>
+        <p style="font-size:14.5px;margin:0 0 18px;">
+          Hi ${escapeHtml(user.fullName || user.username || 'Student')},<br><br>
+          We received a request to <strong>cancel your All-Access subscription</strong>.
+          If this was you, enter the verification code below. If you didn't request this, ignore this email — <em>your subscription will stay active.</em>
+        </p>
+
+        <div style="text-align:center;margin:26px 0;">
+          <div style="display:inline-block;padding:16px 28px;border-radius:12px;background:linear-gradient(135deg,#eef2ff,#e0e7ff);border:1px solid #c7d2fe;">
+            <div style="font-size:11px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:#4f46e5;margin-bottom:6px;">Verification Code</div>
+            <div style="font-size:34px;font-weight:900;letter-spacing:10px;color:#312e81;font-family:'Courier New',monospace;">${otp}</div>
+          </div>
+        </div>
+
+        <p style="font-size:13px;color:#4a4d5a;margin:18px 0 0;">
+          This code expires in <strong>10 minutes</strong>. Do not share it with anyone.
+        </p>
+
+        <div style="border-top:1px solid #ebe7e0;margin-top:26px;padding-top:16px;font-size:12.5px;color:#8b8d98;">
+          — Aerospace Department<br/>IIT Kharagpur
+        </div>
+      </div>`;
+
+    const text =
+      `Confirm subscription cancellation\n\n` +
+      `Hi ${user.fullName || user.username || 'Student'},\n\n` +
+      `Your verification code is: ${otp}\n\n` +
+      `This code expires in 10 minutes. If you did not request this, ignore this email — your subscription will stay active.\n\n` +
+      `— Aerospace Department\nIIT Kharagpur`;
+
+    await withTimeout(
+      transporter.sendMail({
+        from: `"Aerospace Department" <onboarding@resend.dev>`,
+        to: user.email,
+        subject: 'Confirm your subscription cancellation — Aerospace Department',
+        text,
+        html
+      }),
+      15000,
+      'Cancel OTP send'
+    );
+
+    console.log(`[subscribe/cancel/send-otp] OTP sent to ${user.email} (user ${userId})`);
+
+    res.json({
+      success: true,
+      message: 'Verification code sent to your email.',
+      email: maskEmail(user.email)
+    });
+  } catch (e) {
+    console.error('[subscribe/cancel/send-otp] Error:', e);
+    res.status(500).json({ success: false, message: 'Could not send verification code: ' + e.message });
+  }
+});
+
+/* ---- Step 2: verify OTP + cancel ---- */
+app.post('/api/subscribe/cancel/verify', async (req, res) => {
+  try {
+    const { userId, otp } = req.body || {};
+    if (!userId || !otp) {
+      return res.status(400).json({ success: false, message: 'userId and otp are required.' });
+    }
+
+    const record = cancelOtpStore[userId];
+    if (!record) {
+      return res.status(400).json({
+        success: false,
+        message: 'No verification code was requested. Please request a new one.'
+      });
+    }
+
+    if (Date.now() > record.expiresAt) {
+      delete cancelOtpStore[userId];
+      return res.status(400).json({
+        success: false,
+        message: 'This code has expired. Please request a new one.'
+      });
+    }
+
+    if (record.attempts >= 5) {
+      delete cancelOtpStore[userId];
+      return res.status(400).json({
+        success: false,
+        message: 'Too many incorrect attempts. Please request a new code.'
+      });
+    }
+
+    if (String(otp).trim() !== record.otp) {
+      record.attempts++;
+      const left = 5 - record.attempts;
+      return res.status(400).json({
+        success: false,
+        message: `Incorrect code. ${left} attempt${left === 1 ? '' : 's'} remaining.`
+      });
+    }
+
+    // ✅ OTP verified — burn it before we do anything else
+    delete cancelOtpStore[userId];
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    if (!user.subscription || !user.subscription.active) {
+      return res.status(400).json({ success: false, message: 'This subscription is no longer active.' });
+    }
+
+    // Try to cancel on Razorpay's side (best-effort)
+    if (user.subscription.subscriptionId) {
+      try {
+        await razorpay.subscriptions.cancel(user.subscription.subscriptionId, false);
+      } catch (e) {
+        console.warn('[subscribe/cancel/verify] razorpay cancel failed:', e.message);
+      }
     }
 
     user.subscription.active = false;
@@ -1299,13 +1464,23 @@ app.post('/api/subscribe/cancel', async (req, res) => {
     user.subscription.status = 'cancelled';
     user.subscription.history = user.subscription.history || [];
     user.subscription.history.push({
-      status: 'revoked', amount: 0, note: 'Cancelled by user', date: new Date()
+      status: 'revoked',
+      amount: 0,
+      note: 'Cancelled by user (OTP verified)',
+      date: new Date()
     });
     await user.save();
 
-    res.json({ success: true, message: 'Subscription cancelled.', user: serializeUser(user) });
+    console.log(`[subscribe/cancel/verify] Subscription cancelled for user ${userId}`);
+
+    res.json({
+      success: true,
+      message: 'Subscription cancelled. You can continue using it until the end of the current billing period.',
+      user: serializeUser(user)
+    });
   } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
+    console.error('[subscribe/cancel/verify] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
 
