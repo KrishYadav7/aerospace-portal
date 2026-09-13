@@ -3493,7 +3493,7 @@ function renderCourseDetail(courseId) {
   }
   const isPremiumCourse = course.isPremium || false;
   const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
-  const isSubscribed = !!currentUser?.isSubscribed;   // ← moved up from below
+  const isSubscribed = !!currentUser?.isSubscribed;   // ← NEW LINE (moved up)
   const acc = accentStyle(course.code || course.name);
   const diff = difficultyColor(course.difficulty);
 
