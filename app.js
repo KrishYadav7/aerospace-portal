@@ -636,34 +636,257 @@ async function registerStudent(e) {
   e.preventDefault();
   const fullName = $('regFullName').value.trim();
   const username = $('regUsername').value.trim();
-  const email = $('regEmail').value.trim();
+  const email    = $('regEmail').value.trim();
+  const phone    = $('regPhone').value.trim();
   const password = $('regPassword').value.trim();
-  if (!fullName || !username || !password || !email) return showToast('Fill all fields.', 'error');
+
+  if (!fullName || !username || !password || !email || !phone) {
+    return showToast('Please fill all fields.', 'error');
+  }
+  if (password.length < 6) return showToast('Password must be at least 6 characters.', 'error');
+  if (!/^\d{10,15}$/.test(phone.replace(/\D/g, ''))) {
+    return showToast('Please enter a valid contact number.', 'error');
+  }
+
   showToast('Sending OTP...', 'info');
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/send-otp', {
+    const response = await fetch(`${API_BASE}/send-otp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, username })
+      body: JSON.stringify({ email, username, phone })
     });
     const data = await response.json();
     if (data.success) {
-      tempRegisterData = { fullName, username, email, password };
+      tempRegisterData = { fullName, username, email, phone, password };
       closeModal('registerModal');
-      const enteredOtp = prompt(`OTP sent to ${email}.\n\nEnter your 6-digit OTP:`);
-      if (enteredOtp) verifyAndCompleteRegistration(enteredOtp);
-    } else showToast(data.message, 'error');
-  } catch { showToast('Server network error.', 'error'); }
+      openOtpModal({
+        title: 'Verify Email & Phone',
+        subtitle: `We've sent a 6-digit OTP to ${email} and your phone. Enter it below to finish registration.`,
+        type: 'register',
+        data: tempRegisterData
+      });
+    } else {
+      showToast(data.message || 'Could not send OTP.', 'error');
+    }
+  } catch {
+    showToast('Server network error.', 'error');
+  }
 }
-async function verifyAndCompleteRegistration(otp) {
+/* ============================================================
+   SHARED OTP MODAL — used by register / forgot-username / forgot-password
+   ============================================================ */
+let _otpContext = null;    // { type, data }
+let _resetToken = null;    // held after forgot-password verify
+
+function openOtpModal({ title, subtitle, type, data }) {
+  _otpContext = { type, data };
+
+  const titleEl = $('otpModalTitle');
+  const subEl   = $('otpModalSub');
+  const input   = $('otpModalInput');
+  const btn     = $('otpModalSubmitBtn');
+
+  if (titleEl) titleEl.innerHTML = `<i class="fas fa-shield-halved"></i> ${escapeHtml(title)}`;
+  if (subEl)   subEl.textContent = subtitle || 'Enter the code we sent you.';
+  if (input)   input.value = '';
+  if (btn) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-check"></i> Verify';
+  }
+
+  openModal('otpVerificationModal');
+  setTimeout(() => input && input.focus(), 120);
+}
+
+function cancelOtpVerification() {
+  _otpContext = null;
+  closeModal('otpVerificationModal');
+}
+
+async function submitOtpVerification() {
+  if (!_otpContext) return closeModal('otpVerificationModal');
+
+  const input = $('otpModalInput');
+  const btn   = $('otpModalSubmitBtn');
+  const otp   = input ? input.value.trim() : '';
+
+  if (!/^\d{6}$/.test(otp)) {
+    return showToast('Please enter a valid 6-digit OTP.', 'error');
+  }
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying…';
+  }
+
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/register', {
+    if (_otpContext.type === 'register') {
+      await _handleRegisterOtp(otp);
+    } else if (_otpContext.type === 'forgot-username') {
+      await _handleForgotUsernameOtp(otp);
+    } else if (_otpContext.type === 'forgot-password') {
+      await _handleForgotPasswordOtp(otp);
+    } else {
+      throw new Error('Unknown verification context.');
+    }
+  } catch (err) {
+    showToast(err.message || 'Verification failed.', 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-check"></i> Verify';
+    }
+    if (input) { input.value = ''; input.focus(); }
+  }
+}
+
+/* ---- Registration OTP handler ---- */
+async function _handleRegisterOtp(otp) {
+  const res = await fetch(`${API_BASE}/register`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ..._otpContext.data, otp })
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Registration failed.');
+
+  _otpContext = null;
+  tempRegisterData = null;
+  closeModal('otpVerificationModal');
+  showToast('🎉 Registration successful! You can now log in.', 'success');
+}
+
+/* ============================================================
+   FORGOT USERNAME FLOW
+   ============================================================ */
+function showForgotUsernameModal() {
+  if ($('fuEmail')) $('fuEmail').value = '';
+  if ($('fuPhone')) $('fuPhone').value = '';
+  openModal('forgotUsernameModal');
+}
+
+async function submitForgotUsernameRequest(e) {
+  if (e) e.preventDefault();
+  const email = $('fuEmail').value.trim();
+  const phone = $('fuPhone').value.trim();
+
+  if (!email && !phone) return showToast('Enter your email or phone.', 'error');
+
+  try {
+    const res = await fetch(`${API_BASE}/forgot-username/send-otp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...tempRegisterData, otp })
+      body: JSON.stringify({ email, phone })
     });
-    const data = await response.json();
-    if (data.success) { showToast('🎉 ' + data.message, 'success'); tempRegisterData = null; }
-    else showToast(data.message, 'error');
-  } catch { showToast('Error verifying OTP.', 'error'); }
+    const data = await res.json();
+    if (!data.success) return showToast(data.message || 'Could not send OTP.', 'error');
+
+    closeModal('forgotUsernameModal');
+    openOtpModal({
+      title: 'Verify Your Identity',
+      subtitle: 'Enter the OTP we sent. After verification, your username will be sent to your phone and email.',
+      type: 'forgot-username',
+      data: { email, phone }
+    });
+    showToast('✅ OTP sent.', 'success');
+  } catch {
+    showToast('Network error.', 'error');
+  }
+}
+
+async function _handleForgotUsernameOtp(otp) {
+  const res = await fetch(`${API_BASE}/forgot-username/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ..._otpContext.data, otp })
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Verification failed.');
+
+  _otpContext = null;
+  closeModal('otpVerificationModal');
+  showToast('✅ ' + (data.message || 'Username sent to your phone and email.'), 'success');
+}
+
+/* ============================================================
+   FORGOT PASSWORD FLOW
+   ============================================================ */
+function showForgotPasswordModal() {
+  if ($('fpEmail')) $('fpEmail').value = '';
+  if ($('fpPhone')) $('fpPhone').value = '';
+  _resetToken = null;
+  openModal('forgotPasswordModal');
+}
+
+async function submitForgotPasswordRequest(e) {
+  if (e) e.preventDefault();
+  const email = $('fpEmail').value.trim();
+  const phone = $('fpPhone').value.trim();
+
+  if (!email && !phone) return showToast('Enter your email or phone.', 'error');
+
+  try {
+    const res = await fetch(`${API_BASE}/forgot-password/send-otp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, phone })
+    });
+    const data = await res.json();
+    if (!data.success) return showToast(data.message || 'Could not send OTP.', 'error');
+
+    closeModal('forgotPasswordModal');
+    openOtpModal({
+      title: 'Verify Your Identity',
+      subtitle: 'Enter the OTP we sent. After verification you can set a new password.',
+      type: 'forgot-password',
+      data: { email, phone }
+    });
+    showToast('✅ OTP sent.', 'success');
+  } catch {
+    showToast('Network error.', 'error');
+  }
+}
+
+async function _handleForgotPasswordOtp(otp) {
+  const res = await fetch(`${API_BASE}/forgot-password/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ..._otpContext.data, otp })
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Verification failed.');
+
+  _resetToken = data.resetToken;
+  _otpContext = null;
+  closeModal('otpVerificationModal');
+
+  if ($('rpNewPassword'))     $('rpNewPassword').value = '';
+  if ($('rpConfirmPassword')) $('rpConfirmPassword').value = '';
+  openModal('resetPasswordModal');
+  showToast('✅ Identity verified. Set a new password.', 'success');
+}
+
+async function submitNewPassword(e) {
+  if (e) e.preventDefault();
+
+  const pw1 = $('rpNewPassword').value;
+  const pw2 = $('rpConfirmPassword').value;
+
+  if (!_resetToken) return showToast('Reset session expired. Start over.', 'error');
+  if (pw1.length < 6) return showToast('Password must be at least 6 characters.', 'error');
+  if (pw1 !== pw2)    return showToast('Passwords do not match.', 'error');
+
+  const btn = $('rpSubmitBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+
+  try {
+    const res = await fetch(`${API_BASE}/forgot-password/reset`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resetToken: _resetToken, newPassword: pw1 })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'Could not update password.');
+
+    _resetToken = null;
+    closeModal('resetPasswordModal');
+    showToast('✅ Password updated. Please log in with your new password.', 'success');
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Save New Password'; }
+  }
 }
 
 /* ============================================================

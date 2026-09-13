@@ -6,6 +6,7 @@ const userSchema = new mongoose.Schema({
   role:     { type: String, default: 'student' },
   fullName: String,
   email:    String,
+  phone:    { type: String, default: '' },
 
   purchases: { type: [String], default: [] },
 

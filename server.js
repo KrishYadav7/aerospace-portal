@@ -111,6 +111,67 @@ const transporter = {
     console.error('    → Some hosts block outbound SMTP (ports 587/465)');
   }
 })();
+/* ============================================================
+   SMS SENDER (Twilio REST API — no extra npm package needed)
+   ------------------------------------------------------------
+   Set these in .env to enable SMS:
+     TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+     TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+     TWILIO_PHONE_NUMBER=+1xxxxxxxxxx
+
+   If any are missing, SMS is silently skipped and a warning is
+   logged. Email OTPs still work normally, so nothing breaks.
+   ============================================================ */
+const TWILIO_ACCOUNT_SID  = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN   = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+
+async function sendSMS(to, body) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+    console.warn('[sms] Twilio not configured — SMS skipped for', to);
+    return { success: false, reason: 'not-configured' };
+  }
+  if (!to) return { success: false, reason: 'no-recipient' };
+  try {
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+    const params = new URLSearchParams();
+    params.append('To', to);
+    params.append('From', TWILIO_PHONE_NUMBER);
+    params.append('Body', body);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: params.toString()
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      console.warn('[sms] Twilio error:', data.message || res.status);
+      return { success: false, reason: data.message || 'twilio-error' };
+    }
+    console.log('[sms] Sent to', to, '· sid=', data.sid);
+    return { success: true, sid: data.sid };
+  } catch (e) {
+    console.warn('[sms] send failed:', e.message);
+    return { success: false, reason: e.message };
+  }
+}
+
+/* Normalize any user-typed phone to E.164 (best-effort).
+   - 10 digits  → assume India (+91)
+   - 11-15 digits (with or without +) → prefix +
+   - anything else → return '' (invalid)                              */
+function normalizePhone(p) {
+  if (!p) return '';
+  const digits = String(p).replace(/\D/g, '');
+  if (/^\d{10}$/.test(digits)) return '+91' + digits;
+  if (/^\d{11,15}$/.test(digits)) return '+' + digits;
+  return '';
+}
 
 /* ============================================================
    DB
@@ -331,46 +392,366 @@ const otpStore = {};
 
 app.post('/api/send-otp', async (req, res) => {
   try {
-    const { email, username } = req.body;
+    const { email, username, phone } = req.body || {};
     const cleanUsername = String(username || '').trim().toLowerCase();
-    const existingUser = await User.findOne({ $or: [{ username: cleanUsername }, { email }] });
-    if (existingUser) return res.status(400).json({ success: false, message: 'Username or Email already exists!' });
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore[email] = otp;
+    const cleanEmail    = String(email || '').trim().toLowerCase();
+    const cleanPhone    = normalizePhone(phone);
 
+    if (!cleanEmail) return res.status(400).json({ success: false, message: 'Email is required.' });
+    if (!cleanPhone) return res.status(400).json({ success: false, message: 'A valid contact number is required.' });
+
+    const existingUser = await User.findOne({
+      $or: [
+        { username: cleanUsername },
+        { email: cleanEmail },
+        { phone: cleanPhone }
+      ]
+    });
+    if (existingUser) {
+      let field = 'Username';
+      if (existingUser.email === cleanEmail) field = 'Email';
+      else if (existingUser.phone === cleanPhone) field = 'Contact number';
+      return res.status(400).json({ success: false, message: `${field} already exists!` });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    otpStore[cleanEmail] = {
+      otp,
+      phone: cleanPhone,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      attempts: 0
+    };
+
+    // ---- Email OTP (blocking, must succeed) ----
     await withTimeout(
       transporter.sendMail({
-                  from: `"Aerospace Department" <onboarding@resend.dev>`,
-        to: email,
+        from: `"Aerospace Department" <onboarding@resend.dev>`,
+        to: cleanEmail,
         subject: 'Aerospace Portal - Registration OTP',
-        text: `Welcome!\n\nYour OTP: ${otp}\n\nDo not share this.`
+        text: `Welcome!\n\nYour OTP: ${otp}\n\nDo not share this. It expires in 10 minutes.`
       }),
       15000,
-      'OTP send'
+      'OTP email send'
     );
 
-    res.json({ success: true, message: 'OTP sent!' });
+    // ---- SMS OTP (best-effort — doesn't fail the request) ----
+    sendSMS(cleanPhone, `Aerospace Portal: Your registration OTP is ${otp}. Valid for 10 min. Do not share.`)
+      .catch(() => {});
+
+    res.json({ success: true, message: 'OTP sent to your email and phone.' });
   } catch (e) {
     console.error('[send-otp] Error:', e.message);
-    res.status(500).json({ success: false, message: 'Error sending email: ' + e.message });
+    res.status(500).json({ success: false, message: 'Error sending OTP: ' + e.message });
   }
 });
 
 app.post('/api/register', async (req, res) => {
   try {
-    const { fullName, username, email, password, otp } = req.body;
-    if (!otpStore[email] || otpStore[email] !== otp) return res.status(400).json({ success: false, message: 'Invalid or Expired OTP.' });
+    const { fullName, username, email, phone, password, otp } = req.body || {};
+    const cleanEmail    = String(email || '').trim().toLowerCase();
+    const cleanUsername = String(username || '').trim().toLowerCase();
+    const cleanPhone    = normalizePhone(phone);
+
+    if (!fullName || !cleanUsername || !cleanEmail || !cleanPhone || !password) {
+      return res.status(400).json({ success: false, message: 'All fields are required.' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+    }
+
+    const record = otpStore[cleanEmail];
+    if (!record) {
+      return res.status(400).json({ success: false, message: 'No OTP was requested for this email.' });
+    }
+    if (Date.now() > record.expiresAt) {
+      delete otpStore[cleanEmail];
+      return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
+    }
+    if (record.attempts >= 5) {
+      delete otpStore[cleanEmail];
+      return res.status(400).json({ success: false, message: 'Too many incorrect attempts. Request a new OTP.' });
+    }
+    if (String(otp || '').trim() !== record.otp) {
+      record.attempts = (record.attempts || 0) + 1;
+      return res.status(400).json({ success: false, message: 'Invalid OTP. Please try again.' });
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
     await new User({
-      fullName,
-      username: String(username).trim().toLowerCase(),
-      email,
+      fullName: String(fullName).trim(),
+      username: cleanUsername,
+      email:    cleanEmail,
+      phone:    cleanPhone,
       password: hashedPassword,
       role: 'student'
     }).save();
-    delete otpStore[email];
-    res.json({ success: true, message: 'Verification successful! You can now log in.' });
-  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+
+    delete otpStore[cleanEmail];
+    res.json({ success: true, message: 'Registration successful! You can now log in.' });
+  } catch (e) {
+    console.error('[register] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+/* ============================================================
+   FORGOT USERNAME / FORGOT PASSWORD / RESET PASSWORD
+   ============================================================ */
+const forgotUsernameStore = {};   // key: email|phone → { otp, expiresAt, attempts, userId }
+const forgotPasswordStore = {};   // key: email|phone → { otp, expiresAt, attempts, userId }
+const passwordResetTokens = {};   // token → { userId, expiresAt }
+
+function storeKeyFor(user) {
+  // Use email as the primary key; phone falls back if email missing
+  return (user.email || user.phone || '').toLowerCase();
+}
+
+/* ---- Step 1: Request OTP for forgot-username ---- */
+app.post('/api/forgot-username/send-otp', async (req, res) => {
+  try {
+    const { email, phone } = req.body || {};
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPhone = normalizePhone(phone);
+
+    if (!cleanEmail && !cleanPhone) {
+      return res.status(400).json({ success: false, message: 'Please provide your email or contact number.' });
+    }
+
+    const or = [];
+    if (cleanEmail) or.push({ email: cleanEmail });
+    if (cleanPhone) or.push({ phone: cleanPhone });
+
+    const user = await User.findOne({ $or: or });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'No account found with those details.' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const key = storeKeyFor(user);
+    forgotUsernameStore[key] = {
+      otp,
+      userId: user._id.toString(),
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      attempts: 0
+    };
+
+    // Email (best-effort if user has one)
+    if (user.email) {
+      transporter.sendMail({
+        from: `"Aerospace Department" <onboarding@resend.dev>`,
+        to: user.email,
+        subject: 'Aerospace Portal - Username Recovery OTP',
+        text: `Hi ${user.fullName || user.username},\n\nYour OTP for username recovery is: ${otp}\n\nValid for 10 minutes. Do not share.`
+      }).catch((e) => console.warn('[forgot-username] email failed:', e.message));
+    }
+
+    // SMS (best-effort)
+    if (user.phone) {
+      sendSMS(user.phone, `Aerospace Portal: Your username-recovery OTP is ${otp}. Valid 10 min. Do not share.`)
+        .catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: 'OTP sent. Check your email and phone.',
+      deliveredTo: {
+        email: user.email ? maskEmail(user.email) : null,
+        phone: user.phone ? user.phone.slice(0, 3) + '****' + user.phone.slice(-2) : null
+      }
+    });
+  } catch (e) {
+    console.error('[forgot-username/send-otp]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ---- Step 2: Verify OTP → send username via SMS + email ---- */
+app.post('/api/forgot-username/verify', async (req, res) => {
+  try {
+    const { email, phone, otp } = req.body || {};
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPhone = normalizePhone(phone);
+
+    const or = [];
+    if (cleanEmail) or.push({ email: cleanEmail });
+    if (cleanPhone) or.push({ phone: cleanPhone });
+
+    const user = await User.findOne({ $or: or });
+    if (!user) return res.status(404).json({ success: false, message: 'Account not found.' });
+
+    const key = storeKeyFor(user);
+    const record = forgotUsernameStore[key];
+    if (!record) return res.status(400).json({ success: false, message: 'No OTP requested.' });
+    if (Date.now() > record.expiresAt) {
+      delete forgotUsernameStore[key];
+      return res.status(400).json({ success: false, message: 'OTP expired. Request a new one.' });
+    }
+    if (record.attempts >= 5) {
+      delete forgotUsernameStore[key];
+      return res.status(400).json({ success: false, message: 'Too many attempts. Request a new OTP.' });
+    }
+    if (String(otp || '').trim() !== record.otp) {
+      record.attempts = (record.attempts || 0) + 1;
+      return res.status(400).json({ success: false, message: 'Invalid OTP.' });
+    }
+
+    delete forgotUsernameStore[key];
+
+    // Send username via SMS (primary channel — as required)
+    if (user.phone) {
+      sendSMS(user.phone, `Aerospace Portal: Your username is "${user.username}".`)
+        .catch(() => {});
+    }
+    // Email copy (fallback, so user isn't stuck if SMS is not configured)
+    if (user.email) {
+      transporter.sendMail({
+        from: `"Aerospace Department" <onboarding@resend.dev>`,
+        to: user.email,
+        subject: 'Aerospace Portal - Your Username',
+        text: `Hi ${user.fullName || user.username},\n\nYour username is: ${user.username}\n\n— Aerospace Department`
+      }).catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: 'Your username has been sent to your registered phone and email.'
+    });
+  } catch (e) {
+    console.error('[forgot-username/verify]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ---- Forgot Password: Step 1 — send OTP ---- */
+app.post('/api/forgot-password/send-otp', async (req, res) => {
+  try {
+    const { email, phone } = req.body || {};
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPhone = normalizePhone(phone);
+
+    if (!cleanEmail && !cleanPhone) {
+      return res.status(400).json({ success: false, message: 'Please provide your email or contact number.' });
+    }
+
+    const or = [];
+    if (cleanEmail) or.push({ email: cleanEmail });
+    if (cleanPhone) or.push({ phone: cleanPhone });
+
+    const user = await User.findOne({ $or: or });
+    if (!user) return res.status(404).json({ success: false, message: 'No account found with those details.' });
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const key = storeKeyFor(user);
+    forgotPasswordStore[key] = {
+      otp,
+      userId: user._id.toString(),
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      attempts: 0
+    };
+
+    if (user.email) {
+      transporter.sendMail({
+        from: `"Aerospace Department" <onboarding@resend.dev>`,
+        to: user.email,
+        subject: 'Aerospace Portal - Password Reset OTP',
+        text: `Hi ${user.fullName || user.username},\n\nYour password-reset OTP is: ${otp}\n\nValid 10 min. If this wasn't you, ignore this email.`
+      }).catch((e) => console.warn('[forgot-password] email failed:', e.message));
+    }
+
+    if (user.phone) {
+      sendSMS(user.phone, `Aerospace Portal: Your password-reset OTP is ${otp}. Valid 10 min. Do not share.`)
+        .catch(() => {});
+    }
+
+    res.json({
+      success: true,
+      message: 'OTP sent. Check your email and phone.',
+      deliveredTo: {
+        email: user.email ? maskEmail(user.email) : null,
+        phone: user.phone ? user.phone.slice(0, 3) + '****' + user.phone.slice(-2) : null
+      }
+    });
+  } catch (e) {
+    console.error('[forgot-password/send-otp]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ---- Forgot Password: Step 2 — verify OTP, issue reset token ---- */
+app.post('/api/forgot-password/verify', async (req, res) => {
+  try {
+    const { email, phone, otp } = req.body || {};
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPhone = normalizePhone(phone);
+
+    const or = [];
+    if (cleanEmail) or.push({ email: cleanEmail });
+    if (cleanPhone) or.push({ phone: cleanPhone });
+
+    const user = await User.findOne({ $or: or });
+    if (!user) return res.status(404).json({ success: false, message: 'Account not found.' });
+
+    const key = storeKeyFor(user);
+    const record = forgotPasswordStore[key];
+    if (!record) return res.status(400).json({ success: false, message: 'No OTP requested.' });
+    if (Date.now() > record.expiresAt) {
+      delete forgotPasswordStore[key];
+      return res.status(400).json({ success: false, message: 'OTP expired. Request a new one.' });
+    }
+    if (record.attempts >= 5) {
+      delete forgotPasswordStore[key];
+      return res.status(400).json({ success: false, message: 'Too many attempts. Request a new OTP.' });
+    }
+    if (String(otp || '').trim() !== record.otp) {
+      record.attempts = (record.attempts || 0) + 1;
+      return res.status(400).json({ success: false, message: 'Invalid OTP.' });
+    }
+
+    delete forgotPasswordStore[key];
+
+    // Issue a short-lived, single-use reset token
+    const token = crypto.randomBytes(32).toString('hex');
+    passwordResetTokens[token] = {
+      userId: user._id.toString(),
+      expiresAt: Date.now() + 15 * 60 * 1000
+    };
+
+    res.json({ success: true, message: 'OTP verified. You can now set a new password.', resetToken: token });
+  } catch (e) {
+    console.error('[forgot-password/verify]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ---- Forgot Password: Step 3 — save new password ---- */
+app.post('/api/forgot-password/reset', async (req, res) => {
+  try {
+    const { resetToken, newPassword } = req.body || {};
+    if (!resetToken || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Missing token or password.' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+    }
+
+    const rec = passwordResetTokens[resetToken];
+    if (!rec) return res.status(400).json({ success: false, message: 'Invalid or already-used reset link.' });
+    if (Date.now() > rec.expiresAt) {
+      delete passwordResetTokens[resetToken];
+      return res.status(400).json({ success: false, message: 'Reset session expired. Start over.' });
+    }
+
+    const user = await User.findById(rec.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    delete passwordResetTokens[resetToken];
+    res.json({ success: true, message: 'Password updated successfully. You can now log in.' });
+  } catch (e) {
+    console.error('[forgot-password/reset]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
 });
 
 /* ============================================================

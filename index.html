@@ -99,9 +99,15 @@
               <i class="fas fa-sign-in-alt"></i> Sign In
             </button>
           </form>
-          <div class="login-footer">
+          <div class="login-footer" style="display:flex;flex-direction:column;gap:10px;align-items:center;">
             <a href="#" onclick="showRegisterModal();return false;" class="link-inline">
               <i class="fas fa-user-plus"></i> Register as Student
+            </a>
+            <a href="#" onclick="showForgotUsernameModal();return false;" class="link-inline">
+              <i class="fas fa-user-question"></i> Forgot Username?
+            </a>
+            <a href="#" onclick="showForgotPasswordModal();return false;" class="link-inline">
+              <i class="fas fa-key"></i> Forgot Password?
             </a>
           </div>
         </div>
@@ -467,10 +473,112 @@
         <div class="form-group"><label>Full Name *</label><input type="text" id="regFullName" placeholder="e.g. John Doe" required></div>
         <div class="form-group"><label>Username *</label><input type="text" id="regUsername" placeholder="Choose a username" required></div>
         <div class="form-group"><label>Email *</label><input type="email" id="regEmail" placeholder="your@email.com" required></div>
-        <div class="form-group"><label>Password *</label><input type="password" id="regPassword" placeholder="Choose a password" required></div>
+        <div class="form-group">
+          <label>Contact Number *</label>
+          <input type="tel" id="regPhone" placeholder="+91 98765 43210" required>
+          <span class="hint">We'll send an OTP here as well. Include country code for non-Indian numbers.</span>
+        </div>
+        <div class="form-group"><label>Password *</label><input type="password" id="regPassword" placeholder="Choose a password (min 6 chars)" required minlength="6"></div>
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('registerModal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-user-check"></i> Register</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send OTP</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ SHARED OTP MODAL ============ -->
+  <div class="modal-overlay" id="otpVerificationModal">
+    <div class="modal-box" style="max-width:460px;">
+      <div style="text-align:center; margin-bottom:14px;">
+        <div style="display:inline-flex;align-items:center;justify-content:center;
+                    width:64px;height:64px;border-radius:50%;
+                    background:linear-gradient(135deg,var(--brand-600),var(--accent-500));
+                    color:#fff;font-size:26px;
+                    box-shadow:0 10px 26px rgba(99,102,241,.35);">
+          <i class="fas fa-shield-halved"></i>
+        </div>
+      </div>
+      <h3 id="otpModalTitle" style="text-align:center;justify-content:center;">Verify OTP</h3>
+      <p class="modal-sub" id="otpModalSub" style="text-align:center;">Enter the code we sent you.</p>
+
+      <div class="form-group">
+        <label style="text-align:center;display:block;">6-Digit OTP</label>
+        <input type="text" id="otpModalInput" placeholder="• • • • • •"
+               inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+               oninput="this.value = this.value.replace(/[^0-9]/g, '')"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();submitOtpVerification();}"
+               style="text-align:center;font-size:24px;letter-spacing:10px;font-weight:800;
+                      padding:16px;font-family:'Courier New',monospace;border-radius:12px;">
+        <span class="hint" style="text-align:center;display:block;margin-top:8px;">
+          <i class="fas fa-clock"></i> Code expires in 10 minutes.
+        </span>
+      </div>
+
+      <div class="modal-actions" style="flex-direction:column-reverse;">
+        <button type="button" class="btn btn-outline btn-block" onclick="cancelOtpVerification()">
+          <i class="fas fa-arrow-left"></i> Cancel
+        </button>
+        <button type="button" class="btn btn-primary btn-block" id="otpModalSubmitBtn" onclick="submitOtpVerification()">
+          <i class="fas fa-check"></i> Verify
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ FORGOT USERNAME MODAL ============ -->
+  <div class="modal-overlay" id="forgotUsernameModal">
+    <div class="modal-box" style="max-width:480px;">
+      <h3><i class="fas fa-user-question"></i> Forgot Username</h3>
+      <p class="modal-sub">Enter the email or contact number linked to your account. We'll send an OTP and then deliver your username to your phone.</p>
+      <form id="forgotUsernameForm" onsubmit="submitForgotUsernameRequest(event)">
+        <div class="form-group"><label>Email</label><input type="email" id="fuEmail" placeholder="your@email.com"></div>
+        <div class="form-group"><label>Contact Number</label><input type="tel" id="fuPhone" placeholder="+91 98765 43210"></div>
+        <span class="hint" style="display:block;margin-bottom:12px;">Provide at least one of the two.</span>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('forgotUsernameModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send OTP</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ FORGOT PASSWORD MODAL ============ -->
+  <div class="modal-overlay" id="forgotPasswordModal">
+    <div class="modal-box" style="max-width:480px;">
+      <h3><i class="fas fa-key"></i> Forgot Password</h3>
+      <p class="modal-sub">Enter the email or contact number linked to your account. We'll send an OTP to verify your identity.</p>
+      <form id="forgotPasswordForm" onsubmit="submitForgotPasswordRequest(event)">
+        <div class="form-group"><label>Email</label><input type="email" id="fpEmail" placeholder="your@email.com"></div>
+        <div class="form-group"><label>Contact Number</label><input type="tel" id="fpPhone" placeholder="+91 98765 43210"></div>
+        <span class="hint" style="display:block;margin-bottom:12px;">Provide at least one of the two.</span>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('forgotPasswordModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send OTP</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ RESET PASSWORD MODAL ============ -->
+  <div class="modal-overlay" id="resetPasswordModal">
+    <div class="modal-box" style="max-width:460px;">
+      <h3><i class="fas fa-lock"></i> Set New Password</h3>
+      <p class="modal-sub">Choose a strong new password. Minimum 6 characters.</p>
+      <form id="resetPasswordForm" onsubmit="submitNewPassword(event)">
+        <div class="form-group">
+          <label>New Password *</label>
+          <input type="password" id="rpNewPassword" placeholder="Enter new password" required minlength="6">
+        </div>
+        <div class="form-group">
+          <label>Confirm Password *</label>
+          <input type="password" id="rpConfirmPassword" placeholder="Re-enter new password" required minlength="6">
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('resetPasswordModal')">Cancel</button>
+          <button type="submit" class="btn btn-success" id="rpSubmitBtn">
+            <i class="fas fa-save"></i> Save New Password
+          </button>
         </div>
       </form>
     </div>
