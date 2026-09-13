@@ -588,39 +588,75 @@ app.get('/', (req, res) => res.send('Aerospace EdTech Backend is Running!'));
    AUTH
    ============================================================ */
 app.post('/api/login', async (req, res) => {
+  const t0 = Date.now();
   try {
-    const { username, password, role } = req.body;
-    if (!username || !password) {
-      return res.status(400).json({ success: false, message: 'Username and password are required.' });
-    }
-    const cleanUsername = String(username).trim().toLowerCase();
-    const user = await User.findOne({
-      $or: [
-        { username: cleanUsername },
-        { username: String(username).trim() }
-      ]
-    });
-    if (!user) {
-      console.log('[login] No user found for:', cleanUsername);
-      return res.status(400).json({ success: false, message: 'Invalid username or password.' });
-    }
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      console.log('[login] Password mismatch for user:', user.username);
-      return res.status(400).json({ success: false, message: 'Invalid username or password.' });
-    }
+    const body = req.body || {};
+    const usernameRaw = body.username;
+    const passwordRaw = body.password;
+    const roleFromClient = body.role;
 
-    if (role && user.role !== role) {
-      console.log(`[login] ⛔ Role mismatch: User is ${user.role} but tried to log in as ${role}`);
-      return res.status(403).json({ 
-        success: false, 
-        message: `Access denied. You are not registered as an ${role}.` 
+    // ---------- Input validation ----------
+    if (!usernameRaw || !passwordRaw) {
+      return res.status(400).json({
+        success: false,
+        message: 'Username and password are required.'
       });
     }
 
-    /* ============================================================
-       ADMIN 2FA — step 1 of 2 (STATELESS)
-       ============================================================ */
+    const usernameTrimmed = String(usernameRaw).trim();
+    const cleanUsername = usernameTrimmed.toLowerCase();
+
+    console.log(`[login] attempt user="${cleanUsername}" role-tab="${roleFromClient}" ip=${req.ip}`);
+
+    // ---------- Find user (case-insensitive, robust) ----------
+    let user = await User.findOne({ username: cleanUsername });
+    if (!user) user = await User.findOne({ username: usernameTrimmed });
+    if (!user) {
+      // Final fallback: case-insensitive regex (handles legacy "JohnDoe" style rows)
+      const esc = cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      user = await User.findOne({ username: new RegExp('^' + esc + '$', 'i') });
+    }
+
+    if (!user) {
+      console.log(`[login] ❌ no user for "${cleanUsername}"`);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid username or password.'
+      });
+    }
+
+    console.log(`[login] user found "${user.username}" role=${user.role}`);
+
+    // ---------- Password check ----------
+    let isMatch = false;
+    try {
+      isMatch = await bcrypt.compare(String(passwordRaw), user.password);
+    } catch (bcryptErr) {
+      console.error('[login] bcrypt threw:', bcryptErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Password verification failed. Please contact support.'
+      });
+    }
+
+    if (!isMatch) {
+      console.log(`[login] ❌ wrong password for "${user.username}"`);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid username or password.'
+      });
+    }
+
+    // ---------- Role check — LENIENT (warn only, never block) ----------
+    // The frontend auto-flips the role toggle when the username contains "admin".
+    // Trust the DB role instead of the UI tab to avoid locking out real students.
+    if (roleFromClient && user.role !== roleFromClient) {
+      console.warn(
+        `[login] ⚠️ role tab mismatch: DB="${user.role}" UI="${roleFromClient}" — proceeding with DB role.`
+      );
+    }
+
+    // ---------- Admin 2FA path ----------
     if (user.role === 'admin') {
       const otpDestination = (user.email || process.env.ADMIN_EMAIL || '').trim().toLowerCase();
       if (!otpDestination) {
@@ -631,17 +667,19 @@ app.post('/api/login', async (req, res) => {
       }
 
       if (!user.email && process.env.ADMIN_EMAIL) {
-        user.email = otpDestination;
-        await user.save();
-        console.log('[login] Attached ADMIN_EMAIL to legacy admin');
+        try {
+          user.email = otpDestination;
+          await user.save();
+          console.log('[login] attached ADMIN_EMAIL to legacy admin');
+        } catch (e) {
+          console.warn('[login] could not persist admin email:', e.message);
+        }
       }
 
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      
-      // Create a stateless pendingToken using JWT
       const pendingToken = jwt.sign(
-        { userId: user._id.toString(), otp }, 
-        JWT_SECRET, 
+        { userId: user._id.toString(), otp },
+        JWT_SECRET,
         { expiresIn: '10m' }
       );
 
@@ -650,14 +688,17 @@ app.post('/api/login', async (req, res) => {
           transporter.sendMail({
             to: otpDestination,
             subject: 'Aerospace Portal — Admin Login OTP',
-            text: `Hi ${user.fullName || user.username},\n\nYour admin login OTP is: ${otp}\n\nValid for 10 minutes. Do not share.\n\nIf this wasn't you, ignore this email — no one can log in without this code.`
+            text: `Hi ${user.fullName || user.username},\n\nYour admin login OTP is: ${otp}\n\nValid for 10 minutes. Do not share.\n\nIf this wasn't you, ignore this email.`
           }),
           30000,
           'Admin 2FA OTP send'
         );
       } catch (emailErr) {
-        console.error('[login-2fa] Failed to send OTP:', emailErr.message);
-        return res.status(500).json({ success: false, message: 'Could not send 2FA OTP. Please try again.' });
+        console.error('[login-2fa] OTP send failed:', emailErr.message);
+        return res.status(500).json({
+          success: false,
+          message: 'Could not send 2FA OTP. Please try again.'
+        });
       }
 
       console.log('[login-2fa] OTP sent to', otpDestination);
@@ -670,16 +711,50 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
-    /* ============================================================
-       STUDENT — direct login (unchanged)
-       ============================================================ */
-    if (user.role === 'student') { bumpStreak(user); await user.save(); }
-    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
-    console.log('[login] ✅ Success:', user.username, '(' + user.role + ')');
-    res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
+    // ---------- Student login ----------
+    if (user.role === 'student') {
+      try {
+        bumpStreak(user);
+        await user.save();
+      } catch (saveErr) {
+        // Non-fatal: never block login because of a streak-save hiccup
+        console.warn('[login] bumpStreak save failed (non-fatal):', saveErr.message);
+      }
+    }
+
+    // ---------- Issue token ----------
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    // ---------- Serialize (defensive) ----------
+    let serialized;
+    try {
+      serialized = serializeUser(user);
+    } catch (serErr) {
+      console.error('[login] serializeUser failed:', serErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Login succeeded but user data could not be prepared. Please contact support.'
+      });
+    }
+
+    console.log(`[login] ✅ success ${user.username} (${user.role}) in ${Date.now() - t0}ms`);
+    return res.json({
+      success: true,
+      message: 'Login successful!',
+      token,
+      user: serialized
+    });
+
   } catch (e) {
-    console.error('[login] Error:', e);
-    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+    console.error('[login] 💥 unhandled:', e);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error: ' + (e.message || 'unknown')
+    });
   }
 });
 

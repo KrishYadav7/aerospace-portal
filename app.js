@@ -87,11 +87,20 @@ const SESSION_USER_KEY  = 'aero_user';
 const SESSION_TOKEN_KEY = 'aero_token';
 
 function saveSession(user, token) {
-  if (user)  sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
-  if (token) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+  try {
+    if (user)  sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+    if (token) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+  } catch (e) {
+    // Private-browsing / quota / disabled-storage — never block login
+    console.warn('[session] saveSession failed (non-fatal):', e);
+  }
 }
 function saveSessionUser(user) {
-  if (user) sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+  try {
+    if (user) sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
+  } catch (e) {
+    console.warn('[session] saveSessionUser failed (non-fatal):', e);
+  }
 }
 function loadSessionUser() {
   try {
@@ -594,8 +603,211 @@ function setLoginRole(role) {
   document.querySelectorAll('.login-role-toggle button').forEach(b =>
     b.classList.toggle('active', b.dataset.role === role));
 }
-
 async function handleLogin(e) {
+  e.preventDefault();
+
+  const userEl = $('loginUsername');
+  const passEl = $('loginPassword');
+  if (!userEl || !passEl) return;
+
+  const username = userEl.value.trim();
+  const password = passEl.value.trim();
+  if (!username || !password) {
+    return showToast('Please enter both username and password.', 'error');
+  }
+
+  const btn = e.target.querySelector('button[type="submit"]');
+  const originalBtnText = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
+  }
+
+  const resetBtn = () => {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalBtnText;
+    }
+  };
+
+  const attemptLogin = async (retries = 2) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    try {
+      console.log('[login] POST /api/login', { username, role: loginRole });
+
+      const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, role: loginRole }),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      // ---- SAFE JSON PARSE (fixes "Unexpected token '<'") ----
+      const rawText = await response.text();
+      let data;
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (parseErr) {
+        console.error('[login] non-JSON response:', response.status, rawText.slice(0, 300));
+        if (response.status === 502 || response.status === 504) {
+          if (retries > 0) {
+            showToast(`Server is starting up... Retrying (${3 - retries}/2)`, 'info');
+            await new Promise(r => setTimeout(r, 5000));
+            return attemptLogin(retries - 1);
+          }
+          showToast('Server is not responding yet. Please wait a moment and try again.', 'error');
+        } else {
+          showToast(
+            `Server returned HTTP ${response.status}. ` +
+            (rawText.startsWith('<') ? 'Backend route may be missing.' : 'Unexpected response.'),
+            'error'
+          );
+        }
+        resetBtn();
+        return;
+      }
+
+      console.log('[login] response:', data);
+
+      // ---- Admin 2FA branch ----
+      if (data.requires2FA && data.pendingToken) {
+        _adminPendingToken = data.pendingToken;
+        openOtpModal({
+          title: 'Admin 2FA Verification',
+          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your email'}. Enter it to finish logging in.`,
+          type: 'admin-login',
+          data: { pendingToken: data.pendingToken }
+        });
+        showToast('OTP sent to your email.', 'info');
+        resetBtn();
+        return;
+      }
+
+      // ---- Success ----
+      if (data.success && data.user) {
+        currentUser = data.user;
+        saveSession(data.user, data.token);           // now wrapped in try/catch
+        studentNav = 'home';
+        adminTab = 'overview';
+        editingCourseId = null;
+        setLoginRole('student');
+        pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
+        showToast(data.message || 'Login successful!', 'success');
+        renderApp();
+        return;
+      }
+
+      // ---- Explicit backend error ----
+      showToast(data.message || 'Login failed. Please try again.', 'error');
+      resetBtn();
+
+    } catch (err) {
+      clearTimeout(timeoutId);
+      console.error('[login] fetch error:', err);
+
+      if (err.name === 'AbortError') {
+        showToast('Request timed out. The server may be cold-starting — retrying…', 'error');
+        if (retries > 0) {
+          await new Promise(r => setTimeout(r, 5000));
+          return attemptLogin(retries - 1);
+        }
+      } else if (err.message && (
+          err.message.includes('Failed to fetch') ||
+          err.message.includes('NetworkError') ||
+          err.message.includes('Load failed')
+        )) {
+        if (retries > 0) {
+          showToast(`Server is waking up... Retrying (${3 - retries}/2)`, 'info');
+          await new Promise(r => setTimeout(r, 5000));
+          return attemptLogin(retries - 1);
+        }
+        showToast('Server is taking too long to respond. Please try again.', 'error');
+      } else {
+        showToast('Login failed: ' + (err.message || 'Unknown error'), 'error');
+      }
+      resetBtn();
+    }
+  };
+
+  await attemptLogin();
+} {
+  e.preventDefault();
+  const username = $('loginUsername').value.trim();
+  const password = $('loginPassword').value.trim();
+  if (!username || !password) return showToast('Please enter both username and password.', 'error');
+
+  const btn = e.target.querySelector('button[type="submit"]');
+  const originalBtnText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in...';
+
+  const resetBtn = () => {
+    btn.disabled = false;
+    btn.innerHTML = originalBtnText;
+  };
+
+  const attemptLogin = async (retries = 2) => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout for Render cold start
+
+      const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, role: loginRole }),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      const data = await response.json();
+
+      if (data.requires2FA && data.pendingToken) {
+        _adminPendingToken = data.pendingToken;
+        openOtpModal({
+          title: 'Admin 2FA Verification',
+          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your email'}. Enter it to finish logging in.`,
+          type: 'admin-login',
+          data: { pendingToken: data.pendingToken }
+        });
+        showToast('OTP sent to your email.', 'info');
+        resetBtn();
+        return;
+      }
+
+      if (data.success) {
+        currentUser = data.user;
+        saveSession(data.user, data.token);
+        studentNav = 'home';
+        adminTab = 'overview';
+        editingCourseId = null;
+        setLoginRole('student');
+        pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
+        showToast(data.message, 'success');
+        renderApp();
+      } else {
+        showToast(data.message, 'error');
+        resetBtn();
+      }
+    } catch (err) {
+      if (err.name === 'AbortError' || err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+        if (retries > 0) {
+          showToast(`Server is waking up... Retrying (${3 - retries}/2)`, 'info');
+          await new Promise(r => setTimeout(r, 5000));
+          return attemptLogin(retries - 1);
+        }
+        showToast('Server is taking too long to respond. Please try again.', 'error');
+      } else {
+        showToast('Network error. Check your connection.', 'error');
+      }
+      resetBtn();
+    }
+  };
+
+  await attemptLogin();
+} {
   e.preventDefault();
   const username = $('loginUsername').value.trim();
   const password = $('loginPassword').value.trim();
