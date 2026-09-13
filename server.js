@@ -78,37 +78,130 @@ if (!EMAIL_USER || !EMAIL_PASS) {
   console.error('❌ EMAIL_USER / EMAIL_PASS are not set. OTP + bulk email will NOT work.');
 }
 
-const { Resend } = require('resend');
-const resend = new Resend(process.env.RESEND_API_KEY);
+/* ============================================================
+   EMAIL TRANSPORTER — Resend (primary) + Gmail SMTP (fallback)
+   ------------------------------------------------------------
+   WHY THIS EXISTS:
+     Resend's free "onboarding@resend.dev" sandbox sender can ONLY
+     deliver to the Resend account owner's own email address. All
+     other recipients are silently accepted (HTTP 200) but never
+     delivered. That's why OTPs looked "sent" but never arrived.
 
-// We create a "mock" transporter so your existing verify() and sendMail() code doesn't break
+   THE FIX:
+     1. `from` is picked smartly via pickFrom():
+        - If EMAIL_FROM is set in .env → use it (recommended).
+        - Else if SMTP creds exist → use EMAIL_USER as `from`.
+        - Else fall back to onboarding@resend.dev sandbox.
+
+     2. Every sendMail() call now CHECKS the `error` field from
+        Resend and logs it, so silent drops become visible.
+
+     3. If Resend fails AND SMTP creds exist, we auto-retry over
+        Gmail SMTP (port 465, secure).
+   ============================================================ */
+const { Resend } = require('resend');
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+const USE_RESEND = !!process.env.RESEND_API_KEY;
+const USE_SMTP   = !!(process.env.EMAIL_USER && process.env.EMAIL_PASS);
+
+let smtpTransport = null;
+if (USE_SMTP) {
+  const nodemailerReal = require('nodemailer');
+  smtpTransport = nodemailerReal.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000
+  });
+}
+
+function pickFrom() {
+  if (process.env.EMAIL_FROM && process.env.EMAIL_FROM.trim()) {
+    return process.env.EMAIL_FROM.trim();
+  }
+  if (USE_SMTP) {
+    return `"Aerospace Department" <${process.env.EMAIL_USER}>`;
+  }
+  return '"Aerospace Department" <onboarding@resend.dev>';
+}
+
 const transporter = {
-  verify: async () => { return true; }, // Fake verification for Resend
+  verify: async () => {
+    if (USE_RESEND) {
+      try {
+        const r = await resend.domains.list();
+        if (r && r.error) {
+          console.warn('[email] Resend verify warning:', r.error.message || r.error);
+        }
+        return true;
+      } catch (e) {
+        console.warn('[email] Resend verify threw:', e.message);
+        return true;
+      }
+    }
+    if (USE_SMTP) return smtpTransport.verify();
+    return false;
+  },
+
   sendMail: async (options) => {
-    // Resend expects `from`, `to`, `subject`, `html`, `text`
-    return await resend.emails.send({
-      from: options.from || `"Aerospace Department" <onboarding@resend.dev>`,
+    const from = pickFrom();
+    const payload = {
+      from,
       to: options.to,
       subject: options.subject,
-      html: options.html,
-      text: options.text
-    });
+      text: options.text,
+      html: options.html
+    };
+    if (options.replyTo) payload.reply_to = options.replyTo;
+
+    // ---- 1) Try Resend ----
+    if (USE_RESEND) {
+      const { data, error } = await resend.emails.send(payload);
+      if (error) {
+        console.error('[email] Resend FAILED:',
+          '\n   status:', error.statusCode,
+          '\n   name:  ', error.name,
+          '\n   msg:   ', error.message,
+          '\n   to:    ', options.to,
+          '\n   from:  ', from);
+        if (!USE_SMTP) {
+          throw new Error('Resend: ' + (error.message || 'send failed'));
+        }
+        console.warn('[email] Falling back to SMTP…');
+      } else {
+        console.log('[email] Resend OK →', options.to, '· id:', data && data.id);
+        return data;
+      }
+    }
+
+    // ---- 2) SMTP fallback ----
+    if (USE_SMTP) {
+      const info = await smtpTransport.sendMail(payload);
+      console.log('[email] SMTP OK →', options.to, '· id:', info.messageId);
+      return info;
+    }
+
+    throw new Error('No email transport configured (need RESEND_API_KEY or EMAIL_USER + EMAIL_PASS).');
   }
 };
-// ---- Verify transporter ONCE on boot ----
-// This is the single biggest diagnostic win: on startup you'll see
-// either "✅ Email transporter ready" or "❌ ... FAILED".
+
+// ---- Boot diagnostic ----
 (async () => {
-  if (!EMAIL_USER || !EMAIL_PASS) return;
+  console.log('[email] Resend configured:', USE_RESEND);
+  console.log('[email] SMTP configured:  ', USE_SMTP);
+  console.log('[email] Default FROM:    ', pickFrom());
   try {
     await transporter.verify();
-    console.log(`✅ Email transporter ready — sending as ${EMAIL_USER}`);
+    console.log('✅ Email transporter ready.');
   } catch (err) {
-    console.error('❌ Email transporter verification FAILED:');
-    console.error('   ', err.message);
-    console.error('    → Check EMAIL_USER / EMAIL_PASS in .env');
-    console.error('    → Gmail requires an App Password (not your account password)');
-    console.error('    → Some hosts block outbound SMTP (ports 587/465)');
+    console.error('❌ Email transporter verification FAILED:', err.message);
   }
 })();
 /* ============================================================
@@ -425,7 +518,6 @@ app.post('/api/send-otp', async (req, res) => {
     // ---- Email OTP (blocking, must succeed) ----
     await withTimeout(
       transporter.sendMail({
-        from: `"Aerospace Department" <onboarding@resend.dev>`,
         to: cleanEmail,
         subject: 'Aerospace Portal - Registration OTP',
         text: `Welcome!\n\nYour OTP: ${otp}\n\nDo not share this. It expires in 10 minutes.`
@@ -537,7 +629,6 @@ app.post('/api/forgot-username/send-otp', async (req, res) => {
     // Email (best-effort if user has one)
     if (user.email) {
       transporter.sendMail({
-        from: `"Aerospace Department" <onboarding@resend.dev>`,
         to: user.email,
         subject: 'Aerospace Portal - Username Recovery OTP',
         text: `Hi ${user.fullName || user.username},\n\nYour OTP for username recovery is: ${otp}\n\nValid for 10 minutes. Do not share.`
@@ -604,7 +695,6 @@ app.post('/api/forgot-username/verify', async (req, res) => {
     // Email copy (fallback, so user isn't stuck if SMS is not configured)
     if (user.email) {
       transporter.sendMail({
-        from: `"Aerospace Department" <onboarding@resend.dev>`,
         to: user.email,
         subject: 'Aerospace Portal - Your Username',
         text: `Hi ${user.fullName || user.username},\n\nYour username is: ${user.username}\n\n— Aerospace Department`
@@ -650,7 +740,6 @@ app.post('/api/forgot-password/send-otp', async (req, res) => {
 
     if (user.email) {
       transporter.sendMail({
-        from: `"Aerospace Department" <onboarding@resend.dev>`,
         to: user.email,
         subject: 'Aerospace Portal - Password Reset OTP',
         text: `Hi ${user.fullName || user.username},\n\nYour password-reset OTP is: ${otp}\n\nValid 10 min. If this wasn't you, ignore this email.`
@@ -945,7 +1034,6 @@ app.post('/api/admin/send-email', async (req, res) => {
 
       await withTimeout(
         transporter.sendMail({
-          from: `"Aerospace Department" <onboarding@resend.dev>`,
           to: student.email,
           replyTo: EMAIL_USER,
           subject: cleanSubject,
@@ -1757,7 +1845,6 @@ app.post('/api/subscribe/cancel/send-otp', async (req, res) => {
 
     await withTimeout(
       transporter.sendMail({
-        from: `"Aerospace Department" <onboarding@resend.dev>`,
         to: user.email,
         subject: 'Confirm your subscription cancellation — Aerospace Department',
         text,
