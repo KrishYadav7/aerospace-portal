@@ -108,8 +108,9 @@ let smtpTransport = null;
 if (USE_SMTP) {
   smtpTransport = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    port: 587,                 // ← CHANGED: 465 is BLOCKED on Render
+    secure: false,             // ← CHANGED: STARTTLS, not implicit TLS
+    requireTLS: true,          // ← STARTTLS upgrade required
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS
@@ -120,11 +121,14 @@ if (USE_SMTP) {
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 25000,
-    // Force IPv4 — Render free tier has no IPv6 egress,
-    // and Node otherwise prefers the AAAA record for smtp.gmail.com
+    // Force IPv4 — Render free tier has no IPv6 egress
     family: 4,
     lookup: (hostname, options, callback) => {
       dns.lookup(hostname, { ...options, family: 4 }, callback);
+    },
+    tls: {
+      servername: 'smtp.gmail.com',   // required for proper TLS SNI
+      minVersion: 'TLSv1.2'
     }
   });
 }
