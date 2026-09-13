@@ -3406,35 +3406,63 @@ function clearCourseFilters() {
 
 function renderStudentCourses() {
   const courses = getCourses().filter(c => c.status !== 'draft' && c.status !== 'archived');
-  const searchTerm = ($('studentCourseSearch').value || '').toLowerCase().trim();
-  const fSemester = ($('filterSemester')?.value || '').trim(); // <-- NEW
-  const fCategory = ($('filterCategory')?.value || '').trim();
+  const searchTerm  = ($('studentCourseSearch')?.value || '').toLowerCase().trim();
+  const fSemester   = ($('filterSemester')?.value   || '').trim();
+  const fCategory   = ($('filterCategory')?.value   || '').trim();
   const fDifficulty = ($('filterDifficulty')?.value || '').trim();
-  const fPrice = ($('filterPrice')?.value || '').trim();
+  const fPrice      = ($('filterPrice')?.value      || '').trim();
+
+  // Normalizes any semester value to just its first number as a string.
+  // "1" → "1" | 1 → "1" | "Semester 1" → "1" | "Sem 1" → "1" | "1st" → "1"
+  function normalizeSemester(v) {
+    if (v === null || v === undefined) return '';
+    const s = String(v).trim();
+    const m = s.match(/\d+/);
+    return m ? m[0] : s.toLowerCase();
+  }
 
   const filtered = courses.filter(c => {
+    // Search
     if (searchTerm) {
-      const hit = c.name.toLowerCase().includes(searchTerm) ||
+      const hit = (c.name || '').toLowerCase().includes(searchTerm) ||
                   (c.code && c.code.toLowerCase().includes(searchTerm)) ||
                   (c.instructor && c.instructor.toLowerCase().includes(searchTerm));
       if (!hit) return false;
     }
-    if (fSemester && String(c.semester) !== fSemester) return false; // <-- NEW
+
+    // Semester — normalized comparison
+    if (fSemester) {
+      const courseSem = normalizeSemester(c.semester);
+      const filterSem = normalizeSemester(fSemester);
+      if (courseSem !== filterSem) return false;
+    }
+
+    // Category
     if (fCategory && c.category !== fCategory) return false;
+
+    // Difficulty
     if (fDifficulty && c.difficulty !== fDifficulty) return false;
-    if (fPrice === 'free' && c.isPremium) return false;
+
+    // Price
+    if (fPrice === 'free'    &&  c.isPremium) return false;
     if (fPrice === 'premium' && !c.isPremium) return false;
+
     return true;
   });
 
   filtered.sort((a, b) => {
     if (a.featured && !b.featured) return -1;
     if (!a.featured && b.featured) return 1;
-    return a.name.localeCompare(b.name);
+    return (a.name || '').localeCompare(b.name || '');
   });
 
   if (filtered.length === 0) {
-    $('studentCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-graduation-cap"></i><p>No courses match your filters.</p></div>`;
+    $('studentCourseList').innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-graduation-cap"></i>
+        <p>No courses match your filters.</p>
+        ${fSemester ? `<p style="margin-top:8px;font-size:13px;">No courses found for Semester ${fSemester}.</p>` : ''}
+      </div>`;
     return;
   }
 
