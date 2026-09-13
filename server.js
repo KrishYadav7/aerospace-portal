@@ -1,3 +1,6 @@
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');   // Render free tier has NO IPv6 egress
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -114,9 +117,15 @@ if (USE_SMTP) {
     pool: true,
     maxConnections: 5,
     maxMessages: 50,
-    connectionTimeout: 12000,
-    greetingTimeout: 12000,
-    socketTimeout: 20000
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 25000,
+    // Force IPv4 — Render free tier has no IPv6 egress,
+    // and Node otherwise prefers the AAAA record for smtp.gmail.com
+    family: 4,
+    lookup: (hostname, options, callback) => {
+      dns.lookup(hostname, { ...options, family: 4 }, callback);
+    }
   });
 }
 
@@ -173,8 +182,14 @@ const transporter = {
       } catch (e) {
         lastError = e;
         console.error('[email] ❌ SMTP FAILED →', options.to, '·', e.message);
-        if (!USE_RESEND) throw e;
-        console.warn('[email] → falling back to Resend…');
+        // Resend's sandbox silently drops mail to anyone except the account owner.
+        // Unless you've verified a custom domain on Resend, do NOT fall back —
+        // it will pretend to succeed and the email will never arrive.
+        const resendUsable = USE_RESEND && !/onboarding@resend\.dev/i.test(resendFrom());
+        if (!resendUsable) {
+          throw new Error('SMTP failed and Resend sandbox is not usable: ' + e.message);
+        }
+        console.warn('[email] → falling back to Resend (verified domain)…');
       }
     }
 
