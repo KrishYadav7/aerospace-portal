@@ -599,6 +599,21 @@ async function handleLogin(e) {
       body: JSON.stringify({ username, password, role: loginRole })
     });
     const data = await response.json();
+
+    /* ---- Admin 2FA branch ---- */
+    if (data.requires2FA && data.pendingToken) {
+      _adminPendingToken = data.pendingToken;
+      openOtpModal({
+        title: 'Admin 2FA Verification',
+        subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your email'}. Enter it to finish logging in.`,
+        type: 'admin-login',
+        data: { pendingToken: data.pendingToken }
+      });
+      showToast('OTP sent to your email.', 'info');
+      return;
+    }
+
+    /* ---- Regular login ---- */
     if (data.success) {
       currentUser = data.user;
       saveSession(data.user, data.token);
@@ -632,6 +647,7 @@ function showRegisterModal() {
   openModal('registerModal');
 }
 let tempRegisterData = null;
+let _adminPendingToken = null; // pendingToken between password + admin 2FA
 async function registerStudent(e) {
   e.preventDefault();
   const fullName = $('regFullName').value.trim();
@@ -684,6 +700,7 @@ function openOtpModal({ title, subtitle, type, data }) {
   const subEl   = $('otpModalSub');
   const input   = $('otpModalInput');
   const btn     = $('otpModalSubmitBtn');
+  const resendRow = document.getElementById('otpResendRow');
 
   if (titleEl) titleEl.innerHTML = `<i class="fas fa-shield-halved"></i> ${escapeHtml(title)}`;
   if (subEl)   subEl.textContent = subtitle || 'Enter the code we sent you.';
@@ -692,9 +709,36 @@ function openOtpModal({ title, subtitle, type, data }) {
     btn.disabled = false;
     btn.innerHTML = '<i class="fas fa-check"></i> Verify';
   }
+  // Resend link is only useful for admin-login
+  if (resendRow) resendRow.style.display = (type === 'admin-login') ? 'block' : 'none';
 
   openModal('otpVerificationModal');
   setTimeout(() => input && input.focus(), 120);
+}
+
+/* ---- Resend the OTP for the current context ---- */
+async function resendOtpForCurrentContext() {
+  if (!_otpContext) return;
+  const btn = document.getElementById('otpResendBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…'; }
+
+  try {
+    if (_otpContext.type === 'admin-login' && _otpContext.data?.pendingToken) {
+      const res = await fetch(`${API_BASE}/admin/login/resend-otp`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pendingToken: _otpContext.data.pendingToken })
+      });
+      const data = await res.json();
+      if (data.success) showToast('✓ New OTP sent.', 'success');
+      else showToast(data.message || 'Could not resend.', 'error');
+    } else {
+      showToast('Resend is not available for this step.', 'info');
+    }
+  } catch {
+    showToast('Network error.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-rotate-right"></i> Resend OTP'; }
+  }
 }
 
 function cancelOtpVerification() {
@@ -725,6 +769,8 @@ async function submitOtpVerification() {
       await _handleForgotUsernameOtp(otp);
     } else if (_otpContext.type === 'forgot-password') {
       await _handleForgotPasswordOtp(otp);
+    } else if (_otpContext.type === 'admin-login') {
+      await _handleAdminLoginOtp(otp);
     } else {
       throw new Error('Unknown verification context.');
     }
@@ -751,6 +797,87 @@ async function _handleRegisterOtp(otp) {
   tempRegisterData = null;
   closeModal('otpVerificationModal');
   showToast('🎉 Registration successful! You can now log in.', 'success');
+}
+
+/* ---- Admin 2FA login OTP handler ---- */
+async function _handleAdminLoginOtp(otp) {
+  const res = await fetch(`${API_BASE}/admin/login/verify-otp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      pendingToken: _otpContext.data.pendingToken,
+      otp
+    })
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Invalid OTP.');
+
+  // Success — establish session
+  currentUser = data.user;
+  saveSession(data.user, data.token);
+  _adminPendingToken = null;
+  _otpContext = null;
+
+  closeModal('otpVerificationModal');
+  studentNav = 'home';
+  adminTab = 'overview';
+  editingCourseId = null;
+  pushHash('#/admin/overview');
+  showToast('🎉 Admin login successful.', 'success');
+  renderApp();
+}
+
+/* ---- Admin 2FA login OTP handler ---- */
+async function _handleAdminLoginOtp(otp) {
+  const res = await fetch(`${API_BASE}/admin/login/verify-otp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      pendingToken: _otpContext.data.pendingToken,
+      otp
+    })
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Invalid OTP.');
+
+  // Success — establish session
+  currentUser = data.user;
+  saveSession(data.user, data.token);
+  _adminPendingToken = null;
+  _otpContext = null;
+
+  closeModal('otpVerificationModal');
+  studentNav = 'home';
+  adminTab = 'overview';
+  editingCourseId = null;
+  pushHash('#/admin/overview');
+  showToast('🎉 Admin login successful.', 'success');
+  renderApp();
+}
+
+/* ---- Admin 2FA login OTP handler ---- */
+async function _handleAdminLoginOtp(otp) {
+  const res = await fetch(`${API_BASE}/admin/login/verify-otp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      pendingToken: _otpContext.data.pendingToken,
+      otp
+    })
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.message || 'Invalid OTP.');
+
+  // Success — establish session
+  currentUser = data.user;
+  saveSession(data.user, data.token);
+  _adminPendingToken = null;
+  _otpContext = null;
+
+  closeModal('otpVerificationModal');
+  studentNav = 'home';
+  adminTab = 'overview';
+  editingCourseId = null;
+  pushHash('#/admin/overview');
+  showToast('🎉 Admin login successful.', 'success');
+  renderApp();
 }
 
 /* ============================================================
@@ -1576,7 +1703,8 @@ function updateAdminTabUI() {
     professors:    { icon: 'fa-user-tie',       text: 'Manage Professors' },
     students:      { icon: 'fa-user-graduate',  text: 'Manage Students' },
     replies:       { icon: 'fa-envelope-open-text', text: 'Email Replies' },
-    subscriptions: { icon: 'fa-repeat',         text: 'Subscriptions & Auto-Pay' }
+    subscriptions: { icon: 'fa-repeat',         text: 'Subscriptions & Auto-Pay' },
+    security:      { icon: 'fa-shield-halved',  text: 'Admin Security' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -1594,7 +1722,9 @@ function updateAdminTabUI() {
       <button class="btn btn-primary" onclick="renderAdminEmailReplies()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh Replies</span></button>`,
     subscriptions: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
-      <button class="btn btn-primary" onclick="renderAdminSubscriptions()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`
+      <button class="btn btn-primary" onclick="renderAdminSubscriptions()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
+    security: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>`
   };
   const meta = titleMap[adminTab] || titleMap.overview;
   if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
@@ -1609,6 +1739,167 @@ function renderAdminDashboard() {
   else if (adminTab === 'students') renderAdminStudents();
   else if (adminTab === 'replies') renderAdminEmailReplies();
   else if (adminTab === 'subscriptions') renderAdminSubscriptions();
+  else if (adminTab === 'security') renderAdminSecurityTab();
+}
+
+/* ============================================================
+   ADMIN — SECURITY TAB (self-service credential management)
+   ============================================================ */
+function renderAdminSecurityTab() {
+  const container = document.getElementById('adminSecurityContent');
+  if (!container) return;
+
+  const me = currentUser || {};
+  const maskedEmail = (function mask(e) {
+    if (!e) return '—';
+    const [l, d] = String(e).split('@');
+    if (!d) return e;
+    return l.slice(0, 2) + '*'.repeat(Math.max(1, l.length - 2)) + '@' + d;
+  })(me.email);
+
+  container.innerHTML = `
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-user-shield"></i> Account Summary</h3>
+      <div class="editor-grid-2" style="margin-bottom:12px;">
+        <div class="form-group">
+          <label>Current Username</label>
+          <input type="text" value="${escapeHtml(me.username || '')}" disabled>
+        </div>
+        <div class="form-group">
+          <label>Registered Email (2FA destination)</label>
+          <input type="text" value="${escapeHtml(maskedEmail)}" disabled>
+          <span class="hint">All admin 2FA and recovery codes are sent here.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-at"></i> Change Username</h3>
+      <p class="editor-hint">Your current password is required to confirm this change.</p>
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Current Password *</label>
+          <input type="password" id="secCurPwUsername" placeholder="Enter your current password" autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label>New Username *</label>
+          <input type="text" id="secNewUsername" placeholder="3–30 chars: a-z 0-9 . _ -" autocomplete="off">
+        </div>
+      </div>
+      <div class="editor-footer" style="position:static;box-shadow:none;padding:14px 0 0;border:none;background:none;">
+        <div class="editor-footer-left">
+          <span class="editor-hint"><i class="fas fa-lock"></i> You'll stay logged in after this change.</span>
+        </div>
+        <div class="editor-footer-right">
+          <button class="btn btn-primary" onclick="updateAdminUsername()">
+            <i class="fas fa-save"></i> Change Username
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-key"></i> Change Password</h3>
+      <p class="editor-hint">Minimum 8 characters, must contain at least one letter and one number.</p>
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Current Password *</label>
+          <input type="password" id="secCurPwPassword" placeholder="Enter your current password" autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label>New Password *</label>
+          <input type="password" id="secNewPassword" placeholder="Min 8 chars, letter + number" autocomplete="new-password">
+        </div>
+        <div class="form-group">
+          <label>Confirm New Password *</label>
+          <input type="password" id="secNewPassword2" placeholder="Re-enter new password" autocomplete="new-password">
+        </div>
+      </div>
+      <div class="editor-footer" style="position:static;box-shadow:none;padding:14px 0 0;border:none;background:none;">
+        <div class="editor-footer-left">
+          <span class="editor-hint"><i class="fas fa-envelope"></i> You'll receive a security alert email after the change.</span>
+        </div>
+        <div class="editor-footer-right">
+          <button class="btn btn-primary" onclick="updateAdminPassword()">
+            <i class="fas fa-shield-halved"></i> Change Password
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-life-ring"></i> Account Recovery</h3>
+      <p class="editor-hint">
+        If you forget your username or password, use the login page links:
+        <strong>Forgot Username?</strong> or <strong>Forgot Password?</strong>.
+        Recovery OTPs are sent to <strong>${escapeHtml(maskedEmail)}</strong> only.
+      </p>
+    </div>
+  `;
+}
+
+async function updateAdminUsername() {
+  const currentPassword = ($('secCurPwUsername')?.value || '').trim();
+  const newUsername = ($('secNewUsername')?.value || '').trim().toLowerCase();
+
+  if (!currentPassword) return showToast('Enter your current password.', 'error');
+  if (!newUsername) return showToast('Enter a new username.', 'error');
+  if (newUsername === currentUser.username) return showToast('That is already your username.', 'info');
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/update-credentials`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminId: currentUser._id,
+        currentPassword,
+        newUsername
+      })
+    });
+    if (data.success) {
+      currentUser = data.user;
+      saveSessionUser(currentUser);
+      showToast('✅ Username changed.', 'success');
+      renderAdminSecurityTab();
+      renderApp();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  }
+}
+
+async function updateAdminPassword() {
+  const currentPassword = ($('secCurPwPassword')?.value || '').trim();
+  const pw1 = ($('secNewPassword')?.value || '');
+  const pw2 = ($('secNewPassword2')?.value || '');
+
+  if (!currentPassword) return showToast('Enter your current password.', 'error');
+  if (pw1.length < 8) return showToast('New password must be at least 8 characters.', 'error');
+  if (!/[A-Za-z]/.test(pw1) || !/[0-9]/.test(pw1)) {
+    return showToast('New password must contain at least one letter and one number.', 'error');
+  }
+  if (pw1 !== pw2) return showToast('New passwords do not match.', 'error');
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/update-credentials`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminId: currentUser._id,
+        currentPassword,
+        newPassword: pw1
+      })
+    });
+    if (data.success) {
+      currentUser = data.user;
+      saveSessionUser(currentUser);
+      ['secCurPwPassword', 'secNewPassword', 'secNewPassword2'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+      });
+      showToast('✅ Password changed. Check your email for the security alert.', 'success');
+      renderAdminSecurityTab();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  }
 }
 
 async function renderAdminOverview() {

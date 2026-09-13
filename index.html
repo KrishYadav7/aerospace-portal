@@ -184,6 +184,9 @@
           <button class="admin-tab" data-tab="subscriptions" onclick="switchAdminTab('subscriptions')">
             <i class="fas fa-repeat"></i> Subscriptions
           </button>
+          <button class="admin-tab" data-tab="security" onclick="switchAdminTab('security')">
+            <i class="fas fa-shield-halved"></i> Security
+          </button>
         </div>
 
         <div id="adminTabOverview" class="admin-tab-content">
@@ -300,6 +303,10 @@
 
         <div id="adminTabSubscriptions" class="admin-tab-content">
           <div id="adminSubscriptionsContent"></div>
+        </div>
+
+        <div id="adminTabSecurity" class="admin-tab-content">
+          <div id="adminSecurityContent"></div>
         </div>
       </section>
 
@@ -513,6 +520,11 @@
         <span class="hint" style="text-align:center;display:block;margin-top:8px;">
           <i class="fas fa-clock"></i> Code expires in 10 minutes.
         </span>
+        <div id="otpResendRow" style="display:none;text-align:center;margin-top:10px;">
+          <button type="button" class="link-inline" onclick="resendOtpForCurrentContext()" id="otpResendBtn" style="background:none;border:none;cursor:pointer;">
+            <i class="fas fa-rotate-right"></i> Resend OTP
+          </button>
+        </div>
       </div>
 
       <div class="modal-actions" style="flex-direction:column-reverse;">

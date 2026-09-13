@@ -49,11 +49,19 @@ const bulkEmailLimiter = rateLimit({
   standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many bulk emails sent. Please wait 5 minutes.' }
 });
+const recoveryLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many recovery attempts. Please wait 15 minutes.' }
+});
 app.use('/api/', apiLimiter);
 app.use('/api/login', authLimiter);
 app.use('/api/send-otp', authLimiter);
 app.use('/api/register', authLimiter);
 app.use('/api/admin/send-email', bulkEmailLimiter);
+app.use('/api/forgot-username/send-otp', recoveryLimiter);
+app.use('/api/forgot-password/send-otp', recoveryLimiter);
+app.use('/api/admin/login/verify-otp', authLimiter);
 
 const JWT_SECRET = process.env.JWT_SECRET || 'SuperSecretAeroKey';
 if (!process.env.JWT_SECRET) {
@@ -446,6 +454,53 @@ function nl2br(s) {
   return escapeHtml(s).replace(/\r?\n/g, '<br/>');
 }
 
+/* ============================================================
+   ADMIN 2FA — pending login store
+   ============================================================ */
+const adminLoginStore = {}; // pendingToken → { userId, otp, expiresAt, attempts, resends, email }
+
+/* ============================================================
+   ADMIN SECURITY ALERT — emailed on any credential change
+   ============================================================ */
+async function sendAdminCredentialChangeAlert({ adminUser, changeType, ipAddress }) {
+  try {
+    const to = (adminUser && adminUser.email) || process.env.ADMIN_EMAIL;
+    if (!to) return;
+    const when = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const html = `
+      <div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:560px;margin:0 auto;padding:26px 22px;color:#14161c;line-height:1.6;background:#ffffff;">
+        <div style="border-left:4px solid #f59e0b;padding-left:14px;margin-bottom:22px;">
+          <div style="font-size:18px;font-weight:700;color:#14161c;">Aerospace Department</div>
+          <div style="font-size:12px;color:#8b8d98;letter-spacing:.5px;">SECURITY ALERT</div>
+        </div>
+        <h2 style="font-size:20px;font-weight:800;color:#14161c;margin:0 0 10px;">Admin credentials changed</h2>
+        <p style="font-size:14.5px;margin:0 0 18px;">
+          Hi ${escapeHtml(adminUser.fullName || adminUser.username || 'Admin')},<br><br>
+          Your admin account <strong>${escapeHtml(changeType)}</strong> was just changed.
+        </p>
+        <div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:12px 14px;margin:18px 0;font-size:13px;color:#78350f;">
+          <strong>Time:</strong> ${escapeHtml(when)}<br>
+          <strong>IP:</strong> ${escapeHtml(ipAddress || 'unknown')}
+        </div>
+        <p style="font-size:14px;margin:18px 0 0;">
+          If this was you, no action is needed. If you did <strong>not</strong> make this change, reset your password immediately or contact support.
+        </p>
+        <div style="border-top:1px solid #ebe7e0;margin-top:26px;padding-top:16px;font-size:12.5px;color:#8b8d98;">
+          — Aerospace Department<br/>IIT Kharagpur
+        </div>
+      </div>`;
+    await transporter.sendMail({
+      to,
+      subject: '⚠️ Security Alert — Admin credentials changed',
+      text: `Admin credentials changed\n\nYour admin ${changeType} was just changed.\nTime: ${when}\nIP: ${ipAddress || 'unknown'}\n\nIf this wasn't you, reset your password immediately.`,
+      html
+    });
+    console.log('[admin-alert] Sent to', to, '· change:', changeType);
+  } catch (e) {
+    console.warn('[admin-alert] Failed to send:', e.message);
+  }
+}
+
 /* ---- Concurrency helper: run async tasks with a max parallel limit ---- */
 async function runWithConcurrency(items, worker, concurrency = 8) {
   const results = new Array(items.length);
@@ -508,9 +563,19 @@ app.get('/setup-admin', async (req, res) => {
   try {
     const adminExists = await User.findOne({ role: 'admin' });
     if (adminExists) return res.send('Admin already exists!');
-    const hashedPassword = await bcrypt.hash('AeroAdmin123', 10);
-    await new User({ username: 'admin', password: hashedPassword, role: 'admin', fullName: 'Aerospace Admin' }).save();
-    res.send('✅ Admin created! Username: admin | Password: AeroAdmin123');
+    const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+    if (!adminEmail) return res.status(500).send('❌ ADMIN_EMAIL not set in environment.');
+    const adminUsername = (process.env.ADMIN_USERNAME || 'admin').trim().toLowerCase();
+    const adminPassword = process.env.ADMIN_PASSWORD || 'AeroAdmin123';
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    await new User({
+      username: adminUsername,
+      password: hashedPassword,
+      role: 'admin',
+      fullName: 'Aerospace Admin',
+      email: adminEmail
+    }).save();
+    res.send(`✅ Admin created!\nUsername: ${adminUsername}\nPassword: ${adminPassword}\nEmail: ${adminEmail}\n\n⚠️ 2FA OTPs will be sent to ${adminEmail}. Please log in and change the default password.`);
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
@@ -551,12 +616,243 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
+    /* ============================================================
+       ADMIN 2FA — step 1 of 2
+       ============================================================ */
+    if (user.role === 'admin') {
+      const otpDestination = (user.email || process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+      if (!otpDestination) {
+        return res.status(400).json({
+          success: false,
+          message: 'Admin has no email configured. Contact support.'
+        });
+      }
+
+      // Self-heal: attach ADMIN_EMAIL to legacy admin with no email
+      if (!user.email && process.env.ADMIN_EMAIL) {
+        user.email = otpDestination;
+        await user.save();
+        console.log('[login] Attached ADMIN_EMAIL to legacy admin');
+      }
+
+      const pendingToken = crypto.randomBytes(32).toString('hex');
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      adminLoginStore[pendingToken] = {
+        userId: user._id.toString(),
+        otp,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        attempts: 0,
+        resends: 0,
+        email: otpDestination
+      };
+
+      try {
+        await withTimeout(
+          transporter.sendMail({
+            to: otpDestination,
+            subject: 'Aerospace Portal — Admin Login OTP',
+            text: `Hi ${user.fullName || user.username},\n\nYour admin login OTP is: ${otp}\n\nValid for 10 minutes. Do not share.\n\nIf this wasn't you, ignore this email — no one can log in without this code.`
+          }),
+          30000,
+          'Admin 2FA OTP send'
+        );
+      } catch (emailErr) {
+        delete adminLoginStore[pendingToken];
+        console.error('[login-2fa] Failed to send OTP:', emailErr.message);
+        return res.status(500).json({ success: false, message: 'Could not send 2FA OTP. Please try again.' });
+      }
+
+      console.log('[login-2fa] OTP sent to', otpDestination, '· pendingToken:', pendingToken.slice(0, 8) + '…');
+      return res.json({
+        success: true,
+        requires2FA: true,
+        pendingToken,
+        maskedEmail: maskEmail(otpDestination),
+        message: 'Password verified. Enter the OTP sent to your email.'
+      });
+    }
+
+    /* ============================================================
+       STUDENT — direct login (unchanged)
+       ============================================================ */
     if (user.role === 'student') { bumpStreak(user); await user.save(); }
     const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
     console.log('[login] ✅ Success:', user.username, '(' + user.role + ')');
     res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
   } catch (e) {
     console.error('[login] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
+   ADMIN 2FA — step 2 of 2 (verify OTP → issue JWT)
+   ============================================================ */
+app.post('/api/admin/login/verify-otp', async (req, res) => {
+  try {
+    const { pendingToken, otp } = req.body || {};
+    if (!pendingToken || !otp) {
+      return res.status(400).json({ success: false, message: 'Missing token or OTP.' });
+    }
+
+    const record = adminLoginStore[pendingToken];
+    if (!record) {
+      return res.status(400).json({ success: false, message: 'Session expired or invalid. Please log in again.' });
+    }
+    if (Date.now() > record.expiresAt) {
+      delete adminLoginStore[pendingToken];
+      return res.status(400).json({ success: false, message: 'OTP expired. Please log in again.' });
+    }
+    if (record.attempts >= 5) {
+      delete adminLoginStore[pendingToken];
+      return res.status(400).json({ success: false, message: 'Too many incorrect attempts. Please log in again.' });
+    }
+    if (String(otp).trim() !== record.otp) {
+      record.attempts++;
+      const left = 5 - record.attempts;
+      return res.status(400).json({
+        success: false,
+        message: `Incorrect OTP. ${left} attempt${left === 1 ? '' : 's'} remaining.`
+      });
+    }
+
+    // ✅ OTP verified — burn the pending token
+    delete adminLoginStore[pendingToken];
+
+    const user = await User.findById(record.userId);
+    if (!user || user.role !== 'admin') {
+      return res.status(401).json({ success: false, message: 'Admin account not found.' });
+    }
+
+    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
+    console.log('[login-2fa] ✅ Admin login success:', user.username);
+    res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
+  } catch (e) {
+    console.error('[login-2fa/verify] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
+   ADMIN 2FA — resend OTP
+   ============================================================ */
+app.post('/api/admin/login/resend-otp', async (req, res) => {
+  try {
+    const { pendingToken } = req.body || {};
+    if (!pendingToken) return res.status(400).json({ success: false, message: 'Missing token.' });
+
+    const record = adminLoginStore[pendingToken];
+    if (!record) {
+      return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
+    }
+    if (Date.now() > record.expiresAt) {
+      delete adminLoginStore[pendingToken];
+      return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
+    }
+    if ((record.resends || 0) >= 3) {
+      return res.status(400).json({ success: false, message: 'Maximum resends reached. Please log in again.' });
+    }
+
+    const user = await User.findById(record.userId);
+    if (!user) {
+      delete adminLoginStore[pendingToken];
+      return res.status(404).json({ success: false, message: 'Admin account not found.' });
+    }
+
+    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
+    record.otp = newOtp;
+    record.attempts = 0;
+    record.resends = (record.resends || 0) + 1;
+    record.expiresAt = Date.now() + 10 * 60 * 1000;
+
+    await withTimeout(
+      transporter.sendMail({
+        to: record.email,
+        subject: 'Aerospace Portal — Admin Login OTP (resent)',
+        text: `Hi ${user.fullName || user.username},\n\nYour new admin login OTP is: ${newOtp}\n\nValid for 10 minutes. Do not share.`
+      }),
+      30000,
+      'Admin 2FA resend'
+    );
+
+    res.json({ success: true, message: 'New OTP sent to your email.' });
+  } catch (e) {
+    console.error('[login-2fa/resend] Error:', e);
+    res.status(500).json({ success: false, message: 'Could not resend OTP: ' + e.message });
+  }
+});
+
+/* ============================================================
+   ADMIN — self-service credential update
+   ============================================================ */
+app.put('/api/admin/update-credentials', async (req, res) => {
+  try {
+    const { adminId, currentPassword, newUsername, newPassword } = req.body || {};
+
+    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
+    if (!currentPassword) return res.status(400).json({ success: false, message: 'Current password required.' });
+    if (!newUsername && !newPassword) {
+      return res.status(400).json({ success: false, message: 'Provide a new username and/or new password.' });
+    }
+
+    const user = await User.findById(adminId);
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Admin only.' });
+    }
+
+    const passwordOk = await bcrypt.compare(currentPassword, user.password);
+    if (!passwordOk) {
+      return res.status(401).json({ success: false, message: 'Current password is incorrect.' });
+    }
+
+    const changes = [];
+
+    // ---- Username ----
+    if (newUsername !== undefined && String(newUsername).trim() !== '' && String(newUsername).trim().toLowerCase() !== user.username) {
+      const clean = String(newUsername).trim().toLowerCase();
+      if (!/^[a-z0-9._-]{3,30}$/.test(clean)) {
+        return res.status(400).json({ success: false, message: 'Username must be 3–30 chars (letters, numbers, dots, underscores, hyphens).' });
+      }
+      const taken = await User.findOne({ username: clean, _id: { $ne: user._id } });
+      if (taken) return res.status(409).json({ success: false, message: 'That username is already taken.' });
+      user.username = clean;
+      changes.push('username');
+    }
+
+    // ---- Password ----
+    if (newPassword !== undefined && String(newPassword).length > 0) {
+      const pw = String(newPassword);
+      if (pw.length < 8) {
+        return res.status(400).json({ success: false, message: 'New password must be at least 8 characters.' });
+      }
+      if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) {
+        return res.status(400).json({ success: false, message: 'New password must contain at least one letter and one number.' });
+      }
+      user.password = await bcrypt.hash(pw, 10);
+      changes.push('password');
+    }
+
+    if (changes.length === 0) {
+      return res.status(400).json({ success: false, message: 'Nothing to update.' });
+    }
+
+    await user.save();
+
+    // Fire-and-forget alert email
+    sendAdminCredentialChangeAlert({
+      adminUser: user,
+      changeType: changes.join(' + '),
+      ipAddress: req.ip || req.headers['x-forwarded-for'] || 'unknown'
+    });
+
+    console.log(`[admin] ✅ Credentials updated for ${user.username}: ${changes.join(', ')}`);
+    res.json({
+      success: true,
+      message: `Updated: ${changes.join(', ')}. Check your email for the security alert.`,
+      user: serializeUser(user)
+    });
+  } catch (e) {
+    console.error('[admin/update-credentials] Error:', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
@@ -700,6 +996,20 @@ app.post('/api/forgot-username/send-otp', async (req, res) => {
       return res.status(404).json({ success: false, message: 'No account found with those details.' });
     }
 
+    // Admins must recover via their registered email only
+    if (user.role === 'admin' && !cleanEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'Admins must recover using their registered email address.'
+      });
+    }
+    if (user.role === 'admin' && !user.email) {
+      return res.status(400).json({
+        success: false,
+        message: 'This admin has no email on file. Contact support.'
+      });
+    }
+
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const key = storeKeyFor(user);
     forgotUsernameStore[key] = {
@@ -812,6 +1122,20 @@ app.post('/api/forgot-password/send-otp', async (req, res) => {
     const user = await User.findOne({ $or: or });
     if (!user) return res.status(404).json({ success: false, message: 'No account found with those details.' });
 
+    // Admins must recover via their registered email only
+    if (user.role === 'admin' && !cleanEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'Admins must reset their password using their registered email address.'
+      });
+    }
+    if (user.role === 'admin' && !user.email) {
+      return res.status(400).json({
+        success: false,
+        message: 'This admin has no email on file. Contact support.'
+      });
+    }
+
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     const key = storeKeyFor(user);
     forgotPasswordStore[key] = {
@@ -917,6 +1241,15 @@ app.post('/api/forgot-password/reset', async (req, res) => {
 
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
+
+    // Notify admins that their password was reset via recovery
+    if (user.role === 'admin') {
+      sendAdminCredentialChangeAlert({
+        adminUser: user,
+        changeType: 'password (recovered)',
+        ipAddress: req.ip || req.headers['x-forwarded-for'] || 'unknown'
+      });
+    }
 
     delete passwordResetTokens[resetToken];
     res.json({ success: true, message: 'Password updated successfully. You can now log in.' });
