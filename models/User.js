@@ -35,6 +35,28 @@ const userSchema = new mongoose.Schema({
   quizResults: { type: Map, of: Object, default: {} },
 
   /* ============================================================
+     SUBSCRIPTION / AUTO-PAY
+     ============================================================ */
+  subscription: {
+    active:         { type: Boolean, default: false },
+    status:         { type: String,  default: 'none' },     // none | pending | active | expired | cancelled | halted
+    planId:         { type: String,  default: null },       // Razorpay plan_id
+    subscriptionId: { type: String,  default: null },       // Razorpay subscription_id
+    startedAt:      { type: Date,    default: null },
+    expiresAt:      { type: Date,    default: null },
+    amount:         { type: Number,  default: 0 },          // ₹ / month
+    autoRenew:      { type: Boolean, default: false },
+    lastPaymentId:  { type: String,  default: null },
+    history: [{
+      paymentId: String,
+      amount:    Number,
+      status:    String,                                     // charged | granted | revoked | failed | refunded
+      note:      String,
+      date:      { type: Date, default: Date.now }
+    }]
+  },
+
+  /* ============================================================
      ANALYTICS — rolling log of study events
      Kept small by deduping per (date, courseId, materialId, type)
      Capped at 3000 entries (drop oldest on overflow).

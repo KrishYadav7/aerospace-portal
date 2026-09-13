@@ -13,6 +13,7 @@ const jwt = require('jsonwebtoken');
 const User = require('./models/User');
 const Course = require('./models/Course');
 const Professor = require('./models/Professor');
+const Settings = require('./models/Settings');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const app = express();
@@ -151,6 +152,21 @@ function bumpStreak(user) {
   if ((user.streakCount || 0) > (user.longestStreak || 0)) user.longestStreak = user.streakCount;
 }
 
+/* ---- Subscription helpers ---- */
+async function getGlobalSettings() {
+  let s = await Settings.findOne({ key: 'global' });
+  if (!s) s = await Settings.create({ key: 'global' });
+  return s;
+}
+
+function userHasActiveSubscription(user) {
+  if (!user || !user.subscription) return false;
+  if (!user.subscription.active) return false;
+  if (user.subscription.status !== 'active') return false;
+  if (user.subscription.expiresAt && new Date(user.subscription.expiresAt) < new Date()) return false;
+  return true;
+}
+
 function serializeUser(user) {
   return {
     _id: user._id,
@@ -166,7 +182,9 @@ function serializeUser(user) {
     longestStreak: user.longestStreak || 0,
     lastActiveDate: user.lastActiveDate || null,
     notifications: user.notifications || [],
-    quizResults: Object.fromEntries(user.quizResults || new Map())
+    quizResults: Object.fromEntries(user.quizResults || new Map()),
+    subscription: user.subscription || null,
+    isSubscribed: userHasActiveSubscription(user)
   };
 }
 
@@ -1045,6 +1063,374 @@ app.post('/api/create-order', async (req, res) => {
   }
 });
 /* ============================================================
+   SUBSCRIPTION — SETTINGS + CHECKOUT + MANAGEMENT
+   ============================================================ */
+
+/* ---- Public: read current subscription plan info ---- */
+app.get('/api/settings/subscription', async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    res.json({
+      success: true,
+      settings: {
+        enabled:     s.subscriptionEnabled,
+        amount:      s.subscriptionAmount,
+        title:       s.subscriptionTitle,
+        description: s.subscriptionDesc
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: update plan info ---- */
+app.put('/api/admin/settings/subscription', async (req, res) => {
+  try {
+    const { adminId, amount, title, description, enabled } = req.body || {};
+    if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required.' });
+    const admin = await User.findById(adminId).select('role');
+    if (!admin || admin.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Admin only.' });
+    }
+
+    const s = await getGlobalSettings();
+    if (typeof amount === 'number' && amount >= 0) s.subscriptionAmount = amount;
+    if (typeof title === 'string') s.subscriptionTitle = title.trim() || s.subscriptionTitle;
+    if (typeof description === 'string') s.subscriptionDesc = description.trim() || s.subscriptionDesc;
+    if (typeof enabled === 'boolean') s.subscriptionEnabled = enabled;
+    s.updatedAt = new Date();
+    await s.save();
+
+    res.json({
+      success: true,
+      message: 'Subscription settings saved.',
+      settings: {
+        enabled: s.subscriptionEnabled,
+        amount: s.subscriptionAmount,
+        title: s.subscriptionTitle,
+        description: s.subscriptionDesc
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Ensure a Razorpay Plan exists matching the current amount ---- */
+async function ensureRazorpayPlan(s) {
+  const wantedAmount = Math.round(Number(s.subscriptionAmount) * 100);
+
+  if (s.razorpayPlanId) {
+    try {
+      const plan = await razorpay.plans.fetch(s.razorpayPlanId);
+      if (plan && plan.item && Number(plan.item.amount) === wantedAmount) {
+        return s.razorpayPlanId;
+      }
+    } catch (e) {
+      console.warn('[subscription] plan fetch failed:', e.message);
+    }
+  }
+
+  const plan = await razorpay.plans.create({
+    period: 'monthly',
+    interval: 1,
+    item: {
+      name: s.subscriptionTitle || 'All-Access Monthly Pass',
+      amount: wantedAmount,
+      currency: 'INR',
+      description: s.subscriptionDesc || ''
+    },
+    notes: { product: 'aero-all-access' }
+  });
+
+  s.razorpayPlanId = plan.id;
+  await s.save();
+  return plan.id;
+}
+
+/* ---- Student: start subscription checkout ---- */
+app.post('/api/subscribe/create', async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    const s = await getGlobalSettings();
+    if (!s.subscriptionEnabled) {
+      return res.status(400).json({ success: false, message: 'Subscription is not enabled by admin yet.' });
+    }
+    if (!s.subscriptionAmount || s.subscriptionAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Subscription amount not configured.' });
+    }
+
+    const planId = await ensureRazorpayPlan(s);
+
+    const subscription = await razorpay.subscriptions.create({
+      plan_id: planId,
+      customer_notify: 1,
+      quantity: 1,
+      total_count: 120,                       // 10 years of monthly cycles
+      notes: { userId: String(user._id), purpose: 'aero-all-access' }
+    });
+
+    if (!user.subscription) user.subscription = {};
+    user.subscription.subscriptionId = subscription.id;
+    user.subscription.planId = planId;
+    user.subscription.amount = s.subscriptionAmount;
+    user.subscription.status = 'pending';
+    user.subscription.autoRenew = true;
+    await user.save();
+
+    res.json({
+      success: true,
+      subscriptionId: subscription.id,
+      key_id: process.env.RAZORPAY_KEY_ID,
+      amount: s.subscriptionAmount,
+      title: s.subscriptionTitle,
+      description: s.subscriptionDesc
+    });
+  } catch (e) {
+    console.error('[subscribe/create]', e);
+    res.status(500).json({ success: false, message: 'Could not start subscription: ' + e.message });
+  }
+});
+
+/* ---- Student: verify subscription checkout ---- */
+app.post('/api/subscribe/verify', async (req, res) => {
+  try {
+    const { userId, razorpay_subscription_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+    if (!userId || !razorpay_subscription_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Missing verification fields.' });
+    }
+
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(razorpay_payment_id + '|' + razorpay_subscription_id)
+      .digest('hex');
+
+    if (razorpay_signature !== expected) {
+      return res.status(400).json({ success: false, message: 'Invalid subscription signature.' });
+    }
+
+    let sub = null;
+    try { sub = await razorpay.subscriptions.fetch(razorpay_subscription_id); } catch (e) {}
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    const s = await getGlobalSettings();
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    if (!user.subscription) user.subscription = {};
+    user.subscription.active = true;
+    user.subscription.status = 'active';
+    user.subscription.subscriptionId = razorpay_subscription_id;
+    user.subscription.planId = (sub && sub.plan_id) || user.subscription.planId;
+    user.subscription.startedAt = user.subscription.startedAt || now;
+    user.subscription.expiresAt = expiresAt;
+    user.subscription.amount = s.subscriptionAmount;
+    user.subscription.autoRenew = true;
+    user.subscription.lastPaymentId = razorpay_payment_id;
+    user.subscription.history = user.subscription.history || [];
+    user.subscription.history.push({
+      paymentId: razorpay_payment_id,
+      amount: s.subscriptionAmount,
+      status: 'charged',
+      note: 'Subscription activated',
+      date: now
+    });
+    await user.save();
+
+    res.json({ success: true, message: 'Subscription activated!', user: serializeUser(user) });
+  } catch (e) {
+    console.error('[subscribe/verify]', e);
+    res.status(500).json({ success: false, message: 'Verify failed: ' + e.message });
+  }
+});
+
+/* ---- Student: cancel own subscription ---- */
+app.post('/api/subscribe/cancel', async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    if (!user.subscription || !user.subscription.subscriptionId) {
+      return res.status(400).json({ success: false, message: 'No active subscription.' });
+    }
+
+    try {
+      await razorpay.subscriptions.cancel(user.subscription.subscriptionId, false);
+    } catch (e) {
+      console.warn('[subscribe/cancel] razorpay cancel failed:', e.message);
+    }
+
+    user.subscription.active = false;
+    user.subscription.autoRenew = false;
+    user.subscription.status = 'cancelled';
+    user.subscription.history = user.subscription.history || [];
+    user.subscription.history.push({
+      status: 'revoked', amount: 0, note: 'Cancelled by user', date: new Date()
+    });
+    await user.save();
+
+    res.json({ success: true, message: 'Subscription cancelled.', user: serializeUser(user) });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: list all subscriptions + current settings ---- */
+app.get('/api/admin/subscriptions', async (req, res) => {
+  try {
+    const { adminId } = req.query;
+    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
+    const admin = await User.findById(adminId).select('role');
+    if (!admin || admin.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Admin only.' });
+    }
+
+    const users = await User.find({ 'subscription.status': { $in: ['pending','active','expired','cancelled','halted'] } })
+      .select('fullName username email subscription').lean();
+
+    const now = new Date();
+    const subscriptions = users.map(u => {
+      const s = u.subscription || {};
+      const isActive = !!(s.active && s.status === 'active' &&
+        (!s.expiresAt || new Date(s.expiresAt) > now));
+      const daysLeft = s.expiresAt
+        ? Math.ceil((new Date(s.expiresAt) - now) / 86400000)
+        : null;
+      return {
+        _id: u._id,
+        fullName: u.fullName,
+        username: u.username,
+        email: u.email,
+        subscription: s,
+        isActive,
+        daysLeft
+      };
+    });
+
+    const settings = await getGlobalSettings();
+    res.json({
+      success: true,
+      subscriptions,
+      settings: {
+        enabled:     settings.subscriptionEnabled,
+        amount:      settings.subscriptionAmount,
+        title:       settings.subscriptionTitle,
+        description: settings.subscriptionDesc
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: grant subscription manually ---- */
+app.post('/api/admin/subscription/:userId/grant', async (req, res) => {
+  try {
+    const { adminId, days, note } = req.body || {};
+    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
+    const admin = await User.findById(adminId).select('role');
+    if (!admin || admin.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only.' });
+
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    const s = await getGlobalSettings();
+    const now = new Date();
+    const d = parseInt(days, 10) || 30;
+    const expiresAt = new Date(now.getTime() + d * 24 * 60 * 60 * 1000);
+
+    if (!user.subscription) user.subscription = {};
+    user.subscription.active = true;
+    user.subscription.status = 'active';
+    user.subscription.startedAt = user.subscription.startedAt || now;
+    user.subscription.expiresAt = expiresAt;
+    user.subscription.amount = s.subscriptionAmount || user.subscription.amount || 0;
+    user.subscription.autoRenew = false;
+    user.subscription.history = user.subscription.history || [];
+    user.subscription.history.push({
+      status: 'granted', amount: 0,
+      note: note || `Admin granted ${d} day(s)`, date: now
+    });
+    await user.save();
+
+    res.json({ success: true, message: 'Subscription granted.', user: serializeUser(user) });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: revoke ---- */
+app.post('/api/admin/subscription/:userId/revoke', async (req, res) => {
+  try {
+    const { adminId, note } = req.body || {};
+    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
+    const admin = await User.findById(adminId).select('role');
+    if (!admin || admin.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only.' });
+
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    if (user.subscription && user.subscription.subscriptionId) {
+      try { await razorpay.subscriptions.cancel(user.subscription.subscriptionId, false); } catch (e) {}
+    }
+
+    if (!user.subscription) user.subscription = {};
+    user.subscription.active = false;
+    user.subscription.status = 'cancelled';
+    user.subscription.autoRenew = false;
+    user.subscription.expiresAt = new Date();
+    user.subscription.history = user.subscription.history || [];
+    user.subscription.history.push({
+      status: 'revoked', amount: 0,
+      note: note || 'Admin revoked', date: new Date()
+    });
+    await user.save();
+
+    res.json({ success: true, message: 'Subscription revoked.', user: serializeUser(user) });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: extend ---- */
+app.post('/api/admin/subscription/:userId/extend', async (req, res) => {
+  try {
+    const { adminId, days } = req.body || {};
+    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
+    const admin = await User.findById(adminId).select('role');
+    if (!admin || admin.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only.' });
+
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    const d = parseInt(days, 10) || 30;
+    if (!user.subscription) user.subscription = {};
+    const base = (user.subscription.expiresAt && new Date(user.subscription.expiresAt) > new Date())
+      ? new Date(user.subscription.expiresAt) : new Date();
+    user.subscription.expiresAt = new Date(base.getTime() + d * 24 * 60 * 60 * 1000);
+    user.subscription.active = true;
+    user.subscription.status = 'active';
+    user.subscription.history = user.subscription.history || [];
+    user.subscription.history.push({
+      status: 'granted', amount: 0,
+      note: `Extended by ${d} day(s)`, date: new Date()
+    });
+    await user.save();
+
+    res.json({ success: true, message: 'Extended.', user: serializeUser(user) });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+/* ============================================================
    VERIFY PAYMENT
    ============================================================ */
 app.post('/api/verify-payment', async (req, res) => {
@@ -1103,26 +1489,90 @@ app.post('/api/razorpay-webhook', express.json(), async (req, res) => {
       return res.status(400).send('Invalid signature');
     }
 
-    // 2. Handle the payment.captured event
+    // 2. Handle the payment.captured event (one-time course purchase)
     const event = req.body.event;
+    const payload = req.body.payload || {};
+
     if (event === 'payment.captured') {
-      const payment = req.body.payload.payment.entity;
-      const orderId = payment.order_id;
-      const paymentId = payment.id;
+      const payment = payload.payment && payload.payment.entity;
+      if (payment && payment.order_id) {
+        const orderId = payment.order_id;
+        const paymentId = payment.id;
 
-      console.log(`[Webhook] Payment captured: ${paymentId} for order ${orderId}`);
+        console.log(`[Webhook] Payment captured: ${paymentId} for order ${orderId}`);
 
-      // 3. Update the user's purchases in the database
-      const order = await razorpay.orders.fetch(orderId);
-      const userId = order.notes.userId;
-      const itemId = order.notes.itemId;
+        const order = await razorpay.orders.fetch(orderId);
+        const userId = order.notes.userId;
+        const itemId = order.notes.itemId;
 
-      if (userId && itemId) {
+        if (userId && itemId) {
+          const user = await User.findById(userId);
+          if (user && !user.purchases.includes(itemId)) {
+            user.purchases.push(itemId);
+            await user.save();
+            console.log(`[Webhook] Unlocked item ${itemId} for user ${userId}`);
+          }
+        }
+      }
+    }
+
+    /* ---- SUBSCRIPTION EVENTS ---- */
+    if (event === 'subscription.charged' || event === 'subscription.authenticated') {
+      const subEntity = (payload.subscription && payload.subscription.entity) || {};
+      const payEntity = (payload.payment && payload.payment.entity) || {};
+      const notes = subEntity.notes || {};
+      const userId = notes.userId;
+
+      if (userId) {
         const user = await User.findById(userId);
-        if (user && !user.purchases.includes(itemId)) {
-          user.purchases.push(itemId);
+        if (user) {
+          const now = new Date();
+          const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+          if (!user.subscription) user.subscription = {};
+          user.subscription.active = true;
+          user.subscription.status = 'active';
+          user.subscription.subscriptionId = subEntity.id || user.subscription.subscriptionId;
+          user.subscription.planId = subEntity.plan_id || user.subscription.planId;
+          user.subscription.startedAt = user.subscription.startedAt || now;
+          user.subscription.expiresAt = expiresAt;
+          user.subscription.autoRenew = true;
+          if (payEntity.id) user.subscription.lastPaymentId = payEntity.id;
+          user.subscription.history = user.subscription.history || [];
+          user.subscription.history.push({
+            paymentId: payEntity.id || null,
+            amount: payEntity.amount ? (payEntity.amount / 100) : 0,
+            status: 'charged',
+            note: event,
+            date: now
+          });
           await user.save();
-          console.log(`[Webhook] Unlocked item ${itemId} for user ${userId}`);
+          console.log(`[Webhook] Subscription ${event} → user ${userId} active until ${expiresAt.toISOString()}`);
+        }
+      }
+    }
+
+    if (event === 'subscription.cancelled' ||
+        event === 'subscription.halted' ||
+        event === 'subscription.completed' ||
+        event === 'subscription.paused') {
+      const subEntity = (payload.subscription && payload.subscription.entity) || {};
+      const notes = subEntity.notes || {};
+      const userId = notes.userId;
+      if (userId) {
+        const user = await User.findById(userId);
+        if (user && user.subscription) {
+          user.subscription.active = false;
+          user.subscription.status = event === 'subscription.halted' ? 'halted' : 'cancelled';
+          user.subscription.autoRenew = false;
+          user.subscription.history = user.subscription.history || [];
+          user.subscription.history.push({
+            status: event.replace('subscription.', ''),
+            amount: 0,
+            note: event,
+            date: new Date()
+          });
+          await user.save();
+          console.log(`[Webhook] Subscription ${event} → user ${userId}`);
         }
       }
     }
@@ -1248,8 +1698,9 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
       const owns =
         (user.purchases || []).includes(course._id.toString()) ||
         (user.purchases || []).includes(mat._id.toString());
-      if (!owns && user.role !== 'admin') {
-        return res.status(403).json({ success: false, message: 'Purchase required.' });
+      const subscribed = userHasActiveSubscription(user);
+      if (!owns && !subscribed && user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Purchase or subscription required.' });
       }
     }
 

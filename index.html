@@ -152,21 +152,8 @@
           </div>
         </section>
       </section>
-
       <!-- ADMIN DASHBOARD -->
       <section id="adminView" class="view">
-        <div id="adminTabReplies" class="admin-tab-content">
-          <div class="tab-toolbar">
-            <div class="tab-toolbar-text">
-              <h3><i class="fas fa-envelope-open-text"></i> Student Email Replies</h3>
-              <span class="tab-toolbar-sub" id="replyCountLabel">0 replies</span>
-            </div>
-            <button class="btn btn-outline" onclick="renderAdminEmailReplies()">
-              <i class="fas fa-rotate"></i> Refresh
-            </button>
-          </div>
-          <div id="adminEmailReplyList"></div>
-        </div>
         <div class="dash-header">
           <h2 id="adminPageTitle"><i class="fas fa-tachometer-alt"></i> Admin Dashboard</h2>
           <div class="actions" id="adminHeaderActions"></div>
@@ -187,6 +174,9 @@
           </button>
           <button class="admin-tab" data-tab="replies" onclick="switchAdminTab('replies')">
             <i class="fas fa-envelope-open-text"></i> Email Replies
+          </button>
+          <button class="admin-tab" data-tab="subscriptions" onclick="switchAdminTab('subscriptions')">
+            <i class="fas fa-repeat"></i> Subscriptions
           </button>
         </div>
 
@@ -287,6 +277,23 @@
           <div class="student-selection-bar" id="adminStudentSelectionBar"></div>
 
           <div id="adminStudentList"></div>
+        </div>
+
+        <div id="adminTabReplies" class="admin-tab-content">
+          <div class="tab-toolbar">
+            <div class="tab-toolbar-text">
+              <h3><i class="fas fa-envelope-open-text"></i> Student Email Replies</h3>
+              <span class="tab-toolbar-sub" id="replyCountLabel">0 replies</span>
+            </div>
+            <button class="btn btn-outline" onclick="renderAdminEmailReplies()">
+              <i class="fas fa-rotate"></i> Refresh
+            </button>
+          </div>
+          <div id="adminEmailReplyList"></div>
+        </div>
+
+        <div id="adminTabSubscriptions" class="admin-tab-content">
+          <div id="adminSubscriptionsContent"></div>
         </div>
       </section>
 

@@ -4,6 +4,61 @@
 const API_BASE = 'https://aerospace-portal.onrender.com/api';
 
 /* ============================================================
+   SAFE JSON FETCH
+   ------------------------------------------------------------
+   Wraps fetch() and guarantees:
+     • If the server returns HTML (404 page, 500 page, proxy error),
+       we throw a human-readable error instead of "Unexpected token '<'".
+     • If the server returns empty body, we throw a clear message.
+     • If JSON parsing fails, we include a snippet of the raw reply.
+   ============================================================ */
+async function fetchJSON(url, options = {}) {
+  let res;
+  try {
+    res = await fetch(url, options);
+  } catch (networkErr) {
+    throw new Error('Network error — could not reach the server. Check your connection.');
+  }
+
+  const raw = (await res.text() || '').trim();
+
+  // Empty body? Give a clean error.
+  if (!raw) {
+    throw new Error('Server returned an empty response (HTTP ' + res.status + ').');
+  }
+
+  // HTML response = backend route missing OR server crashed.
+  if (raw.startsWith('<')) {
+    if (res.status === 404) {
+      throw new Error(
+        'API route not found (HTTP 404). The endpoint "' + url + '" is not deployed on the server yet. ' +
+        'Please redeploy the latest server.js to Render.'
+      );
+    }
+    if (res.status === 500) {
+      throw new Error(
+        'Server error (HTTP 500). The backend crashed while handling this request. ' +
+        'Check the Render logs — a route or model may be missing.'
+      );
+    }
+    throw new Error(
+      'Server returned HTML instead of JSON (HTTP ' + res.status + '). ' +
+      'The backend route is probably missing.'
+    );
+  }
+
+  // JSON parse
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    throw new Error(
+      'Invalid JSON from server (HTTP ' + res.status + '). ' +
+      'Raw reply starts with: ' + raw.slice(0, 120)
+    );
+  }
+}
+
+/* ============================================================
    PROFESSORS (MongoDB — centralized database)
    ============================================================ */
 let liveProfessors = [];
@@ -90,6 +145,19 @@ let addingStudent = false;
 // ---- Bulk email selection (in-memory only; cleared on tab switch / logout) ----
 let _emailSelectedIds = new Set();
 
+// ---- Subscription settings (global, fetched on boot) ----
+let liveSubscriptionSettings = { enabled: false, amount: 0, title: '', description: '' };
+
+async function fetchSubscriptionSettings() {
+  try {
+    const res = await fetch(`${API_BASE}/settings/subscription?t=${Date.now()}`);
+    const data = await res.json();
+    if (data.success && data.settings) {
+      liveSubscriptionSettings = data.settings;
+    }
+  } catch (e) { /* silent */ }
+}
+
 const $ = id => document.getElementById(id);
 
 /* ============================================================
@@ -100,6 +168,44 @@ function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+/* ============================================================
+   MATERIAL TYPES — fixed + user-defined custom types
+   ============================================================ */
+const KNOWN_MAT_TYPES = ['video', 'pyq', 'tutorial', 'slides', 'other'];
+
+function isKnownMaterialType(t) {
+  return KNOWN_MAT_TYPES.includes(String(t || '').toLowerCase());
+}
+
+// Slug used for CSS class (e.g. "Lab Manual" -> "lab-manual")
+function materialTypeSlug(t) {
+  const s = String(t || 'other')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return s || 'other';
+}
+
+// Called by <select onchange="..."> to reveal the custom-type input
+function handleMaterialTypeChange(selectEl, customGroupId) {
+  const grp = document.getElementById(customGroupId);
+  if (!grp) return;
+  const isCustom = selectEl.value === '__custom__';
+  grp.style.display = isCustom ? 'block' : 'none';
+  if (isCustom) {
+    const inp = grp.querySelector('input');
+    if (inp) setTimeout(() => inp.focus(), 30);
+  }
+}
+
+// Resolve the final type value when saving
+function resolveMaterialType(selectValue, customValue) {
+  if (selectValue === '__custom__') {
+    const v = String(customValue || '').trim().toLowerCase();
+    return v || null;
+  }
+  return selectValue;
 }
 
 function syncHashToState() {
@@ -909,9 +1015,16 @@ async function saveNewMaterialPage() {
   const isPremium = $('newMatPremium').checked;
 
   const processSave = async (fileData, fileName) => {
+    const selectedType = $('newMatType').value;
+    const customTypeEl = $('newMatCustomType');
+    const resolvedType = resolveMaterialType(selectedType, customTypeEl ? customTypeEl.value : '');
+    if (!resolvedType) {
+      return showToast('Please enter a name for the custom material type.', 'error');
+    }
+
     const payload = {
       title,
-      type: $('newMatType').value,
+      type: resolvedType,
       description: $('newMatDescription').value.trim(),
       url: $('newMatUrl').value.trim(),
       isPremium: isPremium,
@@ -1205,11 +1318,12 @@ function updateAdminTabUI() {
   const titleEl = $('adminPageTitle');
   const actionsEl = $('adminHeaderActions');
   const titleMap = {
-    overview:   { icon: 'fa-tachometer-alt', text: 'Admin Dashboard' },
-    courses:    { icon: 'fa-graduation-cap', text: 'Manage Courses' },
-    professors: { icon: 'fa-user-tie',       text: 'Manage Professors' },
-    students:   { icon: 'fa-user-graduate',  text: 'Manage Students' },
-    replies:    { icon: 'fa-envelope-open-text', text: 'Email Replies' }
+    overview:      { icon: 'fa-tachometer-alt', text: 'Admin Dashboard' },
+    courses:       { icon: 'fa-graduation-cap', text: 'Manage Courses' },
+    professors:    { icon: 'fa-user-tie',       text: 'Manage Professors' },
+    students:      { icon: 'fa-user-graduate',  text: 'Manage Students' },
+    replies:       { icon: 'fa-envelope-open-text', text: 'Email Replies' },
+    subscriptions: { icon: 'fa-repeat',         text: 'Subscriptions & Auto-Pay' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -1224,7 +1338,10 @@ function updateAdminTabUI() {
       <button class="btn btn-success" onclick="openStudentRegModal()"><i class="fas fa-user-plus"></i> <span class="btn-text">Register Student</span></button>`,
     replies: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
-      <button class="btn btn-primary" onclick="renderAdminEmailReplies()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh Replies</span></button>`
+      <button class="btn btn-primary" onclick="renderAdminEmailReplies()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh Replies</span></button>`,
+    subscriptions: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminSubscriptions()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`
   };
   const meta = titleMap[adminTab] || titleMap.overview;
   if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
@@ -1238,6 +1355,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'professors') renderAdminProfessors();
   else if (adminTab === 'students') renderAdminStudents();
   else if (adminTab === 'replies') renderAdminEmailReplies();
+  else if (adminTab === 'subscriptions') renderAdminSubscriptions();
 }
 
 async function renderAdminOverview() {
@@ -1518,7 +1636,200 @@ async function renderAdminEmailReplies() {
     container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading replies.</p></div>`;
   }
 }
+/* ============================================================
+   ADMIN — SUBSCRIPTIONS DASHBOARD
+   ============================================================ */
+async function renderAdminSubscriptions() {
+  const container = $('adminSubscriptionsContent');
+  if (!container) return;
+  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading subscriptions…</p></div>`;
 
+  let data;
+  try {
+    data = await fetchJSON(`${API_BASE}/admin/subscriptions?adminId=${currentUser._id}&t=${Date.now()}`);
+  } catch (err) {
+    console.error('renderAdminSubscriptions:', err);
+    container.innerHTML = `
+      <div class="empty-state" style="border-color:var(--rose-500);">
+        <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);opacity:.9;"></i>
+        <p style="color:var(--rose-500);font-weight:600;">Could not load subscriptions</p>
+        <p style="margin-top:8px;font-size:13px;max-width:560px;margin-left:auto;margin-right:auto;line-height:1.55;">${escapeHtml(err.message)}</p>
+        <button class="btn btn-outline" style="margin-top:16px;" onclick="renderAdminSubscriptions()">
+          <i class="fas fa-rotate"></i> Try Again
+        </button>
+      </div>`;
+    return;
+  }
+
+  if (!data.success) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);opacity:.9;"></i>
+        <p style="color:var(--rose-500);font-weight:600;">${escapeHtml(data.message || 'Failed to load.')}</p>
+      </div>`;
+    return;
+  }
+
+  try {
+    const s = data.settings;
+    const subs = data.subscriptions || [];
+    const activeCount = subs.filter(x => x.isActive).length;
+
+    let html = `
+      <div class="sub-settings-card">
+        <h3><i class="fas fa-cog"></i> Global Subscription Settings</h3>
+        <div class="sub-settings-grid">
+          <div class="form-group">
+            <label>Monthly Amount (₹)</label>
+            <input type="number" id="subAmountInput" min="0" step="1" value="${s.amount}">
+          </div>
+          <div class="form-group">
+            <label>Plan Title</label>
+            <input type="text" id="subTitleInput" value="${escapeHtml(s.title)}" maxlength="60">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea id="subDescInput" rows="2" maxlength="240">${escapeHtml(s.description)}</textarea>
+        </div>
+        <div class="sub-toggle-row">
+          <label>
+            <input type="checkbox" id="subEnabledInput" ${s.enabled ? 'checked' : ''}>
+            <span>Enable auto-pay for students</span>
+          </label>
+          <button class="btn btn-primary" onclick="saveSubscriptionSettings()">
+            <i class="fas fa-save"></i> Save Settings
+          </button>
+        </div>
+      </div>
+
+      <div class="dash-header" style="margin-top:8px;">
+        <h2 style="font-size:17px;">
+          <i class="fas fa-users" style="background:rgba(99,102,241,.15);"></i>
+          Subscribers (${activeCount} active / ${subs.length} total)
+        </h2>
+      </div>
+    `;
+
+    if (subs.length === 0) {
+      html += `<div class="empty-state">
+        <i class="fas fa-repeat"></i>
+        <p>No students have subscribed yet.</p>
+        <p style="margin-top:8px;font-size:13px;">They'll appear here once they start an auto-pay plan.</p>
+      </div>`;
+    } else {
+      html += `<div class="subscriber-list">`;
+      subs.forEach(u => {
+        const sub = u.subscription || {};
+        const initials = (u.fullName || u.username || '?')
+          .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+        const status = u.isActive ? 'active' :
+          sub.status === 'pending' ? 'pending' :
+          sub.status === 'halted' ? 'cancelled' : sub.status || 'expired';
+        const expiresTxt = sub.expiresAt
+          ? new Date(sub.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+          : '—';
+        const daysTxt = (u.daysLeft === null || u.daysLeft === undefined)
+          ? ''
+          : (u.daysLeft > 0 ? `· ${u.daysLeft} day${u.daysLeft === 1 ? '' : 's'} left` : '· expired');
+
+        html += `
+          <div class="subscriber-row ${status}">
+            <div class="subscriber-avatar">${initials}</div>
+            <div class="subscriber-info">
+              <h4>${escapeHtml(u.fullName || u.username)}</h4>
+              <p>@${escapeHtml(u.username)} ${u.email ? '· ' + escapeHtml(u.email) : ''}</p>
+            </div>
+            <span class="subscriber-status ${status}">${status}</span>
+            <span class="subscriber-meta">Until ${expiresTxt} ${daysTxt}</span>
+            <div class="subscriber-actions">
+              <button class="btn btn-outline btn-sm" onclick="adminGrantSubscription('${u._id}', 30)" title="Grant 30 days">
+                <i class="fas fa-plus"></i> Grant
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="adminExtendSubscription('${u._id}')" title="Extend">
+                <i class="fas fa-clock"></i> Extend
+              </button>
+              ${u.isActive ? `<button class="btn btn-danger btn-sm" onclick="adminRevokeSubscription('${u._id}')" title="Revoke">
+                <i class="fas fa-times"></i> Revoke
+              </button>` : ''}
+            </div>
+          </div>`;
+      });
+      html += `</div>`;
+    }
+
+    container.innerHTML = html;
+  } catch (err) {
+    console.error('renderAdminSubscriptions:', err);
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading subscriptions: ${escapeHtml(err.message || 'unknown')}</p></div>`;
+  }
+}
+
+async function saveSubscriptionSettings() {
+  const amount = parseFloat($('subAmountInput').value) || 0;
+  const title = $('subTitleInput').value.trim();
+  const description = $('subDescInput').value.trim();
+  const enabled = $('subEnabledInput').checked;
+
+  if (amount <= 0) return showToast('Please enter a monthly amount greater than 0.', 'error');
+  if (!title) return showToast('Plan title is required.', 'error');
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/settings/subscription`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminId: currentUser._id,
+        amount, title, description, enabled
+      })
+    });
+    if (data.success) {
+      liveSubscriptionSettings = data.settings;
+      showToast('✅ Subscription settings saved.', 'success');
+      renderAdminSubscriptions();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  }
+}
+
+async function adminGrantSubscription(userId, days) {
+  if (!confirm(`Grant a ${days}-day subscription to this student?`)) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription/${userId}/grant`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminId: currentUser._id, days })
+    });
+    if (data.success) { showToast('✓ Subscription granted.', 'success'); renderAdminSubscriptions(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (err) { showToast(err.message || 'Server error.', 'error'); }
+}
+
+async function adminExtendSubscription(userId) {
+  const raw = prompt('Extend by how many days?', '30');
+  if (raw === null) return;
+  const days = parseInt(raw, 10);
+  if (!days || days < 1) return showToast('Invalid number of days.', 'error');
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription/${userId}/extend`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminId: currentUser._id, days })
+    });
+    if (data.success) { showToast('✓ Extended.', 'success'); renderAdminSubscriptions(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (err) { showToast(err.message || 'Server error.', 'error'); }
+}
+
+async function adminRevokeSubscription(userId) {
+  if (!confirm('Revoke this student\'s subscription? This will also cancel the Razorpay auto-pay.')) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription/${userId}/revoke`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminId: currentUser._id })
+    });
+    if (data.success) { showToast('✓ Subscription revoked.', 'info'); renderAdminSubscriptions(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (err) { showToast(err.message || 'Server error.', 'error'); }
+}
 /* ---- Selection helpers ---- */
 function renderStudentSelectionBar(selectedCount, withEmailCount) {
   const bar = $('adminStudentSelectionBar');
@@ -2120,31 +2431,122 @@ function renderEditorDetails(course) {
 }
 
 function renderEditorMaterials(course) {
+  const customGroupId = 'newMatInlineCustomGroup';
+
   let html = `
     <div class="editor-section">
       <div class="editor-section-header">
         <h3 class="editor-section-title"><i class="fas fa-layer-group"></i> Materials (${(course.materials || []).length})</h3>
-        <button class="btn btn-success" onclick="addNewMaterial('${course.id}')"><i class="fas fa-plus"></i> Add Material</button>
+        <button class="btn btn-outline btn-sm" onclick="jumpToNewMaterialCard()">
+          <i class="fas fa-arrow-down"></i> Go to Add Form
+        </button>
       </div>
-      <p class="editor-hint">Click any material to expand and edit.</p>
+      <p class="editor-hint">
+        Click any material card below to expand and edit it.
+        To add a new material — including a <strong>custom type</strong> — just scroll down to the green dashed card.
+      </p>
     </div>
+
+    <details class="material-editor material-editor-new" id="newMaterialInlineCard" open>
+      <summary>
+        <div class="me-summary-left">
+          <span class="me-index">＋</span>
+          <span class="mat-type">NEW</span>
+          <strong>Add a new material</strong>
+        </div>
+        <div class="me-summary-right"><i class="fas fa-chevron-down me-chevron"></i></div>
+      </summary>
+      <div class="me-body">
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Title *</label>
+            <input type="text" id="newMatInlineTitle" placeholder="e.g. Lecture 1: Introduction" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label>Type *</label>
+            <select id="newMatInlineType" onchange="handleMaterialTypeChange(this, '${customGroupId}')">
+              <option value="video">🎬 Video Lecture</option>
+              <option value="pyq">📄 Previous Year Question</option>
+              <option value="tutorial">📝 Tutorial Sheet</option>
+              <option value="slides">📊 Slides</option>
+              <option value="other" selected>📁 Other</option>
+              <option value="__custom__">✨ Custom Type…</option>
+            </select>
+            <div id="${customGroupId}" style="display:none; margin-top:8px;">
+              <input type="text" id="newMatInlineCustomType"
+                     placeholder="e.g. Lab Manual, Assignment, Notes" maxlength="40" autocomplete="off">
+              <span class="hint">Type any name — it becomes its own filter tab on the course page.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Description</label>
+          <textarea id="newMatInlineDescription" rows="2" placeholder="Brief description of this material…"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>External URL / YouTube Link (Optional)</label>
+          <input type="text" id="newMatInlineUrl" placeholder="https://... or youtube.com/...">
+        </div>
+
+        <div class="me-file-section">
+          <label>Or Upload File (PDF, PPT, DOCX) — Optional · max 10 MB</label>
+          <input type="file" id="newMatInlineFile">
+        </div>
+
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Access Level</label>
+            <label class="toggle-box pro" style="margin-top:6px;">
+              <input type="checkbox" id="newMatInlinePremium">
+              <span><i class="fas fa-crown"></i> PRO Material</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label>Price (₹) — only if PRO</label>
+            <input type="number" id="newMatInlinePrice" value="0" min="0" step="1">
+          </div>
+        </div>
+
+        <div class="me-actions">
+          <button class="btn btn-outline btn-sm" onclick="resetNewMaterialInlineForm()">
+            <i class="fas fa-rotate-left"></i> Clear Form
+          </button>
+          <button class="btn btn-primary" id="newMatInlineSubmitBtn" onclick="saveNewMaterialInline('${course.id}')">
+            <i class="fas fa-plus-circle"></i> Add This Material
+          </button>
+        </div>
+      </div>
+    </details>
   `;
+
   if (!course.materials || course.materials.length === 0) {
-    html += `<div class="empty-state"><i class="fas fa-layer-group"></i><p>No materials yet.</p></div>`;
+    html += `<div class="empty-state" style="margin-top:16px;">
+      <i class="fas fa-layer-group"></i>
+      <p>No materials yet — use the green card above to add your first one.</p>
+    </div>`;
     return html;
   }
-  course.materials.forEach((m, idx) => { html += renderMaterialEditorCard(course.id, m, idx); });
+
+  // Render each existing material card below the new-material card
+  course.materials.forEach((m, idx) => {
+    html += renderMaterialEditorCard(course.id, m, idx);
+  });
+
   return html;
 }
 
 function renderMaterialEditorCard(courseId, m, idx) {
   const quizCount = (m.quiz || []).length;
+  const customId = 'meCustom-' + m.id;
+  const isCustom = !isKnownMaterialType(m.type);
   return `
     <details class="material-editor" data-mat-id="${m.id}">
       <summary>
         <div class="me-summary-left">
           <span class="me-index">#${idx + 1}</span>
-          <span class="mat-type ${m.type}">${m.type.toUpperCase()}</span>
+          <span class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</span>
           <strong>${escapeHtml(m.title)}</strong>
           ${m.isPremium ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO</span>` : '<span class="mat-badge free">FREE</span>'}
           ${quizCount > 0 ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>` : ''}
@@ -2155,13 +2557,17 @@ function renderMaterialEditorCard(courseId, m, idx) {
         <div class="editor-grid-2">
           <div class="form-group"><label>Title</label><input type="text" class="me-title" value="${escapeHtml(m.title)}"></div>
           <div class="form-group"><label>Type</label>
-            <select class="me-type">
+            <select class="me-type" onchange="handleMaterialTypeChange(this, '${customId}')">
               <option value="video" ${m.type === 'video' ? 'selected' : ''}>🎬 Video</option>
               <option value="pyq" ${m.type === 'pyq' ? 'selected' : ''}>📄 PYQ</option>
               <option value="tutorial" ${m.type === 'tutorial' ? 'selected' : ''}>📝 Tutorial</option>
               <option value="slides" ${m.type === 'slides' ? 'selected' : ''}>📊 Slides</option>
               <option value="other" ${m.type === 'other' ? 'selected' : ''}>📁 Other</option>
+              <option value="__custom__" ${isCustom ? 'selected' : ''}>✨ Custom Type…</option>
             </select>
+            <div id="${customId}" style="display:${isCustom ? 'block' : 'none'}; margin-top:8px;">
+              <input type="text" class="me-custom-type" placeholder="e.g. Lab Manual, Assignment" maxlength="40" autocomplete="off" value="${isCustom ? escapeHtml(m.type) : ''}">
+            </div>
           </div>
         </div>
         <div class="form-group"><label>Description</label><textarea class="me-desc" rows="2">${escapeHtml(m.description) || ''}</textarea></div>
@@ -2533,9 +2939,17 @@ async function addNewMaterial(courseId) {
 async function saveMaterialInline(courseId, materialId) {
   const el = document.querySelector(`.material-editor[data-mat-id="${materialId}"]`);
   if (!el) return;
+
+  const selectedType = el.querySelector('.me-type').value;
+  const customTypeEl = el.querySelector('.me-custom-type');
+  const resolvedType = resolveMaterialType(selectedType, customTypeEl ? customTypeEl.value : '');
+  if (!resolvedType) {
+    return showToast('Please enter a name for the custom material type.', 'error');
+  }
+
   const payload = {
     title: el.querySelector('.me-title').value.trim(),
-    type: el.querySelector('.me-type').value,
+    type: resolvedType,
     description: el.querySelector('.me-desc').value.trim(),
     url: el.querySelector('.me-url').value.trim(),
     isPremium: el.querySelector('.me-premium').checked,
@@ -2552,7 +2966,129 @@ async function saveMaterialInline(courseId, materialId) {
     else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
+/* ============================================================
+   INLINE "NEW MATERIAL" — used by the green card in course editor
+   ============================================================ */
+function jumpToNewMaterialCard() {
+  const el = document.getElementById('newMaterialInlineCard');
+  if (!el) return;
+  el.setAttribute('open', '');
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 2200);
+  const titleEl = document.getElementById('newMatInlineTitle');
+  if (titleEl) setTimeout(() => titleEl.focus(), 350);
+}
 
+function resetNewMaterialInlineForm() {
+  const ids = [
+    'newMatInlineTitle', 'newMatInlineDescription', 'newMatInlineUrl',
+    'newMatInlineCustomType'
+  ];
+  ids.forEach(id => { const el = $(id); if (el) el.value = ''; });
+
+  const priceEl = $('newMatInlinePrice');
+  if (priceEl) priceEl.value = '0';
+  const premEl = $('newMatInlinePremium');
+  if (premEl) premEl.checked = false;
+  const fileEl = $('newMatInlineFile');
+  if (fileEl) fileEl.value = '';
+  const typeEl = $('newMatInlineType');
+  if (typeEl) typeEl.value = 'other';
+
+  const grp = $('newMatInlineCustomGroup');
+  if (grp) grp.style.display = 'none';
+}
+
+async function saveNewMaterialInline(courseId) {
+  const titleEl = $('newMatInlineTitle');
+  const typeEl = $('newMatInlineType');
+  const customEl = $('newMatInlineCustomType');
+  const descEl = $('newMatInlineDescription');
+  const urlEl = $('newMatInlineUrl');
+  const premEl = $('newMatInlinePremium');
+  const priceEl = $('newMatInlinePrice');
+  const fileEl = $('newMatInlineFile');
+  const btn = $('newMatInlineSubmitBtn');
+
+  const title = titleEl ? titleEl.value.trim() : '';
+  if (!title) {
+    showToast('Please enter a title for the new material.', 'error');
+    if (titleEl) titleEl.focus();
+    return;
+  }
+
+  const resolvedType = resolveMaterialType(
+    typeEl ? typeEl.value : 'other',
+    customEl ? customEl.value : ''
+  );
+  if (!resolvedType) {
+    showToast('Please enter a name for the custom material type.', 'error');
+    if (customEl) customEl.focus();
+    return;
+  }
+
+  const isPremium = premEl ? premEl.checked : false;
+  const price = isPremium ? (parseFloat(priceEl ? priceEl.value : '0') || 0) : 0;
+  const file = fileEl && fileEl.files ? fileEl.files[0] : null;
+
+  const doSave = async (fileData, fileName) => {
+    const payload = {
+      title,
+      type: resolvedType,
+      description: descEl ? descEl.value.trim() : '',
+      url: urlEl ? urlEl.value.trim() : '',
+      isPremium,
+      price,
+      fileData: fileData || '',
+      fileName: fileName || ''
+    };
+
+    try {
+      const res = await fetch(
+        `https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        }
+      );
+      const data = await res.json();
+      if (data.success) {
+        showToast('📎 Material added!', 'success');
+        resetNewMaterialInlineForm();
+        await fetchCoursesFromDB();
+      } else {
+        showToast(data.message || 'Failed to add material.', 'error');
+      }
+    } catch {
+      showToast('Server error while adding material.', 'error');
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material';
+      }
+    }
+  };
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding…';
+  }
+
+  if (file) {
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('File too large (max 10 MB).', 'error');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material'; }
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = ev => doSave(ev.target.result, file.name);
+    reader.readAsDataURL(file);
+  } else {
+    doSave('', '');
+  }
+}
 async function deleteMaterialFromEditor(courseId, materialId, title) {
   if (!confirm(`Delete "${title}"?`)) return;
   try {
@@ -2615,6 +3151,7 @@ async function deleteAnnouncement(courseId, annId) {
    STUDENT HOME
    ============================================================ */
 function renderStudentHome() {
+  renderSubscriptionBanner();
   renderStreakCard();
   renderContinueCard();
 
@@ -2678,7 +3215,139 @@ function renderContinueCard() {
       <button class="btn btn-primary continue-btn" onclick="viewCourseDetail('${course.id}')"><i class="fas fa-play"></i> Resume</button>
     </div>`;
 }
+/* ============================================================
+   SUBSCRIPTION — STUDENT UI
+   ============================================================ */
+function renderSubscriptionBanner() {
+  const host = document.getElementById('streakCardContainer');
+  // We reuse streakCardContainer's parent area by injecting a sibling right above it.
+  // Simpler approach: inject into a dedicated div in index.html if present,
+  // otherwise append before the streak container.
+  const anchor = document.getElementById('streakCardContainer');
+  if (!anchor) return;
 
+  // Remove existing banner if re-rendering
+  const existing = document.getElementById('subscribeBannerHost');
+  if (existing) existing.remove();
+
+  if (currentUser.role !== 'student') return;
+  if (!liveSubscriptionSettings.enabled) return;
+
+  const wrap = document.createElement('div');
+  wrap.id = 'subscribeBannerHost';
+
+  if (currentUser.isSubscribed) {
+    const exp = currentUser.subscription?.expiresAt
+      ? new Date(currentUser.subscription.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      : '—';
+    wrap.innerHTML = `
+      <div class="subscribe-active-banner">
+        <div class="subscribe-active-icon"><i class="fas fa-check-circle"></i></div>
+        <div class="subscribe-active-info">
+          <h4>All-Access subscription active</h4>
+          <p>Unlocked every course · Renews on <strong>${exp}</strong> · ₹${currentUser.subscription?.amount || liveSubscriptionSettings.amount}/month</p>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="cancelSubscription()">
+          <i class="fas fa-times"></i> Cancel Auto-Pay
+        </button>
+      </div>`;
+  } else {
+    wrap.innerHTML = `
+      <div class="subscribe-banner">
+        <div class="subscribe-banner-icon"><i class="fas fa-bolt"></i></div>
+        <div class="subscribe-banner-info">
+          <h4>${escapeHtml(liveSubscriptionSettings.title)}</h4>
+          <p>${escapeHtml(liveSubscriptionSettings.description)} — <strong>₹${liveSubscriptionSettings.amount}/month</strong></p>
+        </div>
+        <button class="btn btn-primary" onclick="startSubscriptionCheckout()">
+          <i class="fas fa-repeat"></i> Subscribe
+        </button>
+      </div>`;
+  }
+
+  anchor.parentNode.insertBefore(wrap, anchor);
+}
+
+async function startSubscriptionCheckout() {
+  if (!currentUser || currentUser.role !== 'student') {
+    return showToast('Please log in as a student first.', 'error');
+  }
+  if (currentUser.isSubscribed) return showToast('You already have an active subscription.', 'info');
+  if (!liveSubscriptionSettings.enabled) return showToast('Subscription is not available right now.', 'error');
+
+  showToast('Preparing subscription…', 'info');
+  try {
+    const res = await fetch(`${API_BASE}/subscribe/create`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser._id })
+    });
+    const data = await res.json();
+    if (!data.success) return showToast(data.message || 'Could not start subscription.', 'error');
+
+    const rzp = new Razorpay({
+      key: data.key_id,
+      subscription_id: data.subscriptionId,
+      name: 'Aerospace Department',
+      description: data.title + ' — ₹' + data.amount + '/month',
+      prefill: {
+        name: currentUser.fullName || currentUser.username,
+        email: currentUser.email || 'student@aerospace.com',
+        contact: '9999999999'
+      },
+      theme: { color: '#4f46e5' },
+      handler: async function (response) {
+        showToast('Verifying subscription…', 'info');
+        try {
+          const vres = await fetch(`${API_BASE}/subscribe/verify`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId: currentUser._id,
+              razorpay_subscription_id: response.razorpay_subscription_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature
+            })
+          });
+          const vdata = await vres.json();
+          if (vdata.success) {
+            currentUser = vdata.user;
+            saveSessionUser(currentUser);
+            showToast('🎉 Subscription activated! All courses unlocked.', 'success');
+            renderApp();
+          } else {
+            showToast(vdata.message || 'Verification failed.', 'error');
+          }
+        } catch {
+          showToast('Verification failed — please contact support.', 'error');
+        }
+      },
+      modal: {
+        ondismiss: function () {
+          showToast('Subscription cancelled.', 'info');
+        }
+      }
+    });
+    rzp.open();
+  } catch (e) {
+    showToast('Could not start subscription.', 'error');
+  }
+}
+
+async function cancelSubscription() {
+  if (!confirm('Cancel your auto-pay? You will keep access until the end of your current billing period.')) return;
+  try {
+    const res = await fetch(`${API_BASE}/subscribe/cancel`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser._id })
+    });
+    const data = await res.json();
+    if (data.success) {
+      currentUser = data.user;
+      saveSessionUser(currentUser);
+      showToast('Auto-pay cancelled.', 'info');
+      renderApp();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
 /* ============================================================
    STUDENT COURSES
    ============================================================ */
@@ -2769,7 +3438,8 @@ function renderStudentCourseCard(c) {
       <p class="course-desc">${escapeHtml(c.description) || ''}</p>
       <div class="material-count"><i class="fas fa-layer-group"></i> ${totalMats} materials</div>
       ${progressHtml}
-      ${c.isPremium && !isPurchased ? `<div style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();showPaymentModal('${c.id}')"><i class="fas fa-shopping-cart"></i> Buy Now</button></div>` : ''}
+      ${c.isPremium && !isPurchased && !currentUser?.isSubscribed ? `<div style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();showPaymentModal('${c.id}')"><i class="fas fa-shopping-cart"></i> Buy Now</button></div>` : ''}
+      ${c.isPremium && currentUser?.isSubscribed ? `<div style="margin-top:10px;"><span class="chip green"><i class="fas fa-check-circle"></i> Unlocked by subscription</span></div>` : ''}
     </div>`;
 }
 
@@ -2854,10 +3524,26 @@ function renderCourseDetail(courseId) {
     </div>`;
   }
 
-  if (isPremiumCourse && currentUser.role === 'student' && !isPurchased) {
+  const isSubscribed = !!currentUser?.isSubscribed;
+
+  if (isPremiumCourse && currentUser.role === 'student' && !isPurchased && !isSubscribed) {
     html += `<div class="premium-notice">
       <div><i class="fas fa-info-circle"></i> Premium materials locked.</div>
-      <button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}')"><i class="fas fa-shopping-cart"></i> Buy (₹${course.price})</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}')"><i class="fas fa-shopping-cart"></i> Buy this course (₹${course.price})</button>
+      </div>
+    </div>`;
+  }
+
+  if (liveSubscriptionSettings.enabled && currentUser.role === 'student' && !isSubscribed) {
+    html += `<div class="subscribe-cta">
+      <div class="subscribe-cta-text">
+        <i class="fas fa-repeat"></i>
+        <span>${escapeHtml(liveSubscriptionSettings.title)} — unlock <strong>every</strong> course for ₹${liveSubscriptionSettings.amount}/month</span>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="startSubscriptionCheckout()">
+        <i class="fas fa-bolt"></i> Subscribe Now
+      </button>
     </div>`;
   }
 
@@ -2879,9 +3565,11 @@ function renderCourseDetail(courseId) {
 
   const materials = course.materials || [];
   const hasPlaylists = (course.playlists || []).length > 0;
-  const filtered = currentMaterialFilter === 'all' ? materials : materials.filter(m => m.type === currentMaterialFilter);
+  const filtered = currentMaterialFilter === 'all'
+    ? materials
+    : materials.filter(m => String(m.type || '').toLowerCase() === String(currentMaterialFilter).toLowerCase());
 
-  const types = hasPlaylists
+  let types = hasPlaylists
     ? ['all', 'playlists', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other']
     : ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
 
@@ -2895,6 +3583,22 @@ function renderCourseDetail(courseId) {
     qa: '❓ Q&A',
     other: '📁 Other'
   };
+
+  // NEW: detect custom (non-known) types used by materials in this course
+  const presentTypes = new Set(
+    materials.map(m => String(m.type || '').toLowerCase()).filter(Boolean)
+  );
+  const customTypes = Array.from(presentTypes)
+    .filter(t => !KNOWN_MAT_TYPES.includes(t))
+    .sort();
+
+  // Insert custom tabs just before "other"
+  const otherIdx = types.indexOf('other');
+  customTypes.forEach((ct, i) => {
+    const display = ct.replace(/[-_]+/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
+    typeLabels[ct] = `📎 ${display}`;
+    types.splice(otherIdx + i, 0, ct);
+  });
 
   if (hasPlaylists && currentMaterialFilter !== 'playlists') {
     const totalVids = (course.playlists || []).reduce((sum, p) => sum + (p.materialIds || []).length, 0);
@@ -2917,7 +3621,7 @@ function renderCourseDetail(courseId) {
     if (t === 'all') count = materials.length;
     else if (t === 'qa') count = course.doubts ? course.doubts.length : 0;
     else if (t === 'playlists') count = (course.playlists || []).length;
-    else count = materials.filter(m => m.type === t).length;
+    else count = materials.filter(m => String(m.type || '').toLowerCase() === String(t).toLowerCase()).length;
     html += `<button class="${currentMaterialFilter === t ? 'active' : ''}" onclick="setMaterialFilter('${t}')">${typeLabels[t]} (${count})</button>`;
   });
   html += `</div>`;
@@ -2951,7 +3655,8 @@ function renderMaterialCard(course, m, isPurchased) {
   const isMatPremium = m.isPremium === true || m.isPremium === 'true';
   const matPrice = parseFloat(m.price) || 0;
   const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
-  const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || !isMatPremium;
+  const isSubscribed = !!currentUser?.isSubscribed;
+  const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || isSubscribed || !isMatPremium;
   const viewed = isMaterialViewed(course.id, m.id);
   const quizCount = (m.quiz || []).length;
   let fileActionHtml = '';
@@ -2996,7 +3701,7 @@ function renderMaterialCard(course, m, isPurchased) {
   return `
     <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
       <div class="mat-head">
-        <div class="mat-type ${m.type}">${m.type.toUpperCase()}</div>
+        <div class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</div>
         ${badgeHtml}
         ${quizBadge}
       </div>
@@ -3884,6 +4589,7 @@ async function initApp() {
   renderApp();
   await fetchCoursesFromDB();
   await fetchProfessorsFromDB();
+  await fetchSubscriptionSettings();
   await refreshUserData();
   await loadNotifications();
   renderApp();

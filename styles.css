@@ -1126,6 +1126,8 @@ input, textarea, select { font-family: inherit; }
   text-transform: uppercase; letter-spacing: .7px;
   color: #fff; padding: 3px 10px;
   border-radius: var(--radius-pill); display: inline-block;
+  /* fallback for user-defined custom types */
+  background: linear-gradient(135deg, #6b7280, #9ca3af);
 }
 .mat-type.video    { background: linear-gradient(135deg, #2563eb, #3b82f6); }
 .mat-type.pyq      { background: linear-gradient(135deg, #7c3aed, #a855f7); }
@@ -3940,4 +3942,235 @@ input, textarea, select { font-family: inherit; }
   .thumbnail-actions .btn {
     flex: 1;
   }
+}
+/* ============================================================
+   43. INLINE "NEW MATERIAL" CARD — lives inside course editor
+   ============================================================ */
+.material-editor-new {
+  border: 2px dashed var(--emerald-500) !important;
+  background: linear-gradient(135deg, rgba(16,185,129,.04), rgba(52,211,153,.02));
+}
+[data-theme="dark"] .material-editor-new,
+[data-theme="dim"] .material-editor-new {
+  background: linear-gradient(135deg, rgba(16,185,129,.10), rgba(52,211,153,.04));
+}
+.material-editor-new[open] {
+  border-color: var(--emerald-500) !important;
+  box-shadow: 0 0 0 3px rgba(16,185,129,.15), var(--shadow-md);
+}
+.material-editor-new > summary {
+  background: linear-gradient(135deg, rgba(16,185,129,.10), rgba(52,211,153,.04)) !important;
+}
+.material-editor-new > summary:hover {
+  background: linear-gradient(135deg, rgba(16,185,129,.18), rgba(52,211,153,.08)) !important;
+}
+.material-editor-new[open] > summary {
+  background: var(--bg-surface) !important;
+}
+.material-editor-new .me-index {
+  background: var(--emerald-500);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 900;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.material-editor-new .mat-type {
+  background: linear-gradient(135deg, var(--emerald-600), var(--emerald-500)) !important;
+}
+
+/* Optional: highlight the new card slightly when scrolled to */
+@keyframes newMatPulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(16,185,129,.15), var(--shadow-md); }
+  50%      { box-shadow: 0 0 0 6px rgba(16,185,129,.28), var(--shadow-md); }
+}
+.material-editor-new.flash {
+  animation: newMatPulse 1s ease-in-out 2;
+}
+/* ============================================================
+   43. FIX: Bookmark button overlapping course-code (no-thumb cards)
+   ============================================================ */
+.course-card:not(.has-thumb) .course-code {
+  padding-left: 44px;    /* reserve space for the left bookmark btn */
+  padding-right: 44px;   /* reserve space for the admin delete btn */
+  min-height: 34px;
+  align-items: center;
+}
+/* ============================================================
+   44. SUBSCRIPTION / AUTO-PAY
+   ============================================================ */
+
+/* ---- Student home: subscribe banner ---- */
+.subscribe-banner {
+  display: flex; align-items: center; gap: 18px;
+  padding: 20px 24px; margin-bottom: 22px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(99,102,241,.14), rgba(6,182,212,.06));
+  border: 1.5px solid rgba(99,102,241,.35);
+  position: relative; overflow: hidden;
+}
+[data-theme="dark"] .subscribe-banner,
+[data-theme="dim"] .subscribe-banner {
+  background: linear-gradient(135deg, rgba(99,102,241,.20), rgba(6,182,212,.10));
+}
+.subscribe-banner-icon {
+  width: 56px; height: 56px; border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--brand-600), var(--accent-500));
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; flex-shrink: 0;
+  box-shadow: 0 6px 18px rgba(99,102,241,.35);
+}
+.subscribe-banner-info { flex: 1; min-width: 0; }
+.subscribe-banner-info h4 {
+  font-size: 16px; font-weight: 800; color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.subscribe-banner-info p {
+  font-size: 13px; color: var(--text-secondary); line-height: 1.5;
+}
+.subscribe-banner .btn { flex-shrink: 0; }
+
+/* ---- Active subscription status pill ---- */
+.subscribe-active-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 20px; margin-bottom: 20px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, rgba(16,185,129,.12), rgba(52,211,153,.05));
+  border: 1.5px solid rgba(16,185,129,.35);
+}
+.subscribe-active-icon {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--emerald-600), var(--emerald-500));
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex-shrink: 0;
+}
+.subscribe-active-info { flex: 1; min-width: 0; }
+.subscribe-active-info h4 {
+  font-size: 14.5px; font-weight: 800; color: var(--emerald-700);
+  margin-bottom: 2px;
+}
+[data-theme="dark"] .subscribe-active-info h4,
+[data-theme="dim"] .subscribe-active-info h4 { color: var(--emerald-400); }
+.subscribe-active-info p {
+  font-size: 12.5px; color: var(--text-tertiary); font-weight: 500;
+}
+
+/* ---- Course detail: subscribe CTA for premium course ---- */
+.subscribe-cta {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 12px; flex-wrap: wrap;
+  padding: 14px 18px; margin-bottom: 16px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, rgba(99,102,241,.10), rgba(6,182,212,.04));
+  border: 1px solid rgba(99,102,241,.28);
+  font-size: 13.5px;
+}
+.subscribe-cta .subscribe-cta-text {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--brand-700); font-weight: 600;
+}
+[data-theme="dark"] .subscribe-cta .subscribe-cta-text,
+[data-theme="dim"] .subscribe-cta .subscribe-cta-text { color: var(--brand-300); }
+
+/* ---- Admin: subscription dashboard ---- */
+.sub-settings-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 22px 24px; margin-bottom: 20px;
+}
+.sub-settings-card h3 {
+  font-size: 15px; font-weight: 700; color: var(--text-primary);
+  display: flex; align-items: center; gap: 10px; margin-bottom: 16px;
+}
+.sub-settings-card h3 i { color: var(--brand-500); }
+
+.sub-settings-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  margin-bottom: 14px;
+}
+@media (max-width: 640px) { .sub-settings-grid { grid-template-columns: 1fr; } }
+
+.sub-toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 14px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  margin-top: 6px;
+}
+.sub-toggle-row label {
+  font-size: 13.5px; font-weight: 600; color: var(--text-primary);
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+}
+
+.subscriber-list {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.subscriber-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  transition: .2s var(--ease);
+}
+.subscriber-row:hover {
+  border-color: var(--brand-300);
+  box-shadow: var(--shadow-sm);
+}
+.subscriber-row.active { border-left: 4px solid var(--emerald-500); }
+.subscriber-row.expired { border-left: 4px solid var(--gold-500); }
+.subscriber-row.cancelled { border-left: 4px solid var(--rose-500); }
+
+.subscriber-avatar {
+  width: 42px; height: 42px; border-radius: 50%;
+  background: linear-gradient(135deg, #22d3ee, #0891b2);
+  color: #fff; font-weight: 800; font-size: 15px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.subscriber-info { flex: 1; min-width: 0; }
+.subscriber-info h4 {
+  font-size: 14px; font-weight: 700; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.subscriber-info p {
+  font-size: 12px; color: var(--text-tertiary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-top: 2px;
+}
+.subscriber-status {
+  font-size: 11px; font-weight: 800;
+  padding: 4px 10px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: .4px;
+  flex-shrink: 0;
+}
+.subscriber-status.active { background: rgba(16,185,129,.15); color: var(--emerald-600); }
+.subscriber-status.expired { background: rgba(245,158,11,.15); color: var(--gold-600); }
+.subscriber-status.cancelled { background: rgba(239,68,68,.15); color: var(--rose-600); }
+.subscriber-status.pending { background: rgba(99,102,241,.15); color: var(--brand-600); }
+[data-theme="dark"] .subscriber-status.active,
+[data-theme="dim"] .subscriber-status.active { color: var(--emerald-400); }
+[data-theme="dark"] .subscriber-status.expired,
+[data-theme="dim"] .subscriber-status.expired { color: var(--gold-400); }
+[data-theme="dark"] .subscriber-status.cancelled,
+[data-theme="dim"] .subscriber-status.cancelled { color: var(--rose-400); }
+[data-theme="dark"] .subscriber-status.pending,
+[data-theme="dim"] .subscriber-status.pending { color: var(--brand-300); }
+
+.subscriber-meta { font-size: 11.5px; color: var(--text-tertiary); flex-shrink: 0; }
+.subscriber-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.subscriber-actions .btn { font-size: 11.5px; padding: 5px 9px; }
+
+@media (max-width: 640px) {
+  .subscriber-row { flex-wrap: wrap; }
+  .subscriber-actions { width: 100%; justify-content: flex-end; margin-top: 6px; }
 }
