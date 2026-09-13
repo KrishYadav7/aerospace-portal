@@ -95,61 +95,96 @@ if (!EMAIL_USER || !EMAIL_PASS) {
      2. Resend (if RESEND_API_KEY set) → fallback only.
      3. If both fail → throw with a clear, actionable error.
    ============================================================ */
+/* ============================================================
+   EMAIL TRANSPORTER — BREVO (HTTPS) first, SMTP/Resend as fallback
+   ------------------------------------------------------------
+   WHY:
+     Render's free tier BLOCKS all outbound SMTP (ports 25, 465, 587).
+     Brevo sends over HTTPS (port 443) — always allowed.
+     Free tier: 300 emails/day, no custom domain required.
+   ============================================================ */
 const { Resend } = require('resend');
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
+const USE_BREVO  = !!(process.env.BREVO_API_KEY && process.env.BREVO_SENDER_EMAIL);
 const USE_RESEND = !!process.env.RESEND_API_KEY;
 const USE_SMTP   = !!(process.env.EMAIL_USER && process.env.EMAIL_PASS);
 
-console.log('[email] SMTP configured:  ', USE_SMTP, USE_SMTP ? `(${process.env.EMAIL_USER})` : '');
+console.log('[email] Brevo configured: ', USE_BREVO, USE_BREVO ? `(${process.env.BREVO_SENDER_EMAIL})` : '');
+console.log('[email] SMTP configured:  ', USE_SMTP,  USE_SMTP  ? `(${process.env.EMAIL_USER})` : '');
 console.log('[email] Resend configured:', USE_RESEND);
 
+// ---- Brevo HTTP sender ----
+async function brevoSend({ to, subject, text, html, replyTo }) {
+  const apiKey = process.env.BREVO_API_KEY;
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
+  const senderName = process.env.BREVO_SENDER_NAME || 'Aerospace Department';
+
+  const body = {
+    sender: { name: senderName, email: senderEmail },
+    to: [{ email: to }],
+    subject,
+    textContent: text || undefined,
+    htmlContent: html || (text ? `<pre style="font-family:Inter,sans-serif;">${text}</pre>` : undefined)
+  };
+  if (replyTo) body.replyTo = { email: replyTo };
+
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'accept': 'application/json',
+      'api-key': apiKey,
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data.message || data.error || JSON.stringify(data);
+    throw new Error(`Brevo ${res.status}: ${msg}`);
+  }
+  return data; // { messageId: '...' }
+}
+
+// ---- SMTP fallback (only used if Brevo is not configured) ----
 let smtpTransport = null;
-if (USE_SMTP) {
+if (USE_SMTP && !USE_BREVO) {
   smtpTransport = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 587,                 // ← CHANGED: 465 is BLOCKED on Render
-    secure: false,             // ← CHANGED: STARTTLS, not implicit TLS
-    requireTLS: true,          // ← STARTTLS upgrade required
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    },
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
     pool: true,
     maxConnections: 5,
     maxMessages: 50,
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 25000,
-    // Force IPv4 — Render free tier has no IPv6 egress
     family: 4,
     lookup: (hostname, options, callback) => {
       dns.lookup(hostname, { ...options, family: 4 }, callback);
     },
-    tls: {
-      servername: 'smtp.gmail.com',   // required for proper TLS SNI
-      minVersion: 'TLSv1.2'
-    }
+    tls: { servername: 'smtp.gmail.com', minVersion: 'TLSv1.2' }
   });
 }
 
-// --- SMTP `from` — always a real, deliverable address ---
 function smtpFrom() {
   const ef = process.env.EMAIL_FROM;
   if (ef && ef.trim() && ef.includes('<')) return ef.trim();
   return `"Aerospace Department" <${process.env.EMAIL_USER}>`;
 }
 
-// --- Resend `from` — MUST be a verified domain, NOT a Gmail ---
 function resendFrom() {
   const ef = (process.env.EMAIL_FROM || '').trim();
-  // Resend can't send from a Gmail address (domain not verified).
   if (ef && !/gmail\.com/i.test(ef) && ef.includes('<')) return ef;
   return '"Aerospace Department" <onboarding@resend.dev>';
 }
 
 const transporter = {
   verify: async () => {
+    if (USE_BREVO) return { ok: true, via: 'brevo', from: process.env.BREVO_SENDER_EMAIL };
     if (USE_SMTP) {
       try {
         await smtpTransport.verify();
@@ -164,20 +199,36 @@ const transporter = {
   },
 
   sendMail: async (options) => {
-    const base = {
-      to: options.to,
-      subject: options.subject,
-      text: options.text,
-      html: options.html
-    };
-
     let lastError = null;
 
-    // ---- 1) SMTP first ----
-    if (USE_SMTP) {
+    // 1) Brevo (HTTPS) — preferred
+    if (USE_BREVO) {
+      try {
+        const info = await brevoSend({
+          to: options.to,
+          subject: options.subject,
+          text: options.text,
+          html: options.html,
+          replyTo: options.replyTo
+        });
+        console.log('[email] ✅ Brevo OK →', options.to, '· id:', info.messageId);
+        return info;
+      } catch (e) {
+        lastError = e;
+        console.error('[email] ❌ Brevo FAILED →', options.to, '·', e.message);
+        if (!USE_SMTP && !USE_RESEND) throw e;
+        console.warn('[email] → falling back…');
+      }
+    }
+
+    // 2) SMTP (only works on paid Render tier)
+    if (USE_SMTP && smtpTransport) {
       try {
         const info = await smtpTransport.sendMail({
-          ...base,
+          to: options.to,
+          subject: options.subject,
+          text: options.text,
+          html: options.html,
           from: smtpFrom(),
           replyTo: options.replyTo || process.env.EMAIL_USER
         });
@@ -186,19 +237,12 @@ const transporter = {
       } catch (e) {
         lastError = e;
         console.error('[email] ❌ SMTP FAILED →', options.to, '·', e.message);
-        // Resend's sandbox silently drops mail to anyone except the account owner.
-        // Unless you've verified a custom domain on Resend, do NOT fall back —
-        // it will pretend to succeed and the email will never arrive.
-        const resendUsable = USE_RESEND && !/onboarding@resend\.dev/i.test(resendFrom());
-        if (!resendUsable) {
-          throw new Error('SMTP failed and Resend sandbox is not usable: ' + e.message);
-        }
-        console.warn('[email] → falling back to Resend (verified domain)…');
       }
     }
 
-    // ---- 2) Resend fallback ----
-    if (USE_RESEND) {
+    // 3) Resend (only if verified domain — sandbox silently drops)
+    const resendUsable = USE_RESEND && !/onboarding@resend\.dev/i.test(resendFrom());
+    if (resendUsable) {
       try {
         const { data, error } = await resend.emails.send({
           from: resendFrom(),
@@ -208,25 +252,29 @@ const transporter = {
           html: options.html,
           reply_to: options.replyTo
         });
-        if (error) {
-          const msg = error.message || JSON.stringify(error);
-          console.error('[email] ❌ Resend FAILED →', options.to, '·', msg);
-          lastError = new Error('Resend: ' + msg);
-        } else {
-          console.log('[email] ✅ Resend OK →', options.to, '· id:', data && data.id);
-          return data;
-        }
+        if (error) throw new Error(error.message || JSON.stringify(error));
+        console.log('[email] ✅ Resend OK →', options.to, '· id:', data && data.id);
+        return data;
       } catch (e) {
-        console.error('[email] ❌ Resend threw →', options.to, '·', e.message);
+        console.error('[email] ❌ Resend FAILED →', options.to, '·', e.message);
         lastError = e;
       }
     }
 
     if (lastError) throw lastError;
-    throw new Error('No email transport configured (need EMAIL_USER+EMAIL_PASS or RESEND_API_KEY).');
+    throw new Error('All email transports failed or none configured.');
   }
 };
 
+(async () => {
+  console.log('[email] Priority: Brevo → SMTP → Resend');
+  try {
+    const v = await transporter.verify();
+    console.log('✅ Email transporter ready. Via:', v.via, '· from:', v.from);
+  } catch (err) {
+    console.error('❌ Email transporter verification FAILED:', err.message);
+  }
+})();
 // ---- Boot diagnostic ----
 (async () => {
   console.log('[email] Default SMTP from:  ', USE_SMTP ? smtpFrom() : '(n/a)');
