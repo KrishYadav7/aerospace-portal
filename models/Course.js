@@ -1,33 +1,33 @@
+const mongoose = require('mongoose');
+
+/* ---------- Matrix Match row (one row of List-I with its correct List-II answer) ---------- */
 const matrixRowSchema = new mongoose.Schema({
   text:         { type: String, default: '' },
-  correctIndex: { type: Number, default: 0 }   // index into matrixRightItems
+  correctIndex: { type: Number, default: 0 }
 }, { _id: false });
 
+/* ---------- Quiz Question (supports 4 types) ---------- */
 const quizQuestionSchema = new mongoose.Schema({
-  // 'single' | 'multiple' | 'integer' | 'matrix'
   type: { type: String, default: 'single' },
 
   question:    { type: String, default: '' },
   explanation: { type: String, default: '' },
 
-  // Single + Multiple Correct
   options:        { type: [String], default: [] },
   correctIndexes: { type: [Number], default: [] },
 
-  // Integer / Numerical
   integerAnswer:    { type: Number, default: null },
   integerTolerance: { type: Number, default: 0 },
 
-  // Matrix Match (List-I ↔ List-II)
-  matrixLeftItems:      { type: [String], default: [] },
-  matrixRightItems:     { type: [String], default: [] },
-  matrixRows:           { type: [matrixRowSchema], default: [] },
+  matrixLeftItems:  { type: [String], default: [] },
+  matrixRightItems: { type: [String], default: [] },
+  matrixRows:       { type: [matrixRowSchema], default: [] },
 
-  // Per-question scoring
   marks:         { type: Number, default: 4 },
   negativeMarks: { type: Number, default: -1 }
 }, { _id: true });
 
+/* ---------- Material ---------- */
 const materialSchema = new mongoose.Schema({
   title: { type: String, required: true },
   type:  { type: String, required: true },
@@ -40,13 +40,79 @@ const materialSchema = new mongoose.Schema({
   estimatedTime: { type: String, default: '' },
   tags: { type: String, default: '' },
 
-  // NEW — Paper/exam-level config (shown at top of quiz editor)
   examConfig: {
     subject:    { type: String, default: '' },
     paperCode:  { type: String, default: '' },
-    totalTime:  { type: String, default: '' },   // e.g. "3 hours"
+    totalTime:  { type: String, default: '' },
     totalMarks: { type: Number, default: 0 }
   },
 
   quiz: [quizQuestionSchema]
 });
+
+/* ---------- Q&A ---------- */
+const replySchema = new mongoose.Schema({
+  authorName:     String,
+  authorUsername: String,
+  authorRole:     { type: String, default: 'student' },
+  text:           { type: String, required: true },
+  date:           { type: Date, default: Date.now },
+  isAccepted:     { type: Boolean, default: false }
+});
+
+const doubtSchema = new mongoose.Schema({
+  studentName: String,
+  studentUsername: String,
+  studentEmail: String,
+  question: String,
+  answer: String,
+  date: { type: Date, default: Date.now },
+  replies: [replySchema]
+});
+
+/* ---------- Announcements ---------- */
+const announcementSchema = new mongoose.Schema({
+  id:         String,
+  title:      String,
+  body:       String,
+  authorName: String,
+  date:       { type: Date, default: Date.now }
+});
+
+/* ---------- Playlists ---------- */
+const playlistSchema = new mongoose.Schema({
+  id:          { type: String, required: true },
+  title:       { type: String, required: true },
+  description: { type: String, default: '' },
+  materialIds: { type: [String], default: [] },
+  createdAt:   { type: Date, default: Date.now }
+});
+
+/* ---------- Course ---------- */
+const courseSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  code: { type: String, required: true },
+  semester: String,
+  instructor: String,
+  description: String,
+
+  category:   { type: String, default: 'General' },
+  difficulty: { type: String, default: 'Intermediate' },
+  duration:   { type: String, default: '' },
+  credits:    { type: Number, default: 0 },
+  language:   { type: String, default: '' },
+  learningOutcomes: { type: [String], default: [] },
+  thumbnail:  { type: String, default: '' },
+  status:     { type: String, default: 'published' },
+  featured:   { type: Boolean, default: false },
+
+  isPremium: { type: Boolean, default: false },
+  price:     { type: Number, default: 0 },
+
+  materials: [materialSchema],
+  doubts:    [doubtSchema],
+  announcements: [announcementSchema],
+  playlists: [playlistSchema]
+}, { timestamps: true });
+
+module.exports = mongoose.model('Course', courseSchema);
