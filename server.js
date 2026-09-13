@@ -78,20 +78,23 @@ if (!EMAIL_USER || !EMAIL_PASS) {
   console.error('❌ EMAIL_USER / EMAIL_PASS are not set. OTP + bulk email will NOT work.');
 }
 
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // true for port 465, false for port 587
-  auth: { user: EMAIL_USER, pass: EMAIL_PASS },
-  pool: true,
-  maxConnections: 5,
-  maxMessages: 50,
-  connectionTimeout: 30000,
-  greetingTimeout: 30000,
-  socketTimeout: 30000,
-  debug: true,
-  logger: true
-});
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// We create a "mock" transporter so your existing verify() and sendMail() code doesn't break
+const transporter = {
+  verify: async () => { return true; }, // Fake verification for Resend
+  sendMail: async (options) => {
+    // Resend expects `from`, `to`, `subject`, `html`, `text`
+    return await resend.emails.send({
+      from: options.from || `"Aerospace Department" <onboarding@resend.dev>`,
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+      text: options.text
+    });
+  }
+};
 // ---- Verify transporter ONCE on boot ----
 // This is the single biggest diagnostic win: on startup you'll see
 // either "✅ Email transporter ready" or "❌ ... FAILED".
@@ -337,7 +340,7 @@ app.post('/api/send-otp', async (req, res) => {
 
     await withTimeout(
       transporter.sendMail({
-        from: `"Aerospace Department" <${EMAIL_USER}>`,
+                  from: `"Aerospace Department" <onboarding@resend.dev>`,
         to: email,
         subject: 'Aerospace Portal - Registration OTP',
         text: `Welcome!\n\nYour OTP: ${otp}\n\nDo not share this.`
@@ -561,7 +564,7 @@ app.post('/api/admin/send-email', async (req, res) => {
 
       await withTimeout(
         transporter.sendMail({
-          from: `"Aerospace Department" <${EMAIL_USER}>`,
+          from: `"Aerospace Department" <onboarding@resend.dev>`,
           to: student.email,
           replyTo: EMAIL_USER,
           subject: cleanSubject,

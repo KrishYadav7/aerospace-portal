@@ -754,7 +754,21 @@ function renderAdminAddCourse() {
       <div class="editor-grid-2">
         <div class="form-group"><label>Course Name *</label><input type="text" id="newCourseName" placeholder="e.g. Aerodynamics" required></div>
         <div class="form-group"><label>Course Code *</label><input type="text" id="newCourseCode" placeholder="e.g. AE101" required></div>
-        <div class="form-group"><label>Semester</label><input type="text" id="newCourseSemester" placeholder="e.g. Fall 2024"></div>
+        <div class="form-group"><label>Semester</label>
+  <select id="newCourseSemester">
+    <option value="">Select Semester</option>
+    <option value="1">Semester 1</option>
+    <option value="2">Semester 2</option>
+    <option value="3">Semester 3</option>
+    <option value="4">Semester 4</option>
+    <option value="5">Semester 5</option>
+    <option value="6">Semester 6</option>
+    <option value="7">Semester 7</option>
+    <option value="8">Semester 8</option>
+    <option value="9">Semester 9</option>
+    <option value="10">Semester 10</option>
+  </select>
+</div>
         <div class="form-group"><label>Instructor</label><input type="text" id="newCourseInstructor" placeholder="e.g. Dr. Smith"></div>
       </div>
       <div class="form-group"><label>Description</label><textarea id="newCourseDescription" rows="4" placeholder="Brief description of the course..."></textarea></div>
@@ -826,7 +840,7 @@ async function saveNewCoursePage() {
 
   const payload = {
     name, code,
-    semester: $('newCourseSemester').value.trim(),
+    semester: $('newCourseSemester').value, // Changed to .value (no trim needed for select)
     instructor: $('newCourseInstructor').value.trim(),
     description: $('newCourseDescription').value.trim(),
     category: $('newCourseCategory').value,
@@ -847,13 +861,25 @@ async function saveNewCoursePage() {
       body: JSON.stringify(payload)
     });
     const data = await res.json();
+    
     if (data.success) {
       showToast('🎉 Course created successfully!', 'success');
       addingCourse = false;
       await fetchCoursesFromDB();
-      if (data.course && data.course._id) openCourseEditor(data.course._id);
-    } else showToast(data.message || 'Failed to create course.', 'error');
-  } catch { showToast('Server error.', 'error'); }
+      
+      // If the course was created successfully, try to open the editor.
+      // If the editor fails to open, fall back to the courses list.
+      if (data.course && data.course._id) {
+        openCourseEditor(data.course._id);
+      } else {
+        switchAdminTab('courses');
+      }
+    } else {
+      showToast(data.message || 'Failed to create course.', 'error');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
 }
 
 function renderAdminAddProfessor() {
@@ -1297,15 +1323,19 @@ function switchAdminTab(tab) {
     _emailSelectedIds.clear();
   }
   adminTab = tab;
+  
+  // Reset ALL editing/adding states
   addingCourse = false;
   addingProfessor = false;
   addingMaterialCourseId = null;
   addingStudent = false;
+  editingCourseId = null;
+  currentCourseId = null;
+  window.currentSelectedCourseId = null;
+  
   pushHash(`#/admin/${tab}`);
-  updateAdminTabUI();
-  renderAdminDashboard();
+  renderApp(); // Use renderApp instead of renderAdminDashboard for a clean slate
 }
-
 function updateAdminTabUI() {
   document.querySelectorAll('.admin-tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === adminTab));
@@ -2273,6 +2303,12 @@ function openCourseEditor(courseId) {
 function closeCourseEditor() {
   editingCourseId = null;
   editingTab = 'details';
+  addingCourse = false;
+  addingProfessor = false;
+  addingMaterialCourseId = null;
+  addingStudent = false;
+  currentCourseId = null;
+  window.currentSelectedCourseId = null;
   pushHash('#/admin/courses');
   renderApp();
 }
@@ -2346,7 +2382,12 @@ function renderEditorDetails(course) {
       <div class="editor-grid-2">
         <div class="form-group"><label>Course Name *</label><input type="text" id="edName" value="${escapeHtml(course.name)}"></div>
         <div class="form-group"><label>Course Code *</label><input type="text" id="edCode" value="${escapeHtml(course.code)}"></div>
-        <div class="form-group"><label>Semester</label><input type="text" id="edSemester" value="${escapeHtml(course.semester) || ''}"></div>
+        <div class="form-group"><label>Semester</label>
+  <select id="edSemester">
+    <option value="">Select Semester</option>
+    ${[1,2,3,4,5,6,7,8,9,10].map(s => `<option value="${s}" ${String(course.semester) === String(s) ? 'selected' : ''}>Semester ${s}</option>`).join('')}
+  </select>
+</div>
         <div class="form-group"><label>Instructor</label><input type="text" id="edInstructor" value="${escapeHtml(course.instructor) || ''}"></div>
       </div>
       <div class="form-group"><label>Description</label>
