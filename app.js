@@ -3396,7 +3396,10 @@ function renderStudentCourses() {
 }
 
 function renderStudentCourseCard(c) {
-  const isPurchased = currentUser.purchases && currentUser.purchases.includes(c.id);
+  const isPurchased  = currentUser.purchases && currentUser.purchases.includes(c.id);
+  const isSubscribed = !!currentUser?.isSubscribed;
+  const unlocked     = isPurchased || isSubscribed;
+
   const saved = isBookmarked(c.id);
   const viewedCount = getProgress(c.id).length;
   const totalMats = (c.materials || []).length;
@@ -3410,9 +3413,15 @@ function renderStudentCourseCard(c) {
     </div>` : '';
 
   const featuredBadge = c.featured ? '<span class="status-badge featured"><i class="fas fa-star"></i></span>' : '';
-  let badge = c.isPremium
-    ? `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>${!isPurchased ? ` <span class="premium-badge premium-locked"><i class="fas fa-lock"></i> Locked</span>` : ''}`
-    : '';
+
+  // Premium badge: Locked OR Unlocked depending on purchase / subscription
+  let badge = '';
+  if (c.isPremium) {
+    const statusBadge = unlocked
+      ? ` <span class="premium-badge premium-unlocked"><i class="fas fa-unlock"></i> Unlocked</span>`
+      : ` <span class="premium-badge premium-locked"><i class="fas fa-lock"></i> Locked</span>`;
+    badge = `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>${statusBadge}`;
+  }
 
   const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy"></div>` : '';
   const plCount = (c.playlists || []).length;
@@ -3438,8 +3447,9 @@ function renderStudentCourseCard(c) {
       <p class="course-desc">${escapeHtml(c.description) || ''}</p>
       <div class="material-count"><i class="fas fa-layer-group"></i> ${totalMats} materials</div>
       ${progressHtml}
-      ${c.isPremium && !isPurchased && !currentUser?.isSubscribed ? `<div style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();showPaymentModal('${c.id}')"><i class="fas fa-shopping-cart"></i> Buy Now</button></div>` : ''}
-      ${c.isPremium && currentUser?.isSubscribed ? `<div style="margin-top:10px;"><span class="chip green"><i class="fas fa-check-circle"></i> Unlocked by subscription</span></div>` : ''}
+      ${c.isPremium && !unlocked
+        ? `<div style="margin-top:10px;"><button class="btn btn-primary btn-sm" onclick="event.stopPropagation();showPaymentModal('${c.id}')"><i class="fas fa-shopping-cart"></i> Buy Now</button></div>`
+        : ''}
     </div>`;
 }
 
@@ -3490,7 +3500,11 @@ function renderCourseDetail(courseId) {
     <div class="course-detail-header" style="${acc}">
       ${course.thumbnail ? `<img src="${course.thumbnail}" class="cd-thumb" alt="" loading="lazy">` : ''}
       <div class="cd-content">
-        <h2>${escapeHtml(course.name)} ${isPremiumCourse ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>' : ''}</h2>
+        <h2>${escapeHtml(course.name)} ${isPremiumCourse
+  ? (isPurchased || isSubscribed
+      ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span> <span class="premium-badge premium-unlocked"><i class="fas fa-unlock"></i> Unlocked</span>'
+      : '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span> <span class="premium-badge premium-locked"><i class="fas fa-lock"></i> Locked</span>')
+  : ''}</h2>
         <div class="cd-chips">
           ${course.category ? `<span class="chip"><i class="fas fa-tag"></i> ${escapeHtml(course.category)}</span>` : ''}
           ${course.difficulty ? `<span class="chip" style="background:${diff.bg};color:${diff.fg};"><i class="fas fa-signal"></i> ${course.difficulty}</span>` : ''}
