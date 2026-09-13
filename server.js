@@ -1734,57 +1734,168 @@ app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', async 
 /* ============================================================
    QUIZ
    ============================================================ */
+/* ============================================================
+   QUIZ — Save paper (admin)
+   ============================================================ */
 app.post('/api/courses/:courseId/materials/:materialId/quiz', async (req, res) => {
   try {
-    const { quiz } = req.body;
-    if (!Array.isArray(quiz)) return res.status(400).json({ success: false, message: 'quiz must be an array' });
-    await Course.updateOne(
-      { _id: req.params.courseId, "materials._id": req.params.materialId },
-      { $set: { "materials.$.quiz": quiz } }
+    const { quiz, examConfig } = req.body || {};
+    if (!Array.isArray(quiz)) {
+      return res.status(400).json({ success: false, message: 'quiz must be an array' });
+    }
+
+    const update = { 'materials.$.quiz': quiz };
+    if (examConfig && typeof examConfig === 'object') {
+      update['materials.$.examConfig'] = {
+        subject:    String(examConfig.subject    || '').slice(0, 200),
+        paperCode:  String(examConfig.paperCode  || '').slice(0, 100),
+        totalTime:  String(examConfig.totalTime  || '').slice(0, 60),
+        totalMarks: Number(examConfig.totalMarks) || 0
+      };
+    }
+
+    const result = await Course.updateOne(
+      { _id: req.params.courseId, 'materials._id': req.params.materialId },
+      { $set: update }
     );
-    res.json({ success: true, message: 'Quiz saved successfully!' });
-  } catch (e) { res.status(500).json({ success: false, message: 'Error saving quiz: ' + e.message }); }
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Material not found.' });
+    }
+    res.json({ success: true, message: 'Paper saved successfully!' });
+  } catch (e) {
+    console.error('[quiz/save]', e);
+    res.status(500).json({ success: false, message: 'Error saving paper: ' + e.message });
+  }
 });
 
+/* ============================================================
+   QUIZ — Grade submission (student)
+   Supports: single, multiple, integer, matrix
+   ============================================================ */
 app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
   try {
     const { userId, answers } = req.body;
     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
-    if (!Array.isArray(answers)) return res.status(400).json({ success: false, message: 'answers must be an array' });
+    if (!Array.isArray(answers)) {
+      return res.status(400).json({ success: false, message: 'answers must be an array' });
+    }
+
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
     const mat = course.materials.id(req.params.materialId);
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+
     const quiz = mat.quiz || [];
-    if (quiz.length === 0) return res.status(400).json({ success: false, message: 'This material has no quiz' });
+    if (quiz.length === 0) return res.status(400).json({ success: false, message: 'This material has no questions' });
 
     let score = 0;
+    let totalMarksPossible = 0;
+    let marksEarned = 0;
+
     const results = quiz.map((q, i) => {
-      const chosen = answers[i];
-      const isCorrect = chosen === q.correctIndex;
-      if (isCorrect) score++;
-      return { correct: isCorrect, chosen, correctIndex: q.correctIndex, explanation: q.explanation || '' };
+      const ans = answers[i];
+      const qType = q.type || 'single';
+      const qMarks = typeof q.marks === 'number' ? q.marks : 4;
+      const qNeg   = typeof q.negativeMarks === 'number' ? q.negativeMarks : -1;
+      totalMarksPossible += qMarks;
+
+      let correct = false;
+
+      if (qType === 'single') {
+        const chosen = Array.isArray(ans) ? ans[0] : ans;
+        const correctIdx = (q.correctIndexes && q.correctIndexes[0] != null)
+          ? q.correctIndexes[0]
+          : (typeof q.correctIndex === 'number' ? q.correctIndex : 0);
+        correct = (chosen === correctIdx);
+      }
+      else if (qType === 'multiple') {
+        const chosen = Array.isArray(ans) ? [...ans].map(Number).sort() : [];
+        const expected = [...(q.correctIndexes || [])].map(Number).sort();
+        correct = chosen.length === expected.length &&
+                  chosen.every((v, k) => v === expected[k]);
+      }
+      else if (qType === 'integer') {
+        const chosen = Number(ans);
+        const expected = Number(q.integerAnswer);
+        const tol = Number(q.integerTolerance) || 0;
+        correct = !isNaN(chosen) && !isNaN(expected) && Math.abs(chosen - expected) <= tol;
+      }
+      else if (qType === 'matrix') {
+        const chosen = Array.isArray(ans) ? ans : [];
+        const rows = q.matrixRows || [];
+        if (rows.length === 0) correct = false;
+        else {
+          let hits = 0;
+          rows.forEach((row, ri) => {
+            if (Number(chosen[ri]) === Number(row.correctIndex)) hits++;
+          });
+          correct = (hits === rows.length);
+        }
+      }
+
+      if (correct) {
+        score++;
+        marksEarned += qMarks;
+      } else {
+        const attempted = qType === 'integer'
+          ? (ans !== null && ans !== undefined && ans !== '' && !isNaN(Number(ans)))
+          : (Array.isArray(ans) ? ans.filter(x => x !== undefined && x !== null && x !== '').length > 0
+                               : (ans !== null && ans !== undefined && ans !== -1));
+        if (attempted && qNeg < 0) marksEarned += qNeg;
+      }
+
+      return {
+        type: qType,
+        correct,
+        chosen: ans,
+        correctIndexes: q.correctIndexes || (typeof q.correctIndex === 'number' ? [q.correctIndex] : []),
+        integerAnswer: q.integerAnswer,
+        integerTolerance: q.integerTolerance || 0,
+        matrixRows: q.matrixRows || [],
+        explanation: q.explanation || '',
+        marks: qMarks,
+        negativeMarks: qNeg
+      };
     });
+
     const total = quiz.length;
     const pct = Math.round((score / total) * 100);
+    const normalizedMarks = totalMarksPossible > 0
+      ? Math.max(0, Math.round(marksEarned * 100) / 100)
+      : 0;
 
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.quizResults) user.quizResults = new Map();
     const prev = user.quizResults.get(req.params.materialId) || { attempts: 0 };
-    user.quizResults.set(req.params.materialId, { score, total, attempts: (prev.attempts || 0) + 1, lastAttemptAt: new Date() });
+    user.quizResults.set(req.params.materialId, {
+      score, total, percent: pct,
+      marksEarned: normalizedMarks,
+      marksPossible: totalMarksPossible,
+      attempts: (prev.attempts || 0) + 1,
+      lastAttemptAt: new Date()
+    });
 
     logActivity(user, {
       type: 'quiz',
       courseId: req.params.courseId,
       materialId: req.params.materialId,
-      score,
-      total
+      score, total
     });
 
     await user.save();
-    res.json({ success: true, score, total, percent: pct, results, attempts: (prev.attempts || 0) + 1 });
-  } catch (e) { res.status(500).json({ success: false, message: 'Error grading quiz: ' + e.message }); }
+    res.json({
+      success: true,
+      score, total, percent: pct,
+      marksEarned: normalizedMarks,
+      marksPossible: totalMarksPossible,
+      results,
+      attempts: (prev.attempts || 0) + 1
+    });
+  } catch (e) {
+    console.error('[quiz/grade]', e);
+    res.status(500).json({ success: false, message: 'Error grading quiz: ' + e.message });
+  }
 });
 
 app.get('/api/user/quiz-results/:userId', async (req, res) => {

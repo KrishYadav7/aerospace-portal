@@ -4186,3 +4186,63 @@ input, textarea, select { font-family: inherit; }
 [data-theme="dim"] .premium-badge.premium-unlocked {
   color: #042019;
 }
+/* ============================================================
+   46. QUIZ EDITOR — full-page upgrades
+   ============================================================ */
+.quiz-edit-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-xs);
+}
+.quiz-options-block { margin-top: 6px; }
+.quiz-option-row { align-items: center; }
+
+.matrix-match-block .quiz-play-letter { width: 26px; height: 26px; font-size: 12px; }
+.matrix-match-student { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.matrix-match-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-surface-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+.matrix-match-item { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; font-size: 13.5px; }
+.matrix-arrow { color: var(--text-tertiary); font-size: 16px; }
+.matrix-match-row select {
+  min-width: 180px; padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-default);
+  background: var(--bg-surface); color: var(--text-primary);
+  font-family: inherit; font-size: 13px;
+}
+
+.quiz-paper-header {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  padding: 10px 14px;
+  background: var(--bg-surface-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  font-size: 12.5px; font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.quiz-paper-header i { color: var(--brand-500); margin-right: 4px; }
+
+.matrix-result-table {
+  width: 100%; border-collapse: collapse; margin-top: 6px;
+  font-size: 12.5px;
+}
+.matrix-result-table th, .matrix-result-table td {
+  padding: 6px 8px; text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.matrix-result-table th { font-weight: 700; color: var(--text-tertiary); }
+.matrix-result-table tr.ok-row  td:first-child { border-left: 3px solid var(--emerald-500); }
+.matrix-result-table tr.bad-row td:first-child { border-left: 3px solid var(--rose-500); }
+
+/* LaTeX display adjustment */
+.latex-content .katex { font-size: 1em; }
+.latex-content .katex-display { margin: 8px 0; }

@@ -224,7 +224,14 @@ function syncHashToState() {
     window.currentSelectedCourseId = null;
     return;
   }
-
+  if (parts[0] === 'admin' && parts[1] === 'quiz' && parts[2] && parts[3]) {
+    quizEditingCourseId = parts[2];
+    quizEditingMaterialId = parts[3];
+    currentCourseId = null; editingCourseId = null;
+    addingCourse = false; addingProfessor = false;
+    addingMaterialCourseId = null; addingStudent = false;
+    return;
+  }
   if (parts[0] === 'admin' && parts[1] === 'course' && parts[2] === 'new') {
     addingCourse = true; addingProfessor = false; addingMaterialCourseId = null; addingStudent = false;
     currentCourseId = null; editingCourseId = null; return;
@@ -675,6 +682,10 @@ function logout() {
   _analyticsCache = null;
   _analyticsCacheAt = 0;
   try { destroyAnalyticsCharts(); } catch (e) {}
+   quizEditingCourseId = null;
+  quizEditingMaterialId = null;
+  quizDraft = [];
+  quizPlayerState = null;
   pushHash('#/home'); renderApp(); showToast('Logged out.', 'info');
 }
 
@@ -1571,7 +1582,7 @@ function setMaterialFilter(type) {
    RENDER APP
    ============================================================ */
 function renderApp() {
-  ['loginView', 'adminView', 'adminEditView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView']
+  ['loginView', 'adminView', 'adminEditView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
     .forEach(id => { const el = $(id); if (el) el.classList.remove('active'); });
   $('appHeader').style.display = 'none';
   $('appFooter').style.display = 'none';
@@ -1595,7 +1606,11 @@ function renderApp() {
 
   renderNotificationBadge();
   buildNav();
-
+  if (quizEditingCourseId && quizEditingMaterialId && currentUser && currentUser.role === 'admin') {
+    $('adminQuizEditorView').classList.add('active');
+    renderQuizEditor();
+    return;
+  }
   if (addingCourse) {
     $('adminAddCourseView').classList.add('active');
     renderAdminAddCourse();
@@ -3135,7 +3150,7 @@ function renderMaterialEditorCard(courseId, m, idx) {
         <div class="me-quiz-section">
           <div class="me-quiz-header">
             <h4><i class="fas fa-question-circle"></i> Quiz (${quizCount})</h4>
-            <button class="btn btn-accent btn-sm" onclick="openQuizModal('${courseId}', '${m.id}')"><i class="fas fa-pen"></i> ${quizCount > 0 ? 'Edit' : 'Add Quiz'}</button>
+            <button class="btn btn-accent btn-sm" onclick="openQuizEditor('${courseId}', '${m.id}')"><i class="fas fa-file-pen"></i> ${quizCount > 0 ? 'Edit Paper' : 'Create Paper'}</button>
           </div>
         </div>
         <div class="me-actions">
@@ -4651,155 +4666,964 @@ function generateCertificate(courseId) {
 /* ============================================================
    QUIZ
    ============================================================ */
+/* ============================================================
+   QUIZ / PAPER EDITOR STATE
+   ============================================================ */
+let quizEditingCourseId   = null;
+let quizEditingMaterialId = null;
+let quizPaperConfig = { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
 let quizDraft = [];
-function openQuizModal(courseId, materialId) {
-  const modal = document.getElementById('quizModal');
-  if (!modal) return showToast('Quiz modal missing.', 'error');
+
+/* ---------- KaTeX helper ---------- */
+function renderMathIn(el) {
+  if (!el) return;
+  if (typeof renderMathInElement !== 'function') {
+    if (!window.__katexReady) {
+      setTimeout(() => renderMathIn(el), 250);
+    }
+    return;
+  }
+  try {
+    renderMathInElement(el, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '$',  right: '$',  display: false },
+        { left: '\\[', right: '\\]', display: true },
+        { left: '\\(', right: '\\)', display: false }
+      ],
+      throwOnError: false,
+      errorColor: '#dc2626'
+    });
+  } catch (e) { /* silent */ }
+}
+/* ============================================================
+   QUIZ EDITOR — Full-page open / close / render
+   ============================================================ */
+function openQuizEditor(courseId, materialId) {
   const course = findCourse(courseId);
-  if (!course) return;
-  const mat = course.materials.find(m => m.id === materialId);
-  if (!mat) return;
-  $('quizCourseId').value = courseId;
-  $('quizMaterialId').value = materialId;
-  quizDraft = JSON.parse(JSON.stringify(mat.quiz || []));
+  if (!course) return showToast('Course not found.', 'error');
+  const mat = (course.materials || []).find(m => m.id === materialId);
+  if (!mat) return showToast('Material not found.', 'error');
+
+  quizEditingCourseId = courseId;
+  quizEditingMaterialId = materialId;
+
+  const rawQuiz = Array.isArray(mat.quiz) ? mat.quiz : [];
+  quizDraft = rawQuiz.map(q => normalizeQuestion(q));
+
+  const cfg = mat.examConfig || {};
+  quizPaperConfig = {
+    subject:    cfg.subject    || course.name    || '',
+    paperCode:  cfg.paperCode  || (course.code ? course.code + '-' + (mat.title || '') : ''),
+    totalTime:  cfg.totalTime  || '',
+    totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0)
+  };
+
+  addingCourse = false; addingProfessor = false;
+  addingMaterialCourseId = null; addingStudent = false;
+  editingCourseId = null; currentCourseId = null;
+  window.currentSelectedCourseId = null;
+
+  pushHash(`#/admin/quiz/${courseId}/${materialId}`);
+  renderApp();
+}
+
+function closeQuizEditor() {
+  const cid = quizEditingCourseId;
+  quizEditingCourseId = null;
+  quizEditingMaterialId = null;
+  quizDraft = [];
+  if (cid) openCourseEditor(cid);
+  else { pushHash('#/admin/courses'); renderApp(); }
+}
+
+function normalizeQuestion(q) {
+  const type = q.type || (Array.isArray(q.correctIndexes) && q.correctIndexes.length > 1
+    ? 'multiple' : 'single');
+
+  let correctIndexes = Array.isArray(q.correctIndexes) ? [...q.correctIndexes]
+    : (typeof q.correctIndex === 'number' ? [q.correctIndex] : []);
+
+  return {
+    type,
+    question:    q.question    || '',
+    explanation: q.explanation || '',
+
+    options:        (q.options && q.options.length) ? [...q.options] : ['', '', '', ''],
+    correctIndexes,
+
+    integerAnswer:    (q.integerAnswer === null || q.integerAnswer === undefined) ? null : Number(q.integerAnswer),
+    integerTolerance: Number(q.integerTolerance) || 0,
+
+    matrixLeftItems:  (q.matrixLeftItems && q.matrixLeftItems.length) ? [...q.matrixLeftItems] : ['', '', '', ''],
+    matrixRightItems: (q.matrixRightItems && q.matrixRightItems.length) ? [...q.matrixRightItems] : ['', '', '', ''],
+    matrixRows:       Array.isArray(q.matrixRows) && q.matrixRows.length
+      ? q.matrixRows.map(r => ({ text: r.text || '', correctIndex: Number(r.correctIndex) || 0 }))
+      : [ { text: '', correctIndex: 0 }, { text: '', correctIndex: 1 },
+          { text: '', correctIndex: 2 }, { text: '', correctIndex: 3 } ],
+
+    marks:         typeof q.marks === 'number' ? q.marks : 4,
+    negativeMarks: typeof q.negativeMarks === 'number' ? q.negativeMarks : -1
+  };
+}
+
+/* ============================================================
+   QUIZ EDITOR — Render
+   ============================================================ */
+function renderQuizEditor() {
+  const container = document.getElementById('quizEditorContent');
+  if (!container) return;
+  const course = findCourse(quizEditingCourseId);
+  if (!course) { container.innerHTML = '<p>Course not found.</p>'; return; }
+  const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
+  if (!mat) { container.innerHTML = '<p>Material not found.</p>'; return; }
+
+  const autoTotal = quizDraft.reduce((s, q) => s + (Number(q.marks) || 0), 0);
+
+  container.innerHTML = `
+    <button class="back-link" onclick="closeQuizEditor()">
+      <i class="fas fa-arrow-left"></i> Back to Course Editor
+    </button>
+
+    <div class="dash-header">
+      <h2><i class="fas fa-file-pen"></i> Question Paper Editor</h2>
+      <div class="actions">
+        <button class="btn btn-outline" onclick="previewQuizPaper()">
+          <i class="fas fa-eye"></i> Preview as Student
+        </button>
+        <button class="btn btn-primary" onclick="saveQuizPaper()" id="quizSaveBtn">
+          <i class="fas fa-save"></i> Save Paper
+        </button>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-title">
+        <i class="fas fa-info-circle"></i> Paper Details
+        <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+          ${escapeHtml(course.name)} · ${escapeHtml(mat.title)}
+        </span>
+      </div>
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Subject Name</label>
+          <input type="text" id="qpSubject" value="${escapeHtml(quizPaperConfig.subject)}" placeholder="e.g. Aerodynamics">
+        </div>
+        <div class="form-group">
+          <label>Paper Code</label>
+          <input type="text" id="qpCode" value="${escapeHtml(quizPaperConfig.paperCode)}" placeholder="e.g. AE101-MID">
+        </div>
+        <div class="form-group">
+          <label>Total Time Duration</label>
+          <input type="text" id="qpTime" value="${escapeHtml(quizPaperConfig.totalTime)}" placeholder="e.g. 3 hours">
+        </div>
+        <div class="form-group">
+          <label>Total Marks</label>
+          <input type="number" id="qpMarks" value="${quizPaperConfig.totalMarks || autoTotal}" min="0" step="1" placeholder="e.g. 100">
+          <span class="hint">Auto-computed from questions: <strong>${autoTotal}</strong></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-list-ol"></i> Questions (${quizDraft.length})
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            Total marks: ${autoTotal}
+          </span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('single')">
+            <i class="fas fa-plus"></i> Single Correct
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('multiple')">
+            <i class="fas fa-plus"></i> Multiple Correct
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('integer')">
+            <i class="fas fa-plus"></i> Integer
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('matrix')">
+            <i class="fas fa-plus"></i> Matrix Match
+          </button>
+        </div>
+      </div>
+
+      <p class="editor-hint">
+        Use <strong>LaTeX</strong> for equations — wrap inline math in <code>$…$</code> and display math in <code>$$…$$</code>.
+        Example: <code>$E = mc^2$</code>.
+      </p>
+
+      <div id="quizDraftList"></div>
+
+      <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:16px;"
+              onclick="addQuizQuestion('single')">
+        <i class="fas fa-plus"></i> Add Question
+      </button>
+    </div>
+  `;
+
   renderQuizDraft();
-  openModal('quizModal');
+  renderMathIn(container);
 }
 
 function renderQuizDraft() {
-  const list = document.getElementById('quizQuestionsList');
+  const list = document.getElementById('quizDraftList');
   if (!list) return;
+
   if (quizDraft.length === 0) {
-    list.innerHTML = `<div class="empty-state" style="padding:20px;margin-bottom:14px;"><i class="fas fa-question-circle"></i><p>No questions yet.</p></div>`;
+    list.innerHTML = `<div class="empty-state"><i class="fas fa-question-circle"></i><p>No questions yet. Add your first question below.</p></div>`;
     return;
   }
+
   let html = '';
   quizDraft.forEach((q, qi) => {
-    html += `<div class="quiz-edit-card">
-      <div class="quiz-edit-head"><strong>Question ${qi + 1}</strong>
-        <button type="button" class="quiz-remove" onclick="removeQuizQuestion(${qi})" aria-label="Remove question"><i class="fas fa-trash-alt"></i></button>
+    html += `<div class="quiz-edit-card" data-qid="${qi}">
+      <div class="quiz-edit-head">
+        <strong>Question ${qi + 1} <span class="mat-type" style="margin-left:8px;">${questionTypeLabel(q.type)}</span></strong>
+        <button type="button" class="quiz-remove" onclick="removeQuizQuestion(${qi})" aria-label="Remove question">
+          <i class="fas fa-trash-alt"></i>
+        </button>
       </div>
-      <div class="form-group" style="margin-bottom:10px;">
-        <input type="text" placeholder="Question text" value="${escapeHtml(q.question)}" oninput="updateQuizField(${qi}, 'question', this.value)">
+
+      <div class="editor-grid-3" style="margin-bottom:12px;">
+        <div class="form-group">
+          <label>Question Type</label>
+          <select onchange="updateQuizType(${qi}, this.value)">
+            <option value="single"   ${q.type === 'single'   ? 'selected' : ''}>Single Correct (MCQ)</option>
+            <option value="multiple" ${q.type === 'multiple' ? 'selected' : ''}>Multiple Correct (MSQ)</option>
+            <option value="integer"  ${q.type === 'integer'  ? 'selected' : ''}>Integer / Numerical</option>
+            <option value="matrix"   ${q.type === 'matrix'   ? 'selected' : ''}>Matrix Match</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Marks (+)</label>
+          <input type="number" value="${q.marks}" min="0" step="0.5"
+                 oninput="updateQuizField(${qi}, 'marks', parseFloat(this.value) || 0)">
+        </div>
+        <div class="form-group">
+          <label>Negative Marks (−)</label>
+          <input type="number" value="${q.negativeMarks}" step="0.5"
+                 oninput="updateQuizField(${qi}, 'negativeMarks', parseFloat(this.value) || 0)">
+        </div>
       </div>
-      <div class="quiz-options">
-        ${(q.options || ['', '', '', '']).map((opt, oi) => `
-          <div class="quiz-option-row">
-            <label class="quiz-radio"><input type="radio" name="correct-${qi}" ${q.correctIndex === oi ? 'checked' : ''} onchange="updateQuizCorrect(${qi}, ${oi})"><span class="quiz-radio-dot"></span></label>
-            <input type="text" placeholder="Option ${oi + 1}" value="${escapeHtml(opt)}" oninput="updateQuizOption(${qi}, ${oi}, this.value)">
-          </div>`).join('')}
+
+      <div class="form-group" style="margin-bottom:14px;">
+        <label>Question Text <span class="hint" style="display:inline;">(LaTeX supported)</span></label>
+        <textarea rows="3" placeholder="e.g. Find the value of $\\int_0^1 x^2 \\, dx$"
+                  oninput="updateQuizField(${qi}, 'question', this.value)">${escapeHtml(q.question)}</textarea>
       </div>
-      <div class="form-group" style="margin:10px 0 0;">
-        <input type="text" placeholder="Explanation (optional)" value="${escapeHtml(q.explanation || '')}" oninput="updateQuizField(${qi}, 'explanation', this.value)">
+
+      ${renderAnswerArea(q, qi)}
+
+      <div class="form-group" style="margin-top:12px;">
+        <label>Explanation / Solution (optional · LaTeX supported)</label>
+        <textarea rows="2" placeholder="e.g. Using power rule: $\\frac{x^3}{3}\\Big|_0^1 = \\frac{1}{3}$"
+                  oninput="updateQuizField(${qi}, 'explanation', this.value)">${escapeHtml(q.explanation || '')}</textarea>
       </div>
     </div>`;
   });
-  list.innerHTML = html;
-}
-function addQuizQuestion() { quizDraft.push({ question: '', options: ['', '', '', ''], correctIndex: 0, explanation: '' }); renderQuizDraft(); }
-function removeQuizQuestion(qi) { quizDraft.splice(qi, 1); renderQuizDraft(); }
-function updateQuizField(qi, field, val) { quizDraft[qi][field] = val; }
-function updateQuizOption(qi, oi, val) { quizDraft[qi].options[oi] = val; }
-function updateQuizCorrect(qi, oi) { quizDraft[qi].correctIndex = oi; }
 
-async function saveQuiz() {
+  list.innerHTML = html;
+  renderMathIn(list);
+}
+
+function questionTypeLabel(t) {
+  return ({ single: 'SINGLE', multiple: 'MULTIPLE', integer: 'INTEGER', matrix: 'MATRIX' })[t] || 'SINGLE';
+}
+
+function renderAnswerArea(q, qi) {
+  if (q.type === 'single' || q.type === 'multiple') {
+    const inputType = q.type === 'single' ? 'radio' : 'checkbox';
+    const inputName = `q-${qi}-${q.type}`;
+
+    return `
+      <div class="quiz-options-block">
+        <label style="font-size:12.5px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:8px;">
+          Options ${q.type === 'multiple' ? '(check ALL correct)' : '(select ONE correct)'}
+        </label>
+        ${(q.options || []).map((opt, oi) => {
+          const checked = (q.correctIndexes || []).includes(oi);
+          return `
+            <div class="quiz-option-row">
+              <label class="quiz-radio">
+                <input type="${inputType}" name="${inputName}"
+                       ${checked ? 'checked' : ''}
+                       onchange="updateQuizCorrect(${qi}, ${oi}, this.checked, '${q.type}')">
+                <span class="quiz-radio-dot"></span>
+              </label>
+              <input type="text"
+                     placeholder="Option ${String.fromCharCode(65 + oi)} · LaTeX ok"
+                     value="${escapeHtml(opt)}"
+                     oninput="updateQuizOption(${qi}, ${oi}, this.value)">
+              <button type="button" class="quiz-remove" style="width:24px;height:24px;"
+                      onclick="removeQuizOption(${qi}, ${oi})" title="Remove option">
+                <i class="fas fa-times" style="font-size:10px;"></i>
+              </button>
+            </div>`;
+        }).join('')}
+        <button type="button" class="btn btn-outline btn-sm" style="margin-top:8px;"
+                onclick="addQuizOption(${qi})">
+          <i class="fas fa-plus"></i> Add Option
+        </button>
+      </div>`;
+  }
+
+  if (q.type === 'integer') {
+    return `
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Correct Integer / Numeric Answer</label>
+          <input type="number" step="any"
+                 value="${q.integerAnswer === null ? '' : q.integerAnswer}"
+                 placeholder="e.g. 42"
+                 oninput="updateQuizField(${qi}, 'integerAnswer', this.value === '' ? null : parseFloat(this.value))">
+        </div>
+        <div class="form-group">
+          <label>Tolerance (±)</label>
+          <input type="number" step="any" min="0"
+                 value="${q.integerTolerance || 0}"
+                 placeholder="0 = exact match"
+                 oninput="updateQuizField(${qi}, 'integerTolerance', parseFloat(this.value) || 0)">
+          <span class="hint">If set to 0.5, answers within ±0.5 are accepted (useful for decimals).</span>
+        </div>
+      </div>`;
+  }
+
+  if (q.type === 'matrix') {
+    const leftItems  = q.matrixLeftItems  || [];
+    const rightItems = q.matrixRightItems || [];
+    const rows       = q.matrixRows       || [];
+
+    return `
+      <div class="matrix-match-block">
+        <div class="editor-grid-2">
+          <div>
+            <label style="font-size:12.5px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:8px;">
+              List-I (Left Column · items to be matched)
+            </label>
+            ${leftItems.map((item, li) => `
+              <div class="quiz-option-row" style="margin-bottom:6px;">
+                <span class="quiz-play-letter">${String.fromCharCode(65 + li)}</span>
+                <input type="text" placeholder="Item ${String.fromCharCode(65 + li)} · LaTeX ok"
+                       value="${escapeHtml(item)}"
+                       oninput="updateMatrixItem(${qi}, 'left', ${li}, this.value)">
+                <button type="button" class="quiz-remove" style="width:24px;height:24px;"
+                        onclick="removeMatrixItem(${qi}, 'left', ${li})" title="Remove">
+                  <i class="fas fa-times" style="font-size:10px;"></i>
+                </button>
+              </div>`).join('')}
+            <button type="button" class="btn btn-outline btn-sm" onclick="addMatrixItem(${qi}, 'left')">
+              <i class="fas fa-plus"></i> Add Left Item
+            </button>
+          </div>
+          <div>
+            <label style="font-size:12.5px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:8px;">
+              List-II (Right Column · items to match to)
+            </label>
+            ${rightItems.map((item, ri) => `
+              <div class="quiz-option-row" style="margin-bottom:6px;">
+                <span class="quiz-play-letter">${['P','Q','R','S','T','U','V','W'][ri] || (ri + 1)}</span>
+                <input type="text" placeholder="Item ${['P','Q','R','S','T','U','V','W'][ri] || (ri + 1)} · LaTeX ok"
+                       value="${escapeHtml(item)}"
+                       oninput="updateMatrixItem(${qi}, 'right', ${ri}, this.value)">
+                <button type="button" class="quiz-remove" style="width:24px;height:24px;"
+                        onclick="removeMatrixItem(${qi}, 'right', ${ri})" title="Remove">
+                  <i class="fas fa-times" style="font-size:10px;"></i>
+                </button>
+              </div>`).join('')}
+            <button type="button" class="btn btn-outline btn-sm" onclick="addMatrixItem(${qi}, 'right')">
+              <i class="fas fa-plus"></i> Add Right Item
+            </button>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <label style="font-size:12.5px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:8px;">
+            Correct Matching (for each List-I item, choose the List-II match)
+          </label>
+          ${rows.map((r, ri) => `
+            <div class="quiz-option-row" style="margin-bottom:8px;">
+              <span class="quiz-play-letter">${String.fromCharCode(65 + ri)}</span>
+              <input type="text" style="flex:1;" placeholder="Row ${String.fromCharCode(65 + ri)} text (LaTeX ok)"
+                     value="${escapeHtml(r.text)}"
+                     oninput="updateMatrixRow(${qi}, ${ri}, 'text', this.value)">
+              <span style="font-size:12px;color:var(--text-tertiary);padding:0 8px;">→ matches</span>
+              <select style="min-width:120px;" onchange="updateMatrixRow(${qi}, ${ri}, 'correctIndex', parseInt(this.value,10) || 0)">
+                ${(rightItems.length ? rightItems : ['P','Q','R','S']).map((_, x) => {
+                  const label = ['P','Q','R','S','T','U','V','W'][x] || (x + 1);
+                  return `<option value="${x}" ${Number(r.correctIndex) === x ? 'selected' : ''}>${label}</option>`;
+                }).join('')}
+              </select>
+              <button type="button" class="quiz-remove" style="width:24px;height:24px;"
+                      onclick="removeMatrixRow(${qi}, ${ri})" title="Remove row">
+                <i class="fas fa-times" style="font-size:10px;"></i>
+              </button>
+            </div>
+          `).join('')}
+          <button type="button" class="btn btn-outline btn-sm" onclick="addMatrixRow(${qi})">
+            <i class="fas fa-plus"></i> Add Row
+          </button>
+        </div>
+      </div>`;
+  }
+
+  return '';
+}
+
+/* ============================================================
+   QUIZ EDITOR — Question mutators
+   ============================================================ */
+function addQuizQuestion(type = 'single') {
+  const base = {
+    type,
+    question: '',
+    explanation: '',
+    marks: 4,
+    negativeMarks: -1
+  };
+  if (type === 'single' || type === 'multiple') {
+    base.options = ['', '', '', ''];
+    base.correctIndexes = [];
+  } else if (type === 'integer') {
+    base.integerAnswer = null;
+    base.integerTolerance = 0;
+  } else if (type === 'matrix') {
+    base.matrixLeftItems  = ['', '', '', ''];
+    base.matrixRightItems = ['', '', '', ''];
+    base.matrixRows = [0, 1, 2, 3].map(i => ({ text: '', correctIndex: i }));
+  }
+  quizDraft.push(base);
+  renderQuizDraft();
+}
+
+function removeQuizQuestion(qi) {
+  if (!confirm(`Delete Question ${qi + 1}?`)) return;
+  quizDraft.splice(qi, 1);
+  renderQuizDraft();
+}
+
+function updateQuizType(qi, newType) {
+  const q = quizDraft[qi];
+  if (!q) return;
+  q.type = newType;
+
+  if ((newType === 'single' || newType === 'multiple') && (!q.options || q.options.length === 0)) {
+    q.options = ['', '', '', ''];
+    q.correctIndexes = [];
+  }
+  if (newType === 'single' && Array.isArray(q.correctIndexes) && q.correctIndexes.length > 1) {
+    q.correctIndexes = [q.correctIndexes[0]];
+  }
+  if (newType === 'integer' && (q.integerAnswer === undefined)) q.integerAnswer = null;
+  if (newType === 'matrix' && (!q.matrixLeftItems || q.matrixLeftItems.length === 0)) {
+    q.matrixLeftItems  = ['', '', '', ''];
+    q.matrixRightItems = ['', '', '', ''];
+    q.matrixRows = [0, 1, 2, 3].map(i => ({ text: '', correctIndex: i }));
+  }
+  renderQuizDraft();
+}
+
+function updateQuizField(qi, field, value) {
+  if (quizDraft[qi]) quizDraft[qi][field] = value;
+}
+
+function updateQuizOption(qi, oi, value) {
+  if (quizDraft[qi] && quizDraft[qi].options) quizDraft[qi].options[oi] = value;
+}
+
+function addQuizOption(qi) {
+  const q = quizDraft[qi];
+  if (!q || !q.options) return;
+  if (q.options.length >= 8) return showToast('Max 8 options.', 'info');
+  q.options.push('');
+  renderQuizDraft();
+}
+
+function removeQuizOption(qi, oi) {
+  const q = quizDraft[qi];
+  if (!q || !q.options) return;
+  if (q.options.length <= 2) return showToast('At least 2 options required.', 'info');
+  q.options.splice(oi, 1);
+  q.correctIndexes = (q.correctIndexes || [])
+    .filter(x => x !== oi)
+    .map(x => x > oi ? x - 1 : x);
+  renderQuizDraft();
+}
+
+function updateQuizCorrect(qi, oi, isChecked, type) {
+  const q = quizDraft[qi];
+  if (!q) return;
+  if (!Array.isArray(q.correctIndexes)) q.correctIndexes = [];
+  if (type === 'single') {
+    q.correctIndexes = [oi];
+  } else {
+    if (isChecked) {
+      if (!q.correctIndexes.includes(oi)) q.correctIndexes.push(oi);
+    } else {
+      q.correctIndexes = q.correctIndexes.filter(x => x !== oi);
+    }
+  }
+}
+
+function updateMatrixItem(qi, side, idx, value) {
+  const q = quizDraft[qi];
+  if (!q) return;
+  const key = side === 'left' ? 'matrixLeftItems' : 'matrixRightItems';
+  if (!Array.isArray(q[key])) q[key] = [];
+  q[key][idx] = value;
+}
+
+function addMatrixItem(qi, side) {
+  const q = quizDraft[qi];
+  if (!q) return;
+  const key = side === 'left' ? 'matrixLeftItems' : 'matrixRightItems';
+  if (!Array.isArray(q[key])) q[key] = [];
+  if (q[key].length >= 8) return showToast('Max 8 items per column.', 'info');
+  q[key].push('');
+  if (side === 'left') {
+    if (!Array.isArray(q.matrixRows)) q.matrixRows = [];
+    q.matrixRows.push({ text: '', correctIndex: 0 });
+  }
+  renderQuizDraft();
+}
+
+function removeMatrixItem(qi, side, idx) {
+  const q = quizDraft[qi];
+  if (!q) return;
+  const key = side === 'left' ? 'matrixLeftItems' : 'matrixRightItems';
+  if (!Array.isArray(q[key]) || q[key].length <= 2) {
+    return showToast('At least 2 items required per column.', 'info');
+  }
+  q[key].splice(idx, 1);
+  if (side === 'left' && Array.isArray(q.matrixRows)) q.matrixRows.splice(idx, 1);
+  if (side === 'right' && Array.isArray(q.matrixRows)) {
+    q.matrixRows.forEach(r => {
+      if (Number(r.correctIndex) >= q.matrixRightItems.length) {
+        r.correctIndex = q.matrixRightItems.length - 1;
+      }
+    });
+  }
+  renderQuizDraft();
+}
+
+function updateMatrixRow(qi, ri, field, value) {
+  const q = quizDraft[qi];
+  if (!q || !Array.isArray(q.matrixRows) || !q.matrixRows[ri]) return;
+  q.matrixRows[ri][field] = value;
+}
+
+function addMatrixRow(qi) {
+  const q = quizDraft[qi];
+  if (!q) return;
+  if (!Array.isArray(q.matrixRows)) q.matrixRows = [];
+  if (q.matrixRows.length >= 8) return showToast('Max 8 rows.', 'info');
+  q.matrixRows.push({ text: '', correctIndex: 0 });
+  renderQuizDraft();
+}
+
+function removeMatrixRow(qi, ri) {
+  const q = quizDraft[qi];
+  if (!q || !Array.isArray(q.matrixRows)) return;
+  if (q.matrixRows.length <= 2) return showToast('At least 2 rows required.', 'info');
+  q.matrixRows.splice(ri, 1);
+  renderQuizDraft();
+}
+
+/* ============================================================
+   QUIZ EDITOR — Save / Validate
+   ============================================================ */
+async function saveQuizPaper() {
+  if (!quizEditingCourseId || !quizEditingMaterialId) return;
+
+  quizPaperConfig = {
+    subject:    ($('qpSubject')?.value || '').trim(),
+    paperCode:  ($('qpCode')?.value    || '').trim(),
+    totalTime:  ($('qpTime')?.value    || '').trim(),
+    totalMarks: parseInt($('qpMarks')?.value, 10) || 0
+  };
+
   for (let i = 0; i < quizDraft.length; i++) {
     const q = quizDraft[i];
-    if (!q.question.trim()) return showToast(`Question ${i + 1} has no text.`, 'error');
-    if (q.options.some(o => !o.trim())) return showToast(`Question ${i + 1} has empty options.`, 'error');
+    if (!q.question || !q.question.trim()) {
+      return showToast(`Question ${i + 1} has no text.`, 'error');
+    }
+    if (q.type === 'single' || q.type === 'multiple') {
+      const filled = (q.options || []).filter(o => o && o.trim());
+      if (filled.length < 2) return showToast(`Question ${i + 1} needs at least 2 filled options.`, 'error');
+      if (!Array.isArray(q.correctIndexes) || q.correctIndexes.length === 0) {
+        return showToast(`Question ${i + 1} has no correct answer selected.`, 'error');
+      }
+      if (q.correctIndexes.some(x => !q.options[x] || !q.options[x].trim())) {
+        return showToast(`Question ${i + 1}: a chosen correct option is empty.`, 'error');
+      }
+      if (q.type === 'single' && q.correctIndexes.length !== 1) {
+        return showToast(`Question ${i + 1}: single correct must have exactly ONE correct option.`, 'error');
+      }
+    }
+    if (q.type === 'integer') {
+      if (q.integerAnswer === null || q.integerAnswer === undefined || isNaN(q.integerAnswer)) {
+        return showToast(`Question ${i + 1}: integer answer required.`, 'error');
+      }
+    }
+    if (q.type === 'matrix') {
+      const left  = (q.matrixLeftItems  || []).filter(x => x && x.trim());
+      const right = (q.matrixRightItems || []).filter(x => x && x.trim());
+      if (left.length < 2)  return showToast(`Question ${i + 1}: at least 2 List-I items required.`, 'error');
+      if (right.length < 2) return showToast(`Question ${i + 1}: at least 2 List-II items required.`, 'error');
+      if ((q.matrixRows || []).length < 2) return showToast(`Question ${i + 1}: at least 2 rows required.`, 'error');
+    }
   }
-  const courseId = $('quizCourseId').value;
-  const materialId = $('quizMaterialId').value;
+
+  const btn = $('quizSaveBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+
+  if (!quizPaperConfig.totalMarks) {
+    quizPaperConfig.totalMarks = quizDraft.reduce((s, q) => s + (Number(q.marks) || 0), 0);
+  }
+
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}/quiz`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quiz: quizDraft })
-    });
+    const res = await fetch(
+      `https://aerospace-portal.onrender.com/api/courses/${quizEditingCourseId}/materials/${quizEditingMaterialId}/quiz`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quiz: quizDraft, examConfig: quizPaperConfig })
+      }
+    );
     const data = await res.json();
-    if (data.success) { showToast('✓ Quiz saved!', 'success'); closeModal('quizModal'); fetchCoursesFromDB(); }
-    else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
+    if (data.success) {
+      showToast('✅ Paper saved!', 'success');
+      await fetchCoursesFromDB();
+    } else {
+      showToast(data.message || 'Failed to save.', 'error');
+    }
+  } catch (e) {
+    console.error(e);
+    showToast('Server error while saving.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Save Paper'; }
+  }
+}
+
+function previewQuizPaper() {
+  quizPaperConfig = {
+    subject:    ($('qpSubject')?.value || '').trim(),
+    paperCode:  ($('qpCode')?.value    || '').trim(),
+    totalTime:  ($('qpTime')?.value    || '').trim(),
+    totalMarks: parseInt($('qpMarks')?.value, 10) || 0
+  };
+  if (quizDraft.length === 0) return showToast('Add at least one question first.', 'info');
+
+  const course = findCourse(quizEditingCourseId);
+  const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
+
+  const emptyAnswer = q => q.type === 'integer' ? '' : [];
+  quizPlayerState = {
+    courseId: quizEditingCourseId,
+    materialId: quizEditingMaterialId,
+    materialTitle: mat ? mat.title : 'Preview',
+    quiz: JSON.parse(JSON.stringify(quizDraft)),
+    answers: quizDraft.map(emptyAnswer),
+    submitted: false,
+    response: null,
+    previewMode: true,
+    paperConfig: { ...quizPaperConfig }
+  };
+  renderQuizPlayer();
+  openModal('quizPlayerModal');
 }
 
 let quizPlayerState = null;
+
 function openQuizPlayer(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
   const mat = course.materials.find(m => m.id === materialId); if (!mat) return;
   const quiz = mat.quiz || [];
-  if (quiz.length === 0) return showToast('No quiz.', 'info');
-  quizPlayerState = { courseId, materialId, materialTitle: mat.title, quiz, answers: new Array(quiz.length).fill(-1), submitted: false, response: null };
+  if (quiz.length === 0) return showToast('This test has no questions yet.', 'info');
+
+  const normalized = quiz.map(q => normalizeQuestion(q));
+  const emptyAnswer = q => q.type === 'integer' ? '' : [];
+
+  quizPlayerState = {
+    courseId, materialId,
+    materialTitle: mat.title,
+    quiz: normalized,
+    answers: normalized.map(emptyAnswer),
+    submitted: false,
+    response: null,
+    paperConfig: mat.examConfig || {}
+  };
   renderQuizPlayer();
   openModal('quizPlayerModal');
 }
+
 function renderQuizPlayer() {
   const st = quizPlayerState; if (!st) return;
-  $('quizPlayerTitle').innerHTML = `<i class="fas fa-question-circle"></i> ${escapeHtml(st.materialTitle)}`;
+  const cfg = st.paperConfig || {};
+  const course = findCourse(st.courseId);
+  const mat = course && (course.materials || []).find(m => m.id === st.materialId);
+  const examCfg = cfg.subject ? cfg : (mat && mat.examConfig) || {};
+
+  $('quizPlayerTitle').innerHTML =
+    `<i class="fas fa-file-pen"></i> ${escapeHtml(examCfg.subject || st.materialTitle)}`;
+
+  const headerInfo = `
+    <div class="quiz-paper-header">
+      ${examCfg.paperCode  ? `<span><i class="fas fa-hashtag"></i> ${escapeHtml(examCfg.paperCode)}</span>` : ''}
+      ${examCfg.totalTime  ? `<span><i class="fas fa-clock"></i> ${escapeHtml(examCfg.totalTime)}</span>` : ''}
+      <span><i class="fas fa-list-ol"></i> ${st.quiz.length} question${st.quiz.length === 1 ? '' : 's'}</span>
+      ${examCfg.totalMarks ? `<span><i class="fas fa-star"></i> Max Marks: ${examCfg.totalMarks}</span>` : ''}
+    </div>`;
+
   if (!st.submitted) {
-    $('quizPlayerSub').textContent = `${st.quiz.length} questions · Choose one per question`;
-    $('quizPlayerActions').innerHTML = `<button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">Cancel</button>
-      <button type="button" class="btn btn-primary" onclick="submitQuiz()"><i class="fas fa-paper-plane"></i> Submit</button>`;
+    $('quizPlayerSub').innerHTML = headerInfo;
+    $('quizPlayerActions').innerHTML = `
+      <button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="submitQuiz()" ${st.previewMode ? 'disabled title="Preview mode"' : ''}>
+        <i class="fas fa-paper-plane"></i> Submit Test
+      </button>`;
+
     let html = '';
     st.quiz.forEach((q, qi) => {
+      const qType = q.type || 'single';
       html += `<div class="quiz-play-card">
-        <div class="quiz-play-qnum">Question ${qi + 1} of ${st.quiz.length}</div>
-        <h4 class="quiz-play-question">${escapeHtml(q.question)}</h4>
-        <div class="quiz-play-options">
-          ${q.options.map((opt, oi) => `<label class="quiz-play-option ${st.answers[qi] === oi ? 'selected' : ''}" onclick="selectQuizAnswer(${qi}, ${oi})">
-            <span class="quiz-play-letter">${String.fromCharCode(65 + oi)}</span>
-            <span class="quiz-play-text">${escapeHtml(opt)}</span>
-          </label>`).join('')}
+        <div class="quiz-play-qnum">Question ${qi + 1} of ${st.quiz.length}
+          <span style="margin-left:8px;font-weight:800;color:var(--text-tertiary);text-transform:uppercase;">
+            ${questionTypeLabel(qType)}
+          </span>
+          <span style="margin-left:8px;color:var(--text-tertiary);font-weight:600;">
+            (+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''})
+          </span>
         </div>
+        <h4 class="quiz-play-question latex-content">${escapeHtml(q.question)}</h4>
+        ${renderStudentAnswerArea(q, qi)}
       </div>`;
     });
     $('quizPlayerBody').innerHTML = html;
-  } else {
-    const { score, total, percent, results, attempts } = st.response;
-    const isPerfect = score === total;
-    const isPass = percent >= 60;
-    const emoji = isPerfect ? '🏆' : isPass ? '🎉' : '📚';
-    const headline = isPerfect ? 'Perfect Score!' : isPass ? 'Well done!' : 'Keep practicing!';
-    $('quizPlayerSub').textContent = `Attempt #${attempts}`;
-    $('quizPlayerActions').innerHTML = `<button type="button" class="btn btn-outline" onclick="openQuizPlayer('${st.courseId}', '${st.materialId}')"><i class="fas fa-redo"></i> Retake</button>
-      <button type="button" class="btn btn-primary" onclick="closeModal('quizPlayerModal')"><i class="fas fa-check"></i> Done</button>`;
-    let html = `<div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
-      <div class="quiz-result-emoji">${emoji}</div>
-      <div class="quiz-result-score">${score} / ${total}</div>
-      <div class="quiz-result-pct">${percent}%</div>
-      <div class="quiz-result-headline">${headline}</div>
-    </div>`;
-    st.quiz.forEach((q, qi) => {
-      const r = results[qi]; const ok = r.correct;
-      html += `<div class="quiz-result-item ${ok ? 'ok' : 'bad'}">
-        <div class="quiz-result-head"><span class="quiz-result-badge ${ok ? 'ok' : 'bad'}"><i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i></span><strong>Q${qi + 1}.</strong> ${escapeHtml(q.question)}</div>
-        <div class="quiz-result-body">
-          <div class="quiz-answer-row"><span class="quiz-answer-label">Your answer:</span><span class="${ok ? 'ok-text' : 'bad-text'}">${escapeHtml(q.options[r.chosen] ?? '—')}</span></div>
-          ${!ok ? `<div class="quiz-answer-row"><span class="quiz-answer-label">Correct:</span><span class="ok-text">${escapeHtml(q.options[r.correctIndex])}</span></div>` : ''}
-          ${r.explanation ? `<div class="quiz-explain"><i class="fas fa-lightbulb"></i> ${escapeHtml(r.explanation)}</div>` : ''}
-        </div>
-      </div>`;
-    });
-    $('quizPlayerBody').innerHTML = html;
+    renderMathIn($('quizPlayerBody'));
+    return;
   }
+
+  const { score, total, percent, results, attempts, marksEarned, marksPossible } = st.response;
+  const isPerfect = score === total;
+  const isPass = percent >= 60;
+  const emoji = isPerfect ? '🏆' : isPass ? '🎉' : '📚';
+  const headline = isPerfect ? 'Perfect Score!' : isPass ? 'Well done!' : 'Keep practicing!';
+
+  $('quizPlayerSub').innerHTML = `${headerInfo}<div style="margin-top:6px;">Attempt #${attempts}</div>`;
+  $('quizPlayerActions').innerHTML = `
+    <button type="button" class="btn btn-outline" onclick="retakeQuiz()"><i class="fas fa-redo"></i> Retake</button>
+    <button type="button" class="btn btn-primary" onclick="closeModal('quizPlayerModal')"><i class="fas fa-check"></i> Done</button>`;
+
+  let html = `<div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
+    <div class="quiz-result-emoji">${emoji}</div>
+    <div class="quiz-result-score">${score} / ${total}</div>
+    <div class="quiz-result-pct">${percent}%${marksPossible ? ` · ${marksEarned} / ${marksPossible} marks` : ''}</div>
+    <div class="quiz-result-headline">${headline}</div>
+  </div>`;
+
+  st.quiz.forEach((q, qi) => {
+    const r = results[qi]; const ok = r.correct;
+    html += `<div class="quiz-result-item ${ok ? 'ok' : 'bad'}">
+      <div class="quiz-result-head">
+        <span class="quiz-result-badge ${ok ? 'ok' : 'bad'}">
+          <i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i>
+        </span>
+        <strong>Q${qi + 1}.</strong>
+        <span class="latex-content">${escapeHtml(q.question)}</span>
+      </div>
+      <div class="quiz-result-body">
+        ${renderResultDetail(q, r)}
+        ${r.explanation ? `<div class="quiz-explain"><i class="fas fa-lightbulb"></i> <span class="latex-content">${escapeHtml(r.explanation)}</span></div>` : ''}
+      </div>
+    </div>`;
+  });
+  $('quizPlayerBody').innerHTML = html;
+  renderMathIn($('quizPlayerBody'));
 }
-function selectQuizAnswer(qi, oi) {
-  if (!quizPlayerState || quizPlayerState.submitted) return;
-  quizPlayerState.answers[qi] = oi;
+
+function renderStudentAnswerArea(q, qi) {
+  const st = quizPlayerState;
+  const ans = st.answers[qi];
+  const qType = q.type || 'single';
+
+  if (qType === 'single' || qType === 'multiple') {
+    const inputType = qType === 'single' ? 'radio' : 'checkbox';
+    const name = `pq-${qi}`;
+    return `<div class="quiz-play-options">
+      ${(q.options || []).map((opt, oi) => {
+        const checked = qType === 'single'
+          ? (ans === oi || (Array.isArray(ans) && ans[0] === oi))
+          : (Array.isArray(ans) && ans.includes(oi));
+        return `<label class="quiz-play-option ${checked ? 'selected' : ''}">
+          <input type="${inputType}" name="${name}" ${checked ? 'checked' : ''} style="display:none;"
+                 onchange="selectQuizAnswerMulti(${qi}, ${oi}, this.checked, '${qType}')">
+          <span class="quiz-play-letter">${String.fromCharCode(65 + oi)}</span>
+          <span class="quiz-play-text latex-content">${escapeHtml(opt)}</span>
+        </label>`;
+      }).join('')}
+    </div>`;
+  }
+
+  if (qType === 'integer') {
+    return `<div class="form-group" style="margin-top:8px;">
+      <label>Your Answer</label>
+      <input type="number" step="any" placeholder="Enter a number"
+             value="${ans === '' ? '' : (ans ?? '')}"
+             oninput="selectQuizAnswerInteger(${qi}, this.value)">
+    </div>`;
+  }
+
+  if (qType === 'matrix') {
+    const left  = q.matrixLeftItems  || [];
+    const right = q.matrixRightItems || [];
+    const chosen = Array.isArray(ans) ? ans : [];
+    return `
+      <div class="matrix-match-student">
+        ${left.map((item, li) => `
+          <div class="matrix-match-row">
+            <div class="matrix-match-item latex-content">
+              <span class="quiz-play-letter">${String.fromCharCode(65 + li)}</span>
+              <span>${escapeHtml(item)}</span>
+            </div>
+            <span class="matrix-arrow">→</span>
+            <select onchange="selectQuizAnswerMatrix(${qi}, ${li}, this.value)">
+              <option value="">— Select match —</option>
+              ${right.map((rItem, ri) => {
+                const label = ['P','Q','R','S','T','U','V','W'][ri] || (ri + 1);
+                return `<option value="${ri}" ${Number(chosen[li]) === ri ? 'selected' : ''}>${label}. ${escapeHtml(rItem).slice(0, 40)}</option>`;
+              }).join('')}
+            </select>
+          </div>
+        `).join('')}
+      </div>`;
+  }
+  return '';
+}
+
+function renderResultDetail(q, r) {
+  const qType = q.type || 'single';
+
+  if (qType === 'single' || qType === 'multiple') {
+    const chosenIdx = Array.isArray(r.chosen) ? r.chosen : (r.chosen != null ? [r.chosen] : []);
+    const correctIdx = r.correctIndexes || [];
+    const fmt = idxs => idxs.length === 0
+      ? '<em>Not answered</em>'
+      : idxs.map(i => `<span class="latex-content">${escapeHtml(q.options[i] || '—')}</span>`).join(', ');
+    return `
+      <div class="quiz-answer-row"><span class="quiz-answer-label">Your answer:</span>
+        <span class="${r.correct ? 'ok-text' : 'bad-text'}">${fmt(chosenIdx)}</span>
+      </div>
+      ${!r.correct ? `<div class="quiz-answer-row"><span class="quiz-answer-label">Correct:</span>
+        <span class="ok-text">${fmt(correctIdx)}</span></div>` : ''}
+    `;
+  }
+
+  if (qType === 'integer') {
+    const tol = Number(r.integerTolerance) || 0;
+    const tolStr = tol > 0 ? ` (±${tol})` : '';
+    return `
+      <div class="quiz-answer-row"><span class="quiz-answer-label">Your answer:</span>
+        <span class="${r.correct ? 'ok-text' : 'bad-text'}">${r.chosen ?? '—'}</span>
+      </div>
+      ${!r.correct ? `<div class="quiz-answer-row"><span class="quiz-answer-label">Correct:</span>
+        <span class="ok-text">${r.integerAnswer}${tolStr}</span></div>` : ''}
+    `;
+  }
+
+  if (qType === 'matrix') {
+    const rows = r.matrixRows || [];
+    const chosen = Array.isArray(r.chosen) ? r.chosen : [];
+    const rightLabels = ['P','Q','R','S','T','U','V','W'];
+    return `
+      <table class="matrix-result-table">
+        <thead><tr><th>List-I</th><th>Your Match</th><th>Correct</th></tr></thead>
+        <tbody>
+          ${rows.map((row, ri) => {
+            const ok = Number(chosen[ri]) === Number(row.correctIndex);
+            return `<tr class="${ok ? 'ok-row' : 'bad-row'}">
+              <td class="latex-content">${String.fromCharCode(65 + ri)}. ${escapeHtml(row.text)}</td>
+              <td>${chosen[ri] != null && chosen[ri] !== '' ? (rightLabels[chosen[ri]] || '—') : '—'}</td>
+              <td>${rightLabels[row.correctIndex] || '—'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`;
+  }
+  return '';
+}
+
+function selectQuizAnswerMulti(qi, oi, isChecked, type) {
+  const st = quizPlayerState; if (!st || st.submitted) return;
+  if (type === 'single') {
+    st.answers[qi] = oi;
+  } else {
+    let arr = Array.isArray(st.answers[qi]) ? st.answers[qi].slice() : [];
+    if (isChecked) { if (!arr.includes(oi)) arr.push(oi); }
+    else arr = arr.filter(x => x !== oi);
+    st.answers[qi] = arr;
+  }
   renderQuizPlayer();
 }
+function selectQuizAnswerInteger(qi, val) {
+  const st = quizPlayerState; if (!st || st.submitted) return;
+  st.answers[qi] = val;
+}
+function selectQuizAnswerMatrix(qi, li, val) {
+  const st = quizPlayerState; if (!st || st.submitted) return;
+  let arr = Array.isArray(st.answers[qi]) ? st.answers[qi].slice() : [];
+  if (val === '') delete arr[li]; else arr[li] = parseInt(val, 10);
+  st.answers[qi] = arr;
+}
+function selectQuizAnswer(qi, oi) { selectQuizAnswerMulti(qi, oi, true, 'single'); }
+
+function retakeQuiz() {
+  const st = quizPlayerState;
+  if (!st) return;
+  openQuizPlayer(st.courseId, st.materialId);
+}
+
 async function submitQuiz() {
   const st = quizPlayerState; if (!st) return;
-  const unanswered = st.answers.filter(a => a < 0).length;
-  if (unanswered > 0) return showToast(`Answer all (${unanswered} left).`, 'error');
+  if (st.previewMode) return showToast('Preview mode — nothing submitted.', 'info');
+
+  for (let i = 0; i < st.quiz.length; i++) {
+    const q = st.quiz[i];
+    const a = st.answers[i];
+    if (q.type === 'integer') {
+      if (a === '' || a === null || a === undefined || isNaN(Number(a))) {
+        return showToast(`Please answer Q${i + 1}.`, 'error');
+      }
+    } else if (q.type === 'matrix') {
+      const rows = q.matrixRows || [];
+      if (!Array.isArray(a) || a.filter(x => x !== undefined && x !== '').length < rows.length) {
+        return showToast(`Please match all items in Q${i + 1}.`, 'error');
+      }
+    } else {
+      if (Array.isArray(a) ? a.length === 0 : (a === null || a === undefined || a === -1)) {
+        return showToast(`Please answer Q${i + 1}.`, 'error');
+      }
+    }
+  }
+
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: currentUser._id, answers: st.answers })
-    });
+    const res = await fetch(
+      `https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`,
+      {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser._id, answers: st.answers })
+      }
+    );
     const data = await res.json();
-       if (data.success) {
+    if (data.success) {
       st.submitted = true; st.response = data;
       if (!currentUser.quizResults) currentUser.quizResults = {};
-      currentUser.quizResults[st.materialId] = { score: data.score, total: data.total, attempts: data.attempts, lastAttemptAt: new Date().toISOString() };
+      currentUser.quizResults[st.materialId] = {
+        score: data.score, total: data.total, percent: data.percent,
+        marksEarned: data.marksEarned, marksPossible: data.marksPossible,
+        attempts: data.attempts, lastAttemptAt: new Date().toISOString()
+      };
       saveSessionUser(currentUser);
       _analyticsCacheAt = 0;
       renderQuizPlayer();
