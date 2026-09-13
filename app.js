@@ -3393,14 +3393,21 @@ async function cancelSubscription() {
    STUDENT COURSES
    ============================================================ */
 function clearCourseFilters() {
-  const c = $('filterCategory'); const d = $('filterDifficulty'); const p = $('filterPrice');
-  if (c) c.value = ''; if (d) d.value = ''; if (p) p.value = '';
+  const s = $('filterSemester');
+  const c = $('filterCategory');
+  const d = $('filterDifficulty');
+  const p = $('filterPrice');
+  if (s) s.value = '';
+  if (c) c.value = '';
+  if (d) d.value = '';
+  if (p) p.value = '';
   renderStudentCourses();
 }
 
 function renderStudentCourses() {
   const courses = getCourses().filter(c => c.status !== 'draft' && c.status !== 'archived');
   const searchTerm = ($('studentCourseSearch').value || '').toLowerCase().trim();
+  const fSemester = ($('filterSemester')?.value || '').trim(); // <-- NEW
   const fCategory = ($('filterCategory')?.value || '').trim();
   const fDifficulty = ($('filterDifficulty')?.value || '').trim();
   const fPrice = ($('filterPrice')?.value || '').trim();
@@ -3412,6 +3419,7 @@ function renderStudentCourses() {
                   (c.instructor && c.instructor.toLowerCase().includes(searchTerm));
       if (!hit) return false;
     }
+    if (fSemester && String(c.semester) !== fSemester) return false; // <-- NEW
     if (fCategory && c.category !== fCategory) return false;
     if (fDifficulty && c.difficulty !== fDifficulty) return false;
     if (fPrice === 'free' && c.isPremium) return false;

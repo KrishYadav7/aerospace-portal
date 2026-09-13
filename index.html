@@ -373,31 +373,44 @@
         <div class="search-bar"><i class="fas fa-search"></i>
           <input type="text" id="studentCourseSearch" placeholder="Search courses..." oninput="renderStudentCourses()">
         </div>
-        <div class="filter-bar" id="studentFilterBar">
-          <select id="filterCategory" onchange="renderStudentCourses()">
-            <option value="">All Categories</option>
-            <option value="Aerodynamics">Aerodynamics</option>
-            <option value="Propulsion">Propulsion</option>
-            <option value="Structures">Structures</option>
-            <option value="Avionics">Avionics</option>
-            <option value="Mathematics">Mathematics</option>
-            <option value="General">General</option>
-          </select>
-          <select id="filterDifficulty" onchange="renderStudentCourses()">
-            <option value="">All Levels</option>
-            <option value="Beginner">Beginner</option>
-            <option value="Intermediate">Intermediate</option>
-            <option value="Advanced">Advanced</option>
-          </select>
-          <select id="filterPrice" onchange="renderStudentCourses()">
-            <option value="">All Prices</option>
-            <option value="free">Free</option>
-            <option value="premium">Premium</option>
-          </select>
-          <button class="btn btn-outline btn-sm" onclick="clearCourseFilters()">
-            <i class="fas fa-times"></i> Clear
-          </button>
-        </div>
+       <div class="filter-bar" id="studentFilterBar">
+  <select id="filterSemester" onchange="renderStudentCourses()">
+    <option value="">All Semesters</option>
+    <option value="1">Semester 1</option>
+    <option value="2">Semester 2</option>
+    <option value="3">Semester 3</option>
+    <option value="4">Semester 4</option>
+    <option value="5">Semester 5</option>
+    <option value="6">Semester 6</option>
+    <option value="7">Semester 7</option>
+    <option value="8">Semester 8</option>
+    <option value="9">Semester 9</option>
+    <option value="10">Semester 10</option>
+  </select>
+  <select id="filterCategory" onchange="renderStudentCourses()">
+    <option value="">All Categories</option>
+    <option value="Aerodynamics">Aerodynamics</option>
+    <option value="Propulsion">Propulsion</option>
+    <option value="Structures">Structures</option>
+    <option value="Avionics">Avionics</option>
+    <option value="Mathematics">Mathematics</option>
+    <option value="General">General</option>
+  </select>
+  <select id="filterDifficulty" onchange="renderStudentCourses()">
+    <option value="">All Levels</option>
+    <option value="Beginner">Beginner</option>
+    <option value="Intermediate">Intermediate</option>
+    <option value="Advanced">Advanced</option>
+  </select>
+  <select id="filterPrice" onchange="renderStudentCourses()">
+    <option value="">All Prices</option>
+    <option value="free">Free</option>
+    <option value="premium">Premium</option>
+  </select>
+  <button class="btn btn-outline btn-sm" onclick="clearCourseFilters()">
+    <i class="fas fa-times"></i> Clear
+  </button>
+</div>
         <div id="studentCourseList"></div>
       </section>
 
