@@ -79,25 +79,18 @@ if (!EMAIL_USER || !EMAIL_PASS) {
 }
 
 /* ============================================================
-   EMAIL TRANSPORTER — Resend (primary) + Gmail SMTP (fallback)
+   EMAIL TRANSPORTER — SMTP FIRST, Resend as fallback
    ------------------------------------------------------------
-   WHY THIS EXISTS:
-     Resend's free "onboarding@resend.dev" sandbox sender can ONLY
-     deliver to the Resend account owner's own email address. All
-     other recipients are silently accepted (HTTP 200) but never
-     delivered. That's why OTPs looked "sent" but never arrived.
+   WHY SMTP FIRST:
+     Gmail SMTP + App Password is reliable and has no sandbox
+     restrictions. Resend's free sandbox (onboarding@resend.dev)
+     only delivers to the account owner, silently dropping all
+     other recipients — which made OTPs "look sent" but never arrive.
 
-   THE FIX:
-     1. `from` is picked smartly via pickFrom():
-        - If EMAIL_FROM is set in .env → use it (recommended).
-        - Else if SMTP creds exist → use EMAIL_USER as `from`.
-        - Else fall back to onboarding@resend.dev sandbox.
-
-     2. Every sendMail() call now CHECKS the `error` field from
-        Resend and logs it, so silent drops become visible.
-
-     3. If Resend fails AND SMTP creds exist, we auto-retry over
-        Gmail SMTP (port 465, secure).
+   STRATEGY:
+     1. SMTP (if EMAIL_USER + EMAIL_PASS set) → always tried first.
+     2. Resend (if RESEND_API_KEY set) → fallback only.
+     3. If both fail → throw with a clear, actionable error.
    ============================================================ */
 const { Resend } = require('resend');
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -105,10 +98,12 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 const USE_RESEND = !!process.env.RESEND_API_KEY;
 const USE_SMTP   = !!(process.env.EMAIL_USER && process.env.EMAIL_PASS);
 
+console.log('[email] SMTP configured:  ', USE_SMTP, USE_SMTP ? `(${process.env.EMAIL_USER})` : '');
+console.log('[email] Resend configured:', USE_RESEND);
+
 let smtpTransport = null;
 if (USE_SMTP) {
-  const nodemailerReal = require('nodemailer');
-  smtpTransport = nodemailerReal.createTransport({
+  smtpTransport = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 465,
     secure: true,
@@ -116,87 +111,107 @@ if (USE_SMTP) {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000
+    pool: true,
+    maxConnections: 5,
+    maxMessages: 50,
+    connectionTimeout: 12000,
+    greetingTimeout: 12000,
+    socketTimeout: 20000
   });
 }
 
-function pickFrom() {
-  if (process.env.EMAIL_FROM && process.env.EMAIL_FROM.trim()) {
-    return process.env.EMAIL_FROM.trim();
-  }
-  if (USE_SMTP) {
-    return `"Aerospace Department" <${process.env.EMAIL_USER}>`;
-  }
+// --- SMTP `from` — always a real, deliverable address ---
+function smtpFrom() {
+  const ef = process.env.EMAIL_FROM;
+  if (ef && ef.trim() && ef.includes('<')) return ef.trim();
+  return `"Aerospace Department" <${process.env.EMAIL_USER}>`;
+}
+
+// --- Resend `from` — MUST be a verified domain, NOT a Gmail ---
+function resendFrom() {
+  const ef = (process.env.EMAIL_FROM || '').trim();
+  // Resend can't send from a Gmail address (domain not verified).
+  if (ef && !/gmail\.com/i.test(ef) && ef.includes('<')) return ef;
   return '"Aerospace Department" <onboarding@resend.dev>';
 }
 
 const transporter = {
   verify: async () => {
-    if (USE_RESEND) {
+    if (USE_SMTP) {
       try {
-        const r = await resend.domains.list();
-        if (r && r.error) {
-          console.warn('[email] Resend verify warning:', r.error.message || r.error);
-        }
-        return true;
+        await smtpTransport.verify();
+        return { ok: true, via: 'smtp', from: smtpFrom() };
       } catch (e) {
-        console.warn('[email] Resend verify threw:', e.message);
-        return true;
+        console.warn('[email] SMTP verify failed:', e.message);
+        if (!USE_RESEND) throw e;
       }
     }
-    if (USE_SMTP) return smtpTransport.verify();
-    return false;
+    if (USE_RESEND) return { ok: true, via: 'resend', from: resendFrom() };
+    throw new Error('No email transport configured.');
   },
 
   sendMail: async (options) => {
-    const from = pickFrom();
-    const payload = {
-      from,
+    const base = {
       to: options.to,
       subject: options.subject,
       text: options.text,
       html: options.html
     };
-    if (options.replyTo) payload.reply_to = options.replyTo;
 
-    // ---- 1) Try Resend ----
-    if (USE_RESEND) {
-      const { data, error } = await resend.emails.send(payload);
-      if (error) {
-        console.error('[email] Resend FAILED:',
-          '\n   status:', error.statusCode,
-          '\n   name:  ', error.name,
-          '\n   msg:   ', error.message,
-          '\n   to:    ', options.to,
-          '\n   from:  ', from);
-        if (!USE_SMTP) {
-          throw new Error('Resend: ' + (error.message || 'send failed'));
-        }
-        console.warn('[email] Falling back to SMTP…');
-      } else {
-        console.log('[email] Resend OK →', options.to, '· id:', data && data.id);
-        return data;
+    let lastError = null;
+
+    // ---- 1) SMTP first ----
+    if (USE_SMTP) {
+      try {
+        const info = await smtpTransport.sendMail({
+          ...base,
+          from: smtpFrom(),
+          replyTo: options.replyTo || process.env.EMAIL_USER
+        });
+        console.log('[email] ✅ SMTP OK →', options.to, '· id:', info.messageId);
+        return info;
+      } catch (e) {
+        lastError = e;
+        console.error('[email] ❌ SMTP FAILED →', options.to, '·', e.message);
+        if (!USE_RESEND) throw e;
+        console.warn('[email] → falling back to Resend…');
       }
     }
 
-    // ---- 2) SMTP fallback ----
-    if (USE_SMTP) {
-      const info = await smtpTransport.sendMail(payload);
-      console.log('[email] SMTP OK →', options.to, '· id:', info.messageId);
-      return info;
+    // ---- 2) Resend fallback ----
+    if (USE_RESEND) {
+      try {
+        const { data, error } = await resend.emails.send({
+          from: resendFrom(),
+          to: options.to,
+          subject: options.subject,
+          text: options.text,
+          html: options.html,
+          reply_to: options.replyTo
+        });
+        if (error) {
+          const msg = error.message || JSON.stringify(error);
+          console.error('[email] ❌ Resend FAILED →', options.to, '·', msg);
+          lastError = new Error('Resend: ' + msg);
+        } else {
+          console.log('[email] ✅ Resend OK →', options.to, '· id:', data && data.id);
+          return data;
+        }
+      } catch (e) {
+        console.error('[email] ❌ Resend threw →', options.to, '·', e.message);
+        lastError = e;
+      }
     }
 
-    throw new Error('No email transport configured (need RESEND_API_KEY or EMAIL_USER + EMAIL_PASS).');
+    if (lastError) throw lastError;
+    throw new Error('No email transport configured (need EMAIL_USER+EMAIL_PASS or RESEND_API_KEY).');
   }
 };
 
 // ---- Boot diagnostic ----
 (async () => {
-  console.log('[email] Resend configured:', USE_RESEND);
-  console.log('[email] SMTP configured:  ', USE_SMTP);
-  console.log('[email] Default FROM:    ', pickFrom());
+  console.log('[email] Default SMTP from:  ', USE_SMTP ? smtpFrom() : '(n/a)');
+  console.log('[email] Default Resend from:', USE_RESEND ? resendFrom() : '(n/a)');
   try {
     await transporter.verify();
     console.log('✅ Email transporter ready.');
@@ -204,6 +219,7 @@ const transporter = {
     console.error('❌ Email transporter verification FAILED:', err.message);
   }
 })();
+
 /* ============================================================
    SMS SENDER (Twilio REST API — no extra npm package needed)
    ------------------------------------------------------------
@@ -522,7 +538,7 @@ app.post('/api/send-otp', async (req, res) => {
         subject: 'Aerospace Portal - Registration OTP',
         text: `Welcome!\n\nYour OTP: ${otp}\n\nDo not share this. It expires in 10 minutes.`
       }),
-      15000,
+      30000,
       'OTP email send'
     );
 
@@ -1850,7 +1866,7 @@ app.post('/api/subscribe/cancel/send-otp', async (req, res) => {
         text,
         html
       }),
-      15000,
+      30000,
       'Cancel OTP send'
     );
 
@@ -2553,7 +2569,21 @@ app.get('/api/admin/email-replies', async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 });
-
+/* ============================================================
+   EMAIL SELF-TEST (open in browser to verify sending works)
+   ============================================================ */
+app.get('/api/admin/test-email', async (req, res) => {
+  try {
+    const info = await transporter.sendMail({
+      to: process.env.EMAIL_USER,
+      subject: 'Aero test email',
+      text: 'If you received this, email is working. — ' + new Date().toISOString()
+    });
+    res.json({ success: true, sentTo: process.env.EMAIL_USER, info });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
 /* ============================================================
    LISTEN
    ============================================================ */
