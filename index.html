@@ -185,11 +185,15 @@
 
         <section class="about-owner section-card">
           <h2><i class="fas fa-user-tie"></i> About the Founder</h2>
-          <div class="owner-container">
-            <div class="owner-image"><img src="passport.jpg" alt="Owner Photo"></div>
-            <div class="owner-details">
-              <h3>Krish Yadav</h3>
-              <p>Academic achiever and experienced educator currently pursuing Aerospace Engineering at IIT Kharagpur. Passionate about translating complex mathematical and engineering principles into accessible concepts. Proven track record in mentoring 2,000+ students and producing structured academic content across core engineering subjects and competitive mathematics.</p>
+          <div id="ownerProfileContainer">
+            <div class="owner-container">
+              <div class="owner-image owner-avatar">
+                <div class="avatar-skeleton"><i class="fas fa-user-tie"></i></div>
+              </div>
+              <div class="owner-details">
+                <h3>Loading…</h3>
+                <p></p>
+              </div>
             </div>
           </div>
         </section>
@@ -234,6 +238,9 @@
           </button>
           <button class="admin-tab" data-tab="subscriptions" onclick="switchAdminTab('subscriptions')">
             <i class="fas fa-repeat"></i> Subscriptions
+          </button>
+          <button class="admin-tab" data-tab="organization" onclick="switchAdminTab('organization')">
+            <i class="fas fa-building-user"></i> Organization
           </button>
           <button class="admin-tab" data-tab="security" onclick="switchAdminTab('security')">
             <i class="fas fa-shield-halved"></i> Security
@@ -354,6 +361,10 @@
 
         <div id="adminTabSubscriptions" class="admin-tab-content">
           <div id="adminSubscriptionsContent"></div>
+        </div>
+
+        <div id="adminTabOrganization" class="admin-tab-content">
+          <div id="adminOrganizationContent"></div>
         </div>
 
         <div id="adminTabSecurity" class="admin-tab-content">
@@ -857,6 +868,56 @@
           <button type="button" class="btn btn-outline" onclick="closeModal('emailStudentsModal')">Cancel</button>
           <button type="submit" class="btn btn-primary" id="emailSubmitBtn">
             <i class="fas fa-paper-plane"></i> <span id="emailSubmitLabel">Send Email</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Contact Team Member Modal (spam-protected relay) -->
+  <div class="modal-overlay" id="contactMemberModal">
+    <div class="modal-box contact-modal">
+      <div class="contact-modal-header">
+        <div class="contact-modal-icon"><i class="fas fa-paper-plane"></i></div>
+        <div class="contact-modal-heading">
+          <h3 id="contactModalTitle">Contact Team Member</h3>
+          <p class="modal-sub" id="contactModalSub">Your message will be relayed privately.</p>
+        </div>
+        <button type="button" class="email-modal-close" onclick="closeModal('contactMemberModal')" aria-label="Close">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+
+      <form id="contactMemberForm" onsubmit="submitContactMessage(event)">
+        <input type="hidden" id="contactToEmail">
+        <input type="hidden" id="contactToName">
+
+        <div class="form-group">
+          <label><i class="fas fa-user"></i> Your Name *</label>
+          <input type="text" id="contactFromName" placeholder="e.g. Rohan Verma" maxlength="80" required>
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-envelope"></i> Your Email *</label>
+          <input type="email" id="contactFromEmail" placeholder="you@example.com" maxlength="200" required>
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-heading"></i> Subject *</label>
+          <input type="text" id="contactSubject" placeholder="e.g. Doubt in Lecture 3" maxlength="200" required>
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-align-left"></i> Message *</label>
+          <textarea id="contactMessage" rows="6" maxlength="5000" placeholder="Type your message here…" required></textarea>
+        </div>
+
+        <div class="email-modal-info">
+          <i class="fas fa-shield-halved"></i>
+          <span>Your message is relayed privately. The recipient's email address is not exposed.</span>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('contactMemberModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="contactSubmitBtn">
+            <i class="fas fa-paper-plane"></i> Send Message
           </button>
         </div>
       </form>

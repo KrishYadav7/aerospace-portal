@@ -4915,3 +4915,273 @@ body.hide-latex-previews .latex-preview { display: none; }
   .quiz-exam-footer .btn { width: 100%; justify-content: center; }
   .quiz-exam-warning-note { justify-content: center; }
 }
+/* ============================================================
+   52. DYNAMIC TEAM PROFILES & STANDARDIZED AVATARS
+   ============================================================ */
+
+/* ---- Owner profile (dynamic) ---- */
+.owner-avatar {
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  position: relative;
+  border: 4px solid var(--brand-500);
+  box-shadow: 0 12px 32px rgba(99,102,241,.25);
+  background: linear-gradient(135deg, var(--bg-surface-3), var(--bg-surface-2));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.owner-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+.owner-avatar-fallback,
+.avatar-skeleton {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  color: var(--brand-600);
+  background: linear-gradient(135deg, var(--brand-50), var(--bg-surface-2));
+  text-transform: uppercase;
+}
+[data-theme="dark"] .owner-avatar-fallback,
+[data-theme="dim"] .owner-avatar-fallback,
+[data-theme="dark"] .avatar-skeleton,
+[data-theme="dim"] .avatar-skeleton {
+  background: linear-gradient(135deg, rgba(99,102,241,.2), var(--bg-surface-3));
+  color: var(--brand-300);
+}
+.avatar-skeleton i { font-size: 44px; opacity: .7; }
+
+.owner-role-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: #422006;
+  background: linear-gradient(135deg, var(--gold-400), var(--gold-500));
+  border-radius: 999px;
+  box-shadow: 0 3px 10px rgba(245,158,11,.3);
+  margin-bottom: 6px;
+}
+.owner-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--brand-600);
+  margin: 2px 0 8px;
+  letter-spacing: .2px;
+}
+[data-theme="dark"] .owner-title,
+[data-theme="dim"] .owner-title { color: var(--brand-400); }
+
+.owner-contact-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+/* ---- Standardized team-member avatars ---- */
+.team-avatar,
+.professor-avatar {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: center;
+  flex-shrink: 0;
+  border: 3px solid var(--brand-500);
+  box-shadow: 0 6px 18px rgba(99,102,241,.2);
+  background: var(--bg-surface-3);
+  display: block;
+  margin: 0 auto 12px;
+}
+.team-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  color: var(--brand-600);
+  background: linear-gradient(135deg, var(--brand-50), var(--bg-surface-2));
+  text-transform: uppercase;
+}
+[data-theme="dark"] .team-avatar-fallback,
+[data-theme="dim"] .team-avatar-fallback {
+  background: linear-gradient(135deg, rgba(99,102,241,.2), var(--bg-surface-3));
+  color: var(--brand-300);
+}
+
+.team-contact-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 12px;
+  width: 100%;
+}
+
+/* ---- Contact chips (both on cards and in modals) ---- */
+.contact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  border: 1.5px solid transparent;
+  transition: .2s var(--ease);
+  white-space: nowrap;
+  line-height: 1;
+}
+.contact-chip i { font-size: 12px; }
+
+.contact-chip-email {
+  background: linear-gradient(135deg, var(--brand-600), var(--brand-500));
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(99,102,241,.3);
+}
+.contact-chip-email:hover {
+  background: linear-gradient(135deg, var(--brand-700), var(--brand-600));
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(99,102,241,.4);
+}
+
+.contact-chip-phone {
+  background: transparent;
+  color: var(--emerald-600);
+  border-color: var(--emerald-500);
+}
+.contact-chip-phone:hover {
+  background: var(--emerald-500);
+  color: #fff;
+  transform: translateY(-1px);
+}
+[data-theme="dark"] .contact-chip-phone,
+[data-theme="dim"] .contact-chip-phone {
+  color: var(--emerald-400);
+  border-color: var(--emerald-500);
+}
+
+/* ---- Contact modal ---- */
+.contact-modal {
+  max-width: 560px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+.contact-modal-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px 26px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: linear-gradient(135deg, rgba(99,102,241,.08), rgba(6,182,212,.03));
+}
+[data-theme="dark"] .contact-modal-header,
+[data-theme="dim"] .contact-modal-header {
+  background: linear-gradient(135deg, rgba(99,102,241,.14), rgba(6,182,212,.06));
+}
+.contact-modal-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--brand-600), var(--accent-500));
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+  box-shadow: 0 6px 18px rgba(99,102,241,.35);
+}
+.contact-modal-heading { flex: 1; min-width: 0; }
+.contact-modal-heading h3 {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: 4px !important;
+  letter-spacing: -.2px;
+}
+.contact-modal-heading .modal-sub {
+  margin-bottom: 0 !important;
+  font-size: 12.5px !important;
+  line-height: 1.5;
+}
+#contactMemberForm {
+  padding: 22px 26px 24px;
+}
+
+/* ---- Owner photo preview in admin ---- */
+.owner-preview-img {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: center;
+  border: 4px solid var(--brand-500);
+  box-shadow: 0 8px 22px rgba(99,102,241,.28);
+  background: var(--bg-surface-3);
+  flex-shrink: 0;
+}
+.owner-preview-fallback {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  color: var(--brand-600);
+  background: linear-gradient(135deg, var(--brand-50), var(--bg-surface-2));
+  border: 4px solid var(--brand-500);
+  box-shadow: 0 8px 22px rgba(99,102,241,.28);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+[data-theme="dark"] .owner-preview-fallback,
+[data-theme="dim"] .owner-preview-fallback {
+  background: linear-gradient(135deg, rgba(99,102,241,.2), var(--bg-surface-3));
+  color: var(--brand-300);
+}
+
+/* ---- Mobile tuning ---- */
+@media (max-width: 640px) {
+  .owner-avatar,
+  .owner-preview-img,
+  .owner-preview-fallback {
+    width: 120px;
+    height: 120px;
+  }
+  .owner-avatar-fallback,
+  .owner-preview-fallback { font-size: 32px; }
+  .team-avatar,
+  .professor-avatar { width: 76px; height: 76px; }
+  .team-avatar-fallback { font-size: 26px; }
+  .team-contact-row { gap: 4px; }
+  .contact-chip { padding: 6px 11px; font-size: 11.5px; }
+  .contact-modal-header { padding: 18px 18px 14px; }
+  #contactMemberForm { padding: 18px 18px 20px; }
+  .contact-modal-icon { width: 40px; height: 40px; font-size: 17px; }
+}

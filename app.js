@@ -157,6 +157,27 @@ let _emailSelectedIds = new Set();
 // ---- Subscription settings (global, fetched on boot) ----
 let liveSubscriptionSettings = { enabled: false, amount: 0, title: '', description: '' };
 
+// ---- Organization owner profile (global, fetched on boot) ----
+let liveOwnerProfile = {
+  name:  'Krish Yadav',
+  title: 'Founder & Course Director',
+  role:  'Founder',
+  bio:   'Academic achiever and experienced educator currently pursuing Aerospace Engineering at IIT Kharagpur. Passionate about translating complex mathematical and engineering principles into accessible concepts. Proven track record in mentoring 2,000+ students and producing structured academic content across core engineering subjects and competitive mathematics.',
+  email: '',
+  phone: '',
+  photo: ''
+};
+
+async function fetchOwnerProfile() {
+  try {
+    const res = await fetch(`${API_BASE}/settings/owner?t=${Date.now()}`);
+    const data = await res.json();
+    if (data.success && data.owner) {
+      liveOwnerProfile = data.owner;
+    }
+  } catch (e) { /* silent */ }
+}
+
 async function fetchSubscriptionSettings() {
   try {
     const res = await fetch(`${API_BASE}/settings/subscription?t=${Date.now()}`);
@@ -1772,6 +1793,7 @@ function updateAdminTabUI() {
     students:      { icon: 'fa-user-graduate',  text: 'Manage Students' },
     replies:       { icon: 'fa-envelope-open-text', text: 'Email Replies' },
     subscriptions: { icon: 'fa-repeat',         text: 'Subscriptions & Auto-Pay' },
+    organization:  { icon: 'fa-building-user',  text: 'Organization & Owner' },
     security:      { icon: 'fa-shield-halved',  text: 'Admin Security' }
   };
   const actionsMap = {
@@ -1791,6 +1813,9 @@ function updateAdminTabUI() {
     subscriptions: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
       <button class="btn btn-primary" onclick="renderAdminSubscriptions()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
+    organization: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminOrganizationTab()"><i class="fas fa-rotate"></i> <span class="btn-text">Reload</span></button>`,
     security: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>`
   };
@@ -1807,6 +1832,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'students') renderAdminStudents();
   else if (adminTab === 'replies') renderAdminEmailReplies();
   else if (adminTab === 'subscriptions') renderAdminSubscriptions();
+  else if (adminTab === 'organization') renderAdminOrganizationTab();
   else if (adminTab === 'security') renderAdminSecurityTab();
 }
 
@@ -2872,6 +2898,257 @@ async function copyAllCredentials() {
 }
 
 /* ============================================================
+   CONTACT TEAM MEMBER MODAL
+   ============================================================ */
+function openContactMemberModal(toEmail, toName, roleLabel) {
+  if (!toEmail) return showToast('No contact address available for this member.', 'info');
+
+  const modal = document.getElementById('contactMemberModal');
+  if (!modal) return showToast('Contact form is unavailable.', 'error');
+
+  // Pre-fill "from" fields if the student is logged in
+  const nameEl = document.getElementById('contactFromName');
+  const emailEl = document.getElementById('contactFromEmail');
+  if (nameEl && currentUser) nameEl.value = currentUser.fullName || currentUser.username || '';
+  if (emailEl && currentUser) emailEl.value = currentUser.email || '';
+
+  const subjectEl = document.getElementById('contactSubject');
+  if (subjectEl) subjectEl.value = '';
+  const msgEl = document.getElementById('contactMessage');
+  if (msgEl) msgEl.value = '';
+
+  document.getElementById('contactToEmail').value = toEmail;
+  document.getElementById('contactToName').value  = toName || 'Team Member';
+
+  const titleEl = document.getElementById('contactModalTitle');
+  if (titleEl) titleEl.textContent = `Contact ${toName || 'Team Member'}`;
+
+  const subEl = document.getElementById('contactModalSub');
+  if (subEl) {
+    subEl.textContent = roleLabel
+      ? `Reaching out regarding: ${roleLabel}. Your message is relayed privately.`
+      : `Your message is relayed privately. The recipient's address is not exposed.`;
+  }
+
+  openModal('contactMemberModal');
+  setTimeout(() => {
+    const firstEmpty = (!nameEl || !nameEl.value) ? nameEl
+                      : (!emailEl || !emailEl.value) ? emailEl
+                      : subjectEl;
+    if (firstEmpty) firstEmpty.focus();
+  }, 100);
+}
+
+async function submitContactMessage(e) {
+  if (e) e.preventDefault();
+
+  const toEmail = document.getElementById('contactToEmail').value.trim();
+  const toName  = document.getElementById('contactToName').value.trim();
+  const fromName  = document.getElementById('contactFromName').value.trim();
+  const fromEmail = document.getElementById('contactFromEmail').value.trim();
+  const subject   = document.getElementById('contactSubject').value.trim();
+  const message   = document.getElementById('contactMessage').value.trim();
+
+  if (!toEmail)         return showToast('Recipient email is missing.', 'error');
+  if (!fromName)        return showToast('Please enter your name.', 'error');
+  if (!fromEmail)       return showToast('Please enter your email.', 'error');
+  if (!subject)         return showToast('Please enter a subject.', 'error');
+  if (!message)         return showToast('Please enter your message.', 'error');
+  if (message.length > 5000) return showToast('Message is too long (max 5,000 characters).', 'error');
+
+  const btn = document.getElementById('contactSubmitBtn');
+  const originalHTML = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…';
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/contact/team`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toEmail, toName, fromName, fromEmail, subject, message })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      closeModal('contactMemberModal');
+      showToast('✅ ' + (data.message || 'Message sent.'), 'success');
+    } else {
+      showToast(data.message || 'Could not send message.', 'error');
+    }
+  } catch (err) {
+    console.error('[contact/team]', err);
+    showToast('Network error. Please try again.', 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML || '<i class="fas fa-paper-plane"></i> Send Message';
+    }
+  }
+}
+
+/* ============================================================
+   ADMIN — Organization Tab (Edit Owner Profile)
+   ============================================================ */
+function renderAdminOrganizationTab() {
+  const container = document.getElementById('adminOrganizationContent');
+  if (!container) return;
+
+  const o = liveOwnerProfile || {};
+  const preview = o.photo
+    ? `<img src="${o.photo}" class="owner-preview-img" alt="Preview" id="ownerPhotoPreview">`
+    : `<div class="owner-preview-fallback" id="ownerPhotoPreview">${escapeHtml(getInitials(o.name || '?'))}</div>`;
+
+  container.innerHTML = `
+    <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-building-user"></i> Owner / Head Owner Profile</h3>
+      <p class="editor-hint">
+        These details power the "About the Founder" section on the student home page.
+        Changes go live immediately — no redeployment required.
+      </p>
+
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Display Name *</label>
+          <input type="text" id="ownerName" value="${escapeHtml(o.name || '')}" maxlength="80" placeholder="e.g. Krish Yadav">
+        </div>
+        <div class="form-group">
+          <label>Role / Designation *</label>
+          <input type="text" id="ownerRole" value="${escapeHtml(o.role || '')}" maxlength="60" placeholder="e.g. Founder, Head Owner">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Professional Title</label>
+        <input type="text" id="ownerTitle" value="${escapeHtml(o.title || '')}" maxlength="120" placeholder="e.g. Founder & Course Director">
+      </div>
+
+      <div class="form-group">
+        <label>Short Bio</label>
+        <textarea id="ownerBio" rows="5" maxlength="2000" placeholder="Two or three sentences describing this person…">${escapeHtml(o.bio || '')}</textarea>
+        <span class="hint">Max 2,000 characters.</span>
+      </div>
+
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Contact Email</label>
+          <input type="email" id="ownerEmail" value="${escapeHtml(o.email || '')}" maxlength="200" placeholder="founder@example.com">
+          <span class="hint">Students will see a "Message" button (private relay).</span>
+        </div>
+        <div class="form-group">
+          <label>Phone (with country code)</label>
+          <input type="tel" id="ownerPhone" value="${escapeHtml(o.phone || '')}" maxlength="40" placeholder="+91 98765 43210">
+          <span class="hint">Shown as a click-to-call button.</span>
+        </div>
+      </div>
+
+      <div class="editor-section-title" style="margin-top:20px;"><i class="fas fa-image"></i> Profile Photo</div>
+      <div class="thumbnail-editor">
+        ${preview}
+        <div class="thumbnail-actions">
+          <input type="file" id="ownerPhotoInput" accept="image/*" style="display:none;" onchange="previewOwnerPhoto(this)">
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('ownerPhotoInput').click()">
+            <i class="fas fa-upload"></i> Upload Photo
+          </button>
+          ${o.photo ? `<button class="btn btn-outline btn-sm" onclick="removeOwnerPhoto()"><i class="fas fa-times"></i> Remove</button>` : ''}
+          <span class="hint" style="margin-top:6px;">Square images work best. Max 2 MB.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-footer" style="position:static;">
+      <div class="editor-footer-left">
+        <span class="editor-hint"><i class="fas fa-info-circle"></i> Updates apply instantly across the platform.</span>
+      </div>
+      <div class="editor-footer-right">
+        <button class="btn btn-outline" onclick="renderAdminOrganizationTab()"><i class="fas fa-rotate-left"></i> Reset</button>
+        <button class="btn btn-primary btn-lg" onclick="saveOwnerProfile()"><i class="fas fa-save"></i> Save Profile</button>
+      </div>
+    </div>
+  `;
+}
+
+function previewOwnerPhoto(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) return showToast('Image too large (max 2 MB).', 'error');
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const prev = document.getElementById('ownerPhotoPreview');
+    if (prev) {
+      const img = document.createElement('img');
+      img.src = e.target.result;
+      img.className = 'owner-preview-img';
+      img.id = 'ownerPhotoPreview';
+      img.alt = 'Preview';
+      prev.replaceWith(img);
+    }
+    // cache so save knows about it
+    window.__pendingOwnerPhoto = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeOwnerPhoto() {
+  window.__pendingOwnerPhoto = '';
+  const prev = document.getElementById('ownerPhotoPreview');
+  if (prev) {
+    const fallback = document.createElement('div');
+    fallback.className = 'owner-preview-fallback';
+    fallback.id = 'ownerPhotoPreview';
+    fallback.textContent = getInitials(document.getElementById('ownerName')?.value || '?');
+    prev.replaceWith(fallback);
+  }
+}
+
+async function saveOwnerProfile() {
+  const name  = (document.getElementById('ownerName')?.value || '').trim();
+  const role  = (document.getElementById('ownerRole')?.value || '').trim();
+  const title = (document.getElementById('ownerTitle')?.value || '').trim();
+  const bio   = (document.getElementById('ownerBio')?.value || '').trim();
+  const email = (document.getElementById('ownerEmail')?.value || '').trim();
+  const phone = (document.getElementById('ownerPhone')?.value || '').trim();
+
+  if (!name) return showToast('Display name is required.', 'error');
+  if (!role) return showToast('Role is required.', 'error');
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return showToast('Please enter a valid email address.', 'error');
+  }
+
+  const payload = {
+    adminId: currentUser._id,
+    name, role, title, bio, email, phone
+  };
+  if (typeof window.__pendingOwnerPhoto === 'string') {
+    payload.photo = window.__pendingOwnerPhoto;
+  }
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/settings/owner`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (data.success) {
+      liveOwnerProfile = data.owner;
+      window.__pendingOwnerPhoto = undefined;
+      showToast('✅ Organization profile saved.', 'success');
+      renderAdminOrganizationTab();
+      // Refresh the student view if it's currently shown
+      if (studentNav === 'home' && currentUser.role === 'student') {
+        renderOwnerProfile();
+      }
+    } else {
+      showToast(data.message || 'Failed to save.', 'error');
+    }
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  }
+}
+
+/* ============================================================
    COURSE EDITOR
    ============================================================ */
 function openCourseEditor(courseId) {
@@ -3909,10 +4186,56 @@ async function deleteAnnouncement(courseId, annId) {
 /* ============================================================
    STUDENT HOME
    ============================================================ */
+function getInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function renderOwnerProfile() {
+  const container = document.getElementById('ownerProfileContainer');
+  if (!container) return;
+  const o = liveOwnerProfile;
+
+  const avatarHtml = o.photo
+    ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy">`
+    : `<div class="owner-avatar-fallback">${escapeHtml(getInitials(o.name))}</div>`;
+
+  const contactHtml = [];
+  if (o.email) {
+    contactHtml.push(`
+      <button type="button" class="contact-chip contact-chip-email"
+              onclick="openContactMemberModal(${JSON.stringify(o.email).replace(/"/g, '&quot;')}, ${JSON.stringify(o.name).replace(/"/g, '&quot;')}, 'Founder')">
+        <i class="fas fa-envelope"></i> Email
+      </button>`);
+  }
+  if (o.phone) {
+    contactHtml.push(`
+      <a href="tel:${escapeHtml(o.phone.replace(/\s+/g, ''))}" class="contact-chip contact-chip-phone">
+        <i class="fas fa-phone"></i> Call
+      </a>`);
+  }
+
+  container.innerHTML = `
+    <div class="owner-container">
+      <div class="owner-image owner-avatar">${avatarHtml}</div>
+      <div class="owner-details">
+        <span class="owner-role-badge">${escapeHtml(o.role || 'Founder')}</span>
+        <h3>${escapeHtml(o.name)}</h3>
+        <div class="owner-title">${escapeHtml(o.title || '')}</div>
+        <p>${escapeHtml(o.bio || '')}</p>
+        ${contactHtml.length ? `<div class="owner-contact-row">${contactHtml.join('')}</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
 function renderStudentHome() {
   renderSubscriptionBanner();
   renderStreakCard();
   renderContinueCard();
+  renderOwnerProfile();
 
   const professors = getProfessors();
   if (professors.length === 0) {
@@ -3920,10 +4243,35 @@ function renderStudentHome() {
   } else {
     let html = '';
     professors.forEach(p => {
+      // ---- Standardized avatar: image OR initial-based fallback ----
       const photoHtml = p.photo
-        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="professor-avatar" loading="lazy">`
-        : `<div class="professor-avatar avatar-placeholder-lg"><i class="fas fa-user-tie"></i></div>`;
-      html += `<div class="professor-card">${photoHtml}<h3>${escapeHtml(p.name)}</h3><div class="prof-title">${escapeHtml(p.title)}</div><p>${escapeHtml(p.description) || ''}</p></div>`;
+        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy">`
+        : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(p.name))}</div>`;
+
+      // ---- Contact buttons (only when data exists) ----
+      const contactButtons = [];
+      if (p.email) {
+        contactButtons.push(`
+          <button type="button" class="contact-chip contact-chip-email"
+                  onclick="openContactMemberModal(${JSON.stringify(p.email).replace(/"/g, '&quot;')}, ${JSON.stringify(p.name).replace(/"/g, '&quot;')}, ${JSON.stringify(p.title || '').replace(/"/g, '&quot;')})">
+            <i class="fas fa-envelope"></i> Message
+          </button>`);
+      }
+      if (p.phone) {
+        contactButtons.push(`
+          <a href="tel:${escapeHtml(p.phone.replace(/\s+/g, ''))}" class="contact-chip contact-chip-phone">
+            <i class="fas fa-phone"></i> Call
+          </a>`);
+      }
+
+      html += `
+        <div class="professor-card">
+          ${photoHtml}
+          <h3>${escapeHtml(p.name)}</h3>
+          <div class="prof-title">${escapeHtml(p.title)}</div>
+          <p>${escapeHtml(p.description) || ''}</p>
+          ${contactButtons.length ? `<div class="team-contact-row">${contactButtons.join('')}</div>` : ''}
+        </div>`;
     });
     $('professorsGrid').innerHTML = html;
   }
@@ -7017,6 +7365,7 @@ async function initApp() {
   await fetchCoursesFromDB();
   await fetchProfessorsFromDB();
   await fetchSubscriptionSettings();
+  await fetchOwnerProfile();
   await refreshUserData();
   await loadNotifications();
   renderApp();

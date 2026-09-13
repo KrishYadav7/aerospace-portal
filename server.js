@@ -2150,6 +2150,151 @@ app.get('/api/settings/subscription', async (req, res) => {
   }
 });
 
+/* ============================================================
+   ORGANIZATION / OWNER PROFILE — public read + admin edit
+   ============================================================ */
+app.get('/api/settings/owner', async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    const op = (s.ownerProfile && typeof s.ownerProfile === 'object')
+      ? s.ownerProfile
+      : (typeof s.toObject === 'function'
+          ? (s.toObject().ownerProfile || {})
+          : {});
+    res.json({
+      success: true,
+      owner: {
+        name:  op.name  || 'Krish Yadav',
+        title: op.title || 'Founder & Course Director',
+        role:  op.role  || 'Founder',
+        bio:   op.bio   || '',
+        email: op.email || '',
+        phone: op.phone || '',
+        photo: op.photo || ''
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+app.put('/api/admin/settings/owner', async (req, res) => {
+  try {
+    const { adminId, name, title, role, bio, email, phone, photo } = req.body || {};
+    if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required.' });
+
+    const admin = await User.findById(adminId).select('role');
+    if (!admin || admin.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Admin only.' });
+    }
+
+    const s = await getGlobalSettings();
+    if (!s.ownerProfile) s.ownerProfile = {};
+
+    if (typeof name  === 'string') s.ownerProfile.name  = name.trim().slice(0, 80);
+    if (typeof title === 'string') s.ownerProfile.title = title.trim().slice(0, 120);
+    if (typeof role  === 'string') s.ownerProfile.role  = role.trim().slice(0, 60);
+    if (typeof bio   === 'string') s.ownerProfile.bio   = bio.trim().slice(0, 2000);
+    if (typeof email === 'string') s.ownerProfile.email = email.trim().slice(0, 200);
+    if (typeof phone === 'string') s.ownerProfile.phone = phone.trim().slice(0, 40);
+    if (typeof photo === 'string') s.ownerProfile.photo = photo; // base64 or ''
+    s.ownerProfile.updatedAt = new Date();
+    s.updatedAt = new Date();
+
+    await s.save();
+
+    res.json({
+      success: true,
+      message: 'Organization profile updated.',
+      owner: s.ownerProfile
+    });
+  } catch (e) {
+    console.error('[admin/settings/owner]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
+   CONTACT TEAM MEMBER — spam-protected internal relay
+   ------------------------------------------------------------
+   Students fill a form; the backend emails the team member with
+   a reply-to set to the student. Raw emails are never exposed.
+   ============================================================ */
+const contactTeamLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many messages. Please wait 10 minutes.' }
+});
+
+app.post('/api/contact/team', contactTeamLimiter, async (req, res) => {
+  try {
+    const { toEmail, toName, fromName, fromEmail, subject, message } = req.body || {};
+
+    // ---- Validation ----
+    if (!toEmail || !fromEmail || !fromName || !subject || !message) {
+      return res.status(400).json({ success: false, message: 'All fields are required.' });
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(String(fromEmail))) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
+    }
+    const cleanSubject = String(subject).trim().slice(0, 200);
+    const cleanMessage = String(message).trim().slice(0, 5000);
+    const cleanFromName = String(fromName).trim().slice(0, 80);
+    const cleanToEmail = String(toEmail).trim().toLowerCase().slice(0, 200);
+    const cleanToName  = String(toName || 'Team Member').trim().slice(0, 80);
+
+    if (!cleanSubject || !cleanMessage) {
+      return res.status(400).json({ success: false, message: 'Subject and message cannot be empty.' });
+    }
+
+    console.log(`[contact/team] relay ${fromEmail} → ${cleanToEmail}`);
+
+    // ---- Send via existing transporter ----
+    await withTimeout(
+      transporter.sendMail({
+        to: cleanToEmail,
+        replyTo: String(fromEmail).trim(),
+        subject: `[Portal Contact] ${cleanSubject}`,
+        text:
+          `New message from the Aerospace Portal contact form.\n\n` +
+          `From:  ${cleanFromName} <${fromEmail}>\n` +
+          `To:    ${cleanToName}\n` +
+          `Subject: ${cleanSubject}\n\n` +
+          `${cleanMessage}\n\n` +
+          `——\nReply directly to this email to respond to ${cleanFromName}.`,
+        html: `
+          <div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px 20px;color:#14161c;line-height:1.6;background:#ffffff;">
+            <div style="border-left:4px solid #6366f1;padding-left:14px;margin-bottom:22px;">
+              <div style="font-size:18px;font-weight:700;color:#14161c;">New Portal Contact Message</div>
+              <div style="font-size:12px;color:#8b8d98;letter-spacing:.5px;">AEROSPACE DEPARTMENT · IIT KHARAGPUR</div>
+            </div>
+
+            <table style="width:100%;border-collapse:collapse;margin-bottom:18px;font-size:13.5px;">
+              <tr><td style="padding:6px 0;color:#8b8d98;width:80px;">From</td><td style="padding:6px 0;font-weight:600;">${escapeHtml(cleanFromName)} &lt;${escapeHtml(fromEmail)}&gt;</td></tr>
+              <tr><td style="padding:6px 0;color:#8b8d98;">To</td><td style="padding:6px 0;font-weight:600;">${escapeHtml(cleanToName)}</td></tr>
+              <tr><td style="padding:6px 0;color:#8b8d98;">Subject</td><td style="padding:6px 0;font-weight:600;">${escapeHtml(cleanSubject)}</td></tr>
+            </table>
+
+            <div style="background:#f6f4f1;border-radius:8px;padding:16px 18px;font-size:14.5px;white-space:pre-wrap;">${escapeHtml(cleanMessage)}</div>
+
+            <p style="font-size:12.5px;color:#8b8d98;margin-top:22px;padding-top:14px;border-top:1px solid #ebe7e0;">
+              Reply directly to this email to reach <strong>${escapeHtml(cleanFromName)}</strong>.
+            </p>
+          </div>`
+      }),
+      30000,
+      'Contact team email'
+    );
+
+    res.json({ success: true, message: 'Message sent. They will reply to your email soon.' });
+  } catch (e) {
+    console.error('[contact/team]', e);
+    res.status(500).json({ success: false, message: 'Could not send message: ' + e.message });
+  }
+});
+
 /* ---- Admin: update plan info ---- */
 app.put('/api/admin/settings/subscription', async (req, res) => {
   try {
