@@ -678,13 +678,97 @@
   </div>
 
 
-  <!-- Quiz Player Modal -->
-  <div class="modal-overlay" id="quizPlayerModal">
-    <div class="modal-box" style="max-width: 640px;">
-      <h3 id="quizPlayerTitle"><i class="fas fa-question-circle"></i> Quiz</h3>
-      <p class="modal-sub" id="quizPlayerSub"></p>
-      <div id="quizPlayerBody"></div>
-      <div class="modal-actions" id="quizPlayerActions"></div>
+  <!-- ============================================================
+       FULL-PAGE PROCTORED EXAM SHELL
+       Rendered directly into the viewport — no modal, no overlay.
+       ============================================================ -->
+  <div id="quizExamShell" class="quiz-exam-shell" aria-hidden="true"></div>
+
+  <!-- Pre-Exam Consent Modal -->
+  <div class="modal-overlay" id="preExamWarningModal">
+    <div class="modal-box" style="max-width:560px;">
+      <div style="text-align:center;margin-bottom:16px;">
+        <div style="display:inline-flex;align-items:center;justify-content:center;
+                    width:72px;height:72px;border-radius:50%;
+                    background:linear-gradient(135deg,#f59e0b,#ef4444);
+                    color:#fff;font-size:32px;
+                    box-shadow:0 12px 32px rgba(239,68,68,.35);">
+          <i class="fas fa-shield-halved"></i>
+        </div>
+      </div>
+      <h3 style="text-align:center;justify-content:center;">
+        <i class="fas fa-triangle-exclamation" style="color:var(--gold-500);"></i>
+        Proctored Assessment
+      </h3>
+      <p class="modal-sub" style="text-align:center;">
+        You are about to begin a <strong>proctored test</strong>. Please read the following rules carefully.
+      </p>
+
+      <div class="pre-exam-rules">
+        <div class="pre-exam-rule">
+          <i class="fas fa-expand"></i>
+          <div>
+            <strong>Full-screen mode is required.</strong>
+            <span>The exam will take over your entire screen.</span>
+          </div>
+        </div>
+        <div class="pre-exam-rule danger">
+          <i class="fas fa-ban"></i>
+          <div>
+            <strong>Leaving this tab = instant submission.</strong>
+            <span>Switching tabs, minimizing the window, or exiting full-screen will auto-submit your exam exactly where you left off.</span>
+          </div>
+        </div>
+        <div class="pre-exam-rule">
+          <i class="fas fa-clipboard-check"></i>
+          <div>
+            <strong>Restricted interactions.</strong>
+            <span>Right-click, copy, paste, and developer tools are disabled during the exam.</span>
+          </div>
+        </div>
+      </div>
+
+      <label class="pre-exam-consent">
+        <input type="checkbox" id="preExamConsentBox" onchange="togglePreExamConsent()">
+        <span>I understand and agree to follow these rules. I accept that any violation will result in immediate auto-submission of my exam.</span>
+      </label>
+
+      <div class="modal-actions" style="flex-direction:column-reverse;">
+        <button type="button" class="btn btn-outline btn-block" onclick="cancelPreExam()">
+          <i class="fas fa-arrow-left"></i> Cancel
+        </button>
+        <button type="button" class="btn btn-danger btn-block" id="preExamBeginBtn" onclick="beginExamSession()" disabled>
+          <i class="fas fa-shield-halved"></i> Begin Exam
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Violation Warning Modal -->
+  <div class="modal-overlay" id="quizViolationModal">
+    <div class="modal-box" style="max-width:520px;">
+      <div style="text-align:center;margin-bottom:16px;">
+        <div style="display:inline-flex;align-items:center;justify-content:center;
+                    width:72px;height:72px;border-radius:50%;
+                    background:linear-gradient(135deg,#f59e0b,#ef4444);
+                    color:#fff;font-size:32px;
+                    box-shadow:0 12px 32px rgba(239,68,68,.4);
+                    animation:pulseGlow 1.4s ease-in-out infinite;">
+          <i class="fas fa-triangle-exclamation"></i>
+        </div>
+      </div>
+      <h3 style="text-align:center;justify-content:center;color:var(--rose-600);">
+        Proctoring Violation Detected
+      </h3>
+      <p class="modal-sub" style="text-align:center;" id="quizViolationText"></p>
+
+      <div class="violation-warning-box" id="quizViolationBox"></div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary btn-block" id="quizViolationResumeBtn" onclick="resumeExamAfterViolation()">
+          <i class="fas fa-play"></i> Resume Exam
+        </button>
+      </div>
     </div>
   </div>
 

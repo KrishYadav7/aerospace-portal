@@ -5725,39 +5725,38 @@ async function saveQuizPaper() {
   }
 }
 
-function previewQuizPaper() {
-  quizPaperConfig = {
-    subject:    ($('qpSubject')?.value || '').trim(),
-    paperCode:  ($('qpCode')?.value    || '').trim(),
-    totalTime:  ($('qpTime')?.value    || '').trim(),
-    totalMarks: parseInt($('qpMarks')?.value, 10) || 0
-  };
-  if (quizDraft.length === 0) return showToast('Add at least one question first.', 'info');
-
-  const course = findCourse(quizEditingCourseId);
-  const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
-
-  const emptyAnswer = q => q.type === 'integer' ? '' : [];
-  quizPlayerState = {
-    courseId: quizEditingCourseId,
-    materialId: quizEditingMaterialId,
-    materialTitle: mat ? mat.title : 'Preview',
-    quiz: JSON.parse(JSON.stringify(quizDraft)),
-    answers: quizDraft.map(emptyAnswer),
-    submitted: false,
-    response: null,
-    previewMode: true,
-    paperConfig: { ...quizPaperConfig }
-  };
-  renderQuizPlayer();
-  openModal('quizPlayerModal');
-}
+/* ============================================================
+   QUIZ — PROCTORED FULL-PAGE EXAM MODE
+   ------------------------------------------------------------
+   Config:
+     QUIZ_PROCTOR_MAX_STRIKES
+       0 = zero-tolerance → first violation auto-submits
+       1 = one grace warning, second violation auto-submits  (default)
+       2 = two grace warnings, third auto-submits
+   ============================================================ */
+const QUIZ_PROCTOR_MAX_STRIKES = 1;
 
 let quizPlayerState = null;
 
+/* ---- Listener registry (cleanup after exam) ---- */
+const _quizListeners = [];
+function _attachProctorListener(target, event, handler, opts) {
+  target.addEventListener(event, handler, opts);
+  _quizListeners.push({ target, event, handler, opts });
+}
+function _detachAllProctorListeners() {
+  while (_quizListeners.length) {
+    const { target, event, handler, opts } = _quizListeners.pop();
+    try { target.removeEventListener(event, handler, opts); } catch (e) {}
+  }
+}
+
+/* ============================================================
+   OPEN — Shows pre-exam consent first
+   ============================================================ */
 function openQuizPlayer(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
-  const mat = course.materials.find(m => m.id === materialId); if (!mat) return;
+  const mat = (course.materials || []).find(m => m.id === materialId); if (!mat) return;
   const quiz = mat.quiz || [];
   if (quiz.length === 0) return showToast('This test has no questions yet.', 'info');
 
@@ -5776,54 +5775,135 @@ function openQuizPlayer(courseId, materialId) {
     answers: initialAnswers,
     submitted: false,
     response: null,
-    paperConfig: mat.examConfig || {}
+    paperConfig: mat.examConfig || {},
+    previewMode: false,
+    examStarted: false,
+    strikes: 0,
+    violations: [],
+    startTime: null,
+    violationHandling: false,
+    fullscreenArmed: false
   };
-  renderQuizPlayer();
-  openModal('quizPlayerModal');
-  startQuizTimer();
+
+  const cb = document.getElementById('preExamConsentBox');
+  if (cb) cb.checked = false;
+  const btn = document.getElementById('preExamBeginBtn');
+  if (btn) btn.disabled = true;
+  openModal('preExamWarningModal');
 }
 
-function renderQuizPlayer() {
+function togglePreExamConsent() {
+  const cb = document.getElementById('preExamConsentBox');
+  const btn = document.getElementById('preExamBeginBtn');
+  if (btn) btn.disabled = !(cb && cb.checked);
+}
+
+function cancelPreExam() {
+  closeModal('preExamWarningModal');
+  quizPlayerState = null;
+}
+
+/* ============================================================
+   BEGIN — Fullscreen + proctoring listeners
+   ============================================================ */
+async function beginExamSession() {
+  if (!quizPlayerState) return;
+  closeModal('preExamWarningModal');
+
+  const shell = document.getElementById('quizExamShell');
+  if (!shell) return;
+  shell.style.display = 'flex';
+  shell.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+
+  try {
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    if (req) { const p = req.call(el); if (p && p.catch) p.catch(() => {}); }
+  } catch (e) {}
+
+  quizPlayerState.examStarted = true;
+  quizPlayerState.startTime = Date.now();
+
+  _attachProctorListener(document, 'visibilitychange', _onExamVisibilityChange);
+  _attachProctorListener(window, 'blur', _onExamWindowBlur);
+  _attachProctorListener(document, 'fullscreenchange', _onExamFullscreenChange);
+  _attachProctorListener(document, 'webkitfullscreenchange', _onExamFullscreenChange);
+  _attachProctorListener(window, 'beforeunload', _onExamBeforeUnload);
+
+  _attachProctorListener(document, 'contextmenu', _blockContextMenu, true);
+  _attachProctorListener(document, 'copy', _blockCopy, true);
+  _attachProctorListener(document, 'cut', _blockCopy, true);
+  _attachProctorListener(document, 'paste', _blockCopy, true);
+  _attachProctorListener(document, 'selectstart', _blockSelectStart, true);
+  _attachProctorListener(document, 'dragstart', _blockDrag, true);
+  _attachProctorListener(document, 'keydown', _blockDevKeys, true);
+
+  setTimeout(() => { if (quizPlayerState) quizPlayerState.fullscreenArmed = true; }, 900);
+
+  renderQuizExamShell();
+  startQuizTimer();
+  showToast('Exam started. Good luck!', 'success');
+}
+
+/* ============================================================
+   RENDER — Full-page shell
+   ============================================================ */
+function renderQuizExamShell() {
   const st = quizPlayerState; if (!st) return;
+  const shell = document.getElementById('quizExamShell');
+  if (!shell) return;
+
   const cfg = st.paperConfig || {};
   const course = findCourse(st.courseId);
   const mat = course && (course.materials || []).find(m => m.id === st.materialId);
   const examCfg = cfg.subject ? cfg : (mat && mat.examConfig) || {};
 
-  $('quizPlayerTitle').innerHTML =
-    `<i class="fas fa-file-pen"></i> ${escapeHtml(examCfg.subject || st.materialTitle)}`;
+  const answered = st.quiz.reduce((s, q, i) => {
+    const a = st.answers[i];
+    if (q.type === 'integer') return s + (a !== '' && a !== null && a !== undefined && !isNaN(Number(a)) ? 1 : 0);
+    if (q.type === 'matrix') {
+      const rows = q.matrixRows || [];
+      const filled = Array.isArray(a) ? a.filter(x => x !== undefined && x !== '').length : 0;
+      return s + (filled >= rows.length ? 1 : 0);
+    }
+    return s + (Array.isArray(a) ? (a.length > 0 ? 1 : 0) : (a >= 0 ? 1 : 0));
+  }, 0);
 
-  const headerInfo = `
-    <div class="quiz-paper-header">
-      ${examCfg.paperCode  ? `<span><i class="fas fa-hashtag"></i> ${escapeHtml(examCfg.paperCode)}</span>` : ''}
-      ${examCfg.totalTime  ? `<span><i class="fas fa-clock"></i> ${escapeHtml(examCfg.totalTime)} <span id="quizTimerDisplay">--:--</span></span>` : ''}
-      <span><i class="fas fa-list-ol"></i> ${st.quiz.length} question${st.quiz.length === 1 ? '' : 's'}</span>
-      ${examCfg.totalMarks ? `<span><i class="fas fa-star"></i> Max Marks: ${examCfg.totalMarks}</span>` : ''}
-    </div>`;
+  const headerHtml = `
+    <header class="quiz-exam-header">
+      <div class="quiz-exam-title-group">
+        <div class="quiz-exam-title">
+          <i class="fas fa-file-pen"></i>
+          ${escapeHtml(examCfg.subject || st.materialTitle)}
+        </div>
+        <div class="quiz-exam-sub">
+          ${examCfg.paperCode ? `<span><i class="fas fa-hashtag"></i> ${escapeHtml(examCfg.paperCode)}</span>` : ''}
+          <span><i class="fas fa-list-ol"></i> ${st.quiz.length} question${st.quiz.length === 1 ? '' : 's'}</span>
+          ${examCfg.totalMarks ? `<span><i class="fas fa-star"></i> Max ${examCfg.totalMarks}</span>` : ''}
+        </div>
+      </div>
 
+      <div class="quiz-exam-timer-wrap">
+        <div class="quiz-exam-timer" id="quizTimerDisplay">--:--</div>
+        ${st.previewMode ? '' : '<div class="quiz-proctor-pill"><i class="fas fa-shield-halved"></i> Proctored</div>'}
+      </div>
+
+      <div class="quiz-exam-progress">
+        <span class="quiz-exam-progress-text">
+          <strong>${answered}</strong> / ${st.quiz.length} answered
+        </span>
+        <div class="quiz-exam-progress-bar">
+          <div class="quiz-exam-progress-fill"
+               style="width:${st.quiz.length > 0 ? (answered / st.quiz.length) * 100 : 0}%"></div>
+        </div>
+      </div>
+    </header>
+  `;
+
+  let bodyHtml = '';
   if (!st.submitted) {
-    const answered = st.quiz.reduce((s, q, i) => {
-      const a = st.answers[i];
-      if (q.type === 'integer') return s + (a !== '' && a !== null && a !== undefined && !isNaN(Number(a)) ? 1 : 0);
-      if (q.type === 'matrix') {
-        const rows = q.matrixRows || [];
-        const filled = Array.isArray(a) ? a.filter(x => x !== undefined && x !== '').length : 0;
-        return s + (filled >= rows.length ? 1 : 0);
-      }
-      return s + (Array.isArray(a) ? (a.length > 0 ? 1 : 0) : (a >= 0 ? 1 : 0));
-    }, 0);
-
-    $('quizPlayerSub').innerHTML = headerInfo;
-    $('quizPlayerActions').innerHTML = `
-      <span class="quiz-progress-indicator">${answered} / ${st.quiz.length} answered</span>
-      <button type="button" class="btn btn-outline" onclick="closeModal('quizPlayerModal')">
-        <i class="fas fa-times"></i> Cancel
-      </button>
-      <button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()" ${st.previewMode ? 'disabled title="Preview mode"' : ''}>
-        <i class="fas fa-paper-plane"></i> Submit Test
-      </button>`;
-
-    let html = '';
+    let qHtml = '';
     st.quiz.forEach((q, qi) => {
       const qType = q.type || 'single';
       const a = st.answers[qi];
@@ -5832,7 +5912,7 @@ function renderQuizPlayer() {
         qType === 'matrix'  ? (Array.isArray(a) && a.filter(x => x !== undefined && x !== '').length >= (q.matrixRows || []).length) :
                               (Array.isArray(a) ? a.length > 0 : (a >= 0));
 
-      html += `<div class="quiz-play-card ${isAnswered ? 'answered' : ''}">
+      qHtml += `<div class="quiz-play-card ${isAnswered ? 'answered' : ''}">
         <div class="quiz-play-qnum">
           Question ${qi + 1} of ${st.quiz.length}
           <span class="quiz-qtype-tag">${questionTypeLabel(qType)}</span>
@@ -5843,50 +5923,392 @@ function renderQuizPlayer() {
         ${renderStudentAnswerArea(q, qi)}
       </div>`;
     });
-    $('quizPlayerBody').innerHTML = html;
-    renderMathIn($('quizPlayerBody'));
-    return;
+    bodyHtml = `<div class="quiz-exam-body-inner">${qHtml}</div>`;
+  } else {
+    const { score, total, percent, results, attempts, marksEarned, marksPossible } = st.response;
+    const isPerfect = score === total;
+    const isPass = percent >= 60;
+    const emoji = isPerfect ? '🏆' : isPass ? '🎉' : '📚';
+    const headline = isPerfect ? 'Perfect Score!' : isPass ? 'Well done!' : 'Keep practicing!';
+
+    let rHtml = `<div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
+      <div class="quiz-result-emoji">${emoji}</div>
+      <div class="quiz-result-score">${score} / ${total}</div>
+      <div class="quiz-result-pct">${percent}%${marksPossible ? ` · ${marksEarned} / ${marksPossible} marks` : ''}</div>
+      <div class="quiz-result-headline">${headline}</div>
+      <div style="font-size:12px;color:var(--text-tertiary);margin-top:6px;">Attempt #${attempts}</div>
+    </div>`;
+
+    st.quiz.forEach((q, qi) => {
+      const r = results[qi];
+      const ok = r.correct;
+      rHtml += `<div class="quiz-result-item ${ok ? 'ok' : 'bad'}">
+        <div class="quiz-result-head">
+          <span class="quiz-result-badge ${ok ? 'ok' : 'bad'}">
+            <i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i>
+          </span>
+          <strong>Q${qi + 1}.</strong>
+          <span class="latex-content">${escapeHtml(q.question)}</span>
+        </div>
+        <div class="quiz-result-body">
+          ${renderResultDetail(q, r)}
+          ${r.explanation ? `<div class="quiz-explain"><i class="fas fa-lightbulb"></i> <span class="latex-content">${escapeHtml(r.explanation)}</span></div>` : ''}
+        </div>
+      </div>`;
+    });
+    bodyHtml = `<div class="quiz-exam-body-inner">${rHtml}</div>`;
   }
 
-  const { score, total, percent, results, attempts, marksEarned, marksPossible } = st.response;
-  const isPerfect = score === total;
-  const isPass = percent >= 60;
-  const emoji = isPerfect ? '🏆' : isPass ? '🎉' : '📚';
-  const headline = isPerfect ? 'Perfect Score!' : isPass ? 'Well done!' : 'Keep practicing!';
+  let footerHtml;
+  if (st.previewMode) {
+    footerHtml = `
+      <footer class="quiz-exam-footer">
+        <div class="quiz-exam-footer-left">
+          <span class="quiz-exam-warning-note"
+                style="background:rgba(99,102,241,.1);color:var(--brand-600);border-color:rgba(99,102,241,.25);">
+            <i class="fas fa-eye"></i> Preview mode — no proctoring, no submission.
+          </span>
+        </div>
+        <button type="button" class="btn btn-primary" onclick="exitQuizSession()">
+          <i class="fas fa-times"></i> Close Preview
+        </button>
+      </footer>`;
+  } else if (!st.submitted) {
+    footerHtml = `
+      <footer class="quiz-exam-footer">
+        <div class="quiz-exam-footer-left">
+          <button type="button" class="btn btn-outline" onclick="requestQuitExam()">
+            <i class="fas fa-times"></i> Quit Exam
+          </button>
+          <span class="quiz-exam-warning-note">
+            <i class="fas fa-shield-halved"></i> Do not switch tabs or leave full-screen.
+          </span>
+        </div>
+        <button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
+          <i class="fas fa-paper-plane"></i> Submit Test
+        </button>
+      </footer>`;
+  } else {
+    footerHtml = `
+      <footer class="quiz-exam-footer">
+        <div class="quiz-exam-footer-left"></div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-outline" onclick="retakeQuiz()">
+            <i class="fas fa-redo"></i> Retake
+          </button>
+          <button type="button" class="btn btn-primary" onclick="exitQuizSession()">
+            <i class="fas fa-check"></i> Done
+          </button>
+        </div>
+      </footer>`;
+  }
 
-  $('quizPlayerSub').innerHTML = `${headerInfo}<div style="margin-top:6px;">Attempt #${attempts}</div>`;
-  $('quizPlayerActions').innerHTML = `
-    <button type="button" class="btn btn-outline" onclick="retakeQuiz()"><i class="fas fa-redo"></i> Retake</button>
-    <button type="button" class="btn btn-primary" onclick="closeModal('quizPlayerModal')"><i class="fas fa-check"></i> Done</button>`;
-
-  let html = `<div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
-    <div class="quiz-result-emoji">${emoji}</div>
-    <div class="quiz-result-score">${score} / ${total}</div>
-    <div class="quiz-result-pct">${percent}%${marksPossible ? ` · ${marksEarned} / ${marksPossible} marks` : ''}</div>
-    <div class="quiz-result-headline">${headline}</div>
-  </div>`;
-
-  st.quiz.forEach((q, qi) => {
-    const r = results[qi]; const ok = r.correct;
-    html += `<div class="quiz-result-item ${ok ? 'ok' : 'bad'}">
-      <div class="quiz-result-head">
-        <span class="quiz-result-badge ${ok ? 'ok' : 'bad'}">
-          <i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i>
-        </span>
-        <strong>Q${qi + 1}.</strong>
-        <span class="latex-content">${escapeHtml(q.question)}</span>
-      </div>
-      <div class="quiz-result-body">
-        ${renderResultDetail(q, r)}
-        ${r.explanation ? `<div class="quiz-explain"><i class="fas fa-lightbulb"></i> <span class="latex-content">${escapeHtml(r.explanation)}</span></div>` : ''}
-      </div>
-    </div>`;
-  });
-  $('quizPlayerBody').innerHTML = html;
-  renderMathIn($('quizPlayerBody'));
-  stopQuizTimer();
+  shell.innerHTML = headerHtml + `<div class="quiz-exam-body">${bodyHtml}</div>` + footerHtml;
+  renderMathIn(shell.querySelector('.quiz-exam-body'));
 }
 
+/* ============================================================
+   PROCTORING — Event handlers
+   ============================================================ */
+function _onExamVisibilityChange() {
+  if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
+  if (document.hidden) _handleExamViolation('You left the exam tab.');
+}
+
+function _onExamWindowBlur() {
+  if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
+  if (document.querySelector('.modal-overlay.active')) return;
+  _handleExamViolation('The exam window lost focus.');
+}
+
+function _onExamFullscreenChange() {
+  if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
+  if (!quizPlayerState.fullscreenArmed) return;
+  const stillFs = document.fullscreenElement || document.webkitFullscreenElement;
+  if (!stillFs) _handleExamViolation('You exited full-screen mode.');
+}
+
+function _onExamBeforeUnload(e) {
+  if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
+  persistQuizAnswers();
+  e.preventDefault();
+  e.returnValue = '';
+  return '';
+}
+
+function _handleExamViolation(reason) {
+  const st = quizPlayerState;
+  if (!st || st.submitted || st.violationHandling) return;
+
+  st.violationHandling = true;
+  st.strikes = (st.strikes || 0) + 1;
+  st.violations.push({ reason, at: Date.now() });
+
+  if (st.strikes > QUIZ_PROCTOR_MAX_STRIKES) {
+    _autoSubmitForViolation(reason);
+  } else {
+    _showViolationWarning(reason, st.strikes);
+  }
+
+  setTimeout(() => { if (quizPlayerState) quizPlayerState.violationHandling = false; }, 1500);
+}
+
+function _resetViolationModalButtons() {
+  const resumeBtn = document.getElementById('quizViolationResumeBtn');
+  if (resumeBtn) {
+    resumeBtn.textContent = 'Resume Exam';
+    resumeBtn.className = 'btn btn-primary btn-block';
+    resumeBtn.setAttribute('onclick', 'resumeExamAfterViolation()');
+  }
+}
+
+function _showViolationWarning(reason, strikeNumber) {
+  const text = document.getElementById('quizViolationText');
+  const box  = document.getElementById('quizViolationBox');
+
+  if (text) {
+    text.textContent =
+      `${reason} This is your final warning — one more violation will instantly auto-submit your exam.`;
+  }
+  if (box) {
+    box.innerHTML = `
+      <div class="violation-warning-row">
+        <span class="violation-warning-label">Strike</span>
+        <span class="violation-warning-value">${strikeNumber} of ${QUIZ_PROCTOR_MAX_STRIKES}</span>
+      </div>
+      <div class="violation-warning-row">
+        <span class="violation-warning-label">Rule</span>
+        <span class="violation-warning-value">Do not switch tabs or windows during the exam.</span>
+      </div>`;
+  }
+  _resetViolationModalButtons();
+  persistQuizAnswers();
+  openModal('quizViolationModal');
+}
+
+function resumeExamAfterViolation() {
+  closeModal('quizViolationModal');
+  try {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) { const p = req.call(el); if (p && p.catch) p.catch(() => {}); }
+    }
+  } catch (e) {}
+}
+
+async function _autoSubmitForViolation(reason) {
+  const st = quizPlayerState;
+  if (!st) return;
+  st.autoSubmitted = true;
+  showToast('⚠️ Auto-submitting due to proctoring violation…', 'error');
+  await new Promise(r => setTimeout(r, 400));
+  await submitQuiz({ auto: true });
+}
+
+function requestQuitExam() {
+  const st = quizPlayerState;
+  if (!st) return;
+
+  st.examStarted = false;
+  const ok = confirm(
+    'Quit the exam?\n\n' +
+    'Your answers will be saved locally, but no score will be recorded.'
+  );
+  if (ok) {
+    persistQuizAnswers();
+    exitQuizSession();
+    return;
+  }
+  try {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) { const p = req.call(el); if (p && p.catch) p.catch(() => {}); }
+    }
+  } catch (e) {}
+  setTimeout(() => { if (quizPlayerState) quizPlayerState.examStarted = true; }, 1000);
+}
+
+/* ============================================================
+   ANTI-CHEAT — Input restrictions
+   ============================================================ */
+function _inExam() {
+  return quizPlayerState && quizPlayerState.examStarted && !quizPlayerState.submitted;
+}
+function _blockContextMenu(e) {
+  if (!_inExam()) return;
+  e.preventDefault();
+  return false;
+}
+function _blockCopy(e) {
+  if (!_inExam()) return;
+  if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;
+  e.preventDefault();
+  return false;
+}
+function _blockSelectStart(e) {
+  if (!_inExam()) return;
+  if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;
+  e.preventDefault();
+  return false;
+}
+function _blockDrag(e) {
+  if (!_inExam()) return;
+  e.preventDefault();
+}
+function _blockDevKeys(e) {
+  if (!_inExam()) return;
+
+  if (e.key === 'F12') { e.preventDefault(); e.stopPropagation(); return false; }
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey &&
+      ['I','J','C','i','j','c'].includes(e.key)) {
+    e.preventDefault(); e.stopPropagation(); return false;
+  }
+  if ((e.ctrlKey || e.metaKey) && ['u','U','s','S','p','P'].includes(e.key)) {
+    e.preventDefault(); e.stopPropagation(); return false;
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault(); e.stopPropagation(); return false;
+  }
+  if ((e.ctrlKey || e.metaKey) && ['a','c','v','x','A','C','V','X'].includes(e.key)) {
+    if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;
+    e.preventDefault(); e.stopPropagation(); return false;
+  }
+}
+
+/* ============================================================
+   SUBMIT / EXIT / RETAKE
+   ============================================================ */
+async function submitQuiz(opts = {}) {
+  const st = quizPlayerState; if (!st) return;
+  if (st.previewMode) return showToast('Preview mode — nothing submitted.', 'info');
+  if (st.submitted) return;
+
+  const auto = !!opts.auto;
+
+  if (!auto) {
+    for (let i = 0; i < st.quiz.length; i++) {
+      const q = st.quiz[i];
+      const a = st.answers[i];
+      if (q.type === 'integer') {
+        if (a === '' || a === null || a === undefined || isNaN(Number(a))) {
+          return showToast(`Please answer Q${i + 1}.`, 'error');
+        }
+      } else if (q.type === 'matrix') {
+        const rows = q.matrixRows || [];
+        if (!Array.isArray(a) || a.filter(x => x !== undefined && x !== '').length < rows.length) {
+          return showToast(`Please match all items in Q${i + 1}.`, 'error');
+        }
+      } else {
+        if (Array.isArray(a) ? a.length === 0 : (a === null || a === undefined || a === -1)) {
+          return showToast(`Please answer Q${i + 1}.`, 'error');
+        }
+      }
+    }
+  }
+
+  st.examStarted = false;
+
+  try {
+    const res = await fetch(
+      `https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser._id, answers: st.answers })
+      }
+    );
+    const data = await res.json();
+    if (data.success) {
+      st.submitted = true;
+      st.response = data;
+
+      stopQuizTimer();
+      clearQuizAnswers(st.materialId);
+      try { localStorage.removeItem('aero_quiz_start_' + st.materialId); } catch (e) {}
+      try { clearSavedQuizDraft(st.materialId); } catch (e) {}
+
+      if (!currentUser.quizResults) currentUser.quizResults = {};
+      currentUser.quizResults[st.materialId] = {
+        score: data.score, total: data.total, percent: data.percent,
+        marksEarned: data.marksEarned, marksPossible: data.marksPossible,
+        attempts: data.attempts, lastAttemptAt: new Date().toISOString()
+      };
+      saveSessionUser(currentUser);
+      _analyticsCacheAt = 0;
+
+      _detachAllProctorListeners();
+      exitFullscreenNow();
+
+      renderQuizExamShell();
+
+      if (auto) {
+        showToast('⚠️ Exam auto-submitted due to proctoring violation.', 'error');
+      } else {
+        const pct = data.percent;
+        if (pct === 100)     showToast('🏆 Perfect!', 'success');
+        else if (pct >= 60)  showToast(`🎉 Scored ${data.score}/${data.total}!`, 'success');
+        else                 showToast(`📚 Scored ${data.score}/${data.total}.`, 'info');
+      }
+    } else {
+      st.examStarted = true;
+      showToast(data.message || 'Failed.', 'error');
+    }
+  } catch {
+    st.examStarted = true;
+    showToast('Server error.', 'error');
+  }
+}
+
+function exitFullscreenNow() {
+  try {
+    if (document.fullscreenElement && document.exitFullscreen) {
+      const p = document.exitFullscreen();
+      if (p && p.catch) p.catch(() => {});
+    } else if (document.webkitFullscreenElement && document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
+  } catch (e) {}
+}
+
+function exitQuizSession() {
+  const st = quizPlayerState;
+  const returnCourseId = st ? st.courseId : null;
+  const wasPreview = st ? st.previewMode : false;
+
+  _detachAllProctorListeners();
+  exitFullscreenNow();
+  stopQuizTimer();
+
+  const shell = document.getElementById('quizExamShell');
+  if (shell) {
+    shell.style.display = 'none';
+    shell.innerHTML = '';
+    shell.setAttribute('aria-hidden', 'true');
+  }
+  document.body.style.overflow = '';
+  quizPlayerState = null;
+
+  if (!wasPreview && returnCourseId && currentUser && currentUser.role === 'student') {
+    try { renderCourseDetail(returnCourseId); } catch (e) {}
+  }
+}
+
+function retakeQuiz() {
+  const st = quizPlayerState;
+  if (!st) return;
+  const courseId = st.courseId;
+  const materialId = st.materialId;
+  clearQuizAnswers(materialId);
+  try { localStorage.removeItem('aero_quiz_start_' + materialId); } catch (e) {}
+  exitQuizSession();
+  openQuizPlayer(courseId, materialId);
+}
+
+/* ============================================================
+   ANSWER INTERACTION
+   ============================================================ */
 function renderStudentAnswerArea(q, qi) {
   const st = quizPlayerState;
   const ans = st.answers[qi];
@@ -5948,7 +6370,6 @@ function renderStudentAnswerArea(q, qi) {
 
 function renderResultDetail(q, r) {
   const qType = q.type || 'single';
-
   if (qType === 'single' || qType === 'multiple') {
     const chosenIdx = Array.isArray(r.chosen) ? r.chosen : (r.chosen != null ? [r.chosen] : []);
     const correctIdx = r.correctIndexes || [];
@@ -5963,7 +6384,6 @@ function renderResultDetail(q, r) {
         <span class="ok-text">${fmt(correctIdx)}</span></div>` : ''}
     `;
   }
-
   if (qType === 'integer') {
     const tol = Number(r.integerTolerance) || 0;
     const tolStr = tol > 0 ? ` (±${tol})` : '';
@@ -5975,7 +6395,6 @@ function renderResultDetail(q, r) {
         <span class="ok-text">${r.integerAnswer}${tolStr}</span></div>` : ''}
     `;
   }
-
   if (qType === 'matrix') {
     const rows = r.matrixRows || [];
     const chosen = Array.isArray(r.chosen) ? r.chosen : [];
@@ -6008,7 +6427,7 @@ function selectQuizAnswerMulti(qi, oi, isChecked, type) {
     st.answers[qi] = arr;
   }
   persistQuizAnswers();
-  renderQuizPlayer();
+  renderQuizExamShell();
 }
 function selectQuizAnswerInteger(qi, val) {
   const st = quizPlayerState; if (!st || st.submitted) return;
@@ -6024,58 +6443,75 @@ function selectQuizAnswerMatrix(qi, li, val) {
 }
 function selectQuizAnswer(qi, oi) { selectQuizAnswerMulti(qi, oi, true, 'single'); }
 
-function retakeQuiz() {
-  const st = quizPlayerState; if (!st) return;
-  clearQuizAnswers(st.materialId);
-  try { localStorage.removeItem('aero_quiz_start_' + st.materialId); } catch (e) {}
-  openQuizPlayer(st.courseId, st.materialId);
+/* ============================================================
+   PREVIEW (admin) — same shell, no proctoring
+   ============================================================ */
+function previewQuizPaper() {
+  quizPaperConfig = {
+    subject:    ($('qpSubject')?.value || '').trim(),
+    paperCode:  ($('qpCode')?.value    || '').trim(),
+    totalTime:  ($('qpTime')?.value    || '').trim(),
+    totalMarks: parseInt($('qpMarks')?.value, 10) || 0
+  };
+  if (quizDraft.length === 0) return showToast('Add at least one question first.', 'info');
+
+  const course = findCourse(quizEditingCourseId);
+  const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
+
+  const emptyAnswer = q => q.type === 'integer' ? '' : [];
+  quizPlayerState = {
+    courseId: quizEditingCourseId,
+    materialId: quizEditingMaterialId,
+    materialTitle: mat ? mat.title : 'Preview',
+    quiz: JSON.parse(JSON.stringify(quizDraft)),
+    answers: quizDraft.map(emptyAnswer),
+    submitted: false,
+    response: null,
+    paperConfig: { ...quizPaperConfig },
+    previewMode: true,
+    examStarted: false,
+    strikes: 0,
+    violations: [],
+    startTime: null,
+    violationHandling: false,
+    fullscreenArmed: true
+  };
+
+  const shell = document.getElementById('quizExamShell');
+  if (!shell) return;
+  shell.style.display = 'flex';
+  shell.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+  renderQuizExamShell();
 }
 
-async function submitQuiz() {
-  const st = quizPlayerState; if (!st) return;
-  if (st.previewMode) return showToast('Preview mode — nothing submitted.', 'info');
+  quizPaperConfig = {
+    subject:    ($('qpSubject')?.value || '').trim(),
+    paperCode:  ($('qpCode')?.value    || '').trim(),
+    totalTime:  ($('qpTime')?.value    || '').trim(),
+    totalMarks: parseInt($('qpMarks')?.value, 10) || 0
+  };
+  if (quizDraft.length === 0) return showToast('Add at least one question first.', 'info');
 
-  for (let i = 0; i < st.quiz.length; i++) {
-    const q = st.quiz[i];
-    const a = st.answers[i];
-    if (q.type === 'integer') {
-      if (a === '' || a === null || a === undefined || isNaN(Number(a))) return showToast(`Please answer Q${i + 1}.`, 'error');
-    } else if (q.type === 'matrix') {
-      const rows = q.matrixRows || [];
-      if (!Array.isArray(a) || a.filter(x => x !== undefined && x !== '').length < rows.length) return showToast(`Please match all items in Q${i + 1}.`, 'error');
-    } else {
-      if (Array.isArray(a) ? a.length === 0 : (a === null || a === undefined || a === -1)) return showToast(`Please answer Q${i + 1}.`, 'error');
-    }
-  }
+  const course = findCourse(quizEditingCourseId);
+  const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
 
-  try {
-    const res = await fetch(
-      `https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUser._id, answers: st.answers }) }
-    );
-    const data = await res.json();
-    if (data.success) {
-      st.submitted = true; st.response = data;
-      stopQuizTimer();
-      clearQuizAnswers(st.materialId);
-      try { localStorage.removeItem('aero_quiz_start_' + st.materialId); } catch (e) {}
-      if (!currentUser.quizResults) currentUser.quizResults = {};
-      currentUser.quizResults[st.materialId] = {
-        score: data.score, total: data.total, percent: data.percent,
-        marksEarned: data.marksEarned, marksPossible: data.marksPossible,
-        attempts: data.attempts, lastAttemptAt: new Date().toISOString()
-      };
-      saveSessionUser(currentUser);
-      _analyticsCacheAt = 0;
-      renderQuizPlayer();
-      const pct = data.percent;
-      if (pct === 100) showToast('🏆 Perfect!', 'success');
-      else if (pct >= 60) showToast(`🎉 Scored ${data.score}/${data.total}!`, 'success');
-      else showToast(`📚 Scored ${data.score}/${data.total}.`, 'info');
-    } else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
-}
+  const emptyAnswer = q => q.type === 'integer' ? '' : [];
+  quizPlayerState = {
+    courseId: quizEditingCourseId,
+    materialId: quizEditingMaterialId,
+    materialTitle: mat ? mat.title : 'Preview',
+    quiz: JSON.parse(JSON.stringify(quizDraft)),
+    answers: quizDraft.map(emptyAnswer),
+    submitted: false,
+    response: null,
+    previewMode: true,
+    paperConfig: { ...quizPaperConfig }
+  };
+  renderQuizPlayer();
+  openModal('quizPlayerModal');
+
+
 
 /* ============================================================
    FILE VIEWER / VIDEO / BOOKMARK / PROGRESS
