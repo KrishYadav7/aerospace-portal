@@ -3493,6 +3493,7 @@ function renderCourseDetail(courseId) {
   }
   const isPremiumCourse = course.isPremium || false;
   const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
+  const isSubscribed = !!currentUser?.isSubscribed;   // ← moved up from below
   const acc = accentStyle(course.code || course.name);
   const diff = difficultyColor(course.difficulty);
 
@@ -3537,8 +3538,6 @@ function renderCourseDetail(courseId) {
       }).join('')}
     </div>`;
   }
-
-  const isSubscribed = !!currentUser?.isSubscribed;
 
   if (isPremiumCourse && currentUser.role === 'student' && !isPurchased && !isSubscribed) {
     html += `<div class="premium-notice">
