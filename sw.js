@@ -1,7 +1,7 @@
 /* ============================================================
    SERVICE WORKER — offline shell caching
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v13';
+const CACHE_NAME = 'aero-shell-v14';
 const SHELL_ASSETS = [
   './',
   './index.html',
