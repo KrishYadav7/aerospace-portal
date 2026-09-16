@@ -19,6 +19,11 @@ const Professor = require('./models/Professor');
 const Settings = require('./models/Settings');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const app = express();
 // 👇 ADD THIS LINE
 app.set('trust proxy', 1); 
@@ -33,7 +38,46 @@ app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
-app.use(express.static(__dirname));
+/* ============================================================
+   FILE UPLOADS — save to disk, serve from /uploads, never store in MongoDB
+   ============================================================ */
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const safeName = String(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, unique + '-' + safeName);
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 500 * 1024 * 1024 } // 500 MB
+});
+app.use('/uploads', express.static(UPLOAD_DIR));
+
+/* Upload endpoint — accepts one file, returns its public URL */
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+    const url = '/uploads/' + req.file.filename;
+    console.log('[upload] ✅ Saved:', req.file.originalname, '→', url, '(', Math.round(req.file.size / 1024 / 1024), 'MB )');
+    res.json({ success: true, url, fileName: req.file.originalname, fileSize: req.file.size });
+  } catch (e) {
+    console.error('[upload] Error:', e.message);
+    res.status(500).json({ success: false, message: 'Upload failed: ' + e.message });
+  }
+});
+
+/* ⚠️ SECURITY: Do NOT use express.static(__dirname) — it exposes .env, server.js, package.json, etc.
+   Serve ONLY specific frontend files. Uploads are served from /uploads below. */
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/index.html', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
+app.get('/styles.css', (req, res) => res.sendFile(path.join(__dirname, 'styles.css')));
+app.get('/media-viewer.js', (req, res) => res.sendFile(path.join(__dirname, 'media-viewer.js')));
+app.get('/sw.js', (req, res) => res.sendFile(path.join(__dirname, 'sw.js')));
+app.get('/manifest.json', (req, res) => res.sendFile(path.join(__dirname, 'manifest.json')));
+app.get('/passport.jpg', (req, res) => res.sendFile(path.join(__dirname, 'passport.jpg')));
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000, max: 300,
@@ -3274,6 +3318,7 @@ app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId',
    ============================================================ */
 const fetchEmailReplies = async () => {
   if (!EMAIL_USER || !EMAIL_PASS) return;
+  if (!USE_SMTP) return;   // skip IMAP entirely if SMTP not configured
   
   const client = new ImapFlow({
     host: 'imap.gmail.com',
@@ -3312,8 +3357,12 @@ const fetchEmailReplies = async () => {
   }
 };
 
-// Run every 3 minutes
-setInterval(fetchEmailReplies, 3 * 60 * 1000);
+// Run every 3 minutes — wrapped in try/catch to prevent crash if IMAP fails
+setInterval(() => {
+  fetchEmailReplies().catch(err => {
+    console.warn('[IMAP] fetchEmailReplies failed (non-fatal):', err.message);
+  });
+}, 3 * 60 * 1000);
 
 // API Endpoint for admin dashboard
 app.get('/api/admin/email-replies', async (req, res) => {

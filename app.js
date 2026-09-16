@@ -57,7 +57,45 @@ async function fetchJSON(url, options = {}) {
     );
   }
 }
+/* ============================================================
+   File Upload Helper — disk pe upload karta hai, base64 nahi
+   ============================================================ */
+async function uploadFileToServer(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append('file', file);
 
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/upload`);
+    xhr.timeout = 1800000; // 30 minutes
+
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (data.success) resolve(data);
+          else reject(new Error(data.message || 'Upload failed'));
+        } catch (e) {
+          reject(new Error('Invalid response from server'));
+        }
+      } else {
+        reject(new Error(`Upload failed (HTTP ${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.ontimeout = () => reject(new Error('Upload timed out'));
+
+    xhr.send(formData);
+  });
+}
 /* ============================================================
    PROFESSORS (MongoDB — centralized database)
    ============================================================ */
@@ -1462,7 +1500,7 @@ function renderAdminAddMaterial(courseId) {
       <div class="form-group" style="margin-top:16px;">
         <label>Or Upload File (PDF, PPT, DOCX) (Optional)</label>
         <input type="file" id="newMatFile" style="margin-top:6px;">
-        <span class="hint">Max file size: 10 MB. Uploading a file will override the URL.</span>
+        <span class="hint">Max file size: 500 MB. Uploading a file will override the URL.</span>
       </div>
     </div>
 
@@ -1491,7 +1529,7 @@ async function saveNewMaterialPage() {
   const file = fileInput && fileInput.files ? fileInput.files[0] : null;
   const isPremium = $('newMatPremium').checked;
 
-  const processSave = async (fileData, fileName) => {
+  const processSave = async (fileUrl, fileName) => {
     const selectedType = $('newMatType').value;
     const customTypeEl = $('newMatCustomType');
     const resolvedType = resolveMaterialType(selectedType, customTypeEl ? customTypeEl.value : '');
@@ -1503,12 +1541,11 @@ async function saveNewMaterialPage() {
       title,
       type: resolvedType,
       description: $('newMatDescription').value.trim(),
-      url: $('newMatUrl').value.trim(),
+      url: fileUrl || $('newMatUrl').value.trim(),
       isPremium: isPremium,
       price: isPremium ? (parseFloat($('newMatPrice').value) || 0) : 0,
       estimatedTime: $('newMatTime').value.trim(),
       tags: $('newMatTags').value.trim(),
-      fileData: fileData || '',
       fileName: fileName || ''
     };
 
@@ -1528,10 +1565,14 @@ async function saveNewMaterialPage() {
   };
 
   if (file) {
-    if (file.size > 10 * 1024 * 1024) return showToast('File too large (max 10 MB).', 'error');
-    const reader = new FileReader();
-    reader.onload = ev => processSave(ev.target.result, file.name);
-    reader.readAsDataURL(file);
+    if (file.size > 500 * 1024 * 1024) return showToast('File too large (max 500 MB).', 'error');
+    try {
+      showToast(`Uploading ${file.name}…`, 'info');
+      const result = await uploadFileToServer(file);
+      await processSave(result.url, result.fileName);
+    } catch (err) {
+      showToast('Upload failed: ' + err.message, 'error');
+    }
   } else {
     processSave('', '');
   }
@@ -3101,7 +3142,7 @@ function previewOwnerPhoto(input) {
       prev.replaceWith(img);
     }
     // cache so save knows about it
-    window.__pendingOwnerPhoto = e.target.result;
+    window.__pendingOwnerPhotoFile = file;
   };
   reader.readAsDataURL(file);
 }
@@ -3136,8 +3177,15 @@ async function saveOwnerProfile() {
     adminId: currentUser._id,
     name, role, title, bio, email, phone
   };
-  if (typeof window.__pendingOwnerPhoto === 'string') {
-    payload.photo = window.__pendingOwnerPhoto;
+  // If a new photo was selected, upload it to disk first
+  if (window.__pendingOwnerPhotoFile) {
+    try {
+      showToast('Uploading founder photo…', 'info');
+      const result = await uploadFileToServer(window.__pendingOwnerPhotoFile);
+      payload.photo = result.url;
+    } catch (err) {
+      return showToast('Photo upload failed: ' + err.message, 'error');
+    }
   }
 
   try {
@@ -3422,7 +3470,7 @@ function renderEditorMaterials(course) {
         </div>
 
         <div class="me-file-section">
-          <label>Or Upload File (PDF, PPT, DOCX) — Optional · max 10 MB</label>
+          <label>Or Upload File (PDF, PPT, DOCX) — Optional · max 500 MB</label>
           <input type="file" id="newMatInlineFile">
         </div>
 
@@ -3945,22 +3993,21 @@ async function saveCourseDetails(courseId) {
   } catch { showToast('Server error.', 'error'); }
 }
 
-function handleThumbnailUpload(input) {
+async function handleThumbnailUpload(input) {
   const file = input.files && input.files[0];
   if (!file) return;
-  if (file.size > 2 * 1024 * 1024) return showToast('Image too large (max 2 MB).', 'error');
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    try {
-      const res = await fetch(`/api/courses/${editingCourseId}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thumbnail: e.target.result })
-      });
-      const data = await res.json();
-      if (data.success) { showToast('✓ Thumbnail updated!', 'success'); await fetchCoursesFromDB(); }
-    } catch { showToast('Upload failed.', 'error'); }
-  };
-  reader.readAsDataURL(file);
+  if (file.size > 10 * 1024 * 1024) return showToast('Image too large (max 500 MB).', 'error');
+  try {
+    showToast('Uploading thumbnail…', 'info');
+    const result = await uploadFileToServer(file);
+    const res = await fetch(`/api/courses/${editingCourseId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thumbnail: result.url })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('✓ Thumbnail updated!', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (err) { showToast('Upload failed: ' + err.message, 'error'); }
 }
 
 async function removeThumbnail() {
@@ -4129,14 +4176,21 @@ async function saveNewMaterialInline(courseId) {
   }
 
   if (file) {
-    if (file.size > 10 * 1024 * 1024) {
-      showToast('File too large (max 10 MB).', 'error');
+    if (file.size > 500 * 1024 * 1024) {
+      showToast('File too large (max 500 MB).', 'error');
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material'; }
       return;
     }
-    const reader = new FileReader();
-    reader.onload = ev => doSave(ev.target.result, file.name);
-    reader.readAsDataURL(file);
+    try {
+      showToast(`Uploading ${file.name}…`, 'info');
+      const result = await uploadFileToServer(file, (pct) => {
+        if (btn) btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Uploading ${pct}%`;
+      });
+      await doSave(result.url, result.fileName);
+    } catch (err) {
+      showToast('Upload failed: ' + err.message, 'error');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material'; }
+    }
   } else {
     doSave('', '');
   }
@@ -4156,22 +4210,21 @@ function replaceMaterialFile(courseId, materialId) {
   if (el) el.querySelector('.me-file-input').click();
 }
 
-function handleNewMaterialFile(input, courseId, materialId) {
+async function handleNewMaterialFile(input, courseId, materialId) {
   const file = input.files && input.files[0];
   if (!file) return;
-  if (file.size > 10 * 1024 * 1024) return showToast('File too large (max 10 MB).', 'error');
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    try {
-      const res = await fetch(`/api/courses/${courseId}/materials/${materialId}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileData: e.target.result, fileName: file.name })
-      });
-      const data = await res.json();
-      if (data.success) { showToast('✓ File replaced!', 'success'); await fetchCoursesFromDB(); }
-    } catch { showToast('Upload failed.', 'error'); }
-  };
-  reader.readAsDataURL(file);
+  if (file.size > 500 * 1024 * 1024) return showToast('File too large (max 500 MB).', 'error');
+  try {
+    showToast(`Uploading ${file.name}…`, 'info');
+    const result = await uploadFileToServer(file);
+    const res = await fetch(`/api/courses/${courseId}/materials/${materialId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: result.url, fileName: result.fileName })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('✓ File replaced!', 'success'); await fetchCoursesFromDB(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (err) { showToast('Upload failed: ' + err.message, 'error'); }
 }
 
 async function postAnnouncement(courseId) {
@@ -7166,13 +7219,22 @@ async function saveProfessor(e) {
       }
     } catch { showToast('Server error.', 'error'); }
   };
+  const photoInput = $('newProfPhotoInput');
+  const photoFile = photoInput && photoInput.files ? photoInput.files[0] : null;
 
-  const photoFile = $('professorPhoto').files ? $('professorPhoto').files[0] : null;
   if (photoFile) {
-    const reader = new FileReader();
-    reader.onload = ev => processSave(ev.target.result);
-    reader.readAsDataURL(photoFile);
-  } else processSave(null);
+    if (photoFile.size > 5 * 1024 * 1024) return showToast('Photo too large (max 5 MB).', 'error');
+    try {
+      showToast('Uploading photo…', 'info');
+      const result = await uploadFileToServer(photoFile);
+      await processSave(result.url);
+    } catch (err) {
+      showToast('Upload failed: ' + err.message, 'error');
+    }
+  } else {
+    processSave(null);
+  }
+ 
 }
 async function deleteProfessor(professorId) {
   if (!confirm('Delete this professor?')) return;
