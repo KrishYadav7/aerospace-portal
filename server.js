@@ -479,17 +479,17 @@ const transporter = {
     console.error('❌ Email transporter verification FAILED:', err.message);
   }
 })();
-// ---- Boot diagnostic ----
-(async () => {
-  console.log('[email] Default SMTP from:  ', USE_SMTP ? smtpFrom() : '(n/a)');
-  console.log('[email] Default Resend from:', USE_RESEND ? resendFrom() : '(n/a)');
-  try {
-    await transporter.verify();
-    console.log('✅ Email transporter ready.');
-  } catch (err) {
-    console.error('❌ Email transporter verification FAILED:', err.message);
-  }
-})();
+// // ---- Boot diagnostic ----
+// (async () => {
+//   console.log('[email] Default SMTP from:  ', USE_SMTP ? smtpFrom() : '(n/a)');
+//   console.log('[email] Default Resend from:', USE_RESEND ? resendFrom() : '(n/a)');
+//   try {
+//     await transporter.verify();
+//     console.log('✅ Email transporter ready.');
+//   } catch (err) {
+//     console.error('❌ Email transporter verification FAILED:', err.message);
+//   }
+// })();
 
 /* ============================================================
    SMS SENDER (Twilio REST API — no extra npm package needed)
