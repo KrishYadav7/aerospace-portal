@@ -105,7 +105,7 @@ function generateId() { return Date.now().toString(36) + Math.random().toString(
 
 async function fetchProfessorsFromDB() {
   try {
-    const response = await fetch(`${API_BASE}/professors?t=${Date.now()}`);
+    const response = await fetch(`${API_BASE}/professors`);
     const data = await response.json();
     if (data.success) {
       // Map _id (from MongoDB) to id (for the frontend)
@@ -175,7 +175,7 @@ async function fetchCoursesFromDB(force = false) {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/courses?t=${Date.now()}`);
+    const response = await fetch(`${API_BASE}/courses`);
     const data = await response.json();
     liveCourses = data.map(course => {
       const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
@@ -224,7 +224,7 @@ let liveOwnerProfile = {
 
 async function fetchOwnerProfile() {
   try {
-    const res = await fetch(`${API_BASE}/settings/owner?t=${Date.now()}`);
+    const res = await fetch(`${API_BASE}/settings/owner`);
     const data = await res.json();
     if (data.success && data.owner) {
       liveOwnerProfile = data.owner;
@@ -234,7 +234,7 @@ async function fetchOwnerProfile() {
 
 async function fetchSubscriptionSettings() {
   try {
-    const res = await fetch(`${API_BASE}/settings/subscription?t=${Date.now()}`);
+    const res = await fetch(`${API_BASE}/settings/subscription`);
     const data = await res.json();
     if (data.success && data.settings) {
       liveSubscriptionSettings = data.settings;
@@ -3252,8 +3252,8 @@ function renderCourseEditor(courseId) {
   const premiumChip = course.isPremium ? '<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>' : '';
 
   // Count total questions across all materials
-  const totalQuestions = (course.materials || []).reduce((s, m) => s + ((m.quiz || []).length), 0);
-  const quizzesCount = (course.materials || []).filter(m => (m.quiz || []).length > 0).length;
+  const totalQuestions = (course.materials || []).reduce((s, m) => s + (m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length), 0);
+  const quizzesCount = (course.materials || []).filter(m => (m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length) > 0).length;
 
   let html = `
     <div class="editor-hero" style="${acc}">
@@ -3553,7 +3553,7 @@ function renderEditorQuizzes(course) {
   `;
 
   materials.forEach((m, idx) => {
-    const quizCount = (m.quiz || []).length;
+    const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
     const cfg = m.examConfig || {};
     const paperMarks = (m.quiz || []).reduce((s, q) => s + (Number(q.marks) || 0), 0);
 
@@ -3624,7 +3624,7 @@ function renderEditorQuizzes(course) {
 }
 
 function renderMaterialEditorCard(courseId, m, idx) {
-  const quizCount = (m.quiz || []).length;
+  const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
   const customId = 'meCustom-' + m.id;
   const isCustom = !isKnownMaterialType(m.type);
 
@@ -4980,7 +4980,7 @@ function renderMaterialCard(course, m, isPurchased) {
   const isSubscribed = !!currentUser?.isSubscribed;
   const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || isSubscribed || !isMatPremium;
   const viewed = isMaterialViewed(course.id, m.id);
-  const quizCount = (m.quiz || []).length;
+  const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
   let fileActionHtml = '';
   if (!canAccess) {
     fileActionHtml = `<button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock ₹${matPrice}</button>`;
@@ -6232,10 +6232,25 @@ function _detachAllProctorListeners() {
 /* ============================================================
    OPEN — Shows pre-exam consent first
    ============================================================ */
-function openQuizPlayer(courseId, materialId) {
+async function openQuizPlayer(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
   const mat = (course.materials || []).find(m => m.id === materialId); if (!mat) return;
-  const quiz = mat.quiz || [];
+
+  // Quiz data is not in the cached list — fetch it on demand
+  let quiz = mat.quiz;
+  if (!quiz || quiz.length === 0) {
+    try {
+      showToast('Loading quiz…', 'info');
+      const res = await fetch(`/api/courses/${courseId}/materials/${materialId}/full-quiz`);
+      const data = await res.json();
+      if (!data.success) return showToast(data.message || 'Could not load quiz.', 'error');
+      quiz = data.quiz || [];
+      mat.quiz = quiz;
+      mat.examConfig = data.examConfig || mat.examConfig || {};
+    } catch (e) {
+      return showToast('Network error loading quiz.', 'error');
+    }
+  }
   if (quiz.length === 0) return showToast('This test has no questions yet.', 'info');
 
   const normalized = quiz.map(q => normalizeQuestion(q));

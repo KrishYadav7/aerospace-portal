@@ -1657,11 +1657,43 @@ app.delete('/api/professors/:id', async (req, res) => {
 /* Course list — strips heavy base64 file blobs.
    The fileData is fetched on-demand via /api/courses/:courseId/materials/:materialId/file
    only when a student actually opens a PDF. */
+/* Course list — LIGHTWEIGHT VERSION
+   Strips: fileData (base64), quiz questions
+   Keeps: quizCount (computed), basic metadata, playlists, announcements */
 app.get('/api/courses', async (req, res) => {
   try {
-    const courses = await Course.find()
-      .select('-materials.fileData')
-      .lean();
+    const courses = await Course.aggregate([
+      {
+        $project: {
+          name: 1, code: 1, semester: 1, instructor: 1, description: 1,
+          category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
+          learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
+          isPremium: 1, price: 1, announcements: 1, playlists: 1,
+          createdAt: 1, updatedAt: 1,
+          doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
+          materials: {
+            $map: {
+              input: { $ifNull: ['$materials', []] },
+              as: 'm',
+              in: {
+                _id: '$$m._id',
+                title: '$$m.title',
+                type: '$$m.type',
+                description: '$$m.description',
+                url: '$$m.url',
+                fileName: '$$m.fileName',
+                isPremium: '$$m.isPremium',
+                price: '$$m.price',
+                estimatedTime: '$$m.estimatedTime',
+                tags: '$$m.tags',
+                examConfig: '$$m.examConfig',
+                quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
+              }
+            }
+          }
+        }
+      }
+    ]);
     res.json(courses);
   } catch (e) {
     res.status(500).json({ message: 'Server error: ' + e.message });
@@ -1670,6 +1702,30 @@ app.get('/api/courses', async (req, res) => {
 
 /* On-demand file fetch — called only when opening a PDF */
 app.get('/api/courses/:courseId/materials/:materialId/file', async (req, res) => {
+/* On-demand full material fetch — includes quiz questions.
+   Called only when student takes quiz or admin edits quiz. */
+app.get('/api/courses/:courseId/materials/:materialId/full-quiz', async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.courseId)
+      .select('materials')
+      .lean();
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+    const mat = (course.materials || []).find(
+      m => String(m._id) === String(req.params.materialId)
+    );
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+
+    res.json({
+      success: true,
+      quiz: mat.quiz || [],
+      examConfig: mat.examConfig || {}
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
   try {
     const course = await Course.findById(req.params.courseId)
       .select('materials._id materials.fileData materials.fileName')
