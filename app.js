@@ -1,7 +1,7 @@
 /* ============================================================
    API CONFIGURATION
    ============================================================ */
-const API_BASE = 'https://aerospace-portal.onrender.com/api';
+const API_BASE = '/api';
 
 /* ============================================================
    SAFE JSON FETCH
@@ -120,14 +120,30 @@ let liveCourses = [];
 function getCourses() { return liveCourses; }
 function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 
-async function fetchCoursesFromDB() {
+/* Client-side course catalog cache.
+   - Students: cached for 60s → instant navigation between pages.
+   - Admins:   always fresh → no risk of stale admin dashboard.
+   - Manual refresh: call fetchCoursesFromDB(true). */
+let _courseCacheAt = 0;
+const COURSE_CACHE_MS = 60 * 1000;
+
+async function fetchCoursesFromDB(force = false) {
+  const isAdmin = currentUser && currentUser.role === 'admin';
+
+  // Serve from cache if fresh, and never cache for admins
+  if (!force && !isAdmin && liveCourses.length > 0 && (Date.now() - _courseCacheAt) < COURSE_CACHE_MS) {
+    renderApp();
+    return;
+  }
+
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/courses?t=' + Date.now());
+    const response = await fetch(`${API_BASE}/courses?t=${Date.now()}`);
     const data = await response.json();
     liveCourses = data.map(course => {
       const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
       return { ...course, id: course._id, materials: fixedMaterials, playlists: course.playlists || [] };
     });
+    _courseCacheAt = Date.now();
     renderApp();
   } catch (error) {
     console.error('Error fetching courses:', error);
@@ -658,7 +674,7 @@ async function handleLogin(e) {
     try {
       console.log('[login] POST /api/login', { username, role: loginRole });
 
-      const response = await fetch('https://aerospace-portal.onrender.com/api/login', {
+      const response = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password, role: loginRole }),
@@ -1157,7 +1173,7 @@ async function saveNewStudentPage() {
   if (!/^[a-z0-9._-]+$/.test(username)) return showToast('Username may only contain letters, numbers, dots, underscores, or hyphens.', 'error');
 
   try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/create-student', {
+    const res = await fetch('/api/admin/create-student', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fullName, username, email, password })
     });
@@ -1291,7 +1307,7 @@ async function saveNewCoursePage() {
   };
 
   try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/courses', {
+    const res = await fetch('/api/courses', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -1497,7 +1513,7 @@ async function saveNewMaterialPage() {
     };
 
     try {
-      const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
+      const res = await fetch(`/api/courses/${courseId}/materials`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -1586,7 +1602,7 @@ async function openNotification(notifId) {
 
   if (!n.read) {
     try {
-      const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
+      const res = await fetch(`/api/user/notifications/${currentUser._id}/mark-read`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notifId })
       });
@@ -1607,7 +1623,7 @@ async function openNotification(notifId) {
 async function markAllNotificationsRead() {
   if (!currentUser?._id) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}/mark-read`, {
+    const res = await fetch(`/api/user/notifications/${currentUser._id}/mark-read`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ all: true })
     });
@@ -1625,7 +1641,7 @@ async function markAllNotificationsRead() {
 async function loadNotifications() {
   if (!currentUser?._id) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/notifications/${currentUser._id}`);
+    const res = await fetch(`/api/user/notifications/${currentUser._id}`);
     const data = await res.json();
     if (data.success) {
       currentUser.notifications = data.notifications;
@@ -2006,7 +2022,7 @@ async function renderAdminOverview() {
   $('statStudents').textContent = '...';
 
   try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/students');
+    const res = await fetch('/api/students');
     const data = await res.json();
     if (data.success) $('statStudents').textContent = data.students.length;
   } catch { $('statStudents').textContent = '—'; }
@@ -2133,7 +2149,7 @@ async function renderAdminStudents() {
   container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading students...</p></div>`;
 
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/students');
+    const response = await fetch('/api/students');
     const data = await response.json();
     const countEl = $('studentCountLabel');
 
@@ -2227,7 +2243,7 @@ async function renderAdminEmailReplies() {
   container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading replies...</p></div>`;
 
   try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/email-replies');
+    const res = await fetch('/api/admin/email-replies');
     const data = await res.json();
     
     const countEl = $('replyCountLabel');
@@ -2612,7 +2628,7 @@ async function sendBulkEmail(e) {
   const abortTimer = setTimeout(() => controller.abort(), 90000);
 
   try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/send-email', {
+    const res = await fetch('/api/admin/send-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
@@ -2774,7 +2790,7 @@ async function copyEmailFailures() {
 
 async function checkEmailStatus() {
   try {
-    const res = await fetch('https://aerospace-portal.onrender.com/api/admin/email-status');
+    const res = await fetch('/api/admin/email-status');
     const data = await res.json();
     if (data.ready) {
       showToast(`✅ Email ready — sending as ${data.from}`, 'success');
@@ -2794,7 +2810,7 @@ async function resetStudentPassword(userId, name) {
     return;
   }
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/admin/reset-password/${userId}`, {
+    const res = await fetch(`/api/admin/reset-password/${userId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ newPassword: newPass })
     });
@@ -2814,7 +2830,7 @@ async function resetStudentPassword(userId, name) {
 async function deleteStudent(userId, name) {
   if (!confirm(`Delete student "${name}"? This cannot be undone.`)) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/admin/students/${userId}`, { method: 'DELETE' });
+    const res = await fetch(`/api/admin/students/${userId}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.success) {
       showToast('🗑️ Student deleted.', 'info');
@@ -3802,7 +3818,7 @@ async function savePlaylistFromModal(e) {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...'; }
 
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists`, {
+    const res = await fetch(`/api/courses/${courseId}/playlists`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, description, materialIds })
@@ -3823,7 +3839,7 @@ async function savePlaylistFromModal(e) {
 
 async function autoGeneratePlaylist(courseId) {
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/auto-videos`, {
+    const res = await fetch(`/api/courses/${courseId}/playlists/auto-videos`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: 'All Video Lectures' })
@@ -3844,7 +3860,7 @@ async function renamePlaylist(courseId, playlistId) {
   if (newTitle === null) return;
   if (!newTitle.trim()) return showToast('Title cannot be empty.', 'error');
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}`, {
+    const res = await fetch(`/api/courses/${courseId}/playlists/${playlistId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: newTitle.trim() })
@@ -3858,7 +3874,7 @@ async function renamePlaylist(courseId, playlistId) {
 async function deletePlaylist(courseId, playlistId) {
   if (!confirm('Delete this playlist? The videos in it will NOT be deleted from the course.')) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}`, {
+    const res = await fetch(`/api/courses/${courseId}/playlists/${playlistId}`, {
       method: 'DELETE'
     });
     const data = await res.json();
@@ -3871,7 +3887,7 @@ async function addSelectedVideoToPlaylist(courseId, playlistId) {
   const sel = document.getElementById('playlistAdd-' + playlistId);
   if (!sel || !sel.value) return showToast('Pick a video first.', 'info');
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}/materials`, {
+    const res = await fetch(`/api/courses/${courseId}/playlists/${playlistId}/materials`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ materialId: sel.value })
@@ -3884,7 +3900,7 @@ async function addSelectedVideoToPlaylist(courseId, playlistId) {
 
 async function removeVideoFromPlaylist(courseId, playlistId, materialId) {
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/playlists/${playlistId}/materials/${materialId}`, {
+    const res = await fetch(`/api/courses/${courseId}/playlists/${playlistId}/materials/${materialId}`, {
       method: 'DELETE'
     });
     const data = await res.json();
@@ -3919,7 +3935,7 @@ async function saveCourseDetails(courseId) {
     price: parseFloat($('edPrice').value) || 0
   };
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
+    const res = await fetch(`/api/courses/${courseId}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -3936,7 +3952,7 @@ function handleThumbnailUpload(input) {
   const reader = new FileReader();
   reader.onload = async (e) => {
     try {
-      const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${editingCourseId}`, {
+      const res = await fetch(`/api/courses/${editingCourseId}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ thumbnail: e.target.result })
       });
@@ -3949,7 +3965,7 @@ function handleThumbnailUpload(input) {
 
 async function removeThumbnail() {
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${editingCourseId}`, {
+    const res = await fetch(`/api/courses/${editingCourseId}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ thumbnail: '' })
     });
@@ -3962,7 +3978,7 @@ async function addNewMaterial(courseId) {
   const title = prompt('Material title:');
   if (!title || !title.trim()) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
+    const res = await fetch(`/api/courses/${courseId}/materials`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: title.trim(), type: 'video', description: '', url: '', isPremium: false, price: 0 })
     });
@@ -3993,7 +4009,7 @@ async function saveMaterialInline(courseId, materialId) {
   };
   if (!payload.title) return showToast('Title required.', 'error');
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, {
+    const res = await fetch(`/api/courses/${courseId}/materials/${materialId}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -4082,7 +4098,7 @@ async function saveNewMaterialInline(courseId) {
 
     try {
       const res = await fetch(
-        `https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`,
+        `/api/courses/${courseId}/materials`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4128,7 +4144,7 @@ async function saveNewMaterialInline(courseId) {
 async function deleteMaterialFromEditor(courseId, materialId, title) {
   if (!confirm(`Delete "${title}"?`)) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, { method: 'DELETE' });
+    const res = await fetch(`/api/courses/${courseId}/materials/${materialId}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.success) { showToast('Deleted.', 'info'); await fetchCoursesFromDB(); }
     else showToast(data.message || 'Failed.', 'error');
@@ -4147,7 +4163,7 @@ function handleNewMaterialFile(input, courseId, materialId) {
   const reader = new FileReader();
   reader.onload = async (e) => {
     try {
-      const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials/${materialId}`, {
+      const res = await fetch(`/api/courses/${courseId}/materials/${materialId}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileData: e.target.result, fileName: file.name })
       });
@@ -4163,7 +4179,7 @@ async function postAnnouncement(courseId) {
   const body = $('annBody').value.trim();
   if (!title) return showToast('Title required.', 'error');
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/announcements`, {
+    const res = await fetch(`/api/courses/${courseId}/announcements`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, body, authorName: currentUser.fullName || currentUser.username || 'Instructor' })
     });
@@ -4176,7 +4192,7 @@ async function postAnnouncement(courseId) {
 async function deleteAnnouncement(courseId, annId) {
   if (!confirm('Delete this announcement?')) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/announcements/${annId}`, { method: 'DELETE' });
+    const res = await fetch(`/api/courses/${courseId}/announcements/${annId}`, { method: 'DELETE' });
     const data = await res.json();
     if (data.success) { showToast('Deleted.', 'info'); await fetchCoursesFromDB(); }
     else showToast(data.message || 'Failed.', 'error');
@@ -4903,7 +4919,7 @@ function renderCourseDetail(courseId) {
 }
 
 function renderMaterialCard(course, m, isPurchased) {
-  const hasFile = m.fileData && m.fileData.length > 0;
+  const hasFile = (m.fileData && m.fileData.length > 0) || (m.fileName && m.fileName.length > 0);
   const hasUrl = m.url && m.url.length > 0;
   const isMatPremium = m.isPremium === true || m.isPremium === 'true';
   const matPrice = parseFloat(m.price) || 0;
@@ -5110,7 +5126,7 @@ async function openPlaylistPlayer(courseId, playlistId, startIndex = 0) {
 
     try {
       const res = await fetch(
-        `https://aerospace-portal.onrender.com/api/materials/${courseId}/${mat.id}/video-session`,
+        `/api/materials/${courseId}/${mat.id}/video-session`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -6112,7 +6128,7 @@ async function saveQuizPaper() {
 
   try {
     const res = await fetch(
-      `https://aerospace-portal.onrender.com/api/courses/${quizEditingCourseId}/materials/${quizEditingMaterialId}/quiz`,
+      `/api/courses/${quizEditingCourseId}/materials/${quizEditingMaterialId}/quiz`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6621,7 +6637,7 @@ async function submitQuiz(opts = {}) {
 
   try {
     const res = await fetch(
-      `https://aerospace-portal.onrender.com/api/user/quiz/${st.courseId}/${st.materialId}`,
+      `/api/user/quiz/${st.courseId}/${st.materialId}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6901,16 +6917,35 @@ function previewQuizPaper() {
 async function viewFileOnline(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
   const mat = course.materials.find(m => m.id === materialId);
-  if (!mat || !mat.fileData) return showToast('No file attached.', 'info');
+  if (!mat) return showToast('Material not found.', 'info');
+
+  let fileData = mat.fileData;
+
+  // fileData was stripped from the list — fetch on demand
+  if (!fileData && mat.fileName) {
+    try {
+      const res = await fetch(`${API_BASE}/courses/${courseId}/materials/${materialId}/file`);
+      const data = await res.json();
+      if (!data.success || !data.fileData) {
+        return showToast('Could not load this file.', 'error');
+      }
+      fileData = data.fileData;
+      mat.fileData = fileData; // cache for this session
+    } catch (e) {
+      return showToast('Network error loading file.', 'error');
+    }
+  }
+
+  if (!fileData) return showToast('No file attached.', 'info');
 
   const fileName = (mat.fileName || '').toLowerCase();
   const isPdf =
     fileName.endsWith('.pdf') ||
-    String(mat.fileData).startsWith('data:application/pdf');
+    String(fileData).startsWith('data:application/pdf');
 
   if (isPdf) {
     window.PDFViewer.open({
-      data: mat.fileData,
+      data: fileData,
       materialId: mat.id,
       courseId: course.id,
       fileName: mat.fileName,
@@ -6931,7 +6966,7 @@ async function openMaterialVideo(courseId, materialId) {
 
   try {
     const res = await fetch(
-      `https://aerospace-portal.onrender.com/api/materials/${courseId}/${materialId}/video-session`,
+      `/api/materials/${courseId}/${materialId}/video-session`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6964,7 +6999,7 @@ async function toggleBookmark(e, courseId) {
   if (e) e.stopPropagation();
   if (!currentUser?._id) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/bookmarks/${courseId}`, {
+    const res = await fetch(`/api/user/bookmarks/${courseId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: currentUser._id })
     });
@@ -6982,7 +7017,7 @@ async function toggleMaterialViewed(e, courseId, materialId) {
   if (e) e.stopPropagation();
   const currently = isMaterialViewed(courseId, materialId);
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/progress/${courseId}/${materialId}`, {
+    const res = await fetch(`/api/user/progress/${courseId}/${materialId}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: currentUser._id, viewed: !currently })
     });
@@ -7002,7 +7037,7 @@ async function toggleMaterialViewed(e, courseId, materialId) {
 async function refreshUserData() {
   if (!currentUser?._id) return;
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/user/me/${currentUser._id}`);
+    const res = await fetch(`/api/user/me/${currentUser._id}`);
     const data = await res.json();
     if (data.success) {
       currentUser = data.user;
@@ -7044,7 +7079,7 @@ async function saveCourse(e) {
   };
   if (!payload.name || !payload.code) return showToast('Name and code required.', 'error');
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/courses', {
+    const response = await fetch('/api/courses', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -7061,7 +7096,7 @@ async function saveCourse(e) {
 async function deleteCourse(courseId) {
   if (!confirm('Delete this course and all its materials?')) return;
   try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, { method: 'DELETE' });
+    const response = await fetch(`/api/courses/${courseId}`, { method: 'DELETE' });
     const data = await response.json();
     if (data.success) {
       if (currentCourseId === courseId) currentCourseId = null;
@@ -7074,7 +7109,7 @@ async function deleteCourse(courseId) {
 
 async function publishCourse(courseId) {
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}`, {
+    const res = await fetch(`/api/courses/${courseId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'published' })
@@ -7194,7 +7229,7 @@ async function saveMaterial(e) {
       fileData, fileName
     };
     try {
-      const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/materials`, {
+      const response = await fetch(`/api/courses/${courseId}/materials`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(materialData)
       });
@@ -7218,7 +7253,7 @@ async function askDoubt(courseId) {
   const question = textarea.value.trim();
   if (!question) return showToast('Type your doubt first.', 'error');
   try {
-    const response = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts`, {
+    const response = await fetch(`/api/courses/${courseId}/doubts`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         studentName: currentUser.fullName || currentUser.username,
@@ -7238,7 +7273,7 @@ async function postReply(courseId, doubtId) {
   const text = ta.value.trim();
   if (!text) return showToast('Type a reply.', 'error');
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}/replies`, {
+    const res = await fetch(`/api/courses/${courseId}/doubts/${doubtId}/replies`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         authorName: currentUser.fullName || currentUser.username,
@@ -7255,7 +7290,7 @@ async function postReply(courseId, doubtId) {
 
 async function acceptReply(courseId, doubtId, replyId) {
   try {
-    const res = await fetch(`https://aerospace-portal.onrender.com/api/courses/${courseId}/doubts/${doubtId}/replies/${replyId}/accept`, {
+    const res = await fetch(`/api/courses/${courseId}/doubts/${doubtId}/replies/${replyId}/accept`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ acceptedBy: currentUser.username })
     });
@@ -7279,7 +7314,7 @@ async function showPaymentModal(courseId, materialId = null) {
   }
   showToast(`Initiating payment for ${itemName}...`, 'info');
   try {
-    const response = await fetch('https://aerospace-portal.onrender.com/api/create-order', {
+    const response = await fetch('/api/create-order', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ amount })
     });
@@ -7295,7 +7330,7 @@ async function showPaymentModal(courseId, materialId = null) {
       order_id: data.order.id,
       handler: async function (response) {
         showToast('Verifying...', 'info');
-        const verifyRes = await fetch('https://aerospace-portal.onrender.com/api/verify-payment', {
+        const verifyRes = await fetch('/api/verify-payment', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             razorpay_order_id: response.razorpay_order_id,
@@ -7407,7 +7442,7 @@ async function renderStudentAnalytics() {
       </div>`;
     try {
       const res = await fetch(
-        `https://aerospace-portal.onrender.com/api/user/analytics/${currentUser._id}?t=${now}`
+        `/api/user/analytics/${currentUser._id}?t=${now}`
       );
       const data = await res.json();
       if (!data.success) {

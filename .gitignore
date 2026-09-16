@@ -1,2 +1,10 @@
 node_modules/
 .env
+*.env
+*.bak
+server.js.bak
+app.js.bak
+sw.js.bak
+.DS_Store
+*.log
+.clinic/

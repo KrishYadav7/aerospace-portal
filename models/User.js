@@ -72,5 +72,8 @@ const userSchema = new mongoose.Schema({
     total:      { type: Number, default: null }            // for quiz events
   }]
 }, { timestamps: true });
-
+userSchema.index({ email: 1 });
+userSchema.index({ phone: 1 });
+userSchema.index({ role: 1, createdAt: -1 });
+userSchema.index({ 'subscription.status': 1 });
 module.exports = mongoose.model('User', userSchema);

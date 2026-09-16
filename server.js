@@ -1571,7 +1571,7 @@ app.post('/api/admin/send-email', async (req, res) => {
    ============================================================ */
 app.get('/api/professors', async (req, res) => {
   try {
-    const professors = await Professor.find().sort({ createdAt: 1 });
+    const professors = await Professor.find().sort({ createdAt: 1 }).lean();
     res.json({ success: true, professors });
   } catch (e) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -1610,14 +1610,41 @@ app.delete('/api/professors/:id', async (req, res) => {
 /* ============================================================
    COURSES — CRUD
    ============================================================ */
+/* Course list — strips heavy base64 file blobs.
+   The fileData is fetched on-demand via /api/courses/:courseId/materials/:materialId/file
+   only when a student actually opens a PDF. */
 app.get('/api/courses', async (req, res) => {
-  try { res.json(await Course.find()); }
-  catch (e) { res.status(500).json({ message: 'Server error: ' + e.message }); }
+  try {
+    const courses = await Course.find()
+      .select('-materials.fileData')
+      .lean();
+    res.json(courses);
+  } catch (e) {
+    res.status(500).json({ message: 'Server error: ' + e.message });
+  }
+});
+
+/* On-demand file fetch — called only when opening a PDF */
+app.get('/api/courses/:courseId/materials/:materialId/file', async (req, res) => {
+  try {
+    const course = await Course.findById(req.params.courseId)
+      .select('materials._id materials.fileData materials.fileName')
+      .lean();
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+    const mat = (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+    if (!mat.fileData) return res.status(404).json({ success: false, message: 'No file attached.' });
+
+    res.json({ success: true, fileData: mat.fileData, fileName: mat.fileName || '' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
 });
 
 app.get('/api/courses/:id', async (req, res) => {
   try {
-    const course = await Course.findById(req.params.id);
+    const course = await Course.findById(req.params.id).lean();
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
     res.json({ success: true, course });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
@@ -1976,7 +2003,7 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
 
 app.get('/api/user/quiz-results/:userId', async (req, res) => {
   try {
-    const user = await User.findById(req.params.userId).select('quizResults');
+    const user = await User.findById(req.params.userId).select('quizResults').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     res.json({ success: true, results: Object.fromEntries(user.quizResults || new Map()) });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
@@ -1987,7 +2014,7 @@ app.get('/api/user/quiz-results/:userId', async (req, res) => {
    ============================================================ */
 app.get('/api/user/analytics/:userId', async (req, res) => {
   try {
-    const user = await User.findById(req.params.userId).select('-password');
+    const user = await User.findById(req.params.userId).select('-password').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
     const log = user.activityLog || [];
@@ -2073,7 +2100,8 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
     const courseProgress = [];
     if (interactedCourseIds.size > 0) {
       const courses = await Course.find({ _id: { $in: Array.from(interactedCourseIds) } })
-        .select('name code materials');
+        .select('name code materials')
+        .lean();
       courses.forEach(c => {
         const cid = c._id.toString();
         const completed = (progressMap[cid] || []).length;
@@ -3058,7 +3086,7 @@ app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
    ============================================================ */
 app.get('/api/user/notifications/:userId', async (req, res) => {
   try {
-    const user = await User.findById(req.params.userId).select('notifications');
+    const user = await User.findById(req.params.userId).select('notifications').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     const list = (user.notifications || []).slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 30);
     res.json({ success: true, notifications: list });
@@ -3082,7 +3110,10 @@ app.post('/api/user/notifications/:userId/mark-read', async (req, res) => {
    ============================================================ */
 app.get('/api/students', async (req, res) => {
   try {
-    const students = await User.find({ role: 'student' }).select('-password').sort({ createdAt: -1 });
+    const students = await User.find({ role: 'student' })
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .lean();
     res.json({ success: true, students });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
@@ -3287,7 +3318,7 @@ setInterval(fetchEmailReplies, 3 * 60 * 1000);
 // API Endpoint for admin dashboard
 app.get('/api/admin/email-replies', async (req, res) => {
   try {
-    const replies = await EmailReply.find().sort({ date: -1 }).limit(50);
+    const replies = await EmailReply.find().sort({ date: -1 }).limit(50).lean();
     res.json({ success: true, replies });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
