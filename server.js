@@ -68,6 +68,157 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
   }
 });
 
+/* ============================================================
+   CHUNKED UPLOAD — bypasses Hostinger's 10 MB proxy limit
+   ------------------------------------------------------------
+   Client flow:
+     1. POST /api/upload/init     → { uploadId, chunkSize }
+     2. POST /api/upload/chunk    × N  (each ≤ 6 MB)
+     3. POST /api/upload/complete → { url, fileName }
+   ============================================================ */
+const CHUNK_DIR = path.join(UPLOAD_DIR, 'chunks');
+if (!fs.existsSync(CHUNK_DIR)) fs.mkdirSync(CHUNK_DIR, { recursive: true });
+
+const uploadSessions = new Map(); // uploadId → session
+
+// Auto-cleanup stale sessions every 30 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, s] of uploadSessions.entries()) {
+    if (now - s.createdAt > 2 * 60 * 60 * 1000) {
+      try { fs.rmSync(s.sessionDir, { recursive: true, force: true }); } catch (_) {}
+      uploadSessions.delete(id);
+    }
+  }
+}, 30 * 60 * 1000);
+
+app.post('/api/upload/init', (req, res) => {
+  try {
+    const { fileName, fileSize, fileType } = req.body || {};
+    if (!fileName || !fileSize) {
+      return res.status(400).json({ success: false, message: 'fileName and fileSize are required.' });
+    }
+    const uploadId  = crypto.randomBytes(16).toString('hex');
+    const chunkSize = 6 * 1024 * 1024;               // 6 MB per chunk (safely under 10 MB)
+    const totalChunks = Math.ceil(Number(fileSize) / chunkSize);
+    const sessionDir  = path.join(CHUNK_DIR, uploadId);
+    fs.mkdirSync(sessionDir, { recursive: true });
+
+    uploadSessions.set(uploadId, {
+      fileName: String(fileName),
+      fileType: fileType || 'application/octet-stream',
+      fileSize: Number(fileSize),
+      totalChunks,
+      chunkSize,
+      sessionDir,
+      receivedChunks: new Set(),
+      createdAt: Date.now()
+    });
+
+    console.log(`[chunked] init uploadId=${uploadId} size=${(fileSize/1024/1024).toFixed(2)}MB chunks=${totalChunks}`);
+    res.json({ success: true, uploadId, chunkSize, totalChunks });
+  } catch (e) {
+    console.error('[chunked/init]', e);
+    res.status(500).json({ success: false, message: 'Init failed: ' + e.message });
+  }
+});
+
+const chunkUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const session = uploadSessions.get(req.body.uploadId);
+      if (!session) return cb(new Error('Invalid or expired upload session.'));
+      cb(null, session.sessionDir);
+    },
+    filename: (req, file, cb) => {
+      const idx = parseInt(req.body.chunkIndex, 10);
+      cb(null, `chunk-${String(idx).padStart(6, '0')}`);
+    }
+  }),
+  limits: { fileSize: 8 * 1024 * 1024 } // hard cap per chunk
+});
+
+app.post('/api/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
+  try {
+    const { uploadId, chunkIndex } = req.body || {};
+    const session = uploadSessions.get(uploadId);
+    if (!session) {
+      return res.status(400).json({ success: false, message: 'Invalid upload session.' });
+    }
+    session.receivedChunks.add(parseInt(chunkIndex, 10));
+    res.json({
+      success: true,
+      received: session.receivedChunks.size,
+      total: session.totalChunks
+    });
+  } catch (e) {
+    console.error('[chunked/chunk]', e);
+    res.status(500).json({ success: false, message: 'Chunk upload failed: ' + e.message });
+  }
+});
+
+app.post('/api/upload/complete', async (req, res) => {
+  try {
+    const { uploadId } = req.body || {};
+    const session = uploadSessions.get(uploadId);
+    if (!session) {
+      return res.status(400).json({ success: false, message: 'Invalid upload session.' });
+    }
+    if (session.receivedChunks.size !== session.totalChunks) {
+      return res.status(400).json({
+        success: false,
+        message: `Missing chunks — got ${session.receivedChunks.size}/${session.totalChunks}.`
+      });
+    }
+
+    const unique   = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const safeName = String(session.fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const finalName = unique + '-' + safeName;
+    const finalPath = path.join(UPLOAD_DIR, finalName);
+
+    // Stream-merge chunks to avoid loading whole file into memory
+    const writeStream = fs.createWriteStream(finalPath);
+    for (let i = 0; i < session.totalChunks; i++) {
+      const chunkPath = path.join(session.sessionDir, `chunk-${String(i).padStart(6, '0')}`);
+      const data = fs.readFileSync(chunkPath);
+      await new Promise((resolve, reject) => {
+        writeStream.write(data, (err) => err ? reject(err) : resolve());
+      });
+    }
+    await new Promise((resolve, reject) => {
+      writeStream.end();
+      writeStream.on('finish', resolve);
+      writeStream.on('error', reject);
+    });
+
+    try { fs.rmSync(session.sessionDir, { recursive: true, force: true }); } catch (_) {}
+    uploadSessions.delete(uploadId);
+
+    const url = '/uploads/' + finalName;
+    console.log('[chunked] ✅ Complete →', url, '(', Math.round(session.fileSize / 1024 / 1024), 'MB )');
+    res.json({ success: true, url, fileName: session.fileName, fileSize: session.fileSize });
+  } catch (e) {
+    console.error('[chunked/complete]', e);
+    res.status(500).json({ success: false, message: 'Assemble failed: ' + e.message });
+  }
+});
+
+/* Global multer / error handler — returns JSON, never HTML */
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ success: false, message: 'File too large for this endpoint.' });
+    }
+    return res.status(400).json({ success: false, message: 'Upload error: ' + err.message });
+  }
+  if (err) {
+    console.error('[error-handler]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+  next();
+});
+
 /* ⚠️ SECURITY: Do NOT use express.static(__dirname) — it exposes .env, server.js, package.json, etc.
    Serve ONLY specific frontend files. Uploads are served from /uploads below. */
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
@@ -1700,10 +1851,7 @@ app.get('/api/courses', async (req, res) => {
   }
 });
 
-/* On-demand file fetch — called only when opening a PDF */
-app.get('/api/courses/:courseId/materials/:materialId/file', async (req, res) => {
-/* On-demand full material fetch — includes quiz questions.
-   Called only when student takes quiz or admin edits quiz. */
+/* ---- On-demand full material fetch (quiz questions) ---- */
 app.get('/api/courses/:courseId/materials/:materialId/full-quiz', async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId)
@@ -1726,6 +1874,8 @@ app.get('/api/courses/:courseId/materials/:materialId/full-quiz', async (req, re
   }
 });
 
+/* ---- On-demand file fetch (PDF base64) ---- */
+app.get('/api/courses/:courseId/materials/:materialId/file', async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId)
       .select('materials._id materials.fileData materials.fileName')
