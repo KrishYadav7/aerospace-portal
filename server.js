@@ -4344,7 +4344,7 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',   // Best free model
+        model: 'llama-3.1-8b-instant',   // Best free model
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user',   content: userPrompt }
@@ -4374,7 +4374,7 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
     res.json({
       success: true,
       answer,
-      model: 'llama-3.3-70b-versatile',
+      model: 'llama-3.1-8b-instant',
       tokensUsed: groqData.usage?.total_tokens || 0
     });
 
