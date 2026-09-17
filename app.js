@@ -4249,14 +4249,17 @@ async function saveNewMaterialInline(courseId) {
   const file = fileEl && fileEl.files ? fileEl.files[0] : null;
 
   const doSave = async (fileData, fileName) => {
+    // FIX: Determine if fileData is a URL from an uploaded file
+    const isUploadedFile = fileData && (fileData.startsWith('/uploads/') || fileData.startsWith('http'));
+
     const payload = {
       title,
       type: resolvedType,
       description: descEl ? descEl.value.trim() : '',
-      url: urlEl ? urlEl.value.trim() : '',
+      url: isUploadedFile ? fileData : (urlEl ? urlEl.value.trim() : ''), // Put URL here
       isPremium,
       price,
-      fileData: fileData || '',
+      fileData: isUploadedFile ? '' : (fileData || ''), // Keep fileData empty for uploads
       fileName: fileName || ''
     };
 
@@ -4373,7 +4376,6 @@ async function saveNewMaterialInline(courseId) {
     doSave('', '');
   }
 }
-
 async function deleteMaterialFromEditor(courseId, materialId, title) {
   if (!confirm(`Delete "${title}"?`)) return;
   try {
@@ -7168,6 +7170,12 @@ async function viewFileOnline(courseId, materialId) {
 
   let fileData = mat.fileData;
 
+  // FIX 1: If fileData is already a URL (from the previous bug), open it directly
+  if (fileData && (fileData.startsWith('/uploads/') || fileData.startsWith('http'))) {
+    window.open(fileData, '_blank');
+    return;
+  }
+
   // fileData was stripped from the list — fetch on demand
   if (!fileData && mat.fileName) {
     try {
@@ -7177,6 +7185,13 @@ async function viewFileOnline(courseId, materialId) {
         return showToast('Could not load this file.', 'error');
       }
       fileData = data.fileData;
+
+      // FIX 2: Check if the server returned a URL inside fileData
+      if (fileData && (fileData.startsWith('/uploads/') || fileData.startsWith('http'))) {
+        window.open(fileData, '_blank');
+        return;
+      }
+
       mat.fileData = fileData; // cache for this session
     } catch (e) {
       return showToast('Network error loading file.', 'error');
