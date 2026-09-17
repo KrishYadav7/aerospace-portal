@@ -8,3 +8,8 @@ sw.js.bak
 .DS_Store
 *.log
 .clinic/
+.env.save
+.env.*.local
+uploads/
+chunks/
+.vscode/
