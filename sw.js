@@ -1,7 +1,12 @@
 /* ============================================================
-   SERVICE WORKER — offline shell caching
+   SERVICE WORKER — offline shell caching (v23)
+   ------------------------------------------------------------
+   Changes vs v22:
+     • Removed PDF.js + Chart.js from precache (load on-demand now)
+     • Faster first install → faster first load
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v22';   // v18 → v19';
+const CACHE_NAME = 'aero-shell-v23';
+
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -10,8 +15,6 @@ const SHELL_ASSETS = [
   './media-viewer.js',
   './manifest.json',
   'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css',
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
   'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'
 ];
 
@@ -69,7 +72,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   /* ---- Everything else: cache-first, refresh in background ---- */
-  const CACHEABLE_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+  const CACHEABLE_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'cdn.jsdelivr.net'];
 
   event.respondWith(
     caches.match(request).then((cached) => {

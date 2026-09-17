@@ -7,6 +7,10 @@
   <title>AeroGyan Education – Course Portal</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <link rel="preconnect" href="https://checkout.razorpay.com" crossorigin>
+  <link rel="dns-prefetch" href="https://api.brevo.com">
+  <link rel="dns-prefetch" href="https://cdnjs.cloudflare.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
   <link rel="stylesheet" href="styles.css">
@@ -60,7 +64,7 @@
       }
     };
   </script>
-  <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
   <div id="app">
@@ -338,7 +342,7 @@
           <div class="tab-toolbar">
             <div class="search-bar" style="margin:0; flex:1; max-width:440px;">
               <i class="fas fa-search"></i>
-              <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="renderAdminCourses()">
+              <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="debouncedRenderAdminCourses()">
             </div>
           </div>
           <div id="adminCourseList"></div>
@@ -478,7 +482,7 @@
           <h2><i class="fas fa-graduation-cap"></i> All Courses</h2>
         </div>
         <div class="search-bar"><i class="fas fa-search"></i>
-          <input type="text" id="studentCourseSearch" placeholder="Search courses..." oninput="renderStudentCourses()">
+          <input type="text" id="studentCourseSearch" placeholder="Search courses..." oninput="debouncedRenderStudentCourses()">
         </div>
        <div class="filter-bar" id="studentFilterBar">
   <select id="filterSemester" onchange="renderStudentCourses()">
@@ -1110,10 +1114,59 @@
     </div>
   </div>
 </div>
-  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="media-viewer.js"></script>
-  <script src="app.js"></script>
+  <!-- ============================================================
+       LAZY LOADERS — Heavy libs load ONLY when needed
+       ============================================================ -->
+  <script>
+    /* Razorpay — loads when user clicks Buy/Subscribe */
+    window.loadRazorpay = function () {
+      return new Promise((resolve, reject) => {
+        if (window.Razorpay) return resolve();
+        const s = document.createElement('script');
+        s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    };
+
+    /* Chart.js — loads when Analytics tab opens */
+    window.loadChartJS = function () {
+      return new Promise((resolve, reject) => {
+        if (window.Chart) return resolve();
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    };
+
+    /* PDF.js — loads when user opens a PDF */
+    window.loadPDFJS = function () {
+      return new Promise((resolve, reject) => {
+        if (window.pdfjsLib) {
+          if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          }
+          return resolve();
+        }
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        s.onload = () => {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          resolve();
+        };
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    };
+  </script>
+
+  <!-- Core app scripts — always loaded, deferred -->
+  <script src="media-viewer.js" defer></script>
+  <script src="app.js" defer></script>
 </body>
 </html>

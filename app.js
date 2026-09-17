@@ -291,11 +291,8 @@ async function fetchCoursesFromDB(force = false) {
   }
 
   try {
-    // Cache-buster: browser / proxy / CDN cannot return a stale list.
-    const response = await fetch(`${API_BASE}/courses?_t=${Date.now()}`, {
-      cache: 'no-store'
-    });
-    const data = await response.json();
+    // Uses fetchJSON for consistent error handling
+    const data = await fetchJSON(`${API_BASE}/courses?_t=${Date.now()}`);
 
     if (!Array.isArray(data)) {
       console.error('[fetchCoursesFromDB] Expected an array, got:', data);
@@ -330,11 +327,8 @@ async function fetchCoursesFromDB(force = false) {
   }
 
   try {
-    // Cache-buster: browser / proxy / CDN cannot return a stale list.
-    const response = await fetch(`${API_BASE}/courses?_t=${Date.now()}`, {
-      cache: 'no-store'
-    });
-    const data = await response.json();
+    // Uses fetchJSON for consistent error handling
+    const data = await fetchJSON(`${API_BASE}/courses?_t=${Date.now()}`);
 
     if (!Array.isArray(data)) {
       console.error('[fetchCoursesFromDB] Expected an array, got:', data);
@@ -551,6 +545,17 @@ async function fetchSubscriptionSettings() {
 }
 
 const $ = id => document.getElementById(id);
+
+/* ============================================================
+   DEBOUNCE — prevents firing expensive renders on every keystroke
+   ============================================================ */
+function debounce(fn, wait = 220) {
+  let t;
+  return function (...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
+}
 
 /* ============================================================
    HELPERS
@@ -4849,6 +4854,11 @@ async function startSubscriptionCheckout() {
   if (!liveSubscriptionSettings.enabled) return showToast('Subscription is not available right now.', 'error');
 
   showToast('Preparing subscription…', 'info');
+
+  // Lazy-load Razorpay SDK
+  try { await window.loadRazorpay(); }
+  catch { return showToast('Could not load payment gateway.', 'error'); }
+
   try {
     const res = await fetch(`${API_BASE}/subscribe/create`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -5021,6 +5031,10 @@ async function submitCancelOtp() {
 /* ============================================================
    STUDENT COURSES
    ============================================================ */
+/* ---- Debounced renderers (used by search inputs) ---- */
+const debouncedRenderStudentCourses = debounce(renderStudentCourses, 250);
+const debouncedRenderAdminCourses  = debounce(renderAdminCourses, 250);
+
 function clearCourseFilters() {
   const s = $('filterSemester');
   const c = $('filterCategory');
@@ -7386,6 +7400,10 @@ async function viewFileOnline(courseId, materialId) {
   const mat = course.materials.find(m => m.id === materialId);
   if (!mat) return showToast('Material not found.', 'info');
 
+  // Lazy-load PDF.js before opening viewer
+  try { await window.loadPDFJS(); }
+  catch { return showToast('Could not load PDF viewer.', 'error'); }
+
   let fileUrl = null;
   let fileData = mat.fileData;
 
@@ -7823,6 +7841,11 @@ async function showPaymentModal(courseId, materialId = null) {
     if (mat) { amount = mat.price || 0; itemName = mat.title; purchaseId = mat.id; }
   }
   showToast(`Initiating payment for ${itemName}...`, 'info');
+
+  // Lazy-load Razorpay SDK
+  try { await window.loadRazorpay(); }
+  catch { return showToast('Could not load payment gateway.', 'error'); }
+
   try {
     const response = await fetch('/api/create-order', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -7831,8 +7854,8 @@ async function showPaymentModal(courseId, materialId = null) {
     const data = await response.json();
     if (!data.success) return showToast('Error creating order.', 'error');
 
-       const options = {
-      key: data.key_id, // <-- FIXED: Use the key sent from the backend
+    const options = {
+      key: data.key_id,
       amount: data.order.amount,
       currency: 'INR',
       name: 'Aerospace EdTech',
@@ -7906,26 +7929,31 @@ async function initApp() {
   }
   updateThemeIcon();
   syncHashToState();
+
+  /* ---- TIER 1: First paint (immediate) ---- */
   renderApp();
 
-  // Public data (safe to fetch in parallel — no user dependency)
-  const publicFetches = [
+  /* ---- TIER 2: Critical background fetches (parallel) ---- */
+  const criticalFetches = [
     fetchCoursesFromDB(),
     fetchProfessorsFromDB(),
     fetchSubscriptionSettings(),
     fetchOwnerProfile()
   ];
 
-  // User-scoped data (requires currentUser._id, but can run in parallel)
-  const userFetches = savedUser && savedUser._id
-    ? [refreshUserData(), loadNotifications()]
-    : [];
+  /* ---- TIER 3: User-scoped (slightly delayed so first paint wins) ---- */
+  if (savedUser && savedUser._id) {
+    setTimeout(() => {
+      refreshUserData().catch(() => {});
+      loadNotifications().catch(() => {});
+    }, 300);
+  }
 
-  // Fire everything at once
-  const results = await Promise.allSettled([...publicFetches, ...userFetches]);
+  // Await critical fetches, then re-render once
+  const results = await Promise.allSettled(criticalFetches);
   results.forEach((r, i) => {
     if (r.status === 'rejected') {
-      console.warn('[initApp] fetch #' + i + ' failed:', r.reason);
+      console.warn('[initApp] critical fetch #' + i + ' failed:', r.reason);
     }
   });
 
@@ -7953,6 +7981,10 @@ function toDateKeyLocal(d) {
 async function renderStudentAnalytics() {
   const container = document.getElementById('analyticsContent');
   if (!container) return;
+
+  // Lazy-load Chart.js only when analytics tab opens
+  try { await window.loadChartJS(); }
+  catch { console.warn('[analytics] Chart.js failed to load — charts skipped.'); }
 
   destroyAnalyticsCharts();
   container.innerHTML = '';

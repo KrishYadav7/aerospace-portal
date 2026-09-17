@@ -27,8 +27,26 @@ const fs = require('fs');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const app = express();
-// 👇 ADD THIS LINE
-app.set('trust proxy', 1); 
+app.set('trust proxy', 1);
+
+/* ============================================================
+   SIMPLE IN-MEMORY CACHE — dramatically reduces DB hits
+   TTL is per-key. Cleared automatically on course/settings mutation.
+   ============================================================ */
+const _cache = new Map();
+function cacheGet(key) {
+  const entry = _cache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { _cache.delete(key); return null; }
+  return entry.value;
+}
+function cacheSet(key, value, ttlMs = 60000) {
+  _cache.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+function cacheClear(prefix) {
+  if (!prefix) return _cache.clear();
+  for (const k of _cache.keys()) if (k.startsWith(prefix)) _cache.delete(k);
+}
 
 
 app.use(helmet({
@@ -248,14 +266,14 @@ app.get('/index.html', (req, res) => {
 
 /* ---- Static assets: 5-min browser cache (speeds up repeat visits) ---- */
 function sendCached(res, file, maxAge = 300) {
-  res.setHeader('Cache-Control', `public, max-age=${maxAge}`);
+  res.setHeader('Cache-Control', `public, max-age=${maxAge}, stale-while-revalidate=86400`);
   res.sendFile(path.join(__dirname, file));
 }
-app.get('/app.js',          (req, res) => sendCached(res, 'app.js'));
-app.get('/styles.css',      (req, res) => sendCached(res, 'styles.css'));
-app.get('/media-viewer.js', (req, res) => sendCached(res, 'media-viewer.js'));
-app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 86400));
-app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json'));
+app.get('/app.js',          (req, res) => sendCached(res, 'app.js', 3600));
+app.get('/styles.css',      (req, res) => sendCached(res, 'styles.css', 3600));
+app.get('/media-viewer.js', (req, res) => sendCached(res, 'media-viewer.js', 3600));
+app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
+app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json', 86400));
 app.get('/sw.js',           (req, res) => {
   res.setHeader('Cache-Control', 'no-cache'); // SW को हमेशा fresh चाहिए
   res.sendFile(path.join(__dirname, 'sw.js'));
@@ -2004,6 +2022,14 @@ app.delete('/api/professors/:id', async (req, res) => {
    Keeps: quizCount (computed), basic metadata, playlists, announcements */
 app.get('/api/courses', async (req, res) => {
   try {
+    // 60-second cache
+    const cached = cacheGet('courses:list');
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=30');
+      return res.json(cached);
+    }
+
     const courses = await Course.aggregate([
       {
         $project: {
@@ -2036,6 +2062,10 @@ app.get('/api/courses', async (req, res) => {
         }
       }
     ]);
+
+    cacheSet('courses:list', courses, 60000);
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=30');
     res.json(courses);
   } catch (e) {
     res.status(500).json({ message: 'Server error: ' + e.message });
@@ -2134,6 +2164,7 @@ app.post('/api/courses', async (req, res) => {
   try {
     const newCourse = new Course(req.body);
     await newCourse.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Course created successfully!', course: newCourse });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
@@ -2145,6 +2176,7 @@ app.put('/api/courses/:id', async (req, res) => {
     allowed.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
     const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
     if (!updated) return res.status(404).json({ success: false, message: 'Course not found' });
+    cacheClear('courses:');
     res.json({ success: true, message: 'Course updated successfully!', course: updated });
   } catch (e) { res.status(500).json({ success: false, message: 'Error updating course: ' + e.message }); }
 });
@@ -2152,6 +2184,7 @@ app.put('/api/courses/:id', async (req, res) => {
 app.delete('/api/courses/:id', async (req, res) => {
   try {
     await Course.findByIdAndDelete(req.params.id);
+    cacheClear('courses:');
     res.json({ success: true, message: 'Course deleted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
@@ -2165,6 +2198,7 @@ app.post('/api/courses/:courseId/materials', async (req, res) => {
     if (!course) return res.status(404).json({ message: 'Course not found' });
     course.materials.push(req.body);
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Material added successfully!', course });
   } catch (e) {
     console.error('[materials/POST] ❌ Error:', e.message);
@@ -2183,6 +2217,7 @@ app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
     const fields = ['title', 'type', 'description', 'url', 'isPremium', 'price', 'fileData', 'fileName'];
     fields.forEach(f => { if (req.body[f] !== undefined) mat[f] = req.body[f]; });
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Material updated successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error updating material: ' + e.message }); }
 });
@@ -2196,6 +2231,7 @@ app.delete('/api/courses/:courseId/materials/:materialId', async (req, res) => {
       pl.materialIds = pl.materialIds.filter(id => id !== req.params.materialId);
     });
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Material deleted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error deleting material.' }); }
 });
@@ -2660,8 +2696,14 @@ app.post('/api/create-order', async (req, res) => {
 /* ---- Public: read current subscription plan info ---- */
 app.get('/api/settings/subscription', async (req, res) => {
   try {
+    const cached = cacheGet('settings:subscription');
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=120');
+      return res.json(cached);
+    }
     const s = await getGlobalSettings();
-    res.json({
+    const payload = {
       success: true,
       settings: {
         enabled:     s.subscriptionEnabled,
@@ -2669,7 +2711,10 @@ app.get('/api/settings/subscription', async (req, res) => {
         title:       s.subscriptionTitle,
         description: s.subscriptionDesc
       }
-    });
+    };
+    cacheSet('settings:subscription', payload, 5 * 60 * 1000);
+    res.setHeader('Cache-Control', 'public, max-age=120');
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -2680,13 +2725,19 @@ app.get('/api/settings/subscription', async (req, res) => {
    ============================================================ */
 app.get('/api/settings/owner', async (req, res) => {
   try {
+    const cached = cacheGet('settings:owner');
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=120');
+      return res.json(cached);
+    }
     const s = await getGlobalSettings();
     const op = (s.ownerProfile && typeof s.ownerProfile === 'object')
       ? s.ownerProfile
       : (typeof s.toObject === 'function'
           ? (s.toObject().ownerProfile || {})
           : {});
-    res.json({
+    const payload = {
       success: true,
       owner: {
         name:  op.name  || 'Krish Yadav',
@@ -2697,7 +2748,10 @@ app.get('/api/settings/owner', async (req, res) => {
         phone: op.phone || '',
         photo: op.photo || ''
       }
-    });
+    };
+    cacheSet('settings:owner', payload, 5 * 60 * 1000);
+    res.setHeader('Cache-Control', 'public, max-age=120');
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -2727,6 +2781,7 @@ app.put('/api/admin/settings/owner', async (req, res) => {
     s.updatedAt = new Date();
 
     await s.save();
+    cacheClear('settings:');
 
     res.json({
       success: true,
@@ -2837,6 +2892,7 @@ app.put('/api/admin/settings/subscription', async (req, res) => {
     if (typeof enabled === 'boolean') s.subscriptionEnabled = enabled;
     s.updatedAt = new Date();
     await s.save();
+    cacheClear('settings:');
 
     res.json({
       success: true,
@@ -3813,12 +3869,21 @@ const fetchEmailReplies = async () => {
   }
 };
 
-// Run every 3 minutes — wrapped in try/catch to prevent crash if IMAP fails
-setInterval(() => {
-  fetchEmailReplies().catch(err => {
-    console.warn('[IMAP] fetchEmailReplies failed (non-fatal):', err.message);
-  });
-}, 3 * 60 * 1000);
+/* ============================================================
+   IMAP Polling — OFF by default (saves CPU + network)
+   Set ENABLE_IMAP_POLLING=true in .env to enable.
+   Manual refresh still works via admin dashboard → "Refresh Replies".
+   ============================================================ */
+if (process.env.ENABLE_IMAP_POLLING === 'true') {
+  console.log('[IMAP] Polling enabled — every 15 minutes');
+  setInterval(() => {
+    fetchEmailReplies().catch(err => {
+      console.warn('[IMAP] fetchEmailReplies failed (non-fatal):', err.message);
+    });
+  }, 15 * 60 * 1000);
+} else {
+  console.log('[IMAP] Polling disabled. Set ENABLE_IMAP_POLLING=true to enable auto-polling.');
+}
 
 // API Endpoint for admin dashboard
 app.get('/api/admin/email-replies', async (req, res) => {
