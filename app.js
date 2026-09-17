@@ -4162,7 +4162,6 @@ function resetNewMaterialInlineForm() {
   const grp = $('newMatInlineCustomGroup');
   if (grp) grp.style.display = 'none';
 }
-
 async function saveNewMaterialInline(courseId) {
   const titleEl = $('newMatInlineTitle');
   const typeEl = $('newMatInlineType');
@@ -4217,14 +4216,46 @@ async function saveNewMaterialInline(courseId) {
         }
       );
       const data = await res.json();
+
       if (data.success) {
         showToast('📎 Material added!', 'success');
         resetNewMaterialInlineForm();
-        await fetchCoursesFromDB();
+
+        // ---- 1) Force-refresh the full course catalog from server ----
+        await fetchCoursesFromDB(true);
+
+        // ---- 2) Explicitly re-render the current editor (safety net) ----
+        if (editingCourseId === courseId) {
+          renderCourseEditor(courseId);
+        }
+
+        // ---- 3) Scroll to the newest material + highlight it ----
+        setTimeout(() => {
+          const cards = document.querySelectorAll(
+            '#courseEditorContent .material-editor:not(.material-editor-new)'
+          );
+          if (cards.length > 0) {
+            const newest = cards[cards.length - 1];
+
+            // Open it so user can see the details
+            newest.setAttribute('open', '');
+
+            // Scroll into view
+            newest.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            // Flashy green glow for 3 seconds
+            const originalShadow = newest.style.boxShadow;
+            newest.style.transition = 'box-shadow .4s ease';
+            newest.style.boxShadow =
+              '0 0 0 3px rgba(16,185,129,.55), 0 0 32px rgba(16,185,129,.4)';
+            setTimeout(() => { newest.style.boxShadow = originalShadow || ''; }, 3200);
+          }
+        }, 300);
       } else {
         showToast(data.message || 'Failed to add material.', 'error');
       }
-    } catch {
+    } catch (err) {
+      console.error('[saveNewMaterialInline]', err);
       showToast('Server error while adding material.', 'error');
     } finally {
       if (btn) {
@@ -4242,7 +4273,10 @@ async function saveNewMaterialInline(courseId) {
   if (file) {
     if (file.size > 500 * 1024 * 1024) {
       showToast('File too large (max 500 MB).', 'error');
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material'; }
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material';
+      }
       return;
     }
     try {
@@ -4253,12 +4287,16 @@ async function saveNewMaterialInline(courseId) {
       await doSave(result.url, result.fileName);
     } catch (err) {
       showToast('Upload failed: ' + err.message, 'error');
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material'; }
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-plus-circle"></i> Add This Material';
+      }
     }
   } else {
     doSave('', '');
   }
 }
+
 async function deleteMaterialFromEditor(courseId, materialId, title) {
   if (!confirm(`Delete "${title}"?`)) return;
   try {
