@@ -1936,7 +1936,12 @@ app.post('/api/courses/:courseId/materials', async (req, res) => {
     course.materials.push(req.body);
     await course.save();
     res.json({ success: true, message: 'Material added successfully!', course });
-  } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+  } catch (e) {
+    console.error('[materials/POST] ❌ Error:', e.message);
+    console.error('[materials/POST] Stack:', e.stack);
+    console.error('[materials/POST] Body:', JSON.stringify(req.body).slice(0, 500));
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
 });
 
 app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
