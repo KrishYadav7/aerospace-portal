@@ -5172,14 +5172,16 @@ function renderMaterialCard(course, m, isPurchased) {
       fileActionHtml += `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')"><i class="fas fa-play"></i> Watch</button>`;
     }
     
-    // 2. File handling (ALWAYS use Read button for uploaded files, no download/open link)
-    if (hasFile) {
+    // 2. Check if the file is a PDF
+    const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
+                  (m.url || '').toLowerCase().endsWith('.pdf') ||
+                  (m.fileData || '').startsWith('data:application/pdf');
+
+    // 3. Handle PDFs (Files or Links) - ALWAYS use Read button
+    if (hasFile && isPdf) {
       fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
-    }
-    
-    // 3. External link handling (only if no file is uploaded, and it's not a video)
-    if (!hasFile && hasUrl && m.type !== 'video') {
-       fileActionHtml += ` <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
+    } else if (hasUrl && !hasFile && m.type !== 'video') {
+      fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
     }
   }
 
@@ -7171,7 +7173,6 @@ async function viewFileOnline(courseId, materialId) {
   let fileUrl = null;
   let fileData = mat.fileData;
 
-  // 1. Detect local uploaded file URL
   if (mat.url && (mat.url.startsWith('/uploads/') || (mat.url.startsWith('http') && mat.url.includes('/uploads/')))) {
     fileUrl = mat.url;
   } else if (fileData && (fileData.startsWith('/uploads/') || (fileData.startsWith('http') && fileData.includes('/uploads/')))) {
@@ -7179,18 +7180,22 @@ async function viewFileOnline(courseId, materialId) {
   }
 
   if (fileUrl) {
-    window.PDFViewer.open({
-      url: fileUrl,
-      materialId: mat.id,
-      courseId: course.id,
-      fileName: mat.fileName,
-      title: mat.title,
-      username: currentUser.fullName || currentUser.username || 'Student'
-    });
+    const isPdfUrl = fileUrl.toLowerCase().endsWith('.pdf') || fileUrl.includes('/uploads/');
+    if (isPdfUrl) {
+      window.PDFViewer.open({
+        url: fileUrl,
+        materialId: mat.id,
+        courseId: course.id,
+        fileName: mat.fileName,
+        title: mat.title,
+        username: currentUser.fullName || currentUser.username || 'Student'
+      });
+    } else {
+      showToast('Preview is only available for PDFs. Download is disabled.', 'error');
+    }
     return;
   }
 
-  // 2. Legacy fallback (if server has Base64 data)
   if (!fileData && mat.fileName) {
     try {
       const res = await fetch(`${API_BASE}/courses/${courseId}/materials/${materialId}/file`);
@@ -7198,14 +7203,19 @@ async function viewFileOnline(courseId, materialId) {
       if (data.success && data.fileData) {
         fileData = data.fileData;
         if (fileData.startsWith('/uploads/') || (fileData.startsWith('http') && fileData.includes('/uploads/'))) {
-          window.PDFViewer.open({
-            url: fileData,
-            materialId: mat.id,
-            courseId: course.id,
-            fileName: mat.fileName,
-            title: mat.title,
-            username: currentUser.fullName || currentUser.username || 'Student'
-          });
+          const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || fileData.toLowerCase().endsWith('.pdf');
+          if (isPdf) {
+            window.PDFViewer.open({
+              url: fileData,
+              materialId: mat.id,
+              courseId: course.id,
+              fileName: mat.fileName,
+              title: mat.title,
+              username: currentUser.fullName || currentUser.username || 'Student'
+            });
+          } else {
+            showToast('Preview is only available for PDFs. Download is disabled.', 'error');
+          }
           return;
         }
         mat.fileData = fileData;
@@ -7215,14 +7225,19 @@ async function viewFileOnline(courseId, materialId) {
 
   if (!fileData) return showToast('No file attached.', 'info');
 
-  window.PDFViewer.open({
-    data: fileData,
-    materialId: mat.id,
-    courseId: course.id,
-    fileName: mat.fileName,
-    title: mat.title,
-    username: currentUser.fullName || currentUser.username || 'Student'
-  });
+  const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || String(fileData).startsWith('data:application/pdf');
+  if (isPdf) {
+    window.PDFViewer.open({
+      data: fileData,
+      materialId: mat.id,
+      courseId: course.id,
+      fileName: mat.fileName,
+      title: mat.title,
+      username: currentUser.fullName || currentUser.username || 'Student'
+    });
+  } else {
+    showToast('Preview is only available for PDFs. Download is disabled.', 'error');
+  }
 }
 
 async function openMaterialVideo(courseId, materialId) {

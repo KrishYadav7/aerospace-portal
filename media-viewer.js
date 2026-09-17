@@ -141,6 +141,13 @@
           task = pdfjsLib.getDocument({ data: bytes });
         }
         this.pdfDoc = await task.promise;
+                this.pdfDoc = await task.promise;
+        
+        // FIX: Prevent race condition if user closes the viewer while loading
+        if (!this.active) return; 
+        
+        await this._renderAllPages();
+        this.loaderEl.style.display = 'none';
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
       } catch (err) {
@@ -306,7 +313,7 @@
       this._applyAllHighlights();
     }
 
-    async _renderPage(n) {
+     async _renderPage(n) {
       const page = await this.pdfDoc.getPage(n);
       const viewport = page.getViewport({ scale: this.scale });
       const pageEl = this.pageEls.get(n);
@@ -315,6 +322,7 @@
       pageEl.innerHTML = '';
       pageEl.style.width = viewport.width + 'px';
       pageEl.style.height = viewport.height + 'px';
+      pageEl.style.position = 'relative'; // FIX: Required for absolute positioning
 
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
@@ -333,6 +341,13 @@
       textLayer.className = 'pdfv-textlayer';
       textLayer.style.width = viewport.width + 'px';
       textLayer.style.height = viewport.height + 'px';
+      textLayer.style.position = 'absolute'; // FIX
+      textLayer.style.top = '0'; // FIX
+      textLayer.style.left = '0'; // FIX
+      
+      // FIX: Set the CSS variable required by PDF.js text layer
+      textLayer.style.setProperty('--scale-factor', this.scale); 
+      
       pageEl.appendChild(textLayer);
 
       const textContent = await page.getTextContent();
