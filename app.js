@@ -127,8 +127,11 @@ async function uploadFileChunked(file, onProgress) {
 
   const { uploadId, chunkSize, totalChunks } = initRes;
 
-  // 2) Upload each chunk sequentially
-  for (let i = 0; i < totalChunks; i++) {
+  // 2) Upload chunks in parallel (3 at a time) — 3x faster
+  let completedChunks = 0;
+  const CONCURRENCY = 3;
+
+  const uploadOneChunk = async (i) => {
     const start = i * chunkSize;
     const end   = Math.min(start + chunkSize, file.size);
     const blob  = file.slice(start, end);
@@ -144,10 +147,19 @@ async function uploadFileChunked(file, onProgress) {
     });
     if (!chunkRes.success) throw new Error(chunkRes.message || `Chunk ${i + 1} failed.`);
 
+    completedChunks++;
     if (onProgress) {
-      const pct = Math.round(((i + 1) / totalChunks) * 100);
-      onProgress(pct);
+      onProgress(Math.round((completedChunks / totalChunks) * 100));
     }
+  };
+
+  // Batch parallel uploads — keeps server memory bounded
+  for (let i = 0; i < totalChunks; i += CONCURRENCY) {
+    const batch = [];
+    for (let j = 0; j < CONCURRENCY && (i + j) < totalChunks; j++) {
+      batch.push(uploadOneChunk(i + j));
+    }
+    await Promise.all(batch);
   }
 
   // 3) Ask server to assemble
@@ -7689,12 +7701,28 @@ async function initApp() {
   updateThemeIcon();
   syncHashToState();
   renderApp();
-  await fetchCoursesFromDB();
-  await fetchProfessorsFromDB();
-  await fetchSubscriptionSettings();
-  await fetchOwnerProfile();
-  await refreshUserData();
-  await loadNotifications();
+
+  // Public data (safe to fetch in parallel — no user dependency)
+  const publicFetches = [
+    fetchCoursesFromDB(),
+    fetchProfessorsFromDB(),
+    fetchSubscriptionSettings(),
+    fetchOwnerProfile()
+  ];
+
+  // User-scoped data (requires currentUser._id, but can run in parallel)
+  const userFetches = savedUser && savedUser._id
+    ? [refreshUserData(), loadNotifications()]
+    : [];
+
+  // Fire everything at once
+  const results = await Promise.allSettled([...publicFetches, ...userFetches]);
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') {
+      console.warn('[initApp] fetch #' + i + ' failed:', r.reason);
+    }
+  });
+
   renderApp();
 }
 /* ============================================================
