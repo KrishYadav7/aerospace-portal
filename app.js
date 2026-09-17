@@ -8421,7 +8421,7 @@ async function renderAlumniSection() {
     let html = '';
     list.forEach(a => {
       const avatar = a.photo
-        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy">`
+        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;">`
         : `<div class="alumni-avatar-fallback">${escapeHtml(getInitials(a.name))}</div>`;
 
       const metaParts = [];
@@ -8480,7 +8480,7 @@ async function renderFriendsSection() {
     let html = '';
     list.forEach(f => {
       const photoHtml = f.photo
-        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy">`
+        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy" style="width:88px;height:88px;object-fit:cover;border-radius:50%;display:block;margin:0 auto 12px;">`
         : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(f.name))}</div>`;
 
       const contactBtns = [];
@@ -8514,7 +8514,7 @@ function openAlumniSubmitModal() {
   });
   const prev = document.getElementById('alumPhotoPreview');
   if (prev && prev.tagName === 'IMG') {
-    prev.outerHTML = `<div class="thumbnail-preview-empty" id="alumPhotoPreview"><i class="fas fa-user"></i><span>No photo</span></div>`;
+    prev.outerHTML = `<div class="profile-preview-empty" id="alumPhotoPreview"><i class="fas fa-user"></i></div>`;
   }
   window.__pendingAlumPhotoFile = null;
   openModal('alumniSubmitModal');
@@ -8526,7 +8526,7 @@ function openFriendSubmitModal() {
   });
   const prev = document.getElementById('frPhotoPreview');
   if (prev && prev.tagName === 'IMG') {
-    prev.outerHTML = `<div class="thumbnail-preview-empty" id="frPhotoPreview"><i class="fas fa-user"></i><span>No photo</span></div>`;
+    prev.outerHTML = `<div class="profile-preview-empty" id="frPhotoPreview"><i class="fas fa-user"></i></div>`;
   }
   window.__pendingFrPhotoFile = null;
   openModal('friendSubmitModal');
@@ -8542,7 +8542,7 @@ function previewAlumniPhoto(input) {
     if (prev) {
       const img = document.createElement('img');
       img.src = e.target.result;
-      img.className = 'thumbnail-preview';
+      img.className = 'profile-preview';
       img.id = 'alumPhotoPreview';
       img.alt = 'Preview';
       prev.replaceWith(img);
@@ -8562,7 +8562,7 @@ function previewFriendPhoto(input) {
     if (prev) {
       const img = document.createElement('img');
       img.src = e.target.result;
-      img.className = 'thumbnail-preview';
+      img.className = 'profile-preview';
       img.id = 'frPhotoPreview';
       img.alt = 'Preview';
       prev.replaceWith(img);

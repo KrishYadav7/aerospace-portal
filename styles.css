@@ -5364,6 +5364,71 @@ body.hide-latex-previews .latex-preview { display: none; }
 }
 .community-actions .btn { font-size: 11.5px; padding: 5px 10px; }
 
+/* ============================================================
+   55. PROFILE PHOTO PREVIEW — small, circular (alumni/friends)
+   ============================================================ */
+.profile-preview {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  object-fit: cover;
+  object-position: center;
+  border: 3px solid var(--brand-500);
+  box-shadow: 0 6px 18px rgba(99,102,241,.25);
+  background: var(--bg-surface-3);
+  display: block;
+  flex-shrink: 0;
+}
+
+/* Same size circle for the empty state */
+.profile-preview-empty {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: 2px dashed var(--border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  font-size: 24px;
+  background: var(--bg-surface-2);
+  flex-shrink: 0;
+}
+
+/* Row layout for photo section in the modal */
+.profile-photo-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.profile-photo-row .thumbnail-actions {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Force all alumni / friend card avatars to stay small */
+.alumni-avatar,
+.alumni-avatar img,
+.alumni-avatar-img,
+.team-avatar,
+.professor-avatar,
+.community-avatar,
+.community-avatar-img {
+  max-width: 100% !important;
+  max-height: 100% !important;
+}
+
+@media (max-width: 640px) {
+  .profile-preview,
+  .profile-preview-empty {
+    width: 80px;
+    height: 80px;
+  }
+  .profile-preview-empty { font-size: 20px; }
+}
+
 @media (max-width: 640px) {
   .community-item { flex-wrap: wrap; }
   .community-actions { width: 100%; justify-content: flex-end; }
