@@ -5173,7 +5173,10 @@ body.hide-latex-previews .latex-preview { display: none; }
   .owner-preview-fallback {
     width: 120px;
     height: 120px;
-  }/* ============================================================
+  }
+}
+
+/* ============================================================
    53. ALUMNI & FRIENDS SECTIONS
    ============================================================ */
 .section-header-row {
@@ -5432,8 +5435,6 @@ body.hide-latex-previews .latex-preview { display: none; }
 @media (max-width: 640px) {
   .community-item { flex-wrap: wrap; }
   .community-actions { width: 100%; justify-content: flex-end; }
-}
-
   .owner-avatar-fallback,
   .owner-preview-fallback { font-size: 32px; }
   .team-avatar,
