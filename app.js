@@ -4709,12 +4709,12 @@ function renderStudentHome() {
   } else {
     let html = '';
     professors.forEach(p => {
-      // ---- Standardized avatar: image OR initial-based fallback ----
+      // Standardized avatar: image OR initial-based fallback
       const photoHtml = p.photo
-        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;margin:0 auto 12px !important;">`
+        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy">`
         : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(p.name))}</div>`;
 
-      // ---- Contact buttons (only when data exists) ----
+      // Contact buttons (only when data exists)
       const contactButtons = [];
       if (p.email) {
         contactButtons.push(`
@@ -8421,7 +8421,7 @@ async function renderAlumniSection() {
     let html = '';
     list.forEach(a => {
       const avatar = a.photo
-        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;">`
+        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy">`
         : `<div class="alumni-avatar-fallback">${escapeHtml(getInitials(a.name))}</div>`;
 
       const metaParts = [];
@@ -8480,7 +8480,7 @@ async function renderFriendsSection() {
     let html = '';
     list.forEach(f => {
       const photoHtml = f.photo
-        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;margin:0 auto 12px !important;border:3px solid var(--accent-500) !important;box-shadow:0 6px 18px rgba(6,182,212,.28) !important;">`
+        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy">`
         : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(f.name))}</div>`;
 
       const contactBtns = [];

@@ -4917,7 +4917,7 @@ body.hide-latex-previews .latex-preview { display: none; }
 }
 /* ============================================================
 /* ============================================================
-   52. TEAM, ALUMNI & FRIENDS — FIXED LAYOUT & RESPONSIVE
+   52. TEAM, ALUMNI & FRIENDS — SYSTEMATIC BLOCK LAYOUT
    ============================================================ */
 
 /* --- 1. Grid Layouts (Responsive & Prevents Overlap) --- */
@@ -4982,7 +4982,7 @@ body.hide-latex-previews .latex-preview { display: none; }
     box-shadow: 0 6px 18px rgba(99,102,241,.25) !important;
 }
 
-/* Force the image inside the avatar to crop correctly */
+/* Force the image inside the avatar to crop correctly (focuses on face) */
 .owner-avatar img,
 .alumni-avatar img,
 .professor-avatar img,
@@ -4994,7 +4994,7 @@ body.hide-latex-previews .latex-preview { display: none; }
     width: 100% !important;
     height: 100% !important;
     object-fit: cover !important;
-    object-position: center 20% !important; /* Focuses on the face */
+    object-position: center 20% !important; /* Shifts up to show face */
     display: block !important;
     border-radius: 50% !important;
 }
@@ -5062,4 +5062,4 @@ body.hide-latex-previews .latex-preview { display: none; }
         justify-content: center !important;
         margin-top: 10px !important;
     }
-}  
+}
