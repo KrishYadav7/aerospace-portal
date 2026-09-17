@@ -73,7 +73,7 @@
   class PDFViewer {
     constructor() { this._init(); }
 
-    _init() {
+       _init() {
       this.active = false;
       this.modal = null;
       this.bodyEl = null;
@@ -97,8 +97,9 @@
       this._onSelectionChange = this._onSelectionChange.bind(this);
       this._onKeyDown = this._onKeyDown.bind(this);
       this._onBodyScroll = this._onBodyScroll.bind(this);
+      this._onWindowBlur = this._onWindowBlur.bind(this);
+      this._onWindowFocus = this._onWindowFocus.bind(this);
     }
-
     async open(opts) {
       if (this.active) return;
       this.active = true;
@@ -164,7 +165,7 @@
       }).join('');
 
       el.innerHTML =
-        '<div class="pdfv-shell">' +
+        '<div class="pdfv-shell" oncontextmenu="return false;">' +
           '<div class="pdfv-toolbar">' +
             '<div class="pdfv-toolbar-left">' +
               // ---- BACK BUTTON (explicit, labeled) ----
@@ -243,6 +244,9 @@
       document.addEventListener('selectionchange', this._onSelectionChange);
       document.addEventListener('keydown', this._onKeyDown, true);
       this.bodyEl.addEventListener('scroll', this._onBodyScroll, { passive: true });
+      
+      window.addEventListener('blur', this._onWindowBlur);
+      window.addEventListener('focus', this._onWindowFocus);
 
       this.bodyEl.addEventListener('contextmenu', function (e) { e.preventDefault(); });
       this.bodyEl.addEventListener('dragstart', function (e) { e.preventDefault(); });

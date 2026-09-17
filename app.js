@@ -7168,43 +7168,64 @@ async function viewFileOnline(courseId, materialId) {
   const mat = course.materials.find(m => m.id === materialId);
   if (!mat) return showToast('Material not found.', 'info');
 
+  let fileUrl = null;
   let fileData = mat.fileData;
 
-  // FIX 1: If fileData is already a URL (from the previous bug), open it directly
-  if (fileData && (fileData.startsWith('/uploads/') || fileData.startsWith('http'))) {
-    window.open(fileData, '_blank');
+  // 1. Detect local uploaded file URL
+  if (mat.url && (mat.url.startsWith('/uploads/') || (mat.url.startsWith('http') && mat.url.includes('/uploads/')))) {
+    fileUrl = mat.url;
+  } else if (fileData && (fileData.startsWith('/uploads/') || (fileData.startsWith('http') && fileData.includes('/uploads/')))) {
+    fileUrl = fileData;
+  }
+
+  if (fileUrl) {
+    const isPdfUrl = fileUrl.toLowerCase().endsWith('.pdf');
+    if (isPdfUrl) {
+      window.PDFViewer.open({
+        url: fileUrl,
+        materialId: mat.id,
+        courseId: course.id,
+        fileName: mat.fileName,
+        title: mat.title,
+        username: currentUser.fullName || currentUser.username || 'Student'
+      });
+    } else {
+      showToast('Preview is only available for PDFs. Download is disabled.', 'error');
+    }
     return;
   }
 
-  // fileData was stripped from the list — fetch on demand
+  // 2. Legacy fallback (if server has Base64 data)
   if (!fileData && mat.fileName) {
     try {
       const res = await fetch(`${API_BASE}/courses/${courseId}/materials/${materialId}/file`);
       const data = await res.json();
-      if (!data.success || !data.fileData) {
-        return showToast('Could not load this file.', 'error');
+      if (data.success && data.fileData) {
+        fileData = data.fileData;
+        if (fileData.startsWith('/uploads/') || (fileData.startsWith('http') && fileData.includes('/uploads/'))) {
+          const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || fileData.toLowerCase().endsWith('.pdf');
+          if (isPdf) {
+            window.PDFViewer.open({
+              url: fileData,
+              materialId: mat.id,
+              courseId: course.id,
+              fileName: mat.fileName,
+              title: mat.title,
+              username: currentUser.fullName || currentUser.username || 'Student'
+            });
+          } else {
+            showToast('Preview is only available for PDFs. Download is disabled.', 'error');
+          }
+          return;
+        }
+        mat.fileData = fileData;
       }
-      fileData = data.fileData;
-
-      // FIX 2: Check if the server returned a URL inside fileData
-      if (fileData && (fileData.startsWith('/uploads/') || fileData.startsWith('http'))) {
-        window.open(fileData, '_blank');
-        return;
-      }
-
-      mat.fileData = fileData; // cache for this session
-    } catch (e) {
-      return showToast('Network error loading file.', 'error');
-    }
+    } catch (e) { /* silent */ }
   }
 
   if (!fileData) return showToast('No file attached.', 'info');
 
-  const fileName = (mat.fileName || '').toLowerCase();
-  const isPdf =
-    fileName.endsWith('.pdf') ||
-    String(fileData).startsWith('data:application/pdf');
-
+  const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || String(fileData).startsWith('data:application/pdf');
   if (isPdf) {
     window.PDFViewer.open({
       data: fileData,
