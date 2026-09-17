@@ -2251,6 +2251,7 @@ app.post('/api/courses/:courseId/announcements', async (req, res) => {
       date: new Date()
     };
     await Course.findByIdAndUpdate(req.params.courseId, { $push: { announcements: ann } });
+    cacheClear('courses:');
     res.json({ success: true, message: 'Announcement posted!', announcement: ann });
   } catch (e) { res.status(500).json({ success: false, message: 'Error posting announcement: ' + e.message }); }
 });
@@ -2258,6 +2259,7 @@ app.post('/api/courses/:courseId/announcements', async (req, res) => {
 app.delete('/api/courses/:courseId/announcements/:annId', async (req, res) => {
   try {
     await Course.findByIdAndUpdate(req.params.courseId, { $pull: { announcements: { id: req.params.annId } } });
+    cacheClear('courses:');
     res.json({ success: true, message: 'Announcement deleted!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error deleting announcement.' }); }
 });
@@ -2271,6 +2273,7 @@ app.post('/api/courses/:id/doubts', async (req, res) => {
     await Course.findByIdAndUpdate(req.params.id, {
       $push: { doubts: { studentName, studentUsername, studentEmail, question, date: new Date() } }
     });
+    cacheClear('courses:');
     res.json({ success: true, message: 'Doubt submitted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error submitting doubt' }); }
 });
@@ -2331,6 +2334,7 @@ app.post('/api/courses/:courseId/doubts/:doubtId/replies', async (req, res) => {
         await asker.save();
       }
     }
+    cacheClear('courses:');
     res.json({ success: true, message: 'Reply posted!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error posting reply: ' + e.message }); }
 });
@@ -2351,6 +2355,7 @@ app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', async 
     if (!reply) return res.status(404).json({ success: false, message: 'Reply not found' });
     reply.isAccepted = true;
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Answer accepted!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error: ' + e.message }); }
 });
@@ -2385,6 +2390,7 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', async (req, res) =
     if (result.matchedCount === 0) {
       return res.status(404).json({ success: false, message: 'Material not found.' });
     }
+    cacheClear('courses:');
     res.json({ success: true, message: 'Paper saved successfully!' });
   } catch (e) {
     console.error('[quiz/save]', e);
@@ -3742,6 +3748,7 @@ app.post('/api/courses/:courseId/playlists', async (req, res) => {
     };
     course.playlists.push(playlist);
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Playlist created.', playlist });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
@@ -3768,6 +3775,7 @@ app.post('/api/courses/:courseId/playlists/auto-videos', async (req, res) => {
     };
     course.playlists.push(playlist);
     await course.save();
+    cacheClear('courses:');
     res.json({
       success: true,
       message: 'Auto playlist created with ' + videoIds.length + ' video' + (videoIds.length === 1 ? '' : 's') + '.',
@@ -3786,6 +3794,7 @@ app.put('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
     if (req.body.description !== undefined) pl.description = String(req.body.description || '').trim();
     if (Array.isArray(req.body.materialIds)) pl.materialIds = req.body.materialIds;
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Playlist updated.', playlist: pl });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
@@ -3796,6 +3805,7 @@ app.delete('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
       req.params.courseId,
       { $pull: { playlists: { id: req.params.playlistId } } }
     );
+    cacheClear('courses:');
     res.json({ success: true, message: 'Playlist deleted.' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
@@ -3810,6 +3820,7 @@ app.post('/api/courses/:courseId/playlists/:playlistId/materials', async (req, r
     if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
     if (!pl.materialIds.includes(materialId)) pl.materialIds.push(materialId);
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Added to playlist.', playlist: pl });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
@@ -3822,6 +3833,7 @@ app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId',
     if (!pl) return res.status(404).json({ success: false, message: 'Playlist not found.' });
     pl.materialIds = pl.materialIds.filter(id => id !== req.params.materialId);
     await course.save();
+    cacheClear('courses:');
     res.json({ success: true, message: 'Removed from playlist.', playlist: pl });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });

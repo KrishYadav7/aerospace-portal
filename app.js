@@ -317,41 +317,6 @@ async function fetchCoursesFromDB(force = false) {
   }
 }
 
-async function fetchCoursesFromDB(force = false) {
-  const isAdmin = currentUser && currentUser.role === 'admin';
-
-  // Serve from cache if fresh, and never cache for admins
-  if (!force && !isAdmin && liveCourses.length > 0 && (Date.now() - _courseCacheAt) < COURSE_CACHE_MS) {
-    renderApp();
-    return;
-  }
-
-  try {
-    // Uses fetchJSON for consistent error handling
-    const data = await fetchJSON(`${API_BASE}/courses?_t=${Date.now()}`);
-
-    if (!Array.isArray(data)) {
-      console.error('[fetchCoursesFromDB] Expected an array, got:', data);
-      renderApp();
-      return;
-    }
-
-    liveCourses = data.map(course => {
-      const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
-      return {
-        ...course,
-        id: course._id,
-        materials: fixedMaterials,
-        playlists: course.playlists || []
-      };
-    });
-    _courseCacheAt = Date.now();
-    renderApp();
-  } catch (error) {
-    console.error('Error fetching courses:', error);
-    renderApp();
-  }
-}
 
 /* ============================================================
    APP STATE
