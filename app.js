@@ -279,42 +279,69 @@ function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
    - Admins:   always fresh → no risk of stale admin dashboard.
    - Manual refresh: call fetchCoursesFromDB(true). */
 let _courseCacheAt = 0;
-const COURSE_CACHE_MS = 60 * 1000;
+const COURSE_CACHE_MS = 5*60 * 1000;
 
-async function fetchCoursesFromDB(force = false) {
+let _coursePagination = { page: 1, hasMore: false, total: 0 };
+
+async function fetchCoursesFromDB(force = false, page = 1) {
   const isAdmin = currentUser && currentUser.role === 'admin';
 
-  // Serve from cache if fresh, and never cache for admins
-  if (!force && !isAdmin && liveCourses.length > 0 && (Date.now() - _courseCacheAt) < COURSE_CACHE_MS) {
+  if (!force && !isAdmin && page === 1 && liveCourses.length > 0
+      && (Date.now() - _courseCacheAt) < COURSE_CACHE_MS) {
     renderApp();
     return;
   }
 
   try {
-    // Uses fetchJSON for consistent error handling
-    const data = await fetchJSON(`${API_BASE}/courses?_t=${Date.now()}`);
+    const data = await fetchJSON(`${API_BASE}/courses?page=${page}&limit=12&_t=${Date.now()}`);
 
-    if (!Array.isArray(data)) {
-      console.error('[fetchCoursesFromDB] Expected an array, got:', data);
-      renderApp();
-      return;
+    // Handle BOTH new paginated shape and old array shape
+    const list = Array.isArray(data) ? data : (data.courses || []);
+    const pagination = data.pagination || { page: 1, hasMore: false, total: list.length };
+
+    const normalized = list.map(course => ({
+      ...course,
+      id: course._id,
+      materials: (course.materials || []).map(m => ({ ...m, id: m._id })),
+      playlists: course.playlists || []
+    }));
+
+    if (page === 1) {
+      liveCourses = normalized;
+    } else {
+      liveCourses = [...liveCourses, ...normalized];
     }
 
-    liveCourses = data.map(course => {
-      const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
-      return {
-        ...course,
-        id: course._id,
-        materials: fixedMaterials,
-        playlists: course.playlists || []
-      };
-    });
+    _coursePagination = pagination;
     _courseCacheAt = Date.now();
     renderApp();
   } catch (error) {
     console.error('Error fetching courses:', error);
     renderApp();
   }
+}
+
+// Naya helper — on-demand full course (with all data)
+async function fetchSingleCourse(courseId) {
+  try {
+    const data = await fetchJSON(`${API_BASE}/courses/${courseId}?_t=${Date.now()}`);
+    if (data && data.success && data.course) {
+      const c = data.course;
+      const normalized = {
+        ...c,
+        id: c._id,
+        materials: (c.materials || []).map(m => ({ ...m, id: m._id })),
+        playlists: c.playlists || []
+      };
+      const idx = liveCourses.findIndex(x => x.id === normalized.id);
+      if (idx >= 0) liveCourses[idx] = normalized;
+      else liveCourses.push(normalized);
+      return normalized;
+    }
+  } catch (e) {
+    console.warn('[fetchSingleCourse]', e);
+  }
+  return null;
 }
 
 
@@ -345,8 +372,18 @@ let _emailSelectedIds = new Set();
    ============================================================ */
 let _sessionHeartbeatTimer = null;
 let _sessionKilled = false;
-const SESSION_HEARTBEAT_MS = 20000;   // 20 s between checks
-const SESSION_FIRST_CHECK_MS = 3000;  // quick first check after login
+// 60s is plenty for single-device enforcement and cuts DB traffic by 3×
+const SESSION_HEARTBEAT_MS = 60000;
+const SESSION_FIRST_CHECK_MS = 5000;
+// Pause heartbeats when the tab is hidden — saves battery + DB hits
+let _heartbeatPaused = false;
+document.addEventListener('visibilitychange', () => {
+  _heartbeatPaused = document.hidden;
+  if (!document.hidden && currentUser && !_sessionKilled) {
+    // Immediate check when user comes back
+    checkSessionAlive();
+  }
+});
 
 function startSessionHeartbeat() {
   stopSessionHeartbeat();
@@ -364,11 +401,12 @@ function stopSessionHeartbeat() {
 
 async function checkSessionAlive() {
   if (_sessionKilled) return;
+  if (_heartbeatPaused) return;
   if (!currentUser) return;
 
   let token = null;
   try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
-  if (!token) return;   // No token → nothing to validate (private-mode / first load)
+  if (!token) return;
 
   try {
     const res = await fetch(`${API_BASE}/auth/session-check`, {
@@ -385,9 +423,7 @@ async function checkSessionAlive() {
         data.message || 'Your session has ended. Please log in again.'
       );
     }
-    // HTTP 200 → session is still valid, keep going
   } catch (e) {
-    // Network hiccup — silent, retry on next tick
     console.warn('[session-heartbeat]', e && e.message);
   }
 }
@@ -530,6 +566,13 @@ function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+/* Safely embed a value as a JS string literal inside an HTML attribute.
+   Handles ', ", <, >, & and any unicode without breaking out of the string.
+   NOTE: the output already includes surrounding double-quotes. */
+function jsStr(value) {
+  return escapeHtml(JSON.stringify(String(value == null ? '' : value)));
 }
 /* ============================================================
    MATERIAL TYPES — fixed + user-defined custom types
@@ -906,8 +949,7 @@ function openSearchResult(r) {
   } else if (r.kind === 'material') {
     viewCourseDetail(r.courseId);
   } else if (r.kind === 'doubt') {
-    currentMaterialFilter = 'qa';
-    viewCourseDetail(r.courseId);
+    viewCourseDetail(r.courseId, 'qa');   // <-- pass filter as arg
   }
 }
 
@@ -2001,10 +2043,10 @@ function navigateStudent(dest) {
   studentNav = dest;
   renderApp();
 }
-function viewCourseDetail(courseId) {
+function viewCourseDetail(courseId, filter = 'all') {
   currentCourseId = courseId; window.currentSelectedCourseId = courseId;
   editingCourseId = null;
-  currentMaterialFilter = 'all';
+  currentMaterialFilter = filter;
   pushHash(`#/course/${courseId}`); renderApp();
 }
 function goBackFromDetail() {
@@ -2019,7 +2061,25 @@ function setMaterialFilter(type) {
 /* ============================================================
    RENDER APP
    ============================================================ */
+/* ============================================================
+   RENDER APP — rAF-batched, debounced to prevent thrash
+   ------------------------------------------------------------
+   Multiple synchronous calls (e.g. from initApp + hashchange)
+   collapse into ONE paint per animation frame.
+   ============================================================ */
+let _renderScheduled = false;
 function renderApp() {
+  if (_renderScheduled) return;
+  _renderScheduled = true;
+  const run = () => {
+    _renderScheduled = false;
+    _renderAppNow();
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 16);
+}
+
+function _renderAppNow() {
   ['loginView', 'adminView', 'adminEditView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
     .forEach(id => { const el = $(id); if (el) el.classList.remove('active'); });
   $('appHeader').style.display = 'none';
@@ -2049,45 +2109,20 @@ function renderApp() {
     renderQuizEditor();
     return;
   }
-  if (addingCourse) {
-    $('adminAddCourseView').classList.add('active');
-    renderAdminAddCourse();
-    return;
-  }
-  if (addingProfessor) {
-    $('adminAddProfessorView').classList.add('active');
-    renderAdminAddProfessor();
-    return;
-  }
-  if (addingMaterialCourseId) {
-    $('adminAddMaterialView').classList.add('active');
-    renderAdminAddMaterial(addingMaterialCourseId);
-    return;
-  }
-  if (addingStudent) {
-    $('adminAddStudentView').classList.add('active');
-    renderAdminAddStudent();
-    return;
-  }
+  if (addingCourse)          { $('adminAddCourseView').classList.add('active');    renderAdminAddCourse(); return; }
+  if (addingProfessor)       { $('adminAddProfessorView').classList.add('active'); renderAdminAddProfessor(); return; }
+  if (addingMaterialCourseId){ $('adminAddMaterialView').classList.add('active');  renderAdminAddMaterial(addingMaterialCourseId); return; }
+  if (addingStudent)         { $('adminAddStudentView').classList.add('active');   renderAdminAddStudent(); return; }
   if (editingCourseId && currentUser.role === 'admin') {
     $('adminEditView').classList.add('active');
-    renderCourseEditor(editingCourseId);
-    return;
+    renderCourseEditor(editingCourseId); return;
   }
-  if (currentCourseId) {
-    $('courseDetailView').classList.add('active');
-    renderCourseDetail(currentCourseId);
-    return;
-  }
-  if (currentUser.role === 'admin') {
-    $('adminView').classList.add('active');
-    renderAdminDashboard();
-    return;
-  }
-  if (studentNav === 'home') { $('studentHomeView').classList.add('active'); renderStudentHome(); }
-  else if (studentNav === 'saved') { $('studentSavedView').classList.add('active'); renderSavedCourses(); }
+  if (currentCourseId) { $('courseDetailView').classList.add('active'); renderCourseDetail(currentCourseId); return; }
+  if (currentUser.role === 'admin') { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
+  if (studentNav === 'home')      { $('studentHomeView').classList.add('active');     renderStudentHome(); }
+  else if (studentNav === 'saved'){ $('studentSavedView').classList.add('active');    renderSavedCourses(); }
   else if (studentNav === 'analytics') { $('studentAnalyticsView').classList.add('active'); renderStudentAnalytics(); }
-  else { $('studentCoursesView').classList.add('active'); renderStudentCourses(); }
+  else                            { $('studentCoursesView').classList.add('active');  renderStudentCourses(); }
 }
 
 function buildNav() {
@@ -2487,6 +2522,7 @@ function renderAdminProfessors() {
 }
 
 async function renderAdminStudents() {
+  
   const container = $('adminStudentList');
   if (!container) return;
   container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading students...</p></div>`;
@@ -2510,6 +2546,7 @@ async function renderAdminStudents() {
             <i class="fas fa-user-plus"></i> Register First Student
           </button>
         </div>`;
+
       return;
     }
 
@@ -2562,10 +2599,10 @@ async function renderAdminStudents() {
             </div>
           </div>
           <div class="student-card-actions">
-            <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${sid}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
+            <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${sid}', ${jsStr(s.fullName || s.username)})">
               <i class="fas fa-key"></i> Reset Password
             </button>
-            <button class="btn btn-danger btn-sm" onclick="deleteStudent('${sid}', '${escapeHtml(s.fullName || s.username).replace(/'/g, "\\'")}')">
+            <button class="btn btn-danger btn-sm" onclick="deleteStudent('${sid}', ${jsStr(s.fullName || s.username)})">
               <i class="fas fa-trash"></i>
             </button>
           </div>
@@ -2586,7 +2623,7 @@ async function renderAdminEmailReplies() {
   container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading replies...</p></div>`;
 
   try {
-    const res = await fetch('/api/admin/email-replies');
+    const res = await fetch('/api/admin/email-replies?refresh=1&t=' + Date.now());
     const data = await res.json();
     
     const countEl = $('replyCountLabel');
@@ -3191,7 +3228,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-id-card"></i> Full Name</div>
       <div class="cred-value-group">
         <span class="cred-value">${escapeHtml(student.fullName)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('name', '${escapeHtml(student.fullName).replace(/'/g, "\\'")}')" title="Copy" aria-label="Copy name">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('name', ${jsStr(student.fullName)})" title="Copy" aria-label="Copy name">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -3200,7 +3237,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-at"></i> Username</div>
       <div class="cred-value-group">
         <span class="cred-value cred-code">${escapeHtml(student.username)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('username', '${escapeHtml(student.username)}')" title="Copy" aria-label="Copy username">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('username', ${jsStr(student.username)})" title="Copy" aria-label="Copy username">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -3209,7 +3246,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-key"></i> Password</div>
       <div class="cred-value-group">
         <span class="cred-value cred-code">${escapeHtml(student.password)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('password', '${escapeHtml(student.password)}')" title="Copy" aria-label="Copy password">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('password', ${jsStr(student.password)})" title="Copy" aria-label="Copy password">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -3219,7 +3256,7 @@ function showCredentialsCard(student) {
       <div class="cred-label"><i class="fas fa-envelope"></i> Email</div>
       <div class="cred-value-group">
         <span class="cred-value">${escapeHtml(student.email)}</span>
-        <button type="button" class="cred-copy-btn" onclick="copyCredential('email', '${escapeHtml(student.email)}')" title="Copy" aria-label="Copy email">
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('email', ${jsStr(student.email)})" title="Copy" aria-label="Copy email">
           <i class="fas fa-copy"></i>
         </button>
       </div>
@@ -3996,7 +4033,7 @@ function renderMaterialEditorCard(courseId, m, idx) {
           </div>
         </div>
         <div class="me-actions">
-          <button class="btn btn-danger btn-sm" onclick="deleteMaterialFromEditor('${courseId}', '${m.id}', '${escapeHtml(m.title).replace(/'/g, "\\'")}')"><i class="fas fa-trash"></i> Delete</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteMaterialFromEditor('${courseId}', '${m.id}', ${jsStr(m.title)})"><i class="fas fa-trash"></i> Delete</button>
           <button class="btn btn-primary" onclick="saveMaterialInline('${courseId}', '${m.id}')"><i class="fas fa-save"></i> Save Material</button>
         </div>
       </div>
@@ -4298,7 +4335,7 @@ async function saveCourseDetails(courseId) {
 async function handleThumbnailUpload(input) {
   const file = input.files && input.files[0];
   if (!file) return;
-  if (file.size > 10 * 1024 * 1024) return showToast('Image too large (max 500 MB).', 'error');
+  if (file.size > 10 * 1024 * 1024) return showToast('Image too large (max 10 MB).', 'error');
   try {
     showToast('Uploading thumbnail…', 'info');
     const result = await uploadFileToServer(file);
@@ -4664,6 +4701,17 @@ function renderOwnerProfile() {
     </div>
   `;
 }
+/* ============================================================
+   Community cache — alumni & friends (5-minute TTL)
+   ============================================================ */
+let _alumniCache  = { data: null, at: 0 };
+let _friendsCache = { data: null, at: 0 };
+const COMMUNITY_CACHE_MS = 5 * 60 * 1000;
+
+function invalidateCommunityCache() {
+  _alumniCache  = { data: null, at: 0 };
+  _friendsCache = { data: null, at: 0 };
+}
 
 function renderStudentHome() {
   renderSubscriptionBanner();
@@ -4679,12 +4727,10 @@ function renderStudentHome() {
   } else {
     let html = '';
     professors.forEach(p => {
-      // Standardized avatar: image OR initial-based fallback
       const photoHtml = p.photo
         ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy">`
         : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(p.name))}</div>`;
 
-      // Contact buttons (only when data exists)
       const contactButtons = [];
       if (p.email) {
         contactButtons.push(`
@@ -5674,10 +5720,36 @@ let quizDraft = [];
 window.__mathjaxReady = false;
 window.__mathjaxQueue = [];
 
+/* ============================================================
+   MathJax v3 renderer — LAZY LOADED
+   ============================================================ */
+window.__mathjaxReady = false;
+window.__mathjaxQueue = [];
+
 function renderMathIn(el) {
   if (!el) return;
   if (!window.__mathjaxReady || !window.MathJax || !window.MathJax.typesetPromise) {
     if (!window.__mathjaxQueue.includes(el)) window.__mathjaxQueue.push(el);
+    // Kick off MathJax load lazily the first time we need it
+    if (typeof window.loadMathJax === 'function' && !window.__mathjaxLoading) {
+      window.__mathjaxLoading = true;
+      window.loadMathJax()
+        .then(() => {
+          const wait = () => {
+            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+              window.MathJax.startup.promise.then(() => {
+                window.__mathjaxReady = true;
+                const q = window.__mathjaxQueue.splice(0);
+                q.forEach(e => renderMathIn(e));
+              });
+            } else {
+              setTimeout(wait, 120);
+            }
+          };
+          wait();
+        })
+        .catch(err => console.warn('[MathJax] load failed:', err));
+    }
     return;
   }
   try { window.MathJax.typesetClear([el]); } catch (e) {}
@@ -5686,16 +5758,18 @@ function renderMathIn(el) {
   });
 }
 
-(function waitForMathJax() {
+/* One-time (bounded) readiness check — stops after ~15 s if MathJax never loads. */
+(function waitForMathJax(attempts = 0) {
   if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
     window.MathJax.startup.promise.then(() => {
       window.__mathjaxReady = true;
       const q = window.__mathjaxQueue.splice(0);
       q.forEach(el => renderMathIn(el));
     }).catch(() => {});
-  } else {
-    setTimeout(waitForMathJax, 120);
+    return;
   }
+  if (attempts >= 125) return;   // ~15 s
+  setTimeout(() => waitForMathJax(attempts + 1), 120);
 })();
 
 /* ---------- Debounced live LaTeX preview ---------- */
@@ -5960,7 +6034,7 @@ function closeQuizEditor() {
   quizEditingMaterialId = null;
   quizDraft = [];
   if (cid) openCourseEditor(cid);
-  else { pushHash('#/admin/courses'); pushHash; renderApp(); }
+  else { pushHash('#/admin/courses'); renderApp(); }
 }
 
 function normalizeQuestion(q) {
@@ -7371,12 +7445,12 @@ async function viewFileOnline(courseId, materialId) {
 
   let fileUrl = null;
   let fileData = mat.fileData;
-
-  if (mat.url && (mat.url.startsWith('/uploads/') || (mat.url.startsWith('http') && mat.url.includes('/uploads/')))) {
+  if (mat.url && (mat.url.startsWith('http://') || mat.url.startsWith('https://') || mat.url.startsWith('/uploads/'))) {
     fileUrl = mat.url;
-  } else if (fileData && (fileData.startsWith('/uploads/') || (fileData.startsWith('http') && fileData.includes('/uploads/')))) {
+  } else if (fileData && (fileData.startsWith('http://') || fileData.startsWith('https://') || fileData.startsWith('/uploads/'))) {
     fileUrl = fileData;
   }
+  
 
   if (fileUrl) {
     const isPdfUrl = fileUrl.toLowerCase().endsWith('.pdf') || fileUrl.includes('/uploads/');
@@ -7891,14 +7965,17 @@ async function initApp() {
   if (savedUser) {
     currentUser = savedUser;
     if (currentUser.role === 'admin') adminTab = 'overview';
+    // Restart heartbeat immediately if we already have a live session
+    _sessionKilled = false;
+    startSessionHeartbeat();
   }
   updateThemeIcon();
   syncHashToState();
 
-  /* ---- TIER 1: First paint (immediate) ---- */
+  /* ---- Single first paint ---- */
   renderApp();
 
-  /* ---- TIER 2: Critical background fetches (parallel) ---- */
+  /* ---- Kick off critical fetches in parallel ---- */
   const criticalFetches = [
     fetchCoursesFromDB(),
     fetchProfessorsFromDB(),
@@ -7906,22 +7983,21 @@ async function initApp() {
     fetchOwnerProfile()
   ];
 
-  /* ---- TIER 3: User-scoped (slightly delayed so first paint wins) ---- */
   if (savedUser && savedUser._id) {
+    // user-scoped data — fire and forget, no need to block paint
     setTimeout(() => {
       refreshUserData().catch(() => {});
       loadNotifications().catch(() => {});
-    }, 300);
+    }, 400);
   }
 
-  // Await critical fetches, then re-render once
+  // Await and log failures only (renderApp already scheduled above)
   const results = await Promise.allSettled(criticalFetches);
   results.forEach((r, i) => {
-    if (r.status === 'rejected') {
-      console.warn('[initApp] critical fetch #' + i + ' failed:', r.reason);
-    }
+    if (r.status === 'rejected') console.warn('[initApp] fetch #' + i + ' failed:', r.reason);
   });
 
+  // One more paint after data lands
   renderApp();
 }
 /* ============================================================
@@ -8394,113 +8470,99 @@ document.getElementById('loginUsername')?.addEventListener('input', (e) => {
   }
 });
 /* ============================================================
-   ALUMNI & FRIENDS — Student sections + submission + admin
-   ============================================================ */
-
-/* ---------- Student: Alumni section ---------- */
+/* ---------- Student: Alumni section (cached) ---------- */
 async function renderAlumniSection() {
   const section = document.getElementById('alumniSection');
   const grid    = document.getElementById('alumniGrid');
   if (!section || !grid) return;
 
-  try {
-    const res = await fetch(`${API_BASE}/alumni?_t=${Date.now()}`, { cache: 'no-store' });
-    const data = await res.json();
-    const list = (data && data.success && Array.isArray(data.alumni)) ? data.alumni : [];
+  let list = _alumniCache.data;
+  if (!list || Date.now() - _alumniCache.at > COMMUNITY_CACHE_MS) {
+    try {
+      const res = await fetch(`${API_BASE}/alumni?_t=${Date.now()}`, { cache: 'no-store' });
+      const data = await res.json();
+      list = (data && data.success && Array.isArray(data.alumni)) ? data.alumni : [];
+      _alumniCache = { data: list, at: Date.now() };
+    } catch (e) {
+      console.warn('[alumni] fetch failed:', e);
+      list = _alumniCache.data || [];
+    }
+  }
 
-    if (list.length === 0) {
-      section.style.display = 'none';
-      return;
+  if (!list || list.length === 0) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+
+  let html = '';
+  list.forEach(a => {
+    const avatar = a.photo
+      ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy">`
+      : `<div class="alumni-avatar-fallback">${escapeHtml(getInitials(a.name))}</div>`;
+
+    const metaParts = [];
+    if (a.batch)    metaParts.push(`<i class="fas fa-calendar-alt"></i> ${escapeHtml(a.batch)}`);
+    if (a.degree)   metaParts.push(`<i class="fas fa-book"></i> ${escapeHtml(a.degree)}`);
+    if (a.location) metaParts.push(`<i class="fas fa-map-marker-alt"></i> ${escapeHtml(a.location)}`);
+
+    const workParts = [];
+    if (a.currentRole) workParts.push(escapeHtml(a.currentRole));
+    if (a.company)     workParts.push(`@ ${escapeHtml(a.company)}`);
+
+    const contactBtns = [];
+    if (a.linkedin) {
+      contactBtns.push(`<a href="${escapeHtml(a.linkedin)}" target="_blank" rel="noopener noreferrer" class="contact-chip contact-chip-email" style="text-decoration:none;"><i class="fab fa-linkedin"></i> LinkedIn</a>`);
     }
 
-    section.style.display = 'block';
-
-    let html = '';
-    list.forEach(a => {
-      const avatar = a.photo
-        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy">`
-        : `<div class="alumni-avatar-fallback">${escapeHtml(getInitials(a.name))}</div>`;
-
-      const metaParts = [];
-      if (a.batch)    metaParts.push(`<i class="fas fa-calendar-alt"></i> ${escapeHtml(a.batch)}`);
-      if (a.degree)   metaParts.push(`<i class="fas fa-book"></i> ${escapeHtml(a.degree)}`);
-      if (a.location) metaParts.push(`<i class="fas fa-map-marker-alt"></i> ${escapeHtml(a.location)}`);
-
-      const workParts = [];
-      if (a.currentRole) workParts.push(escapeHtml(a.currentRole));
-      if (a.company)     workParts.push(`@ ${escapeHtml(a.company)}`);
-
-      const contactBtns = [];
-      if (a.linkedin) {
-        contactBtns.push(`<a href="${escapeHtml(a.linkedin)}" target="_blank" rel="noopener noreferrer" class="contact-chip contact-chip-email" style="text-decoration:none;">
-          <i class="fab fa-linkedin"></i> LinkedIn
-        </a>`);
-      }
-
-      html += `
-        <div class="alumni-card">
-          <div class="alumni-avatar">${avatar}</div>
-          <div class="alumni-body">
-            <h3>${escapeHtml(a.name)}</h3>
-            ${workParts.length ? `<div class="alumni-work">${workParts.join(' ')}</div>` : ''}
-            ${metaParts.length ? `<div class="alumni-meta">${metaParts.join(' · ')}</div>` : ''}
-            ${a.bio ? `<p class="alumni-bio">${escapeHtml(a.bio)}</p>` : ''}
-            ${contactBtns.length ? `<div class="alumni-contact">${contactBtns.join('')}</div>` : ''}
-          </div>
-        </div>`;
-    });
-    grid.innerHTML = html;
-  } catch (e) {
-    console.warn('[alumni] render failed:', e);
-    section.style.display = 'none';
-  }
+    html += `
+      <div class="alumni-card">
+        <div class="alumni-avatar">${avatar}</div>
+        <div class="alumni-body">
+          <h3>${escapeHtml(a.name)}</h3>
+          ${workParts.length ? `<div class="alumni-work">${workParts.join(' ')}</div>` : ''}
+          ${metaParts.length ? `<div class="alumni-meta">${metaParts.join(' · ')}</div>` : ''}
+          ${a.bio ? `<p class="alumni-bio">${escapeHtml(a.bio)}</p>` : ''}
+          ${contactBtns.length ? `<div class="alumni-contact">${contactBtns.join('')}</div>` : ''}
+        </div>
+      </div>`;
+  });
+  grid.innerHTML = html;
 }
 
-/* ---------- Student: Friends section ---------- */
+/* ---------- Student: Friends section (cached) ---------- */
 async function renderFriendsSection() {
   const section = document.getElementById('friendsSection');
   const grid    = document.getElementById('friendsGrid');
   if (!section || !grid) return;
 
-  try {
-    const res = await fetch(`${API_BASE}/friends?_t=${Date.now()}`, { cache: 'no-store' });
-    const data = await res.json();
-    const list = (data && data.success && Array.isArray(data.friends)) ? data.friends : [];
+  let list = _friendsCache.data;
+  if (!list || Date.now() - _friendsCache.at > COMMUNITY_CACHE_MS) {
+    try {
+      const res = await fetch(`${API_BASE}/friends?_t=${Date.now()}`, { cache: 'no-store' });
+      const data = await res.json();
+      list = (data && data.success && Array.isArray(data.friends)) ? data.friends : [];
+      _friendsCache = { data: list, at: Date.now() };
+    } catch (e) {
+      console.warn('[friends] fetch failed:', e);
+      list = _friendsCache.data || [];
+    }
+  }
 
-    if (list.length === 0) {
-      section.style.display = 'none';
-      return;
+  if (!list || list.length === 0) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+
+  let html = '';
+  list.forEach(f => {
+    const photoHtml = f.photo
+      ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy">`
+      : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(f.name))}</div>`;
+
+    const contactBtns = [];
+    if (f.linkedin) {
+      contactBtns.push(`<a href="${escapeHtml(f.linkedin)}" target="_blank" rel="noopener noreferrer" class="contact-chip contact-chip-email" style="text-decoration:none;"><i class="fab fa-linkedin"></i> LinkedIn</a>`);
     }
 
-    section.style.display = 'block';
-
-    let html = '';
-    list.forEach(f => {
-      const photoHtml = f.photo
-        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy">`
-        : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(f.name))}</div>`;
-
-      const contactBtns = [];
-      if (f.linkedin) {
-        contactBtns.push(`<a href="${escapeHtml(f.linkedin)}" target="_blank" rel="noopener noreferrer" class="contact-chip contact-chip-email" style="text-decoration:none;">
-          <i class="fab fa-linkedin"></i> LinkedIn
-        </a>`);
-      }
-
-      html += `
-        <div class="professor-card friend-card">
-          ${photoHtml}
-          <h3>${escapeHtml(f.name)}</h3>
-          <div class="prof-title">${escapeHtml(f.role || 'Supporter')}</div>
-          <p>${escapeHtml(f.bio || '')}</p>
-          ${contactBtns.length ? `<div class="team-contact-row">${contactBtns.join('')}</div>` : ''}
-        </div>`;
-    });
-    grid.innerHTML = html;
-  } catch (e) {
-    console.warn('[friends] render failed:', e);
-    section.style.display = 'none';
-  }
+    html += `<div class="professor-card friend-card">${photoHtml}<h3>${escapeHtml(f.name)}</h3><div class="prof-title">${escapeHtml(f.role || 'Supporter')}</div><p>${escapeHtml(f.bio || '')}</p>${contactBtns.length ? `<div class="team-contact-row">${contactBtns.join('')}</div>` : ''}</div>`;
+  });
+  grid.innerHTML = html;
 }
 
 /* ---------- Submit modals ---------- */
@@ -8763,7 +8825,7 @@ function renderCommunityList(type, items, title, status) {
       actions = `
         <button class="btn btn-success btn-sm" onclick="approveCommunity('${type}', '${x._id}')"><i class="fas fa-check"></i> Approve</button>`;
     }
-    actions += ` <button class="btn btn-danger btn-sm" onclick="deleteCommunity('${type}', '${x._id}', '${escapeHtml(x.name).replace(/'/g,"\\'")}')"><i class="fas fa-trash"></i></button>`;
+    actions += ` <button class="btn btn-danger btn-sm" onclick="deleteCommunity('${type}', '${x._id}', ${jsStr(x.name)})"><i class="fas fa-trash"></i></button>`;
 
     html += `
       <div class="community-item">
@@ -8790,7 +8852,11 @@ async function approveCommunity(type, id) {
       body: JSON.stringify({ adminId: currentUser._id })
     });
     const data = await res.json();
-    if (data.success) { showToast('✅ Approved.', 'success'); renderAdminCommunity(); }
+    if (data.success) {
+      showToast('✅ Approved.', 'success');
+      invalidateCommunityCache();
+      renderAdminCommunity();
+    }
     else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
@@ -8804,7 +8870,11 @@ async function rejectCommunity(type, id) {
       body: JSON.stringify({ adminId: currentUser._id })
     });
     const data = await res.json();
-    if (data.success) { showToast('Rejected.', 'info'); renderAdminCommunity(); }
+    if (data.success) {
+      showToast('Rejected.', 'info');
+      invalidateCommunityCache();
+      renderAdminCommunity();
+    }
     else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
@@ -8818,7 +8888,11 @@ async function deleteCommunity(type, id, name) {
       body: JSON.stringify({ adminId: currentUser._id })
     });
     const data = await res.json();
-    if (data.success) { showToast('Deleted.', 'info'); renderAdminCommunity(); }
+    if (data.success) {
+      showToast('Deleted.', 'info');
+      invalidateCommunityCache();
+      renderAdminCommunity();
+    }
     else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
