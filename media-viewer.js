@@ -1,7 +1,7 @@
 /* ============================================================
    AEROSPACE MEDIA VIEWER v4
    - PDF viewer with client-side highlighting
-   - Video player (direct HTML5 + YouTube)
+   - Video player (direct HTML5 + YouTube + Playlists)
    - Explicit Back button on both viewers
    - Ultra-light single-line watermark
    ============================================================ */
@@ -17,6 +17,12 @@
   function escapeXml(s) {
     return String(s).replace(/[<>&"']/g, function (c) {
       return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c];
+    });
+  }
+
+  function _escHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, function (m) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
     });
   }
 
@@ -65,6 +71,237 @@
     pink:   'rgba(244,114,182,0.50)',
     orange: 'rgba(251,146,60,0.55)'
   };
+
+  /* ============================================================
+     VIDEO PLAYER
+     ============================================================ */
+  class VideoPlayer {
+    constructor() {
+      this.active = false;
+      this.modal = null;
+      this.videoArea = null;
+      this.titleEl = null;
+      this.playlistPanel = null;
+      this.playlistItemsEl = null;
+      this.watermarkEl = null;
+      
+      this.playlist = [];
+      this.playlistIndex = 0;
+      this.playlistTitle = '';
+      this.username = '';
+      
+      this._onKeyDown = this._onKeyDown.bind(this);
+    }
+
+    open(opts) {
+      if (this.active) this.close();
+      this.active = true;
+
+      this.username = opts.username || 'Student';
+      this.playlist = opts.playlist || [];
+      this.playlistIndex = opts.playlistIndex || 0;
+      this.playlistTitle = opts.playlistTitle || '';
+      
+      this._buildUI();
+      this._renderWatermark();
+      
+      if (this.playlist.length > 0) {
+        this._loadPlaylistItem(this.playlistIndex);
+        this._renderPlaylist();
+      } else {
+        this._loadSingleVideo(opts);
+      }
+
+      this.modal.classList.add('active');
+      document.body.style.overflow = 'hidden';
+      document.addEventListener('keydown', this._onKeyDown);
+    }
+
+    _loadSingleVideo(opts) {
+      this.titleEl.textContent = opts.title || 'Video';
+      this.videoArea.innerHTML = '';
+      
+      if (opts.videoId) {
+        const iframe = document.createElement('iframe');
+        iframe.className = 'vp-iframe';
+        iframe.src = `https://www.youtube.com/embed/${opts.videoId}?autoplay=1&rel=0`;
+        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
+        iframe.allowFullscreen = true;
+        this.videoArea.appendChild(iframe);
+      } else if (opts.src) {
+        const video = document.createElement('video');
+        video.src = opts.src;
+        video.controls = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        this.videoArea.appendChild(video);
+      }
+    }
+
+    _loadPlaylistItem(index) {
+      if (index < 0 || index >= this.playlist.length) return;
+      
+      this.playlistIndex = index;
+      const item = this.playlist[index];
+      this.titleEl.textContent = item.title || 'Video';
+      this.videoArea.innerHTML = '';
+      
+      if (item.kind === 'youtube' && item.videoId) {
+        const iframe = document.createElement('iframe');
+        iframe.className = 'vp-iframe';
+        iframe.src = `https://www.youtube.com/embed/${item.videoId}?autoplay=1&rel=0`;
+        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
+        iframe.allowFullscreen = true;
+        this.videoArea.appendChild(iframe);
+      } else if (item.kind === 'direct' && item.directUrl) {
+        const video = document.createElement('video');
+        video.src = item.directUrl;
+        video.controls = true;
+        video.autoplay = true;
+        video.playsInline = true;
+        this.videoArea.appendChild(video);
+      }
+      
+      this._renderPlaylist(); // Update active item highlight
+    }
+
+    _buildUI() {
+      const old = document.getElementById('videoPlayerModal');
+      if (old) old.remove();
+
+      const el = document.createElement('div');
+      el.id = 'videoPlayerModal';
+      el.className = 'video-player-modal';
+
+      el.innerHTML = `
+        <div class="vp-shell" id="vpShell">
+          <button class="vp-back-btn" id="vpBackBtn"><i class="fas fa-arrow-left"></i> <span>Back</span></button>
+          <button class="vp-playlist-toggle" id="vpPlaylistToggle" style="display:none;"><i class="fas fa-list"></i> <span>Playlist</span></button>
+          <div class="vp-video-area" id="vpVideoArea"></div>
+          <div class="vp-watermark" id="vpWatermark"></div>
+          <div class="vp-title" id="vpTitle"></div>
+          <div class="vp-playlist-panel" id="vpPlaylistPanel">
+             <div class="vp-playlist-header">
+               <h4 id="vpPlaylistTitle"><i class="fas fa-list"></i> Playlist</h4>
+               <button class="vp-playlist-close" id="vpPlaylistClose"><i class="fas fa-times"></i></button>
+             </div>
+             <div class="vp-playlist-items" id="vpPlaylistItems"></div>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(el);
+
+      this.modal = el;
+      this.videoArea = el.querySelector('#vpVideoArea');
+      this.titleEl = el.querySelector('#vpTitle');
+      this.watermarkEl = el.querySelector('#vpWatermark');
+      this.playlistPanel = el.querySelector('#vpPlaylistPanel');
+      this.playlistItemsEl = el.querySelector('#vpPlaylistItems');
+
+      // Event listeners
+      el.querySelector('#vpBackBtn').addEventListener('click', () => this.close());
+      el.querySelector('#vpPlaylistClose').addEventListener('click', () => this._togglePlaylist(false));
+      
+      const toggleBtn = el.querySelector('#vpPlaylistToggle');
+      toggleBtn.addEventListener('click', () => this._togglePlaylist());
+      
+      if (this.playlist.length > 0) {
+        toggleBtn.style.display = 'inline-flex';
+        el.querySelector('#vpPlaylistTitle').textContent = this.playlistTitle || 'Playlist';
+      }
+    }
+
+    _togglePlaylist(forceState) {
+      if (!this.playlistPanel) return;
+      const isOpen = typeof forceState === 'boolean' ? forceState : !this.playlistPanel.classList.contains('open');
+      this.playlistPanel.classList.toggle('open', isOpen);
+      this.modal.querySelector('.vp-shell').classList.toggle('playlist-open', isOpen);
+    }
+
+    _renderPlaylist() {
+      if (!this.playlistItemsEl) return;
+      this.playlistItemsEl.innerHTML = this.playlist.map((item, i) => `
+        <div class="vp-playlist-item ${i === this.playlistIndex ? 'current' : ''}" data-index="${i}">
+          <div class="vp-playlist-item-num">${i + 1}</div>
+          <div class="vp-playlist-item-title">${_escHtml(item.title)}</div>
+          ${i === this.playlistIndex ? '<i class="fas fa-volume-up vp-playlist-item-playing"></i>' : ''}
+        </div>
+      `).join('');
+
+      this.playlistItemsEl.querySelectorAll('.vp-playlist-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const idx = parseInt(el.dataset.index, 10);
+          if (idx !== this.playlistIndex) this._loadPlaylistItem(idx);
+        });
+      });
+    }
+
+    _renderWatermark() {
+      if (!this.watermarkEl) return;
+      const now = new Date();
+      const timestamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const text = this.username + ' | ' + timestamp;
+      
+      this.watermarkEl.style.backgroundImage = makeWatermarkUrl(text, {
+        size: 14,
+        angle: -25,
+        tile: 800,
+        dark: true // White-ish text for dark video background
+      });
+      this.watermarkEl.style.opacity = '0.15'; // Subtle for video
+    }
+
+    _onKeyDown(e) {
+      if (!this.active) return;
+      if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) return; // Allow global search
+      
+      // Block screenshot & dev tools like in PDF viewer
+      if (e.key === 'PrintScreen' || e.keyCode === 44) {
+        e.preventDefault();
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText('Screenshots are not allowed for this document.');
+        }
+        userToast('Screenshots are disabled.', 'error');
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3','4','5','s','S'].includes(e.key)) {
+        e.preventDefault(); e.stopPropagation();
+        userToast('Screenshots are disabled.', 'error');
+        return;
+      }
+      if (e.key === 'F12' || ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I','J','C','i','j','c'].includes(e.key))) {
+        e.preventDefault(); e.stopPropagation();
+        return;
+      }
+    }
+
+    close() {
+      if (!this.active) return;
+      this.active = false;
+      document.removeEventListener('keydown', this._onKeyDown);
+      document.body.style.overflow = '';
+      
+      const m = this.modal;
+      if (m) {
+        m.classList.remove('active');
+        setTimeout(() => { try { m.remove(); } catch (e) {} }, 240);
+      }
+      
+      // Reset state
+      this.playlist = [];
+      this.playlistIndex = 0;
+      this.modal = null;
+      this.videoArea = null;
+      this.titleEl = null;
+      this.playlistPanel = null;
+      this.playlistItemsEl = null;
+      this.watermarkEl = null;
+    }
+  }
+
+  window.VideoPlayer = new VideoPlayer();
 
   /* ============================================================
      PDF VIEWER
@@ -141,13 +378,10 @@
           task = pdfjsLib.getDocument({ data: bytes });
         }
         this.pdfDoc = await task.promise;
-                this.pdfDoc = await task.promise;
         
         // FIX: Prevent race condition if user closes the viewer while loading
         if (!this.active) return; 
         
-        await this._renderAllPages();
-        this.loaderEl.style.display = 'none';
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
       } catch (err) {
@@ -313,7 +547,7 @@
       this._applyAllHighlights();
     }
 
-     async _renderPage(n) {
+    async _renderPage(n) {
       const page = await this.pdfDoc.getPage(n);
       const viewport = page.getViewport({ scale: this.scale });
       const pageEl = this.pageEls.get(n);
@@ -322,7 +556,7 @@
       pageEl.innerHTML = '';
       pageEl.style.width = viewport.width + 'px';
       pageEl.style.height = viewport.height + 'px';
-      pageEl.style.position = 'relative'; // FIX: Required for absolute positioning
+      pageEl.style.position = 'relative';
 
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
@@ -341,11 +575,9 @@
       textLayer.className = 'pdfv-textlayer';
       textLayer.style.width = viewport.width + 'px';
       textLayer.style.height = viewport.height + 'px';
-      textLayer.style.position = 'absolute'; // FIX
-      textLayer.style.top = '0'; // FIX
-      textLayer.style.left = '0'; // FIX
-      
-      // FIX: Set the CSS variable required by PDF.js text layer
+      textLayer.style.position = 'absolute';
+      textLayer.style.top = '0';
+      textLayer.style.left = '0';
       textLayer.style.setProperty('--scale-factor', this.scale); 
       
       pageEl.appendChild(textLayer);
@@ -681,7 +913,7 @@
       }
     }
 
-        _renderWatermark() {
+    _renderWatermark() {
       if (!this.modal) return;
       const wm = this.modal.querySelector('#pdfvWatermark');
       if (!wm) return;
@@ -700,7 +932,7 @@
       wm.style.opacity = '0.45'; // Highly visible
     }
 
-        _onKeyDown(e) {
+    _onKeyDown(e) {
       if (!this.active) return;
       
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
@@ -745,7 +977,8 @@
         return;
       }
     }
-        _flashBlur() {
+    
+    _flashBlur() {
       if (!this.active || !this.modal) return;
       const shell = this.modal.querySelector('.pdfv-shell');
       if (shell) {
