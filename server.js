@@ -53,7 +53,11 @@ const upload = multer({
   storage,
   limits: { fileSize: 500 * 1024 * 1024 } // 500 MB
 });
-app.use('/uploads', express.static(UPLOAD_DIR));
+app.use('/uploads', express.static(UPLOAD_DIR, {
+  maxAge: '7d',
+  immutable: true,
+  etag: true
+}));
 
 /* Upload endpoint — accepts one file, returns its public URL */
 app.post('/api/upload', upload.single('file'), (req, res) => {
@@ -176,20 +180,29 @@ app.post('/api/upload/complete', async (req, res) => {
     const finalName = unique + '-' + safeName;
     const finalPath = path.join(UPLOAD_DIR, finalName);
 
-    // Stream-merge chunks to avoid loading whole file into memory
-    const writeStream = fs.createWriteStream(finalPath);
-    for (let i = 0; i < session.totalChunks; i++) {
-      const chunkPath = path.join(session.sessionDir, `chunk-${String(i).padStart(6, '0')}`);
-      const data = fs.readFileSync(chunkPath);
+    // FAST streaming merge — reads each chunk as a stream, pipes directly.
+    // Never loads whole chunk into memory. Uses 1MB highWaterMark for speed.
+    const writeStream = fs.createWriteStream(finalPath, { highWaterMark: 1024 * 1024 });
+
+    try {
+      for (let i = 0; i < session.totalChunks; i++) {
+        const chunkPath = path.join(session.sessionDir, `chunk-${String(i).padStart(6, '0')}`);
+        await new Promise((resolve, reject) => {
+          const rs = fs.createReadStream(chunkPath, { highWaterMark: 1024 * 1024 });
+          rs.on('error', reject);
+          rs.on('end', resolve);
+          rs.pipe(writeStream, { end: false });
+        });
+      }
       await new Promise((resolve, reject) => {
-        writeStream.write(data, (err) => err ? reject(err) : resolve());
+        writeStream.end();
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
       });
+    } catch (mergeErr) {
+      try { writeStream.destroy(); } catch (_) {}
+      throw mergeErr;
     }
-    await new Promise((resolve, reject) => {
-      writeStream.end();
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
-    });
 
     try { fs.rmSync(session.sessionDir, { recursive: true, force: true }); } catch (_) {}
     uploadSessions.delete(uploadId);
@@ -221,14 +234,30 @@ app.use((err, req, res, next) => {
 
 /* ⚠️ SECURITY: Do NOT use express.static(__dirname) — it exposes .env, server.js, package.json, etc.
    Serve ONLY specific frontend files. Uploads are served from /uploads below. */
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/index.html', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-app.get('/app.js', (req, res) => res.sendFile(path.join(__dirname, 'app.js')));
-app.get('/styles.css', (req, res) => res.sendFile(path.join(__dirname, 'styles.css')));
-app.get('/media-viewer.js', (req, res) => res.sendFile(path.join(__dirname, 'media-viewer.js')));
-app.get('/sw.js', (req, res) => res.sendFile(path.join(__dirname, 'sw.js')));
-app.get('/manifest.json', (req, res) => res.sendFile(path.join(__dirname, 'manifest.json')));
-app.get('/passport.jpg', (req, res) => res.sendFile(path.join(__dirname, 'passport.jpg')));
+/* ---- HTML: no cache (so updates deploy instantly) ---- */
+app.get('/', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+app.get('/index.html', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+/* ---- Static assets: 5-min browser cache (speeds up repeat visits) ---- */
+function sendCached(res, file, maxAge = 300) {
+  res.setHeader('Cache-Control', `public, max-age=${maxAge}`);
+  res.sendFile(path.join(__dirname, file));
+}
+app.get('/app.js',          (req, res) => sendCached(res, 'app.js'));
+app.get('/styles.css',      (req, res) => sendCached(res, 'styles.css'));
+app.get('/media-viewer.js', (req, res) => sendCached(res, 'media-viewer.js'));
+app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 86400));
+app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json'));
+app.get('/sw.js',           (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache'); // SW को हमेशा fresh चाहिए
+  res.sendFile(path.join(__dirname, 'sw.js'));
+});
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000, max: 300,
@@ -918,16 +947,35 @@ app.post('/api/login', async (req, res) => {
     if (user.role === 'student') {
       try {
         bumpStreak(user);
-        await user.save();
-      } catch (saveErr) {
-        // Non-fatal: never block login because of a streak-save hiccup
-        console.warn('[login] bumpStreak save failed (non-fatal):', saveErr.message);
+      } catch (bumpErr) {
+        console.warn('[login] bumpStreak failed (non-fatal):', bumpErr.message);
       }
     }
 
-    // ---------- Issue token ----------
+    // ---------- SINGLE-DEVICE SESSION ----------
+    // Generate a fresh sessionId. This instantly invalidates any
+    // previous device/browser session for this account.
+    let sessionId;
+    try {
+      sessionId = crypto.randomBytes(24).toString('hex');
+      user.activeSession = {
+        sessionId,
+        deviceInfo: String(req.headers['user-agent'] || 'Unknown device').slice(0, 200),
+        loginAt: new Date(),
+        lastSeenAt: new Date()
+      };
+      await user.save(); // persists both streak + new session
+    } catch (sessErr) {
+      console.error('[login] could not persist activeSession:', sessErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Login succeeded but session could not be established. Please try again.'
+      });
+    }
+
+    // ---------- Issue token (with sessionId embedded) ----------
     const token = jwt.sign(
-      { id: user._id, role: user.role },
+      { id: user._id, role: user.role, sessionId },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
@@ -996,13 +1044,147 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Admin account not found.' });
     }
 
-    // 4. Issue the real login token
-    const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
+    // 4. SINGLE-DEVICE SESSION — generate fresh sessionId
+    let sessionId;
+    try {
+      sessionId = crypto.randomBytes(24).toString('hex');
+      user.activeSession = {
+        sessionId,
+        deviceInfo: String(req.headers['user-agent'] || 'Unknown device').slice(0, 200),
+        loginAt: new Date(),
+        lastSeenAt: new Date()
+      };
+      await user.save();
+    } catch (sessErr) {
+      console.error('[login-2fa/verify] session save failed:', sessErr);
+      return res.status(500).json({ success: false, message: 'Could not establish session.' });
+    }
+
+    // 5. Issue the real login token (with sessionId)
+    const token = jwt.sign(
+      { id: user._id, role: user.role, sessionId },
+      JWT_SECRET,
+      { expiresIn: '1d' }
+    );
     console.log('[login-2fa] ✅ Admin login success:', user.username);
     res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
   } catch (e) {
     console.error('[login-2fa/verify] Error:', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+/* ============================================================
+   SESSION CHECK — single-device login enforcement
+   ------------------------------------------------------------
+   The frontend polls this endpoint every ~20 seconds with its
+   Bearer token. If the token's sessionId no longer matches the
+   user's current activeSession.sessionId, we return HTTP 401
+   with code=SESSION_REPLACED so the frontend can force-logout
+   the old device with a clear message.
+   ============================================================ */
+app.get('/api/auth/session-check', async (req, res) => {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        code: 'NO_TOKEN',
+        message: 'No session token provided.'
+      });
+    }
+    const token = auth.slice(7);
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (e) {
+      return res.status(401).json({
+        success: false,
+        code: 'INVALID_TOKEN',
+        message: 'Your session has expired. Please log in again.'
+      });
+    }
+
+    const user = await User.findById(decoded.id)
+      .select('activeSession role username')
+      .lean();
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        code: 'USER_NOT_FOUND',
+        message: 'Account no longer exists.'
+      });
+    }
+
+    const currentSessionId = user.activeSession && user.activeSession.sessionId;
+
+    if (!currentSessionId) {
+      return res.status(401).json({
+        success: false,
+        code: 'NO_ACTIVE_SESSION',
+        message: 'You have been signed out. Please log in again.'
+      });
+    }
+
+    if (currentSessionId !== decoded.sessionId) {
+      console.log(`[session-check] ⚠️ Session replaced for ${user.username}`);
+      return res.status(401).json({
+        success: false,
+        code: 'SESSION_REPLACED',
+        message: 'You were signed out because this account was just signed in on another device.'
+      });
+    }
+
+    // Fire-and-forget lastSeen update (throttled to at most 1 write / 5 min)
+    const now = Date.now();
+    const lastSeen = user.activeSession.lastSeenAt
+      ? new Date(user.activeSession.lastSeenAt).getTime()
+      : 0;
+    if (now - lastSeen > 5 * 60 * 1000) {
+      User.updateOne(
+        { _id: user._id },
+        { $set: { 'activeSession.lastSeenAt': new Date() } }
+      ).catch(() => {});
+    }
+
+    res.json({ success: true, valid: true });
+  } catch (e) {
+    console.error('[auth/session-check]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ============================================================
+   LOGOUT — clears the user's activeSession on the server
+   Only clears if the requesting token's sessionId matches,
+   so a new-device logout doesn't kick out the old device.
+   ============================================================ */
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const auth = req.headers.authorization;
+    if (!auth || !auth.startsWith('Bearer ')) {
+      return res.json({ success: true, message: 'Already logged out.' });
+    }
+    const token = auth.slice(7);
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (e) {
+      return res.json({ success: true, message: 'Session already expired.' });
+    }
+
+    const user = await User.findById(decoded.id).select('activeSession');
+    if (user && user.activeSession && user.activeSession.sessionId === decoded.sessionId) {
+      user.activeSession.sessionId = null;
+      user.activeSession.loginAt = null;
+      user.activeSession.lastSeenAt = null;
+      await user.save();
+    }
+
+    res.json({ success: true, message: 'Logged out.' });
+  } catch (e) {
+    console.error('[auth/logout]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
   }
 });
 
@@ -1901,10 +2083,49 @@ app.get('/api/courses/:courseId/materials/:materialId/file', async (req, res) =>
 
 app.get('/api/courses/:id', async (req, res) => {
   try {
-    const course = await Course.findById(req.params.id).lean();
-    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
-    res.json({ success: true, course });
-  } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid course ID' });
+    }
+    const courses = await Course.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(req.params.id) } },
+      {
+        $project: {
+          name: 1, code: 1, semester: 1, instructor: 1, description: 1,
+          category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
+          learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
+          isPremium: 1, price: 1, announcements: 1, playlists: 1, doubts: 1,
+          createdAt: 1, updatedAt: 1,
+          materials: {
+            $map: {
+              input: { $ifNull: ['$materials', []] },
+              as: 'm',
+              in: {
+                _id: '$$m._id',
+                title: '$$m.title',
+                type: '$$m.type',
+                description: '$$m.description',
+                url: '$$m.url',
+                fileName: '$$m.fileName',
+                isPremium: '$$m.isPremium',
+                price: '$$m.price',
+                estimatedTime: '$$m.estimatedTime',
+                tags: '$$m.tags',
+                examConfig: '$$m.examConfig',
+                quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
+              }
+            }
+          }
+        }
+      }
+    ]);
+    if (!courses || courses.length === 0) {
+      return res.status(404).json({ success: false, message: 'Course not found' });
+    }
+    res.json({ success: true, course: courses[0] });
+  } catch (e) {
+    console.error('[GET /api/courses/:id]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
 });
 
 app.post('/api/courses', async (req, res) => {
@@ -3414,6 +3635,10 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
         success: true, kind: 'youtube', videoId: ytId,
         title: mat.title, expiresAt: Date.now() + (2 * 60 * 60 * 1000)
       });
+    }
+
+    if (/youtube\.com|youtu\.be/i.test(url)) {
+      return res.status(400).json({ success: false, message: 'Invalid YouTube link. Please provide a direct video URL, not a playlist or channel link.' });
     }
 
     if (!/^https?:\/\//i.test(url) && !/^blob:/i.test(url)) {

@@ -116,23 +116,29 @@
       document.body.style.overflow = 'hidden';
       document.addEventListener('keydown', this._onKeyDown);
     }
-       _loadSingleVideo(opts) {
+
+    /* ---------- YouTube IFrame Helper ---------- */
+    _createYouTubeIframe(videoId) {
+      const iframe = document.createElement('iframe');
+      iframe.className = 'vp-iframe';
+      
+      const origin = (window.location.origin && window.location.origin !== 'null') 
+                     ? window.location.origin : '';
+      const originParam = origin ? `&origin=${encodeURIComponent(origin)}` : '';
+      
+      iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1${originParam}`;
+      iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen";
+      iframe.allowFullscreen = true;
+      iframe.setAttribute('frameborder', '0');
+      return iframe;
+    }
+
+    _loadSingleVideo(opts) {
       this.titleEl.textContent = opts.title || 'Video';
       this.videoArea.innerHTML = '';
       
       if (opts.videoId) {
-        const iframe = document.createElement('iframe');
-        iframe.className = 'vp-iframe';
-        
-        // FIX: Pass `origin` parameter so YouTube recognizes your domain
-        const origin = (window.location.origin && window.location.origin !== 'null') 
-                       ? window.location.origin : '';
-        const originParam = origin ? `&origin=${encodeURIComponent(origin)}` : '';
-        
-        iframe.src = `https://www.youtube.com/embed/${opts.videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1${originParam}`;
-        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
-        iframe.allowFullscreen = true;
-        this.videoArea.appendChild(iframe);
+        this.videoArea.appendChild(this._createYouTubeIframe(opts.videoId));
       } else if (opts.src) {
         const video = document.createElement('video');
         video.src = opts.src;
@@ -142,7 +148,8 @@
         this.videoArea.appendChild(video);
       }
     }
-     _loadPlaylistItem(index) {
+
+    _loadPlaylistItem(index) {
       if (index < 0 || index >= this.playlist.length) return;
       
       this.playlistIndex = index;
@@ -151,18 +158,7 @@
       this.videoArea.innerHTML = '';
       
       if (item.kind === 'youtube' && item.videoId) {
-        const iframe = document.createElement('iframe');
-        iframe.className = 'vp-iframe';
-        
-        // FIX: Pass `origin` parameter so YouTube recognizes your domain
-        const origin = (window.location.origin && window.location.origin !== 'null') 
-                       ? window.location.origin : '';
-        const originParam = origin ? `&origin=${encodeURIComponent(origin)}` : '';
-        
-        iframe.src = `https://www.youtube.com/embed/${item.videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1${originParam}`;
-        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
-        iframe.allowFullscreen = true;
-        this.videoArea.appendChild(iframe);
+        this.videoArea.appendChild(this._createYouTubeIframe(item.videoId));
       } else if (item.kind === 'direct' && item.directUrl) {
         const video = document.createElement('video');
         video.src = item.directUrl;
@@ -174,7 +170,7 @@
       
       this._renderPlaylist(); // Update active item highlight
     }
-  
+
     _buildUI() {
       const old = document.getElementById('videoPlayerModal');
       if (old) old.remove();

@@ -4,6 +4,46 @@
 const API_BASE = '/api';
 
 /* ============================================================
+   GLOBAL FETCH INTERCEPTOR — auto-attach Authorization header
+   ------------------------------------------------------------
+   Every /api/* call gets the session token (if available) so
+   the backend can enforce single-device login server-side.
+   This wrapper is installed ONCE and is completely transparent:
+   it only adds a header, it never blocks or alters requests.
+   ============================================================ */
+(function installFetchAuthInterceptor() {
+  if (window.__aeroFetchInterceptorInstalled) return;
+  window.__aeroFetchInterceptorInstalled = true;
+
+  const _originalFetch = window.fetch.bind(window);
+
+  window.fetch = function (input, init) {
+    try {
+      const url = typeof input === 'string'
+        ? input
+        : (input && input.url) ? input.url : '';
+
+      if (url && url.indexOf('/api/') !== -1) {
+        let token = null;
+        try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
+        if (token) {
+          init = init || {};
+          const baseHeaders = init.headers || {};
+          const hasAuth = baseHeaders['Authorization'] || baseHeaders['authorization'];
+          if (!hasAuth) {
+            init.headers = Object.assign({}, baseHeaders, {
+              'Authorization': 'Bearer ' + token
+            });
+          }
+        }
+      }
+    } catch (e) { /* fail-safe: never break a request */ }
+
+    return _originalFetch(input, init);
+  };
+})();
+
+/* ============================================================
    SAFE JSON FETCH
    ------------------------------------------------------------
    Wraps fetch() and guarantees:
@@ -337,6 +377,144 @@ let addingStudent = false;
 
 // ---- Bulk email selection (in-memory only; cleared on tab switch / logout) ----
 let _emailSelectedIds = new Set();
+/* ============================================================
+   SESSION HEARTBEAT — single-device login enforcement (client)
+   ------------------------------------------------------------
+   Polls /api/auth/session-check every 20s. If the server says
+   our sessionId was replaced by a newer login, we immediately
+   wipe local state and show a clear "session ended" modal.
+   ============================================================ */
+let _sessionHeartbeatTimer = null;
+let _sessionKilled = false;
+const SESSION_HEARTBEAT_MS = 20000;   // 20 s between checks
+const SESSION_FIRST_CHECK_MS = 3000;  // quick first check after login
+
+function startSessionHeartbeat() {
+  stopSessionHeartbeat();
+  _sessionKilled = false;
+  setTimeout(() => { if (!_sessionKilled) checkSessionAlive(); }, SESSION_FIRST_CHECK_MS);
+  _sessionHeartbeatTimer = setInterval(checkSessionAlive, SESSION_HEARTBEAT_MS);
+}
+
+function stopSessionHeartbeat() {
+  if (_sessionHeartbeatTimer) {
+    clearInterval(_sessionHeartbeatTimer);
+    _sessionHeartbeatTimer = null;
+  }
+}
+
+async function checkSessionAlive() {
+  if (_sessionKilled) return;
+  if (!currentUser) return;
+
+  let token = null;
+  try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
+  if (!token) return;   // No token → nothing to validate (private-mode / first load)
+
+  try {
+    const res = await fetch(`${API_BASE}/auth/session-check`, {
+      method: 'GET',
+      cache: 'no-store'
+    });
+
+    if (res.status === 401) {
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      _sessionKilled = true;
+      stopSessionHeartbeat();
+      forceLogoutDueToNewLogin(
+        data.message || 'Your session has ended. Please log in again.'
+      );
+    }
+    // HTTP 200 → session is still valid, keep going
+  } catch (e) {
+    // Network hiccup — silent, retry on next tick
+    console.warn('[session-heartbeat]', e && e.message);
+  }
+}
+
+function forceLogoutDueToNewLogin(message) {
+  // Wipe ALL local state (mirrors logout() but doesn't call server logout)
+  currentUser = null;
+  currentCourseId = null;
+  editingCourseId = null;
+  window.currentSelectedCourseId = null;
+  currentMaterialFilter = 'all';
+  studentNav = 'home';
+  adminTab = 'overview';
+  clearSession();
+  try { _emailSelectedIds.clear(); } catch (e) {}
+  _analyticsCache = null;
+  _analyticsCacheAt = 0;
+  try { destroyAnalyticsCharts(); } catch (e) {}
+  try { setLoginRole('student'); } catch (e) {}
+  try { quizEditingCourseId = null; } catch (e) {}
+  try { quizEditingMaterialId = null; } catch (e) {}
+  try { quizDraft = []; } catch (e) {}
+  try { quizPlayerState = null; } catch (e) {}
+  try { stopQuizAutosave(); } catch (e) {}
+  try { stopQuizTimer(); } catch (e) {}
+  try { exitFullscreenNow(); } catch (e) {}
+
+  pushHash('#/home');
+  renderApp();
+  showSessionKilledModal(message);
+}
+
+function showSessionKilledModal(message) {
+  const old = document.getElementById('sessionKilledModal');
+  if (old) old.remove();
+
+  const el = document.createElement('div');
+  el.id = 'sessionKilledModal';
+  el.className = 'modal-overlay active';
+  el.innerHTML = `
+    <div class="modal-box" style="max-width:480px;text-align:center;">
+      <div style="
+        display:inline-flex; align-items:center; justify-content:center;
+        width:72px; height:72px; border-radius:50%;
+        background:linear-gradient(135deg,#f59e0b,#ef4444);
+        color:#fff; font-size:32px;
+        box-shadow:0 12px 32px rgba(239,68,68,.35);
+        margin-bottom:18px;">
+        <i class="fas fa-shield-halved"></i>
+      </div>
+      <h3 style="justify-content:center;margin-bottom:10px;">
+        <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);"></i>
+        Session Ended
+      </h3>
+      <p style="font-size:14px;line-height:1.65;color:var(--text-secondary);margin-bottom:8px;">
+        ${escapeHtml(message || 'You were signed out because this account was just signed in on another device.')}
+      </p>
+      <p style="font-size:12.5px;color:var(--text-tertiary);margin-bottom:20px;">
+        For security, only one device can be signed in at a time.
+      </p>
+      <div class="modal-actions" style="justify-content:center;padding-top:16px;">
+        <button class="btn btn-primary btn-lg" onclick="closeSessionKilledModal()" style="width:100%;">
+          <i class="fas fa-sign-in-alt"></i> Log In Again
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(el);
+
+  // Prevent overlay-click from dismissing (must click the button)
+  el.addEventListener('click', (ev) => {
+    if (ev.target === el) ev.stopPropagation();
+  });
+
+  setTimeout(() => {
+    const btn = el.querySelector('button');
+    if (btn) btn.focus();
+  }, 120);
+}
+
+function closeSessionKilledModal() {
+  const el = document.getElementById('sessionKilledModal');
+  if (el) el.remove();
+  pushHash('#/home');
+  renderApp();
+}
 
 // ---- Subscription settings (global, fetched on boot) ----
 let liveSubscriptionSettings = { enabled: false, amount: 0, title: '', description: '' };
@@ -898,6 +1076,8 @@ async function handleLogin(e) {
         setLoginRole('student');
         pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
         showToast(data.message || 'Login successful!', 'success');
+        _sessionKilled = false;
+        startSessionHeartbeat();     // ← NEW
         renderApp();
         return;
       }
@@ -938,6 +1118,21 @@ async function handleLogin(e) {
 
 
 function logout() {
+  // Fire-and-forget server-side logout — clears activeSession on the server
+  // so this session's token can never be reused again.
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    if (token) {
+      fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token }
+      }).catch(() => {});
+    }
+  } catch (e) {}
+
+  stopSessionHeartbeat();
+  _sessionKilled = false;
+
   currentUser = null; currentCourseId = null; editingCourseId = null;
   window.currentSelectedCourseId = null;
   currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
@@ -948,7 +1143,7 @@ function logout() {
   _analyticsCache = null;
   _analyticsCacheAt = 0;
   try { destroyAnalyticsCharts(); } catch (e) {}
-   quizEditingCourseId = null;
+  quizEditingCourseId = null;
   quizEditingMaterialId = null;
   quizDraft = [];
   quizPlayerState = null;
@@ -1146,6 +1341,8 @@ async function _handleAdminLoginOtp(otp) {
   editingCourseId = null;
   pushHash('#/admin/overview');
   showToast('🎉 Admin login successful.', 'success');
+  _sessionKilled = false;
+  startSessionHeartbeat();     // ← NEW
   renderApp();
 }
 
@@ -7331,10 +7528,12 @@ async function toggleMaterialViewed(e, courseId, materialId) {
 
 async function refreshUserData() {
   if (!currentUser?._id) return;
+  const userIdAtStart = currentUser._id;
   try {
-    const res = await fetch(`/api/user/me/${currentUser._id}`);
+    const res = await fetch(`/api/user/me/${userIdAtStart}`);
     const data = await res.json();
-    if (data.success) {
+    // Guard: don't overwrite state if session was killed while we were fetching
+    if (data.success && currentUser && currentUser._id === userIdAtStart && !_sessionKilled) {
       currentUser = data.user;
       saveSessionUser(currentUser);
     }

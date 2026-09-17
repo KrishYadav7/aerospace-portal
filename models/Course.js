@@ -114,8 +114,10 @@ const courseSchema = new mongoose.Schema({
   announcements: [announcementSchema],
   playlists: [playlistSchema]
 }, { timestamps: true });
+
 courseSchema.index({ status: 1, createdAt: -1 });
 courseSchema.index({ code: 1 });
 courseSchema.index({ featured: -1, createdAt: -1 });
 courseSchema.index({ createdAt: -1 });
+
 module.exports = mongoose.model('Course', courseSchema);

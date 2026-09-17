@@ -70,10 +70,28 @@ const userSchema = new mongoose.Schema({
     materialId: { type: String, default: null },
     score:      { type: Number, default: null },           // for quiz events
     total:      { type: Number, default: null }            // for quiz events
-  }]
+  }],
+
+  /* ============================================================
+     ACTIVE SESSION — Single-device login enforcement
+     ------------------------------------------------------------
+     Only the LATEST login's sessionId is considered valid.
+     Whenever a user logs in from a new device/browser, we
+     regenerate sessionId. All older tokens become instantly
+     invalid (the server compares token.sessionId with the
+     current activeSession.sessionId on every heartbeat).
+     ============================================================ */
+  activeSession: {
+    sessionId:  { type: String, default: null },
+    deviceInfo: { type: String, default: '' },
+    loginAt:    { type: Date,   default: null },
+    lastSeenAt: { type: Date,   default: null }
+  }
 }, { timestamps: true });
+
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
 userSchema.index({ role: 1, createdAt: -1 });
 userSchema.index({ 'subscription.status': 1 });
+
 module.exports = mongoose.model('User', userSchema);
