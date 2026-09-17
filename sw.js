@@ -1,7 +1,7 @@
 /* ============================================================
    SERVICE WORKER — offline shell caching
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v17';
+const CACHE_NAME = 'aero-shell-v18';
 const SHELL_ASSETS = [
   './',
   './index.html',
@@ -44,6 +44,31 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/') || url.hostname.includes('razorpay')) return;
   if (request.method !== 'GET') return;
 
+  /* ---- app.js / styles.css / media-viewer.js: NETWORK-FIRST ---- */
+  const isCoreAsset =
+    url.pathname === '/app.js' ||
+    url.pathname === '/styles.css' ||
+    url.pathname === '/media-viewer.js' ||
+    url.pathname.endsWith('/app.js') ||
+    url.pathname.endsWith('/styles.css') ||
+    url.pathname.endsWith('/media-viewer.js');
+
+  if (isCoreAsset) {
+    event.respondWith(
+      fetch(request, { cache: 'no-store' })
+        .then((res) => {
+          if (res && res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(request, clone));
+          }
+          return res;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  /* ---- Everything else: cache-first, refresh in background ---- */
   const CACHEABLE_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
   event.respondWith(
