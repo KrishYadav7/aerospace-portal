@@ -775,8 +775,6 @@ app.get('/setup-admin', async (req, res) => {
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
-app.get('/', (req, res) => res.send('Aerospace EdTech Backend is Running!'));
-
 /* ============================================================
    AUTH
    ============================================================ */

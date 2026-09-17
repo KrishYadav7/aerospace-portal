@@ -58,16 +58,30 @@ async function fetchJSON(url, options = {}) {
   }
 }
 /* ============================================================
-   File Upload Helper — disk pe upload karta hai, base64 nahi
+   File Upload Helper
+   ------------------------------------------------------------
+   • Small files (< 6 MB) → single POST /api/upload
+   • Large files (≥ 6 MB) → chunked upload (bypasses Hostinger's
+     10 MB proxy limit)
    ============================================================ */
+const CHUNKED_THRESHOLD = 6 * 1024 * 1024; // 6 MB
+
 async function uploadFileToServer(file, onProgress) {
+  if (file.size >= CHUNKED_THRESHOLD) {
+    return uploadFileChunked(file, onProgress);
+  }
+  return uploadFileDirect(file, onProgress);
+}
+
+/* ---- Direct single-shot upload (small files) ---- */
+function uploadFileDirect(file, onProgress) {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
     formData.append('file', file);
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/upload`);
-    xhr.timeout = 1800000; // 30 minutes
+    xhr.timeout = 1800000;
 
     if (onProgress) {
       xhr.upload.onprogress = (e) => {
@@ -90,11 +104,61 @@ async function uploadFileToServer(file, onProgress) {
         reject(new Error(`Upload failed (HTTP ${xhr.status})`));
       }
     };
-    xhr.onerror = () => reject(new Error('Network error during upload'));
+    xhr.onerror   = () => reject(new Error('Network error during upload'));
     xhr.ontimeout = () => reject(new Error('Upload timed out'));
 
     xhr.send(formData);
   });
+}
+
+/* ---- Chunked upload (large files) ---- */
+async function uploadFileChunked(file, onProgress) {
+  // 1) Init session
+  const initRes = await fetchJSON(`${API_BASE}/upload/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type || 'application/octet-stream'
+    })
+  });
+  if (!initRes.success) throw new Error(initRes.message || 'Could not start upload.');
+
+  const { uploadId, chunkSize, totalChunks } = initRes;
+
+  // 2) Upload each chunk sequentially
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * chunkSize;
+    const end   = Math.min(start + chunkSize, file.size);
+    const blob  = file.slice(start, end);
+
+    const fd = new FormData();
+    fd.append('uploadId',   uploadId);
+    fd.append('chunkIndex', i);
+    fd.append('chunk',      blob, `${file.name}.part${i}`);
+
+    const chunkRes = await fetchJSON(`${API_BASE}/upload/chunk`, {
+      method: 'POST',
+      body: fd
+    });
+    if (!chunkRes.success) throw new Error(chunkRes.message || `Chunk ${i + 1} failed.`);
+
+    if (onProgress) {
+      const pct = Math.round(((i + 1) / totalChunks) * 100);
+      onProgress(pct);
+    }
+  }
+
+  // 3) Ask server to assemble
+  const doneRes = await fetchJSON(`${API_BASE}/upload/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId })
+  });
+  if (!doneRes.success) throw new Error(doneRes.message || 'Assembly failed.');
+
+  return doneRes;
 }
 /* ============================================================
    PROFESSORS (MongoDB — centralized database)
