@@ -4963,12 +4963,12 @@ body.hide-latex-previews .latex-preview { display: none; }
 .professor-avatar, 
 .team-avatar, 
 .community-avatar {
-    width: 100px !important;
-    height: 100px !important;
-    max-width: 100px !important;
-    max-height: 100px !important;
-    min-width: 100px !important;
-    min-height: 100px !important;
+    width: 130px !important;
+    height: 130px !important;
+    max-width: 130px !important;
+    max-height: 130px !important;
+    min-width: 130px !important;
+    min-height: 130px !important;
     aspect-ratio: 1 / 1 !important;
     border-radius: 50% !important;
     overflow: hidden !important;
@@ -5045,10 +5045,10 @@ body.hide-latex-previews .latex-preview { display: none; }
     .alumni-avatar, 
     .professor-avatar, 
     .team-avatar { 
-        width: 80px !important; 
-        height: 80px !important; 
-        min-width: 80px !important; 
-        min-height: 80px !important; 
+        width: 100px !important; 
+        height: 100px !important; 
+        min-width: 100px !important; 
+        min-height: 100px !important; 
     }
     
     .section-header-row {
