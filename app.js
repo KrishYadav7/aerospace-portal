@@ -229,19 +229,44 @@ function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 let _courseCacheAt = 0;
 const COURSE_CACHE_MS = 60 * 1000;
 
-/* ============================================================
-   COURSES
-   ============================================================ */
-let liveCourses = [];
-function getCourses() { return liveCourses; }
-function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
+async function fetchCoursesFromDB(force = false) {
+  const isAdmin = currentUser && currentUser.role === 'admin';
 
-/* Client-side course catalog cache.
-   - Students: cached for 60s → instant navigation between pages.
-   - Admins:   always fresh → no risk of stale admin dashboard.
-   - Manual refresh: call fetchCoursesFromDB(true). */
-let _courseCacheAt = 0;
-const COURSE_CACHE_MS = 60 * 1000;
+  // Serve from cache if fresh, and never cache for admins
+  if (!force && !isAdmin && liveCourses.length > 0 && (Date.now() - _courseCacheAt) < COURSE_CACHE_MS) {
+    renderApp();
+    return;
+  }
+
+  try {
+    // Cache-buster: browser / proxy / CDN cannot return a stale list.
+    const response = await fetch(`${API_BASE}/courses?_t=${Date.now()}`, {
+      cache: 'no-store'
+    });
+    const data = await response.json();
+
+    if (!Array.isArray(data)) {
+      console.error('[fetchCoursesFromDB] Expected an array, got:', data);
+      renderApp();
+      return;
+    }
+
+    liveCourses = data.map(course => {
+      const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
+      return {
+        ...course,
+        id: course._id,
+        materials: fixedMaterials,
+        playlists: course.playlists || []
+      };
+    });
+    _courseCacheAt = Date.now();
+    renderApp();
+  } catch (error) {
+    console.error('Error fetching courses:', error);
+    renderApp();
+  }
+}
 
 async function fetchCoursesFromDB(force = false) {
   const isAdmin = currentUser && currentUser.role === 'admin';
@@ -4248,9 +4273,6 @@ async function saveNewMaterialInline(courseId) {
         resetNewMaterialInlineForm();
 
         // ---- 1) INSTANT local update from the POST response ----
-        // The server returns the updated course document. Merge it into
-        // liveCourses immediately so the new material renders without
-        // waiting on any refetch.
         if (data.course && data.course._id) {
           const updated = data.course;
           const idx = liveCourses.findIndex(
