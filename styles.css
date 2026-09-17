@@ -5173,7 +5173,202 @@ body.hide-latex-previews .latex-preview { display: none; }
   .owner-preview-fallback {
     width: 120px;
     height: 120px;
-  }
+  }/* ============================================================
+   53. ALUMNI & FRIENDS SECTIONS
+   ============================================================ */
+.section-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+.section-header-row h2 { margin-bottom: 0 !important; }
+
+/* ---- Alumni grid ---- */
+.alumni-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--gap-grid);
+}
+.alumni-card {
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  display: flex;
+  gap: 16px;
+  transition: .25s var(--ease);
+  align-items: flex-start;
+}
+.alumni-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+  background: var(--bg-surface);
+  border-color: var(--gold-400);
+}
+[data-theme="dark"] .alumni-card:hover,
+[data-theme="dim"] .alumni-card:hover { border-color: var(--gold-500); }
+
+.alumni-avatar {
+  width: 76px; height: 76px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  border: 3px solid var(--gold-400);
+  box-shadow: 0 6px 18px rgba(245,158,11,.25);
+  background: linear-gradient(135deg, var(--bg-surface-3), var(--bg-surface-2));
+  display: flex; align-items: center; justify-content: center;
+}
+.alumni-avatar-img { width: 100%; height: 100%; object-fit: cover; }
+.alumni-avatar-fallback {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; font-weight: 800; letter-spacing: -1px;
+  color: var(--gold-600);
+  background: linear-gradient(135deg, rgba(245,158,11,.15), var(--bg-surface-3));
+  text-transform: uppercase;
+}
+[data-theme="dark"] .alumni-avatar-fallback,
+[data-theme="dim"] .alumni-avatar-fallback { color: var(--gold-400); }
+
+.alumni-body { flex: 1; min-width: 0; }
+.alumni-body h3 {
+  font-size: 16px; font-weight: 800;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+  letter-spacing: -.2px;
+}
+.alumni-work {
+  font-size: 13px; font-weight: 700;
+  color: var(--gold-600);
+  margin-bottom: 4px;
+}
+[data-theme="dark"] .alumni-work,
+[data-theme="dim"] .alumni-work { color: var(--gold-400); }
+
+.alumni-meta {
+  font-size: 12px; color: var(--text-tertiary);
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-bottom: 10px;
+}
+.alumni-meta i { color: var(--brand-500); margin-right: 3px; }
+
+.alumni-bio {
+  font-size: 13px; color: var(--text-secondary);
+  line-height: 1.55; margin-bottom: 12px;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+.alumni-contact { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ---- Friend card tweak (reuses professor-card) ---- */
+.friend-card { border-color: rgba(6,182,212,.3); }
+.friend-card:hover { border-color: var(--accent-500); box-shadow: 0 8px 20px rgba(6,182,212,.2); }
+.friend-card .prof-title { color: var(--accent-600); }
+
+@media (max-width: 640px) {
+  .alumni-grid { grid-template-columns: 1fr; }
+  .alumni-card { flex-direction: column; align-items: center; text-align: center; }
+  .alumni-body { text-align: center; }
+  .alumni-meta { justify-content: center; }
+  .alumni-contact { justify-content: center; }
+  .alumni-avatar { width: 92px; height: 92px; }
+}
+
+/* ============================================================
+   54. ADMIN — COMMUNITY TAB
+   ============================================================ */
+.community-group-head {
+  display: flex; justify-content: space-between; align-items: center;
+  font-size: 13px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .6px;
+  color: var(--text-secondary);
+  margin: 18px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.community-count {
+  font-size: 12px; font-weight: 800;
+  background: var(--brand-100); color: var(--brand-700);
+  padding: 2px 10px; border-radius: 999px;
+}
+[data-theme="dark"] .community-count,
+[data-theme="dim"] .community-count {
+  background: rgba(99,102,241,.2); color: var(--brand-300);
+}
+
+.community-empty {
+  font-size: 12.5px; color: var(--text-tertiary);
+  font-style: italic; padding: 8px 0;
+}
+
+.community-list {
+  display: flex; flex-direction: column; gap: 10px;
+}
+.community-item {
+  display: flex; gap: 14px;
+  padding: 14px 16px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  align-items: flex-start;
+  transition: .2s var(--ease);
+}
+.community-item:hover {
+  border-color: var(--brand-300);
+  background: var(--bg-surface);
+}
+[data-theme="dark"] .community-item:hover,
+[data-theme="dim"] .community-item:hover { border-color: var(--brand-500); }
+
+.community-avatar {
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  border: 2px solid var(--border-subtle);
+  background: var(--bg-surface-3);
+  display: flex; align-items: center; justify-content: center;
+}
+.community-avatar-img { width: 100%; height: 100%; object-fit: cover; }
+.community-avatar-fallback {
+  font-size: 18px; font-weight: 800;
+  color: var(--brand-600);
+  letter-spacing: -.5px;
+  text-transform: uppercase;
+}
+
+.community-info { flex: 1; min-width: 0; }
+.community-info h4 {
+  font-size: 14.5px; font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.community-meta {
+  font-size: 12px; color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.community-bio {
+  font-size: 12.5px; color: var(--text-secondary);
+  line-height: 1.5; margin-bottom: 6px;
+}
+.community-contact {
+  font-size: 12px; color: var(--text-tertiary);
+}
+.community-contact i { color: var(--brand-500); margin-right: 4px; }
+
+.community-actions {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  flex-shrink: 0; align-self: flex-start;
+}
+.community-actions .btn { font-size: 11.5px; padding: 5px 10px; }
+
+@media (max-width: 640px) {
+  .community-item { flex-wrap: wrap; }
+  .community-actions { width: 100%; justify-content: flex-end; }
+}
+
   .owner-avatar-fallback,
   .owner-preview-fallback { font-size: 32px; }
   .team-avatar,

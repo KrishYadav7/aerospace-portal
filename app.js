@@ -2178,6 +2178,7 @@ function updateAdminTabUI() {
     replies:       { icon: 'fa-envelope-open-text', text: 'Email Replies' },
     subscriptions: { icon: 'fa-repeat',         text: 'Subscriptions & Auto-Pay' },
     organization:  { icon: 'fa-building-user',  text: 'Organization & Owner' },
+        community:     { icon: 'fa-users',          text: 'Community — Alumni & Friends' },
     security:      { icon: 'fa-shield-halved',  text: 'Admin Security' }
   };
   const actionsMap = {
@@ -2201,7 +2202,10 @@ function updateAdminTabUI() {
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
       <button class="btn btn-primary" onclick="renderAdminOrganizationTab()"><i class="fas fa-rotate"></i> <span class="btn-text">Reload</span></button>`,
     security: `
-      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>`
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>`,
+    community: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminCommunity()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
   };
   const meta = titleMap[adminTab] || titleMap.overview;
   if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
@@ -2217,6 +2221,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'replies') renderAdminEmailReplies();
   else if (adminTab === 'subscriptions') renderAdminSubscriptions();
   else if (adminTab === 'organization') renderAdminOrganizationTab();
+  else if (adminTab === 'community') renderAdminCommunity();
   else if (adminTab === 'security') renderAdminSecurityTab();
 }
 
@@ -4695,6 +4700,8 @@ function renderStudentHome() {
   renderStreakCard();
   renderContinueCard();
   renderOwnerProfile();
+  renderAlumniSection();
+  renderFriendsSection();
 
   const professors = getProfessors();
   if (professors.length === 0) {
@@ -8389,4 +8396,434 @@ document.getElementById('loginUsername')?.addEventListener('input', (e) => {
     setLoginRole('student');
   }
 });
+/* ============================================================
+   ALUMNI & FRIENDS — Student sections + submission + admin
+   ============================================================ */
+
+/* ---------- Student: Alumni section ---------- */
+async function renderAlumniSection() {
+  const section = document.getElementById('alumniSection');
+  const grid    = document.getElementById('alumniGrid');
+  if (!section || !grid) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/alumni?_t=${Date.now()}`, { cache: 'no-store' });
+    const data = await res.json();
+    const list = (data && data.success && Array.isArray(data.alumni)) ? data.alumni : [];
+
+    if (list.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = 'block';
+
+    let html = '';
+    list.forEach(a => {
+      const avatar = a.photo
+        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy">`
+        : `<div class="alumni-avatar-fallback">${escapeHtml(getInitials(a.name))}</div>`;
+
+      const metaParts = [];
+      if (a.batch)    metaParts.push(`<i class="fas fa-calendar-alt"></i> ${escapeHtml(a.batch)}`);
+      if (a.degree)   metaParts.push(`<i class="fas fa-book"></i> ${escapeHtml(a.degree)}`);
+      if (a.location) metaParts.push(`<i class="fas fa-map-marker-alt"></i> ${escapeHtml(a.location)}`);
+
+      const workParts = [];
+      if (a.currentRole) workParts.push(escapeHtml(a.currentRole));
+      if (a.company)     workParts.push(`@ ${escapeHtml(a.company)}`);
+
+      const contactBtns = [];
+      if (a.linkedin) {
+        contactBtns.push(`<a href="${escapeHtml(a.linkedin)}" target="_blank" rel="noopener noreferrer" class="contact-chip contact-chip-email" style="text-decoration:none;">
+          <i class="fab fa-linkedin"></i> LinkedIn
+        </a>`);
+      }
+
+      html += `
+        <div class="alumni-card">
+          <div class="alumni-avatar">${avatar}</div>
+          <div class="alumni-body">
+            <h3>${escapeHtml(a.name)}</h3>
+            ${workParts.length ? `<div class="alumni-work">${workParts.join(' ')}</div>` : ''}
+            ${metaParts.length ? `<div class="alumni-meta">${metaParts.join(' · ')}</div>` : ''}
+            ${a.bio ? `<p class="alumni-bio">${escapeHtml(a.bio)}</p>` : ''}
+            ${contactBtns.length ? `<div class="alumni-contact">${contactBtns.join('')}</div>` : ''}
+          </div>
+        </div>`;
+    });
+    grid.innerHTML = html;
+  } catch (e) {
+    console.warn('[alumni] render failed:', e);
+    section.style.display = 'none';
+  }
+}
+
+/* ---------- Student: Friends section ---------- */
+async function renderFriendsSection() {
+  const section = document.getElementById('friendsSection');
+  const grid    = document.getElementById('friendsGrid');
+  if (!section || !grid) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/friends?_t=${Date.now()}`, { cache: 'no-store' });
+    const data = await res.json();
+    const list = (data && data.success && Array.isArray(data.friends)) ? data.friends : [];
+
+    if (list.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = 'block';
+
+    let html = '';
+    list.forEach(f => {
+      const photoHtml = f.photo
+        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy">`
+        : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(f.name))}</div>`;
+
+      const contactBtns = [];
+      if (f.linkedin) {
+        contactBtns.push(`<a href="${escapeHtml(f.linkedin)}" target="_blank" rel="noopener noreferrer" class="contact-chip contact-chip-email" style="text-decoration:none;">
+          <i class="fab fa-linkedin"></i> LinkedIn
+        </a>`);
+      }
+
+      html += `
+        <div class="professor-card friend-card">
+          ${photoHtml}
+          <h3>${escapeHtml(f.name)}</h3>
+          <div class="prof-title">${escapeHtml(f.role || 'Supporter')}</div>
+          <p>${escapeHtml(f.bio || '')}</p>
+          ${contactBtns.length ? `<div class="team-contact-row">${contactBtns.join('')}</div>` : ''}
+        </div>`;
+    });
+    grid.innerHTML = html;
+  } catch (e) {
+    console.warn('[friends] render failed:', e);
+    section.style.display = 'none';
+  }
+}
+
+/* ---------- Submit modals ---------- */
+function openAlumniSubmitModal() {
+  ['alumName','alumBatch','alumDegree','alumRole','alumCompany','alumLocation',
+   'alumEmail','alumPhone','alumLinkedin','alumBio'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const prev = document.getElementById('alumPhotoPreview');
+  if (prev && prev.tagName === 'IMG') {
+    prev.outerHTML = `<div class="thumbnail-preview-empty" id="alumPhotoPreview"><i class="fas fa-user"></i><span>No photo</span></div>`;
+  }
+  window.__pendingAlumPhotoFile = null;
+  openModal('alumniSubmitModal');
+}
+
+function openFriendSubmitModal() {
+  ['frName','frRole','frBio','frEmail','frPhone','frLinkedin'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const prev = document.getElementById('frPhotoPreview');
+  if (prev && prev.tagName === 'IMG') {
+    prev.outerHTML = `<div class="thumbnail-preview-empty" id="frPhotoPreview"><i class="fas fa-user"></i><span>No photo</span></div>`;
+  }
+  window.__pendingFrPhotoFile = null;
+  openModal('friendSubmitModal');
+}
+
+function previewAlumniPhoto(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { input.value = ''; return showToast('Image too large (max 2 MB).', 'error'); }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const prev = document.getElementById('alumPhotoPreview');
+    if (prev) {
+      const img = document.createElement('img');
+      img.src = e.target.result;
+      img.className = 'thumbnail-preview';
+      img.id = 'alumPhotoPreview';
+      img.alt = 'Preview';
+      prev.replaceWith(img);
+    }
+    window.__pendingAlumPhotoFile = file;
+  };
+  reader.readAsDataURL(file);
+}
+
+function previewFriendPhoto(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { input.value = ''; return showToast('Image too large (max 2 MB).', 'error'); }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const prev = document.getElementById('frPhotoPreview');
+    if (prev) {
+      const img = document.createElement('img');
+      img.src = e.target.result;
+      img.className = 'thumbnail-preview';
+      img.id = 'frPhotoPreview';
+      img.alt = 'Preview';
+      prev.replaceWith(img);
+    }
+    window.__pendingFrPhotoFile = file;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function submitAlumniForm(e) {
+  if (e) e.preventDefault();
+  const name = ($('alumName').value || '').trim();
+  const bio  = ($('alumBio').value  || '').trim();
+  if (!name) return showToast('Please enter your name.', 'error');
+  if (!bio)  return showToast('Please share a short bio.', 'error');
+
+  const btn = $('alumSubmitBtn');
+  const originalHTML = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting…'; }
+
+  try {
+    let photoUrl = '';
+    if (window.__pendingAlumPhotoFile) {
+      showToast('Uploading photo…', 'info');
+      const up = await uploadFileToServer(window.__pendingAlumPhotoFile);
+      photoUrl = up.url;
+    }
+    const payload = {
+      name,
+      batch:       ($('alumBatch').value    || '').trim(),
+      degree:      ($('alumDegree').value   || '').trim(),
+      currentRole: ($('alumRole').value     || '').trim(),
+      company:     ($('alumCompany').value  || '').trim(),
+      location:    ($('alumLocation').value || '').trim(),
+      email:       ($('alumEmail').value    || '').trim(),
+      phone:       ($('alumPhone').value    || '').trim(),
+      linkedin:    ($('alumLinkedin').value || '').trim(),
+      bio,
+      photo: photoUrl
+    };
+    const res = await fetch(`${API_BASE}/alumni/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.success) {
+      closeModal('alumniSubmitModal');
+      showToast('✅ ' + (data.message || 'Submitted for review.'), 'success');
+    } else {
+      showToast(data.message || 'Submission failed.', 'error');
+    }
+  } catch (err) {
+    console.error('[submitAlumniForm]', err);
+    showToast('Network error. Please try again.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHTML; }
+  }
+}
+
+async function submitFriendForm(e) {
+  if (e) e.preventDefault();
+  const name = ($('frName').value || '').trim();
+  const role = ($('frRole').value || '').trim();
+  if (!name) return showToast('Please enter your name.', 'error');
+  if (!role) return showToast('Please enter your role.', 'error');
+
+  const btn = $('frSubmitBtn');
+  const originalHTML = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting…'; }
+
+  try {
+    let photoUrl = '';
+    if (window.__pendingFrPhotoFile) {
+      showToast('Uploading photo…', 'info');
+      const up = await uploadFileToServer(window.__pendingFrPhotoFile);
+      photoUrl = up.url;
+    }
+    const payload = {
+      name, role,
+      bio:      ($('frBio').value      || '').trim(),
+      email:    ($('frEmail').value    || '').trim(),
+      phone:    ($('frPhone').value    || '').trim(),
+      linkedin: ($('frLinkedin').value || '').trim(),
+      photo: photoUrl
+    };
+    const res = await fetch(`${API_BASE}/friends/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.success) {
+      closeModal('friendSubmitModal');
+      showToast('✅ ' + (data.message || 'Submitted for review.'), 'success');
+    } else {
+      showToast(data.message || 'Submission failed.', 'error');
+    }
+  } catch (err) {
+    console.error('[submitFriendForm]', err);
+    showToast('Network error. Please try again.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHTML; }
+  }
+}
+
+/* ---------- Admin: Community Tab ---------- */
+async function renderAdminCommunity() {
+  const container = document.getElementById('adminCommunityContent');
+  if (!container) return;
+  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading community…</p></div>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/admin/community?adminId=${currentUser._id}&t=${Date.now()}`, { cache: 'no-store' });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'Failed to load.');
+
+    const alumni  = data.alumni  || [];
+    const friends = data.friends || [];
+
+    const pendA = alumni.filter(x => x.status === 'pending');
+    const apprA = alumni.filter(x => x.status === 'approved');
+    const rejA  = alumni.filter(x => x.status === 'rejected');
+    const pendF = friends.filter(x => x.status === 'pending');
+    const apprF = friends.filter(x => x.status === 'approved');
+    const rejF  = friends.filter(x => x.status === 'rejected');
+
+    let html = '';
+
+    /* ---- Alumni block ---- */
+    html += `
+      <div class="editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title">
+            <i class="fas fa-graduation-cap"></i> Alumni Submissions
+            <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+              ${pendA.length} pending · ${apprA.length} approved · ${rejA.length} rejected
+            </span>
+          </div>
+        </div>
+        ${renderCommunityList('alumni', pendA, 'Pending Approval', 'pending')}
+        ${renderCommunityList('alumni', apprA, 'Approved (visible to students)', 'approved')}
+        ${renderCommunityList('alumni', rejA,  'Rejected', 'rejected')}
+      </div>
+    `;
+
+    /* ---- Friends block ---- */
+    html += `
+      <div class="editor-section">
+        <div class="editor-section-header">
+          <div class="editor-section-title">
+            <i class="fas fa-handshake"></i> Friends & Supporters
+            <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+              ${pendF.length} pending · ${apprF.length} approved · ${rejF.length} rejected
+            </span>
+          </div>
+        </div>
+        ${renderCommunityList('friends', pendF, 'Pending Approval', 'pending')}
+        ${renderCommunityList('friends', apprF, 'Approved (visible to students)', 'approved')}
+        ${renderCommunityList('friends', rejF,  'Rejected', 'rejected')}
+      </div>
+    `;
+
+    container.innerHTML = html;
+  } catch (e) {
+    console.error('[admin/community]', e);
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading community: ${escapeHtml(e.message || 'unknown')}</p></div>`;
+  }
+}
+
+function renderCommunityList(type, items, title, status) {
+  if (items.length === 0) {
+    return `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">0</span></div>
+            <p class="community-empty">No entries.</p>`;
+  }
+  let html = `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">${items.length}</span></div>`;
+  html += `<div class="community-list">`;
+  items.forEach(x => {
+    const photoHtml = x.photo
+      ? `<img src="${escapeHtml(x.photo)}" alt="" class="community-avatar-img" loading="lazy">`
+      : `<div class="community-avatar-fallback">${escapeHtml(getInitials(x.name))}</div>`;
+
+    const meta = [];
+    if (type === 'alumni') {
+      if (x.batch)       meta.push(escapeHtml(x.batch));
+      if (x.currentRole) meta.push(escapeHtml(x.currentRole));
+      if (x.company)     meta.push('@ ' + escapeHtml(x.company));
+    } else {
+      if (x.role) meta.push(escapeHtml(x.role));
+    }
+
+    let actions = '';
+    if (status === 'pending') {
+      actions = `
+        <button class="btn btn-success btn-sm" onclick="approveCommunity('${type}', '${x._id}')"><i class="fas fa-check"></i> Approve</button>
+        <button class="btn btn-warning btn-sm" onclick="rejectCommunity('${type}', '${x._id}')"><i class="fas fa-times"></i> Reject</button>`;
+    } else if (status === 'approved') {
+      actions = `
+        <button class="btn btn-warning btn-sm" onclick="rejectCommunity('${type}', '${x._id}')"><i class="fas fa-times"></i> Unpublish</button>`;
+    } else if (status === 'rejected') {
+      actions = `
+        <button class="btn btn-success btn-sm" onclick="approveCommunity('${type}', '${x._id}')"><i class="fas fa-check"></i> Approve</button>`;
+    }
+    actions += ` <button class="btn btn-danger btn-sm" onclick="deleteCommunity('${type}', '${x._id}', '${escapeHtml(x.name).replace(/'/g,"\\'")}')"><i class="fas fa-trash"></i></button>`;
+
+    html += `
+      <div class="community-item">
+        <div class="community-avatar">${photoHtml}</div>
+        <div class="community-info">
+          <h4>${escapeHtml(x.name)}</h4>
+          <div class="community-meta">${meta.join(' · ') || '—'}</div>
+          ${x.bio ? `<div class="community-bio">${escapeHtml(x.bio.slice(0, 200))}${x.bio.length > 200 ? '…' : ''}</div>` : ''}
+          ${x.email ? `<div class="community-contact"><i class="fas fa-envelope"></i> ${escapeHtml(x.email)}</div>` : ''}
+        </div>
+        <div class="community-actions">${actions}</div>
+      </div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+async function approveCommunity(type, id) {
+  if (!confirm('Approve this entry? It will become visible to students.')) return;
+  try {
+    const res = await fetch(`${API_BASE}/admin/${type}/${id}/approve`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminId: currentUser._id })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('✅ Approved.', 'success'); renderAdminCommunity(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function rejectCommunity(type, id) {
+  if (!confirm('Reject / Unpublish this entry?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/admin/${type}/${id}/reject`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminId: currentUser._id })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('Rejected.', 'info'); renderAdminCommunity(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+async function deleteCommunity(type, id, name) {
+  if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/admin/${type}/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ adminId: currentUser._id })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('Deleted.', 'info'); renderAdminCommunity(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
 initApp();

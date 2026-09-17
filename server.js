@@ -17,6 +17,8 @@ const User = require('./models/User');
 const Course = require('./models/Course');
 const Professor = require('./models/Professor');
 const Settings = require('./models/Settings');
+const Alumni = require('./models/Alumni');
+const Friend = require('./models/Friend');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
@@ -3842,6 +3844,239 @@ app.get('/api/admin/test-email', async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 });
+/* ============================================================
+   ALUMNI & FRIENDS — Public submission + Admin approval
+   ------------------------------------------------------------
+   Public endpoints (anyone can submit / view approved):
+     POST /api/alumni/submit
+     GET  /api/alumni
+     POST /api/friends/submit
+     GET  /api/friends
+
+   Admin endpoints (require adminId):
+     GET    /api/admin/community
+     PUT    /api/admin/alumni/:id/approve
+     PUT    /api/admin/alumni/:id/reject
+     DELETE /api/admin/alumni/:id
+     PUT    /api/admin/friends/:id/approve
+     PUT    /api/admin/friends/:id/reject
+     DELETE /api/admin/friends/:id
+   ============================================================ */
+
+const communitySubmitLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,   // 1 hour
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many submissions. Please try again later.' }
+});
+
+/* ---------- Helper: verify admin ---------- */
+async function requireAdmin(adminId) {
+  if (!adminId) return null;
+  const u = await User.findById(adminId).select('role').lean();
+  if (!u || u.role !== 'admin') return null;
+  return u;
+}
+
+/* ---------- Public: Submit alumni ---------- */
+app.post('/api/alumni/submit', communitySubmitLimiter, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.name || !String(b.name).trim()) {
+      return res.status(400).json({ success: false, message: 'Name is required.' });
+    }
+    if (!b.bio || !String(b.bio).trim()) {
+      return res.status(400).json({ success: false, message: 'A short bio is required.' });
+    }
+    const doc = new Alumni({
+      name:        String(b.name).trim().slice(0, 80),
+      batch:       String(b.batch || '').trim().slice(0, 40),
+      degree:      String(b.degree || '').trim().slice(0, 120),
+      currentRole: String(b.currentRole || '').trim().slice(0, 120),
+      company:     String(b.company || '').trim().slice(0, 120),
+      location:    String(b.location || '').trim().slice(0, 100),
+      email:       String(b.email || '').trim().slice(0, 200),
+      phone:       String(b.phone || '').trim().slice(0, 40),
+      linkedin:    String(b.linkedin || '').trim().slice(0, 300),
+      bio:         String(b.bio).trim().slice(0, 1500),
+      photo:       String(b.photo || '').slice(0, 500),
+      status: 'pending'
+    });
+    await doc.save();
+    res.json({ success: true, message: 'Thanks! Your details were submitted. Admin will review soon.' });
+  } catch (e) {
+    console.error('[alumni/submit]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ---------- Public: List approved alumni ---------- */
+app.get('/api/alumni', async (req, res) => {
+  try {
+    const alumni = await Alumni.find({ status: 'approved' })
+      .select('-email -phone -approvedBy')
+      .sort({ approvedAt: -1 })
+      .lean();
+    res.json({ success: true, alumni });
+  } catch (e) {
+    console.error('[alumni/list]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ---------- Public: Submit friend ---------- */
+app.post('/api/friends/submit', communitySubmitLimiter, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.name || !String(b.name).trim()) {
+      return res.status(400).json({ success: false, message: 'Name is required.' });
+    }
+    if (!b.role || !String(b.role).trim()) {
+      return res.status(400).json({ success: false, message: 'Role is required.' });
+    }
+    const doc = new Friend({
+      name:     String(b.name).trim().slice(0, 80),
+      role:     String(b.role).trim().slice(0, 120),
+      bio:      String(b.bio || '').trim().slice(0, 800),
+      email:    String(b.email || '').trim().slice(0, 200),
+      phone:    String(b.phone || '').trim().slice(0, 40),
+      linkedin: String(b.linkedin || '').trim().slice(0, 300),
+      photo:    String(b.photo || '').slice(0, 500),
+      status: 'pending'
+    });
+    await doc.save();
+    res.json({ success: true, message: 'Thanks for joining! Admin will verify and publish soon.' });
+  } catch (e) {
+    console.error('[friends/submit]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ---------- Public: List approved friends ---------- */
+app.get('/api/friends', async (req, res) => {
+  try {
+    const friends = await Friend.find({ status: 'approved' })
+      .select('-email -phone -approvedBy')
+      .sort({ approvedAt: -1 })
+      .lean();
+    res.json({ success: true, friends });
+  } catch (e) {
+    console.error('[friends/list]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ---------- Admin: List all community entries ---------- */
+app.get('/api/admin/community', async (req, res) => {
+  try {
+    const { adminId } = req.query;
+    const admin = await requireAdmin(adminId);
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
+
+    const alumni  = await Alumni.find().sort({ submittedAt: -1 }).lean();
+    const friends = await Friend.find().sort({ submittedAt: -1 }).lean();
+    res.json({ success: true, alumni, friends });
+  } catch (e) {
+    console.error('[admin/community]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ---------- Admin: Approve / Reject / Delete ALUMNI ---------- */
+app.put('/api/admin/alumni/:id/approve', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req.body.adminId);
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
+    const doc = await Alumni.findByIdAndUpdate(
+      req.params.id,
+      { status: 'approved', approvedAt: new Date(), approvedBy: admin._id.toString() },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+    res.json({ success: true, message: 'Alumni approved.' });
+  } catch (e) {
+    console.error('[admin/alumni/approve]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+app.put('/api/admin/alumni/:id/reject', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req.body.adminId);
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
+    const doc = await Alumni.findByIdAndUpdate(
+      req.params.id,
+      { status: 'rejected', approvedAt: null },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+    res.json({ success: true, message: 'Alumni rejected.' });
+  } catch (e) {
+    console.error('[admin/alumni/reject]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+app.delete('/api/admin/alumni/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req.body.adminId || req.query.adminId);
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
+    await Alumni.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Alumni deleted.' });
+  } catch (e) {
+    console.error('[admin/alumni/delete]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ---------- Admin: Approve / Reject / Delete FRIEND ---------- */
+app.put('/api/admin/friends/:id/approve', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req.body.adminId);
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
+    const doc = await Friend.findByIdAndUpdate(
+      req.params.id,
+      { status: 'approved', approvedAt: new Date(), approvedBy: admin._id.toString() },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+    res.json({ success: true, message: 'Friend approved.' });
+  } catch (e) {
+    console.error('[admin/friends/approve]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+app.put('/api/admin/friends/:id/reject', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req.body.adminId);
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
+    const doc = await Friend.findByIdAndUpdate(
+      req.params.id,
+      { status: 'rejected', approvedAt: null },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+    res.json({ success: true, message: 'Friend rejected.' });
+  } catch (e) {
+    console.error('[admin/friends/reject]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+app.delete('/api/admin/friends/:id', async (req, res) => {
+  try {
+    const admin = await requireAdmin(req.body.adminId || req.query.adminId);
+    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
+    await Friend.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Friend deleted.' });
+  } catch (e) {
+    console.error('[admin/friends/delete]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
 /* ============================================================
    LISTEN
    ============================================================ */
