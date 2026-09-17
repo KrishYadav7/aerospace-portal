@@ -116,7 +116,6 @@
       document.body.style.overflow = 'hidden';
       document.addEventListener('keydown', this._onKeyDown);
     }
-
     _loadSingleVideo(opts) {
       this.titleEl.textContent = opts.title || 'Video';
       this.videoArea.innerHTML = '';
@@ -124,8 +123,9 @@
       if (opts.videoId) {
         const iframe = document.createElement('iframe');
         iframe.className = 'vp-iframe';
-        iframe.src = `https://www.youtube.com/embed/${opts.videoId}?autoplay=1&rel=0`;
-        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
+        // FIX: Use youtube-nocookie.com to bypass referrer blocks
+        iframe.src = `https://www.youtube-nocookie.com/embed/${opts.videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1`;
+        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
         iframe.allowFullscreen = true;
         this.videoArea.appendChild(iframe);
       } else if (opts.src) {
@@ -137,7 +137,6 @@
         this.videoArea.appendChild(video);
       }
     }
-
     _loadPlaylistItem(index) {
       if (index < 0 || index >= this.playlist.length) return;
       
@@ -149,8 +148,9 @@
       if (item.kind === 'youtube' && item.videoId) {
         const iframe = document.createElement('iframe');
         iframe.className = 'vp-iframe';
-        iframe.src = `https://www.youtube.com/embed/${item.videoId}?autoplay=1&rel=0`;
-        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
+        // FIX: Use youtube-nocookie.com to bypass referrer blocks
+        iframe.src = `https://www.youtube-nocookie.com/embed/${item.videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1`;
+        iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
         iframe.allowFullscreen = true;
         this.videoArea.appendChild(iframe);
       } else if (item.kind === 'direct' && item.directUrl) {
@@ -164,7 +164,7 @@
       
       this._renderPlaylist(); // Update active item highlight
     }
-
+  
     _buildUI() {
       const old = document.getElementById('videoPlayerModal');
       if (old) old.remove();

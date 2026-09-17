@@ -634,8 +634,17 @@ function serializeUser(user) {
 
 function extractYouTubeId(url) {
   if (!url) return null;
-  const m = String(url).match(
-    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
+  const str = String(url).trim();
+  
+  // Matches all common YouTube URL formats:
+  // - youtube.com/watch?v=VIDEO_ID
+  // - youtu.be/VIDEO_ID
+  // - youtube.com/embed/VIDEO_ID
+  // - youtube.com/shorts/VIDEO_ID
+  // - youtube.com/live/VIDEO_ID
+  // - youtube.com/v/VIDEO_ID
+  const m = str.match(
+    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
   );
   return m ? m[1] : null;
 }
