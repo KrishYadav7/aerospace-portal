@@ -605,9 +605,24 @@ function normalizePhone(p) {
 /* ============================================================
    DB
    ============================================================ */
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('🚀 MongoDB Database Successfully Connected!'))
-  .catch((err) => console.log('Database Connection Error:', err));
+mongoose.connect(process.env.MONGO_URI, {
+  maxPoolSize: 50,
+  minPoolSize: 5,
+  maxIdleTimeMS: 30000,
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+  connectTimeoutMS: 10000,
+  family: 4,
+  compressors: ['zlib'],
+  retryWrites: true,
+  retryReads: true
+})
+  .then(() => console.log('🚀 MongoDB Connected — pool ready'))
+  .catch((err) => console.error('❌ MongoDB Error:', err.message));
+
+mongoose.connection.on('connected', () => console.log('[mongo] connected'));
+mongoose.connection.on('error', (e) => console.error('[mongo] error:', e.message));
+mongoose.connection.on('disconnected', () => console.warn('[mongo] disconnected'));
 /* ============================================================
    EMAIL REPLIES SCHEMA
    ============================================================ */
@@ -2359,7 +2374,17 @@ app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', async 
     res.json({ success: true, message: 'Answer accepted!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error: ' + e.message }); }
 });
-
+// server.js mein, app.use(express.json()) ke baad
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    if (duration > 1000) { // 1 second se zyada slow
+      console.warn(`[SLOW] ${req.method} ${req.url} - ${duration}ms`);
+    }
+  });
+  next();
+});
 /* ============================================================
    QUIZ
    ============================================================ */

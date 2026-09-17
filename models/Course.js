@@ -119,5 +119,7 @@ courseSchema.index({ status: 1, createdAt: -1 });
 courseSchema.index({ code: 1 });
 courseSchema.index({ featured: -1, createdAt: -1 });
 courseSchema.index({ createdAt: -1 });
+courseSchema.index({ status: 1, featured: -1 });
+courseSchema.index({ name: 'text', code: 'text', description: 'text' });
 
 module.exports = mongoose.model('Course', courseSchema);

@@ -93,5 +93,6 @@ userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
 userSchema.index({ role: 1, createdAt: -1 });
 userSchema.index({ 'subscription.status': 1 });
+userSchema.index({ role: 1, email: 1 });
 
 module.exports = mongoose.model('User', userSchema);
