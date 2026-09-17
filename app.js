@@ -5468,7 +5468,31 @@ function renderQASection(course) {
       <textarea id="newDoubtText" placeholder="Type your doubt here..."></textarea>
       <button class="btn btn-primary" onclick="askDoubt('${course.id}')"><i class="fas fa-paper-plane"></i> Submit Doubt</button>
     </div>`;
-  }
+
+    // ====== AI DOUBT SOLVER BOX ======
+    html += `<div class="ai-doubt-box">
+      <div class="ai-doubt-header">
+        <div class="ai-doubt-icon"><i class="fas fa-robot"></i></div>
+        <div>
+          <h4>Ask AI Assistant</h4>
+          <p>Get an instant answer while you wait for a human reply</p>
+        </div>
+      </div>
+      <textarea id="aiDoubtInput-${course.id}" 
+                placeholder="e.g. Explain Bernoulli's equation with an example…"
+                rows="3"></textarea>
+      <div class="ai-doubt-actions">
+        <button class="btn btn-accent" onclick="askAIDoubt('${course.id}')">
+          <i class="fas fa-sparkles"></i> Ask AI
+        </button>
+        <button class="btn btn-outline btn-sm" onclick="askAIDoubt('${course.id}', true)">
+          <i class="fas fa-paper-plane"></i> Ask & Post Publicly
+        </button>
+      </div>
+      <div class="ai-doubt-answer" id="aiDoubtAnswer-${course.id}" style="display:none;"></div>
+    </div>`;
+    // ====== END AI BOX ======
+}
 
   if (doubts.length === 0) {
     html += `<div class="empty-state" style="padding:20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet.</p></div>`;
@@ -8895,6 +8919,139 @@ async function deleteCommunity(type, id, name) {
     }
     else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
+}
+/* ============================================================
+   AI DOUBT SOLVER — Frontend Functions
+   ============================================================ */
+
+/**
+ * Ask AI a doubt
+ * @param {string} courseId - Course ka ID
+ * @param {boolean} postPublicly - Agar true, toh Q&A mein bhi save hoga
+ */
+async function askAIDoubt(courseId, postPublicly = false) {
+  const input = document.getElementById(`aiDoubtInput-${courseId}`);
+  const answerBox = document.getElementById(`aiDoubtAnswer-${courseId}`);
+  const question = input ? input.value.trim() : '';
+
+  // ---- Validation ----
+  if (!question) {
+    return showToast('Please type your doubt first.', 'error');
+  }
+
+  // ---- Loading state dikhao ----
+  answerBox.style.display = 'block';
+  answerBox.innerHTML = `
+    <div class="ai-loading">
+      <div class="ai-spinner"></div>
+      <span>AI is thinking…</span>
+    </div>`;
+
+  try {
+    // ---- Backend ko request bhejo ----
+    const res = await fetch(`${API_BASE}/ai/solve-doubt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        courseId,
+        userId: currentUser ? currentUser._id : null
+      })
+    });
+
+    const data = await res.json();
+
+    // ---- Error handle karo ----
+    if (!data.success) {
+      answerBox.innerHTML = `<div class="ai-error">
+        <i class="fas fa-triangle-exclamation"></i> ${escapeHtml(data.message)}
+      </div>`;
+      return;
+    }
+
+    // ---- Answer render karo ----
+    answerBox.innerHTML = `
+      <div class="ai-answer-header">
+        <i class="fas fa-robot"></i> <strong>AI Assistant</strong>
+        <span class="ai-badge">Beta</span>
+      </div>
+      <div class="ai-answer-body" id="aiAnswerBody-${courseId}">${renderMarkdown(data.answer)}</div>
+      <div class="ai-answer-footer">
+        <span class="hint">⚠️ AI answers may be inaccurate. Verify with your instructor.</span>
+        <button class="btn btn-outline btn-sm" onclick="copyAIAnswer('${courseId}')">
+          <i class="fas fa-copy"></i> Copy
+        </button>
+      </div>`;
+
+    // ---- LaTeX (math) render karo ----
+    if (typeof renderMathIn === 'function') {
+      renderMathIn(document.getElementById(`aiAnswerBody-${courseId}`));
+    }
+
+    // ---- Agar user chahta hai, toh Q&A mein bhi post karo ----
+    if (postPublicly) {
+      await fetch(`/api/courses/${courseId}/doubts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          studentName: currentUser.fullName || currentUser.username,
+          studentUsername: currentUser.username,
+          studentEmail: currentUser.email || '',
+          question: `[AI-answered] ${question}\n\n🤖 AI Answer:\n${data.answer}`
+        })
+      });
+      showToast('✅ Posted publicly for instructor review.', 'success');
+      fetchCoursesFromDB();
+    }
+
+  } catch (err) {
+    console.error('[askAIDoubt]', err);
+    answerBox.innerHTML = `<div class="ai-error">
+      <i class="fas fa-triangle-exclamation"></i> Network error. Please try again.
+    </div>`;
+  }
+}
+
+/**
+ * AI answer ko clipboard mein copy karo
+ */
+function copyAIAnswer(courseId) {
+  const body = document.getElementById(`aiAnswerBody-${courseId}`);
+  if (!body) return;
+  copyToClipboard(body.innerText).then(ok => {
+    showToast(ok ? '✓ Copied!' : 'Copy failed.', ok ? 'success' : 'error');
+  });
+}
+
+/**
+ * Simple Markdown → HTML converter
+ * (Bold, lists, code blocks, headers)
+ */
+function renderMarkdown(text) {
+  if (!text) return '';
+  let html = escapeHtml(text);
+
+  // Code blocks (``` ... ```)
+  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+
+  // Inline code (`...`)
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Bold (**...**)
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+
+  // Bullet lists
+  html = html.replace(/^\s*[-*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+
+  // Line breaks
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
 }
 
 initApp();

@@ -1,11 +1,7 @@
 /* ============================================================
-   SERVICE WORKER — offline shell caching (v23)
-   ------------------------------------------------------------
-   Changes vs v22:
-     • Removed PDF.js + Chart.js from precache (load on-demand now)
-     • Faster first install → faster first load
+   SERVICE WORKER — offline shell caching (v24)
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v23';
+const CACHE_NAME = 'aero-shell-v25';
 
 const SHELL_ASSETS = [
   './',
@@ -13,20 +9,18 @@ const SHELL_ASSETS = [
   './styles.css',
   './app.js',
   './media-viewer.js',
-  './manifest.json',
-  'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css',
-  'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'
+  './manifest.json'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return Promise.all(
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(
         SHELL_ASSETS.map((url) =>
-          cache.add(url).catch((err) => console.warn('Cache miss:', url, err))
+          cache.add(url).catch((err) => console.warn('[SW] cache miss:', url, err))
         )
-      );
-    })
+      )
+    )
   );
   self.skipWaiting();
 });
@@ -34,67 +28,43 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      Promise.all(
+        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+      )
     )
   );
   self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
-  const { request } = event;
-  const url = new URL(request.url);
+  const req = event.request;
+  if (req.method !== 'GET') return;
 
-  if (url.pathname.startsWith('/api/') || url.hostname.includes('razorpay')) return;
-  if (request.method !== 'GET') return;
+  const url = new URL(req.url);
 
-  /* ---- app.js / styles.css / media-viewer.js: NETWORK-FIRST ---- */
-  const isCoreAsset =
-    url.pathname === '/app.js' ||
-    url.pathname === '/styles.css' ||
-    url.pathname === '/media-viewer.js' ||
-    url.pathname.endsWith('/app.js') ||
-    url.pathname.endsWith('/styles.css') ||
-    url.pathname.endsWith('/media-viewer.js');
+  // Never intercept API calls, uploads, or cross-origin requests
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith('/api/')) return;
+  if (url.pathname.startsWith('/uploads/')) return;
 
-  if (isCoreAsset) {
-    event.respondWith(
-      fetch(request, { cache: 'no-store' })
-        .then((res) => {
-          if (res && res.ok) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((c) => c.put(request, clone));
-          }
-          return res;
-        })
-        .catch(() => caches.match(request))
-    );
-    return;
-  }
-
-  /* ---- Everything else: cache-first, refresh in background ---- */
-  const CACHEABLE_HOSTS = ['cdnjs.cloudflare.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'cdn.jsdelivr.net'];
-
-  event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) {
-        fetch(request).then((res) => {
-          if (res.ok) caches.open(CACHE_NAME).then((c) => c.put(request, res.clone()));
-        }).catch(() => {});
-        return cached;
-      }
-      return fetch(request)
-        .then((res) => {
-          const isSameOrigin = url.origin === location.origin;
-          const isCacheableHost = CACHEABLE_HOSTS.some((h) => url.hostname.includes(h));
-          if (res.ok && (isSameOrigin || isCacheableHost)) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((c) => c.put(request, clone));
-          }
-          return res;
-        })
-        .catch(() => {
-          if (request.mode === 'navigate') return caches.match('./index.html');
-        });
-    })
+  const isShell = SHELL_ASSETS.some((a) =>
+    url.pathname.endsWith(a.replace('./', '/')) || url.pathname === '/'
   );
+
+  if (isShell) {
+    event.respondWith(
+      caches.match(req).then((cached) =>
+        cached ||
+        fetch(req)
+          .then((res) => {
+            if (res && res.ok) {
+              const copy = res.clone();
+              caches.open(CACHE_NAME).then((c) => c.put(req, copy));
+            }
+            return res;
+          })
+          .catch(() => caches.match('./index.html'))
+      )
+    );
+  }
 });

@@ -1,13 +1,37 @@
+/* ============================================================
+   BOOT ORDER — .env MUST load before anything touches process.env
+   ============================================================ */
 const dns = require('dns');
 dns.setDefaultResultOrder('ipv4first');   // Render free tier has NO IPv6 egress
 
+// ⚡ CRITICAL: dotenv must be the FIRST thing that runs.
+// Otherwise cloudinary.config() reads undefined env vars.
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
+const cloudinary = require('cloudinary').v2;
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true
+});
+
+console.log('[cloudinary] Configured:', !!process.env.CLOUDINARY_CLOUD_NAME);
+if (!process.env.CLOUDINARY_CLOUD_NAME) {
+  console.error('❌ CLOUDINARY_CLOUD_NAME missing from .env');
+}
+if (!process.env.CLOUDINARY_API_KEY) {
+  console.error('❌ CLOUDINARY_API_KEY missing from .env');
+}
+if (!process.env.CLOUDINARY_API_SECRET) {
+  console.error('❌ CLOUDINARY_API_SECRET missing from .env');
+}
 const cors = require('cors');
 const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
-require('dotenv').config();
 const nodemailer = require('nodemailer');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
@@ -56,22 +80,16 @@ app.use(helmet({
 }));
 app.use(compression());
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// File uploads use multer (separate path); JSON bodies never exceed a few MB
+app.use(express.json({ limit: '4mb' }));
+app.use(express.urlencoded({ limit: '4mb', extended: true }));
 /* ============================================================
    FILE UPLOADS — save to disk, serve from /uploads, never store in MongoDB
    ============================================================ */
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const safeName = String(file.originalname).replace(/[^a-zA-Z0-9._-]/g, '_');
-    cb(null, unique + '-' + safeName);
-  }
-});
+const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 500 * 1024 * 1024 } // 500 MB
+  limits: { fileSize: 12 * 1024 * 1024 } // 12 MB — larger files use /api/upload/chunk
 });
 app.use('/uploads', express.static(UPLOAD_DIR, {
   maxAge: '7d',
@@ -80,14 +98,35 @@ app.use('/uploads', express.static(UPLOAD_DIR, {
 }));
 
 /* Upload endpoint — accepts one file, returns its public URL */
-app.post('/api/upload', upload.single('file'), (req, res) => {
+app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
-    const url = '/uploads/' + req.file.filename;
-    console.log('[upload] ✅ Saved:', req.file.originalname, '→', url, '(', Math.round(req.file.size / 1024 / 1024), 'MB )');
-    res.json({ success: true, url, fileName: req.file.originalname, fileSize: req.file.size });
+
+    console.log('[upload] 📤 Cloudinary:', req.file.originalname,
+                '(' + Math.round(req.file.size / 1024 / 1024) + ' MB)');
+
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'auto',
+          folder: 'aerogyan/uploads',
+          timeout: 600000
+        },
+        (err, result) => err ? reject(err) : resolve(result)
+      );
+      stream.end(req.file.buffer);
+    });
+
+    console.log('[upload] ✅ Cloudinary URL:', result.secure_url);
+    res.json({
+      success: true,
+      url: result.secure_url,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      publicId: result.public_id
+    });
   } catch (e) {
-    console.error('[upload] Error:', e.message);
+    console.error('[upload] ❌ Error:', e.message);
     res.status(500).json({ success: false, message: 'Upload failed: ' + e.message });
   }
 });
@@ -195,14 +234,10 @@ app.post('/api/upload/complete', async (req, res) => {
       });
     }
 
-    const unique   = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const safeName = String(session.fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
-    const finalName = unique + '-' + safeName;
-    const finalPath = path.join(UPLOAD_DIR, finalName);
-
-    // FAST streaming merge — reads each chunk as a stream, pipes directly.
-    // Never loads whole chunk into memory. Uses 1MB highWaterMark for speed.
-    const writeStream = fs.createWriteStream(finalPath, { highWaterMark: 1024 * 1024 });
+    // ---- 1) Merge all chunks into one temp file on disk ----
+    const tempName = 'temp-' + Date.now() + '-' + Math.round(Math.random() * 1e9);
+    const tempPath = path.join(UPLOAD_DIR, tempName);
+    const writeStream = fs.createWriteStream(tempPath, { highWaterMark: 1024 * 1024 });
 
     try {
       for (let i = 0; i < session.totalChunks; i++) {
@@ -221,15 +256,33 @@ app.post('/api/upload/complete', async (req, res) => {
       });
     } catch (mergeErr) {
       try { writeStream.destroy(); } catch (_) {}
+      try { fs.unlinkSync(tempPath); } catch (_) {}
       throw mergeErr;
     }
 
+    // ---- 2) Upload merged file to Cloudinary ----
+    console.log('[chunked] 📤 Cloudinary upload:', session.fileName,
+                '(' + Math.round(session.fileSize / 1024 / 1024) + ' MB)');
+
+    const result = await cloudinary.uploader.upload(tempPath, {
+      resource_type: 'auto',
+      folder: 'aerogyan/uploads',
+      timeout: 600000
+    });
+
+    // ---- 3) Cleanup temp file + chunk directory ----
+    try { fs.unlinkSync(tempPath); } catch (_) {}
     try { fs.rmSync(session.sessionDir, { recursive: true, force: true }); } catch (_) {}
     uploadSessions.delete(uploadId);
 
-    const url = '/uploads/' + finalName;
-    console.log('[chunked] ✅ Complete →', url, '(', Math.round(session.fileSize / 1024 / 1024), 'MB )');
-    res.json({ success: true, url, fileName: session.fileName, fileSize: session.fileSize });
+    console.log('[chunked] ✅ Cloudinary URL:', result.secure_url);
+    res.json({
+      success: true,
+      url: result.secure_url,
+      fileName: session.fileName,
+      fileSize: session.fileSize,
+      publicId: result.public_id
+    });
   } catch (e) {
     console.error('[chunked/complete]', e);
     res.status(500).json({ success: false, message: 'Assemble failed: ' + e.message });
@@ -1990,9 +2043,22 @@ app.post('/api/admin/send-email', async (req, res) => {
    ============================================================ */
 app.get('/api/professors', async (req, res) => {
   try {
-    const professors = await Professor.find().sort({ createdAt: 1 }).lean();
-    res.json({ success: true, professors });
+    const cached = cacheGet('professors:all');
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return res.json(cached);
+    }
+    const professors = await Professor.find()
+      .select('-__v')
+      .sort({ createdAt: 1 })
+      .lean();
+    const payload = { success: true, professors };
+    cacheSet('professors:all', payload, 5 * 60 * 1000);
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.json(payload);
   } catch (e) {
+    console.error('[GET /api/professors]', e);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -2037,53 +2103,66 @@ app.delete('/api/professors/:id', async (req, res) => {
    Keeps: quizCount (computed), basic metadata, playlists, announcements */
 app.get('/api/courses', async (req, res) => {
   try {
-    // 60-second cache
-    const cached = cacheGet('courses:list');
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit) || 12);
+    const skip = (page - 1) * limit;
+
+    const cacheKey = `courses:list:${page}:${limit}`;
+    const cached = cacheGet(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=30');
       return res.json(cached);
     }
 
-    const courses = await Course.aggregate([
-      {
-        $project: {
-          name: 1, code: 1, semester: 1, instructor: 1, description: 1,
-          category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
-          learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
-          isPremium: 1, price: 1, announcements: 1, playlists: 1,
-          createdAt: 1, updatedAt: 1,
-          doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
-          materials: {
-            $map: {
-              input: { $ifNull: ['$materials', []] },
-              as: 'm',
-              in: {
-                _id: '$$m._id',
-                title: '$$m.title',
-                type: '$$m.type',
-                description: '$$m.description',
-                url: '$$m.url',
-                fileName: '$$m.fileName',
-                isPremium: '$$m.isPremium',
-                price: '$$m.price',
-                estimatedTime: '$$m.estimatedTime',
-                tags: '$$m.tags',
-                examConfig: '$$m.examConfig',
-                quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
+    const [courses, total] = await Promise.all([
+      Course.aggregate([
+        { $sort: { featured: -1, createdAt: -1 } },
+        { $skip: skip },
+        { $limit: limit },
+        {
+          $project: {
+            name: 1, code: 1, semester: 1, instructor: 1, description: 1,
+            category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
+            learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
+            isPremium: 1, price: 1, announcements: 1, playlists: 1,
+            createdAt: 1, updatedAt: 1,
+            doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
+            materials: {
+              $map: {
+                input: { $ifNull: ['$materials', []] },
+                as: 'm',
+                in: {
+                  _id: '$$m._id', title: '$$m.title', type: '$$m.type',
+                  description: '$$m.description', url: '$$m.url',
+                  fileName: '$$m.fileName', isPremium: '$$m.isPremium',
+                  price: '$$m.price', estimatedTime: '$$m.estimatedTime',
+                  tags: '$$m.tags', examConfig: '$$m.examConfig',
+                  quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
+                }
               }
             }
           }
         }
-      }
+      ]),
+      Course.countDocuments()
     ]);
 
-    cacheSet('courses:list', courses, 60000);
+    const payload = {
+      success: true,
+      courses,
+      pagination: {
+        page, limit, total,
+        totalPages: Math.ceil(total / limit),
+        hasMore: page * limit < total
+      }
+    };
+
+    cacheSet(cacheKey, payload, 60000);
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=30');
-    res.json(courses);
+    res.json(payload);
   } catch (e) {
-    res.status(500).json({ message: 'Server error: ' + e.message });
+    console.error('[GET /api/courses]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
 
@@ -3925,6 +4004,14 @@ if (process.env.ENABLE_IMAP_POLLING === 'true') {
 // API Endpoint for admin dashboard
 app.get('/api/admin/email-replies', async (req, res) => {
   try {
+    // Live IMAP pull when the admin explicitly asks for a refresh
+    if (req.query.refresh === '1' && USE_SMTP) {
+      try {
+        await withTimeout(fetchEmailReplies(), 10000, 'IMAP refresh');
+      } catch (e) {
+        console.warn('[IMAP] Live refresh failed (non-fatal):', e.message);
+      }
+    }
     const replies = await EmailReply.find().sort({ date: -1 }).limit(50).lean();
     res.json({ success: true, replies });
   } catch (e) {
@@ -4178,7 +4265,124 @@ app.delete('/api/admin/friends/:id', async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 });
+/* ============================================================
+   AI DOUBT SOLVER — Groq (Llama 3.3 70B)
+   ------------------------------------------------------------
+   Student doubt → AI answer in ~2 seconds
+   FREE tier: 14,400 requests/day
+   ============================================================ */
 
+// Rate limiter — 10 requests per minute per IP (spam protection)
+const aiDoubtLimiter = rateLimit({
+  windowMs: 60 * 1000,   // 1 minute
+  max: 10,               // 10 doubts/minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many AI requests. Please wait a minute.' }
+});
+
+app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
+  try {
+    // ---- STEP 1: Frontend se data nikalo ----
+    const { question, courseId, materialId, userId } = req.body || {};
+
+    // ---- STEP 2: Validation ----
+    if (!question || !question.trim()) {
+      return res.status(400).json({ success: false, message: 'Question is required.' });
+    }
+    if (question.length > 2000) {
+      return res.status(400).json({ success: false, message: 'Question too long (max 2000 chars).' });
+    }
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(500).json({ success: false, message: 'AI service not configured.' });
+    }
+
+    // ---- STEP 3: Course context fetch karo (RAG-lite) ----
+    let contextBlock = '';
+    if (courseId) {
+      try {
+        const course = await Course.findById(courseId)
+          .select('name code description materials.title materials.description materials.type')
+          .lean();
+
+        if (course) {
+          const matList = (course.materials || [])
+            .slice(0, 20)
+            .map(m => `- ${m.title} (${m.type}): ${(m.description || '').slice(0, 120)}`)
+            .join('\n');
+
+          contextBlock =
+            `Course: ${course.name} (${course.code})\n` +
+            `Description: ${(course.description || '').slice(0, 400)}\n` +
+            `Available materials:\n${matList}\n`;
+        }
+      } catch (e) {
+        console.warn('[ai/solve-doubt] Course fetch failed:', e.message);
+        // Continue without context — not fatal
+      }
+    }
+
+    // ---- STEP 4: Prompt banao ----
+    const systemPrompt =
+      `You are a helpful teaching assistant for the Aerospace Department at IIT Kharagpur. ` +
+      `You help students understand concepts from their course materials. ` +
+      `Answer in a clear, student-friendly way. Use simple language and real-world analogies. ` +
+      `If the question involves math or physics, show the derivation step-by-step. ` +
+      `If you don't know something, say so honestly. ` +
+      `Keep answers focused (under 400 words unless a derivation needs more). ` +
+      `Use markdown formatting (bold, bullet points, code blocks, LaTeX with $...$ for math).`;
+
+    const userPrompt = contextBlock
+      ? `${contextBlock}\nStudent's doubt: ${question}`
+      : `Student's doubt: ${question}`;
+
+    // ---- STEP 5: Groq API call ----
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',   // Best free model
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: userPrompt }
+        ],
+        temperature: 0.5,        // 0 = boring, 1 = creative, 0.5 = balanced
+        max_tokens: 1200         // Answer length cap
+      })
+    });
+
+    // ---- STEP 6: Error handling ----
+    if (!groqRes.ok) {
+      const errText = await groqRes.text();
+      console.error('[ai/solve-doubt] Groq error:', groqRes.status, errText);
+      return res.status(500).json({
+        success: false,
+        message: 'AI service is busy. Please try again in a moment.'
+      });
+    }
+
+    // ---- STEP 7: Answer extract karo ----
+    const groqData = await groqRes.json();
+    const answer = groqData.choices?.[0]?.message?.content || 'No answer generated.';
+
+    console.log(`[ai/solve-doubt] ✅ Answered (${answer.length} chars)`);
+
+    // ---- STEP 8: Frontend ko bhejo ----
+    res.json({
+      success: true,
+      answer,
+      model: 'llama-3.3-70b-versatile',
+      tokensUsed: groqData.usage?.total_tokens || 0
+    });
+
+  } catch (e) {
+    console.error('[ai/solve-doubt] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
 /* ============================================================
    LISTEN
    ============================================================ */

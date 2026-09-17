@@ -1,0 +1,25 @@
+{
+  "name": "AeroGyan Education – Course Portal",
+  "short_name": "AeroGyan",
+  "description": "Aerospace Engineering course materials, lectures, and quizzes.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0b1226",
+  "theme_color": "#0b1226",
+  "icons": [
+    {
+      "src": "/passport.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/passport.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
