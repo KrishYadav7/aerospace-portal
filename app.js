@@ -4663,7 +4663,7 @@ function renderOwnerProfile() {
   const o = liveOwnerProfile;
 
   const avatarHtml = o.photo
-    ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy">`
+    ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;">`
     : `<div class="owner-avatar-fallback">${escapeHtml(getInitials(o.name))}</div>`;
 
   const contactHtml = [];
@@ -4711,7 +4711,7 @@ function renderStudentHome() {
     professors.forEach(p => {
       // ---- Standardized avatar: image OR initial-based fallback ----
       const photoHtml = p.photo
-        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy">`
+        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;margin:0 auto 12px !important;">`
         : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(p.name))}</div>`;
 
       // ---- Contact buttons (only when data exists) ----
@@ -8421,7 +8421,7 @@ async function renderAlumniSection() {
     let html = '';
     list.forEach(a => {
       const avatar = a.photo
-        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;">`
+        ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;">`
         : `<div class="alumni-avatar-fallback">${escapeHtml(getInitials(a.name))}</div>`;
 
       const metaParts = [];
@@ -8480,7 +8480,7 @@ async function renderFriendsSection() {
     let html = '';
     list.forEach(f => {
       const photoHtml = f.photo
-        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy" style="width:88px;height:88px;object-fit:cover;border-radius:50%;display:block;margin:0 auto 12px;">`
+        ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;margin:0 auto 12px !important;border:3px solid var(--accent-500) !important;box-shadow:0 6px 18px rgba(6,182,212,.28) !important;">`
         : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(f.name))}</div>`;
 
       const contactBtns = [];
@@ -8742,7 +8742,7 @@ function renderCommunityList(type, items, title, status) {
   html += `<div class="community-list">`;
   items.forEach(x => {
     const photoHtml = x.photo
-      ? `<img src="${escapeHtml(x.photo)}" alt="" class="community-avatar-img" loading="lazy">`
+      ? `<img src="${escapeHtml(x.photo)}" alt="" class="community-avatar-img" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;">`
       : `<div class="community-avatar-fallback">${escapeHtml(getInitials(x.name))}</div>`;
 
     const meta = [];
