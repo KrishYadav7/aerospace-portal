@@ -2500,9 +2500,20 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
     const user = await User.findById(req.params.userId).select('-password').lean();
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    const log = user.activityLog || [];
-    const progressMap = user.progress ? Object.fromEntries(user.progress) : {};
-    const quizResults = user.quizResults ? Object.fromEntries(user.quizResults) : {};
+    /* ---- SAFE Map/Plain-Object → Plain Object converter ----
+       Why: `.lean()` returns Mongoose Map fields as plain objects,
+       not Maps. `Object.fromEntries(plainObject)` throws
+       "object is not iterable". This helper handles BOTH cases. */
+    const toPlain = (v) => {
+      if (!v) return {};
+      if (v instanceof Map) return Object.fromEntries(v);
+      if (typeof v === 'object' && !Array.isArray(v)) return v;
+      return {};
+    };
+
+    const log = Array.isArray(user.activityLog) ? user.activityLog : [];
+    const progressMap = toPlain(user.progress);
+    const quizResults = toPlain(user.quizResults);
 
     const uniqueDays = new Set(log.map(a => a.date));
     const totalViews = log.filter(a => a.type === 'view').length;
