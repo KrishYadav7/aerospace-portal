@@ -5162,24 +5162,24 @@ function renderMaterialCard(course, m, isPurchased) {
   const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || isSubscribed || !isMatPremium;
   const viewed = isMaterialViewed(course.id, m.id);
   const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
+  
   let fileActionHtml = '';
   if (!canAccess) {
     fileActionHtml = `<button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock ₹${matPrice}</button>`;
   } else {
-    if (m.type === 'video' && hasUrl) {
+    // 1. Video handling
+    if (m.type === 'video' && hasUrl && !hasFile) {
       fileActionHtml += `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')"><i class="fas fa-play"></i> Watch</button>`;
-    } else if (hasUrl) {
-      fileActionHtml += ` <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
     }
-
+    
+    // 2. File handling (ALWAYS use Read button for uploaded files, no download/open link)
     if (hasFile) {
-      const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
-                    String(m.fileData || '').startsWith('data:application/pdf');
-      if (isPdf) {
-        fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
-      } else if (currentUser.role === 'admin') {
-        fileActionHtml += ` <a href="${m.fileData}" download="${escapeHtml(m.fileName) || 'download'}" class="btn btn-outline btn-sm"><i class="fas fa-download"></i> Download</a>`;
-      }
+      fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
+    }
+    
+    // 3. External link handling (only if no file is uploaded, and it's not a video)
+    if (!hasFile && hasUrl && m.type !== 'video') {
+       fileActionHtml += ` <a href="${escapeHtml(m.url)}" target="_blank" rel="noopener" class="btn btn-primary btn-sm"><i class="fas fa-external-link-alt"></i> Open Link</a>`;
     }
   }
 
@@ -7179,19 +7179,14 @@ async function viewFileOnline(courseId, materialId) {
   }
 
   if (fileUrl) {
-    const isPdfUrl = fileUrl.toLowerCase().endsWith('.pdf');
-    if (isPdfUrl) {
-      window.PDFViewer.open({
-        url: fileUrl,
-        materialId: mat.id,
-        courseId: course.id,
-        fileName: mat.fileName,
-        title: mat.title,
-        username: currentUser.fullName || currentUser.username || 'Student'
-      });
-    } else {
-      showToast('Preview is only available for PDFs. Download is disabled.', 'error');
-    }
+    window.PDFViewer.open({
+      url: fileUrl,
+      materialId: mat.id,
+      courseId: course.id,
+      fileName: mat.fileName,
+      title: mat.title,
+      username: currentUser.fullName || currentUser.username || 'Student'
+    });
     return;
   }
 
@@ -7203,19 +7198,14 @@ async function viewFileOnline(courseId, materialId) {
       if (data.success && data.fileData) {
         fileData = data.fileData;
         if (fileData.startsWith('/uploads/') || (fileData.startsWith('http') && fileData.includes('/uploads/'))) {
-          const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || fileData.toLowerCase().endsWith('.pdf');
-          if (isPdf) {
-            window.PDFViewer.open({
-              url: fileData,
-              materialId: mat.id,
-              courseId: course.id,
-              fileName: mat.fileName,
-              title: mat.title,
-              username: currentUser.fullName || currentUser.username || 'Student'
-            });
-          } else {
-            showToast('Preview is only available for PDFs. Download is disabled.', 'error');
-          }
+          window.PDFViewer.open({
+            url: fileData,
+            materialId: mat.id,
+            courseId: course.id,
+            fileName: mat.fileName,
+            title: mat.title,
+            username: currentUser.fullName || currentUser.username || 'Student'
+          });
           return;
         }
         mat.fileData = fileData;
@@ -7225,19 +7215,14 @@ async function viewFileOnline(courseId, materialId) {
 
   if (!fileData) return showToast('No file attached.', 'info');
 
-  const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || String(fileData).startsWith('data:application/pdf');
-  if (isPdf) {
-    window.PDFViewer.open({
-      data: fileData,
-      materialId: mat.id,
-      courseId: course.id,
-      fileName: mat.fileName,
-      title: mat.title,
-      username: currentUser.fullName || currentUser.username || 'Student'
-    });
-  } else {
-    showToast('Inline preview is only available for PDFs.', 'info');
-  }
+  window.PDFViewer.open({
+    data: fileData,
+    materialId: mat.id,
+    courseId: course.id,
+    fileName: mat.fileName,
+    title: mat.title,
+    username: currentUser.fullName || currentUser.username || 'Student'
+  });
 }
 
 async function openMaterialVideo(courseId, materialId) {

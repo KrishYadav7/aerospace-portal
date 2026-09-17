@@ -20,13 +20,12 @@
     });
   }
 
-  // Ultra-light single-line watermark
   function makeWatermarkUrl(text, opts) {
     opts = opts || {};
     const color = opts.dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
-    const size  = opts.size  || 10;       // very small
+    const size  = opts.size  || 10;
     const angle = opts.angle || -22;
-    const tile  = opts.tile  || 1200;     // sparse — very few repeats
+    const tile  = opts.tile  || 1200;
     const svg =
       '<svg xmlns="http://www.w3.org/2000/svg" width="' + tile + '" height="' + tile + '">' +
         '<text x="50%" y="50%" font-family="Inter,Arial,sans-serif" font-size="' + size + '" ' +
@@ -73,7 +72,7 @@
   class PDFViewer {
     constructor() { this._init(); }
 
-       _init() {
+    _init() {
       this.active = false;
       this.modal = null;
       this.bodyEl = null;
@@ -100,6 +99,7 @@
       this._onWindowBlur = this._onWindowBlur.bind(this);
       this._onWindowFocus = this._onWindowFocus.bind(this);
     }
+
     async open(opts) {
       if (this.active) return;
       this.active = true;
@@ -114,7 +114,7 @@
           pdfjsLib.GlobalWorkerOptions.workerSrc =
             'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) { }
 
       this.materialId = opts.materialId || 'doc';
       this.username   = opts.username || 'Student';
@@ -130,11 +130,16 @@
       this.loaderEl.style.display = 'flex';
 
       try {
-        const dataURL = String(opts.data || '').indexOf('data:') === 0
-          ? opts.data
-          : 'data:application/pdf;base64,' + opts.data;
-        const bytes = dataURLToBytes(dataURL);
-        const task = pdfjsLib.getDocument({ data: bytes });
+        let task;
+        if (opts.url) {
+          task = pdfjsLib.getDocument(opts.url);
+        } else {
+          const dataURL = String(opts.data || '').indexOf('data:') === 0
+            ? opts.data
+            : 'data:application/pdf;base64,' + opts.data;
+          const bytes = dataURLToBytes(dataURL);
+          task = pdfjsLib.getDocument({ data: bytes });
+        }
         this.pdfDoc = await task.promise;
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
@@ -168,7 +173,6 @@
         '<div class="pdfv-shell" oncontextmenu="return false;">' +
           '<div class="pdfv-toolbar">' +
             '<div class="pdfv-toolbar-left">' +
-              // ---- BACK BUTTON (explicit, labeled) ----
               '<button type="button" class="pdfv-back-btn" data-act="close" title="Back (Esc)">' +
                 '<i class="fas fa-arrow-left"></i><span>Back</span>' +
               '</button>' +
@@ -218,7 +222,6 @@
 
       const self = this;
 
-      // Wire both .pdfv-btn (icon buttons) and .pdfv-back-btn (labeled back)
       el.querySelectorAll('.pdfv-btn, .pdfv-back-btn').forEach(function (btn) {
         btn.addEventListener('click', function () { self._handleToolbar(btn.dataset.act); });
       });
@@ -248,7 +251,6 @@
       window.addEventListener('blur', this._onWindowBlur);
       window.addEventListener('focus', this._onWindowFocus);
 
-      this.bodyEl.addEventListener('contextmenu', function (e) { e.preventDefault(); });
       this.bodyEl.addEventListener('dragstart', function (e) { e.preventDefault(); });
 
       this.pagesEl.addEventListener('click', function (e) {
@@ -371,6 +373,23 @@
       this.currentPage = current;
       const inp = this.modal.querySelector('#pdfvPageInput');
       if (inp && document.activeElement !== inp) inp.value = current;
+    }
+
+    _onWindowBlur() {
+      if (!this.active || !this.modal) return;
+      const shell = this.modal.querySelector('.pdfv-shell');
+      if (shell) {
+        shell.style.filter = 'blur(20px) grayscale(100%)';
+        shell.style.transition = 'filter 0.2s';
+      }
+    }
+
+    _onWindowFocus() {
+      if (!this.active || !this.modal) return;
+      const shell = this.modal.querySelector('.pdfv-shell');
+      if (shell) {
+        shell.style.filter = '';
+      }
     }
 
     _changeZoom(delta) { this._setZoom(this.scale + delta); }
@@ -647,12 +666,11 @@
       }
     }
 
-    // ---- Watermark: single line, very small ----
     _renderWatermark() {
       if (!this.modal) return;
       const wm = this.modal.querySelector('#pdfvWatermark');
       if (!wm) return;
-      const text = this.username; // one line, no date
+      const text = this.username;
       wm.style.backgroundImage = makeWatermarkUrl(text, {
         size: 10, angle: -22, tile: 1200
       });
@@ -660,9 +678,35 @@
 
     _onKeyDown(e) {
       if (!this.active) return;
+      
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'p')) {
+      
+      if (e.key === 'PrintScreen' || e.keyCode === 44) {
+        e.preventDefault();
+        userToast('Screenshots are disabled for this document.', 'error');
+        const shell = this.modal.querySelector('.pdfv-shell');
+        if (shell) {
+          shell.style.filter = 'blur(20px) grayscale(100%)';
+          setTimeout(() => { if(shell) shell.style.filter = ''; }, 800);
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'p' || e.key === 'S' || e.key === 'P')) {
         e.preventDefault(); e.stopPropagation();
+        userToast('Downloading and printing are disabled.', 'error');
+        return;
+      }
+
+      if (e.key === 'F12' || 
+          ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I','J','C','i','j','c'].includes(e.key))) {
+        e.preventDefault(); e.stopPropagation();
+        return;
+      }
+      
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
+        e.preventDefault(); e.stopPropagation();
+        return;
       }
     }
 
@@ -674,6 +718,9 @@
       document.removeEventListener('selectionchange', this._onSelectionChange);
       document.removeEventListener('keydown', this._onKeyDown, true);
       if (this.bodyEl) this.bodyEl.removeEventListener('scroll', this._onBodyScroll);
+      
+      window.removeEventListener('blur', this._onWindowBlur);
+      window.removeEventListener('focus', this._onWindowFocus);
 
       document.body.style.overflow = this._prevBodyOverflow || '';
 
@@ -692,816 +739,6 @@
     }
   }
 
-  /* ============================================================
-     VIDEO PLAYER
-     ============================================================ */
-  class VideoPlayer {
-    constructor() { this._init(); }
-
-    _init() {
-      this.active = false;
-      this.modal = null;
-      this.video = null;
-      this.ytPlayer = null;
-      this.mode = null;
-      this.materialId = null;
-      this.username = '';
-      this.title = '';
-      this._hideTimer = null;
-      this._toastTimer = null;
-      this._resumeTimer = null;
-      this._ytPollTimer = null;
-      this._prevBodyOverflow = '';
-      this._dragSeeking = false;
-      this._onDocClick = null;
-      this._onKeyDown = this._onKeyDown.bind(this);
-      this._onFsChange = this._onFsChange.bind(this);
-    }
-
-    _esc(s) {
-      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[c];
-      });
-    }
-
-    _parseYouTube(url) {
-      if (!url) return null;
-      const m = String(url).match(
-        /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/
-      );
-      return m ? m[1] : null;
-    }
-
-    _loadYouTubeAPI() {
-      if (window.YT && window.YT.Player) return Promise.resolve();
-      return new Promise(function (resolve) {
-        const existing = document.querySelector('script[src*="youtube.com/iframe_api"]');
-        if (existing) {
-          const prev = window.onYouTubeIframeAPIReady;
-          window.onYouTubeIframeAPIReady = function () {
-            try { prev && prev(); } catch (e) {}
-            resolve();
-          };
-          return;
-        }
-        window.onYouTubeIframeAPIReady = function () { resolve(); };
-        const s = document.createElement('script');
-        s.src = 'https://www.youtube.com/iframe_api';
-        s.async = true;
-        document.head.appendChild(s);
-      });
-    }
-
-    async open(opts) {
-      if (this.active) return;
-      this.active = true;
-
-      this.materialId = opts.materialId || 'video';
-      this.username   = opts.username || 'Student';
-      this.title      = opts.title || 'Video';
-      this._prevBodyOverflow = document.body.style.overflow;
-
-      let ytId = opts.videoId || null;
-      let directSrc = null;
-
-      if (!ytId) {
-        const src = String(opts.src || '').trim();
-        const parsed = this._parseYouTube(src);
-        if (parsed) ytId = parsed;
-        else directSrc = src;
-      }
-
-      if (ytId) {
-        await this._openYouTube(ytId);
-      } else if (directSrc && (/^https?:\/\//i.test(directSrc) || directSrc.indexOf('data:') === 0 || directSrc.indexOf('blob:') === 0)) {
-        this._openDirect(directSrc, opts.poster);
-      } else {
-        this.active = false;
-        userToast('Invalid or missing video source.', 'error');
-      }
-    }
-
-    /* ============================================================
-       DIRECT HTML5 VIDEO
-       ============================================================ */
-    _openDirect(src, poster) {
-      this.mode = 'direct';
-      const posterAttr = poster ? ' poster="' + this._esc(poster) + '"' : '';
-      const inner =
-        '<video id="vpVideo" playsinline preload="metadata" ' +
-        'controlslist="nodownload noplaybackrate noremoteplayback"' +
-        posterAttr + '></video>' +
-        this._sharedUiHtml();
-
-      this._buildModal(inner);
-      this.video = this.modal.querySelector('#vpVideo');
-      this.video.src = src;
-
-      this._renderWatermark();
-      this._wireSharedControls();
-      this._wireDirectEvents();
-      this._loadPrefs();
-
-      const self = this;
-      const p = this.video.play();
-      if (p && p.catch) p.catch(function () { self._showCenterPlay(); });
-
-      document.addEventListener('keydown', this._onKeyDown, true);
-      document.addEventListener('fullscreenchange', this._onFsChange);
-      document.addEventListener('webkitfullscreenchange', this._onFsChange);
-    }
-
-    /* ============================================================
-       YOUTUBE
-       ============================================================ */
-    async _openYouTube(videoId) {
-      this.mode = 'youtube';
-
-      const inner =
-        '<div class="vp-video-area">' +
-          '<div id="vpYtMount"></div>' +
-          '<div class="vp-click-capture" id="vpClickCapture"></div>' +
-        '</div>' +
-        this._sharedUiHtml();
-
-      this._buildModal(inner);
-      this._renderWatermark();
-      this._wireSharedControls();
-
-      document.addEventListener('keydown', this._onKeyDown, true);
-      document.addEventListener('fullscreenchange', this._onFsChange);
-      document.addEventListener('webkitfullscreenchange', this._onFsChange);
-
-      const pipBtn = this.modal.querySelector('#vpPipBtn');
-      if (pipBtn) pipBtn.style.display = 'none';
-
-      try {
-        await this._loadYouTubeAPI();
-        if (!window.YT || !window.YT.Player) throw new Error('YT API unavailable');
-      } catch (err) {
-        console.error('[YouTube] API failed', err);
-        userToast('Could not load the video player. Check your connection.', 'error');
-        this.close();
-        return;
-      }
-
-      const self = this;
-      const playerVars = {
-        autoplay: 1,
-        controls: 0,
-        disablekb: 1,
-        modestbranding: 1,
-        rel: 0,
-        showinfo: 0,
-        iv_load_policy: 3,
-        fs: 0,
-        playsinline: 1,
-        origin: window.location.origin,
-        widget_referrer: window.location.origin
-      };
-
-      this.ytPlayer = new window.YT.Player('vpYtMount', {
-        videoId: videoId,
-        playerVars: playerVars,
-        events: {
-          onReady: function () {
-            try {
-              const v = parseFloat(localStorage.getItem('aero_vp_volume') || '1');
-              if (!isNaN(v)) {
-                self.ytPlayer.setVolume(Math.round(v * 100));
-                if (v === 0) self.ytPlayer.mute();
-              }
-              const r = parseFloat(localStorage.getItem('aero_vp_speed') || '1');
-              if (!isNaN(r) && r !== 1) {
-                self.ytPlayer.setPlaybackRate(r);
-                const btn = self.modal.querySelector('#vpSpeedBtn');
-                if (btn) btn.textContent = r + '×';
-              }
-            } catch (e) {}
-            self._updateYtTime();
-            self.ytPlayer.playVideo();
-          },
-          onStateChange: function (e) {
-            const YTS = window.YT.PlayerState;
-            if (e.data === YTS.PLAYING) {
-              self._setPlayIcon(true);
-              self._hideCenterPlay();
-              self._scheduleHideControls();
-              self._startYtPolling();
-            } else if (e.data === YTS.PAUSED) {
-              self._setPlayIcon(false);
-              self._showCenterPlay();
-              self._showControls();
-              clearTimeout(self._hideTimer);
-              self._stopYtPolling();
-            } else if (e.data === YTS.ENDED) {
-              self._setPlayIcon(false);
-              self._showCenterPlay();
-              self._stopYtPolling();
-            } else if (e.data === YTS.BUFFERING) {
-              self._setPlayIcon(true);
-              self._startYtPolling();
-            }
-          },
-          onError: function (e) {
-            console.error('[YouTube]', e.data);
-            userToast('This video is restricted and cannot be played here.', 'error');
-          }
-        }
-      });
-    }
-
-    /* ---------- Shared UI (includes Back button) ---------- */
-    _sharedUiHtml() {
-      const speeds = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
-      return (
-        // ---- BACK BUTTON (always visible, top-left) ----
-        '<button type="button" class="vp-back-btn" id="vpBackBtn" title="Back (Esc)">' +
-          '<i class="fas fa-arrow-left"></i><span>Back</span>' +
-        '</button>' +
-        '<div class="vp-watermark" id="vpWatermark"></div>' +
-        '<div class="vp-title" id="vpTitle">' + this._esc(this.title) + '</div>' +
-        '<button type="button" class="vp-center-play" id="vpCenterPlay"><i class="fas fa-play"></i></button>' +
-        '<div class="vp-toast" id="vpToast"></div>' +
-        '<div class="vp-controls" id="vpControls">' +
-          '<div class="vp-progress-row" id="vpProgress">' +
-            '<div class="vp-progress-bg"></div>' +
-            '<div class="vp-progress-buffered" id="vpBuffered"></div>' +
-            '<div class="vp-progress-filled" id="vpFilled"></div>' +
-            '<div class="vp-thumb" id="vpThumb"></div>' +
-            '<div class="vp-tooltip" id="vpTooltip">0:00</div>' +
-          '</div>' +
-          '<div class="vp-buttons">' +
-            '<button type="button" class="vp-btn" data-act="back" title="Back 10s (J)"><i class="fas fa-rotate-left"></i></button>' +
-            '<button type="button" class="vp-btn" data-act="play" id="vpPlayBtn" title="Play/Pause (Space)"><i class="fas fa-play"></i></button>' +
-            '<button type="button" class="vp-btn" data-act="fwd" title="Forward 10s (L)"><i class="fas fa-rotate-right"></i></button>' +
-            '<span class="vp-time" id="vpTime">0:00 / 0:00</span>' +
-            '<div class="vp-spacer"></div>' +
-            '<div class="vp-volume-wrap">' +
-              '<button type="button" class="vp-btn" data-act="mute" id="vpMuteBtn" title="Mute (M)"><i class="fas fa-volume-high"></i></button>' +
-              '<div class="vp-volume"><input type="range" id="vpVolume" min="0" max="1" step="0.05" value="1"></div>' +
-            '</div>' +
-            '<div class="vp-speed-wrap">' +
-              '<button type="button" class="vp-speed-btn" data-act="speed" id="vpSpeedBtn" title="Playback speed">1×</button>' +
-              '<div class="vp-speed-menu" id="vpSpeedMenu">' +
-                speeds.map(function (s) {
-                  return '<button type="button" data-speed="' + s + '"' + (s === 1 ? ' class="active"' : '') + '>' + s + '×</button>';
-                }).join('') +
-              '</div>' +
-            '</div>' +
-            '<button type="button" class="vp-btn" data-act="fs" id="vpFsBtn" title="Fullscreen (F)"><i class="fas fa-expand"></i></button>' +
-          '</div>' +
-        '</div>'
-      );
-    }
-
-    _buildModal(inner) {
-      const old = document.getElementById('videoPlayerModal');
-      if (old) old.remove();
-
-      const el = document.createElement('div');
-      el.id = 'videoPlayerModal';
-      el.className = 'video-player-modal';
-      el.innerHTML = '<div class="vp-shell">' + inner + '</div>';
-      document.body.appendChild(el);
-
-      this.modal = el;
-      el.classList.add('active');
-      document.body.style.overflow = 'hidden';
-
-      const self = this;
-      el.addEventListener('click', function (e) { if (e.target === el) self.close(); });
-      el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-    }
-
-    /* ---------- Shared control wiring ---------- */
-    _wireSharedControls() {
-      const self = this;
-      const modal = this.modal;
-      if (!modal) return;
-
-      // ---- Back button ----
-      const backBtn = modal.querySelector('#vpBackBtn');
-      if (backBtn) {
-        backBtn.addEventListener('click', function (e) {
-          e.stopPropagation();
-          self.close();
-        });
-      }
-
-      // Toolbar buttons
-      modal.querySelectorAll('.vp-btn, .vp-speed-btn').forEach(function (b) {
-        b.addEventListener('click', function (e) {
-          e.stopPropagation();
-          self._handleAction(b.dataset.act);
-        });
-      });
-
-      const cp = modal.querySelector('#vpCenterPlay');
-      if (cp) cp.addEventListener('click', function (e) { e.stopPropagation(); self._togglePlay(); });
-
-      const progress = modal.querySelector('#vpProgress');
-      const getPct = function (e) {
-        const r = progress.getBoundingClientRect();
-        return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-      };
-      const preview = function (e) {
-        const pct = getPct(e);
-        modal.querySelector('#vpFilled').style.width = (pct * 100) + '%';
-        modal.querySelector('#vpThumb').style.left = (pct * 100) + '%';
-        const tip = modal.querySelector('#vpTooltip');
-        tip.style.left = (pct * 100) + '%';
-        tip.textContent = self._formatTime(pct * self._getDuration());
-        return pct;
-      };
-      progress.addEventListener('mousemove', preview);
-      progress.addEventListener('mousedown', function (e) {
-        e.preventDefault();
-        self._dragSeeking = true;
-        let lastPct = preview(e);
-        const onMove = function (ev) { lastPct = preview(ev); };
-        const onUp = function () {
-          const dur = self._getDuration();
-          if (dur) self._seek(lastPct * dur);
-          self._dragSeeking = false;
-          document.removeEventListener('mousemove', onMove);
-          document.removeEventListener('mouseup', onUp);
-        };
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
-      });
-
-      const vol = modal.querySelector('#vpVolume');
-      if (vol) vol.addEventListener('input', function () { self._setVolume(parseFloat(vol.value)); });
-
-      const speedMenu = modal.querySelector('#vpSpeedMenu');
-      if (speedMenu) {
-        speedMenu.querySelectorAll('button').forEach(function (b) {
-          b.addEventListener('click', function (e) {
-            e.stopPropagation();
-            self._setSpeed(parseFloat(b.dataset.speed));
-            speedMenu.classList.remove('open');
-          });
-        });
-      }
-      this._onDocClick = function (e) {
-        if (!e.target.closest('.vp-speed-wrap') && speedMenu) speedMenu.classList.remove('open');
-      };
-      document.addEventListener('click', this._onDocClick);
-
-      const shell = modal.querySelector('.vp-shell');
-      if (shell) {
-        shell.addEventListener('mousemove', function () { self._scheduleHideControls(); });
-        shell.addEventListener('touchstart', function () { self._scheduleHideControls(); }, { passive: true });
-        shell.addEventListener('dblclick', function (e) {
-          if (e.target.closest('.vp-controls') || e.target.closest('.vp-speed-menu') || e.target.closest('.vp-back-btn')) return;
-          self._toggleFullscreen();
-        });
-      }
-
-      const capture = modal.querySelector('#vpClickCapture');
-      if (capture) {
-        capture.addEventListener('click', function (e) {
-          e.stopPropagation();
-          if (self._dragSeeking) return;
-          self._togglePlay();
-        });
-      }
-
-      if (this.video) {
-        this.video.addEventListener('click', function (e) {
-          e.stopPropagation();
-          if (self._dragSeeking) return;
-          self._togglePlay();
-        });
-      }
-    }
-
-    _wireDirectEvents() {
-      const self = this;
-      const v = this.video;
-      if (!v) return;
-
-      v.addEventListener('timeupdate', function () { self._updateProgress(); });
-      v.addEventListener('loadedmetadata', function () {
-        self._updateProgress();
-        self._updateTime();
-        self._restoreResume();
-      });
-      v.addEventListener('play', function () {
-        self._setPlayIcon(true);
-        self._hideCenterPlay();
-        self._scheduleHideControls();
-      });
-      v.addEventListener('pause', function () {
-        self._setPlayIcon(false);
-        self._showCenterPlay();
-        self._showControls();
-        clearTimeout(self._hideTimer);
-        self._saveResume();
-      });
-      v.addEventListener('ended', function () {
-        self._setPlayIcon(false);
-        self._showCenterPlay();
-        self._saveResume();
-      });
-      v.addEventListener('progress', function () { self._updateBuffered(); });
-      v.addEventListener('volumechange', function () { self._updateVolumeIcon(); });
-      v.addEventListener('error', function () {
-        userToast('Could not play this video.', 'error');
-      });
-
-      this._resumeTimer = setInterval(function () { self._saveResume(); }, 3000);
-    }
-
-    _handleAction(act) {
-      if (act === 'play') this._togglePlay();
-      else if (act === 'back') this._seek(this._getTime() - 10);
-      else if (act === 'fwd')  this._seek(this._getTime() + 10);
-      else if (act === 'mute') this._toggleMute();
-      else if (act === 'fs')   this._toggleFullscreen();
-      else if (act === 'speed') {
-        const menu = this.modal.querySelector('#vpSpeedMenu');
-        if (menu) menu.classList.toggle('open');
-      }
-    }
-
-    _togglePlay() {
-      if (this.mode === 'youtube') {
-        if (!this.ytPlayer || !this.ytPlayer.getPlayerState) return;
-        const s = this.ytPlayer.getPlayerState();
-        if (s === 1 || s === 3) this.ytPlayer.pauseVideo();
-        else this.ytPlayer.playVideo();
-      } else {
-        if (!this.video) return;
-        if (this.video.paused) {
-          const p = this.video.play();
-          if (p && p.catch) p.catch(function () {});
-        } else {
-          this.video.pause();
-        }
-      }
-    }
-
-    _getTime() {
-      if (this.mode === 'youtube') {
-        try { return (this.ytPlayer && this.ytPlayer.getCurrentTime()) || 0; } catch (e) { return 0; }
-      }
-      return (this.video && this.video.currentTime) || 0;
-    }
-
-    _getDuration() {
-      if (this.mode === 'youtube') {
-        try { return (this.ytPlayer && this.ytPlayer.getDuration()) || 0; } catch (e) { return 0; }
-      }
-      return (this.video && this.video.duration) || 0;
-    }
-
-    _seek(t) {
-      const dur = this._getDuration();
-      if (dur) t = Math.max(0, Math.min(dur, t));
-      if (this.mode === 'youtube') {
-        if (this.ytPlayer && this.ytPlayer.seekTo) this.ytPlayer.seekTo(t, true);
-      } else {
-        if (this.video) this.video.currentTime = t;
-      }
-      this._flashToast(this._formatTime(t));
-    }
-
-    _setVolume(v) {
-      v = Math.max(0, Math.min(1, v));
-      if (this.mode === 'youtube') {
-        if (this.ytPlayer && this.ytPlayer.setVolume) {
-          this.ytPlayer.setVolume(Math.round(v * 100));
-          if (v > 0) this.ytPlayer.unMute();
-        }
-      } else {
-        if (this.video) {
-          this.video.volume = v;
-          if (v > 0) this.video.muted = false;
-        }
-      }
-      const volEl = this.modal.querySelector('#vpVolume');
-      if (volEl) volEl.value = v;
-      this._updateVolumeIcon();
-      try { localStorage.setItem('aero_vp_volume', String(v)); } catch (e) {}
-    }
-
-    _toggleMute() {
-      if (this.mode === 'youtube') {
-        if (!this.ytPlayer || !this.ytPlayer.isMuted) return;
-        if (this.ytPlayer.isMuted()) this.ytPlayer.unMute();
-        else this.ytPlayer.mute();
-      } else {
-        if (!this.video) return;
-        this.video.muted = !this.video.muted;
-      }
-      this._updateVolumeIcon();
-    }
-
-    _updateVolumeIcon() {
-      if (!this.modal) return;
-      const i = this.modal.querySelector('#vpMuteBtn i');
-      if (!i) return;
-      let v = 0;
-      if (this.mode === 'youtube') {
-        try {
-          v = (this.ytPlayer && this.ytPlayer.isMuted && this.ytPlayer.isMuted())
-            ? 0 : ((this.ytPlayer && this.ytPlayer.getVolume && this.ytPlayer.getVolume() / 100) || 0);
-        } catch (e) { v = 1; }
-      } else {
-        v = this.video ? (this.video.muted ? 0 : this.video.volume) : 0;
-      }
-      i.className = v === 0
-        ? 'fas fa-volume-xmark'
-        : v < 0.5
-          ? 'fas fa-volume-low'
-          : 'fas fa-volume-high';
-    }
-
-    _setSpeed(s) {
-      if (this.mode === 'youtube') {
-        if (this.ytPlayer && this.ytPlayer.setPlaybackRate) this.ytPlayer.setPlaybackRate(s);
-      } else {
-        if (this.video) this.video.playbackRate = s;
-      }
-      const btn = this.modal.querySelector('#vpSpeedBtn');
-      if (btn) btn.textContent = s + '×';
-      this.modal.querySelectorAll('#vpSpeedMenu button').forEach(function (b) {
-        b.classList.toggle('active', parseFloat(b.dataset.speed) === s);
-      });
-      try { localStorage.setItem('aero_vp_speed', String(s)); } catch (e) {}
-    }
-
-    _toggleFullscreen() {
-      const target = this.modal;
-      if (!target) return;
-      if (!document.fullscreenElement) {
-        const req = target.requestFullscreen || target.webkitRequestFullscreen || target.msRequestFullscreen;
-        if (req) { const p = req.call(target); if (p && p.catch) p.catch(function () {}); }
-      } else {
-        const ex = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
-        if (ex) { const p = ex.call(document); if (p && p.catch) p.catch(function () {}); }
-      }
-    }
-
-    _onFsChange() {
-      if (!this.modal) return;
-      const btn = this.modal.querySelector('#vpFsBtn i');
-      if (btn) btn.className = document.fullscreenElement ? 'fas fa-compress' : 'fas fa-expand';
-    }
-
-    _setPlayIcon(playing) {
-      if (!this.modal) return;
-      const i = this.modal.querySelector('#vpPlayBtn i');
-      if (i) i.className = playing ? 'fas fa-pause' : 'fas fa-play';
-    }
-    _showCenterPlay() {
-      if (!this.modal) return;
-      const el = this.modal.querySelector('#vpCenterPlay');
-      if (el) el.classList.add('visible');
-    }
-    _hideCenterPlay() {
-      if (!this.modal) return;
-      const el = this.modal.querySelector('#vpCenterPlay');
-      if (el) el.classList.remove('visible');
-    }
-
-    _updateProgress() {
-      if (!this.video || !this.modal) return;
-      const d = this.video.duration || 0;
-      const pct = d ? (this.video.currentTime / d) * 100 : 0;
-      const filled = this.modal.querySelector('#vpFilled');
-      const thumb = this.modal.querySelector('#vpThumb');
-      if (filled) filled.style.width = pct + '%';
-      if (thumb) thumb.style.left = pct + '%';
-      this._updateTime();
-    }
-
-    _updateBuffered() {
-      if (!this.video || !this.modal) return;
-      if (!this.video.buffered || !this.video.buffered.length) return;
-      const d = this.video.duration || 0;
-      if (!d) return;
-      const end = this.video.buffered.end(this.video.buffered.length - 1);
-      const buf = this.modal.querySelector('#vpBuffered');
-      if (buf) buf.style.width = (end / d) * 100 + '%';
-    }
-
-    _updateTime() {
-      if (!this.video || !this.modal) return;
-      const el = this.modal.querySelector('#vpTime');
-      if (el) el.textContent =
-        this._formatTime(this.video.currentTime) + ' / ' + this._formatTime(this.video.duration);
-    }
-
-    _startYtPolling() {
-      const self = this;
-      this._stopYtPolling();
-      this._ytPollTimer = setInterval(function () { self._updateYtTime(); }, 250);
-    }
-    _stopYtPolling() {
-      if (this._ytPollTimer) { clearInterval(this._ytPollTimer); this._ytPollTimer = null; }
-    }
-    _updateYtTime() {
-      if (!this.ytPlayer || !this.modal) return;
-      try {
-        const dur = this.ytPlayer.getDuration() || 0;
-        const cur = this.ytPlayer.getCurrentTime() || 0;
-        const pct = dur ? (cur / dur) * 100 : 0;
-        const filled = this.modal.querySelector('#vpFilled');
-        const thumb = this.modal.querySelector('#vpThumb');
-        if (filled) filled.style.width = pct + '%';
-        if (thumb) thumb.style.left = pct + '%';
-        const timeEl = this.modal.querySelector('#vpTime');
-        if (timeEl) timeEl.textContent = this._formatTime(cur) + ' / ' + this._formatTime(dur);
-        try {
-          const frac = this.ytPlayer.getVideoLoadedFraction() || 0;
-          const buf = this.modal.querySelector('#vpBuffered');
-          if (buf) buf.style.width = (frac * 100) + '%';
-        } catch (e) {}
-      } catch (e) {}
-    }
-
-    _formatTime(t) {
-      if (!isFinite(t) || t < 0) t = 0;
-      const h = Math.floor(t / 3600);
-      const m = Math.floor((t % 3600) / 60);
-      const s = Math.floor(t % 60);
-      return h > 0
-        ? h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0')
-        : m + ':' + String(s).padStart(2, '0');
-    }
-
-    _flashToast(msg) {
-      if (!this.modal) return;
-      const t = this.modal.querySelector('#vpToast');
-      if (!t) return;
-      t.textContent = msg;
-      t.classList.add('show');
-      const self = this;
-      clearTimeout(this._toastTimer);
-      this._toastTimer = setTimeout(function () { t.classList.remove('show'); }, 700);
-    }
-
-    _scheduleHideControls() {
-      if (!this.modal) return;
-      this._showControls();
-      const self = this;
-      clearTimeout(this._hideTimer);
-      let playing = false;
-      if (this.mode === 'youtube') {
-        try {
-          const s = this.ytPlayer && this.ytPlayer.getPlayerState && this.ytPlayer.getPlayerState();
-          playing = s === 1 || s === 3;
-        } catch (e) {}
-      } else {
-        playing = this.video && !this.video.paused;
-      }
-      if (playing) {
-        this._hideTimer = setTimeout(function () {
-          if (!self.modal) return;
-          const c = self.modal.querySelector('#vpControls');
-          const t = self.modal.querySelector('#vpTitle');
-          if (c) c.classList.add('hidden');
-          if (t) t.classList.add('hidden');
-          self.modal.style.cursor = 'none';
-        }, 2500);
-      }
-    }
-
-    _showControls() {
-      if (!this.modal) return;
-      const c = this.modal.querySelector('#vpControls');
-      const t = this.modal.querySelector('#vpTitle');
-      if (c) c.classList.remove('hidden');
-      if (t) t.classList.remove('hidden');
-      this.modal.style.cursor = '';
-    }
-
-    // ---- Watermark: single line, very small ----
-    _renderWatermark() {
-      if (!this.modal) return;
-      const wm = this.modal.querySelector('#vpWatermark');
-      if (!wm) return;
-      const text = this.username; // one line, no date
-      wm.style.backgroundImage = makeWatermarkUrl(text, {
-        dark: true, size: 10, angle: -22, tile: 1200
-      });
-    }
-
-    _resumeKey() { return 'aero_vp_pos_' + this.materialId; }
-    _saveResume() {
-      if (this.mode !== 'direct' || !this.video) return;
-      try {
-        const d = this.video.duration || 0;
-        const t = this.video.currentTime;
-        if (t > 3 && t < d - 5) localStorage.setItem(this._resumeKey(), String(t));
-        else if (d > 0 && t >= d - 5) localStorage.removeItem(this._resumeKey());
-      } catch (e) {}
-    }
-    _restoreResume() {
-      try {
-        const t = parseFloat(localStorage.getItem(this._resumeKey()) || '0');
-        if (t > 3 && this.video && this.video.currentTime < 1) {
-          this.video.currentTime = t;
-          this._flashToast('Resumed at ' + this._formatTime(t));
-        }
-      } catch (e) {}
-    }
-
-    _loadPrefs() {
-      if (!this.video || this.mode !== 'direct') return;
-      try {
-        const v = parseFloat(localStorage.getItem('aero_vp_volume') || '1');
-        if (!isNaN(v)) {
-          this.video.volume = v;
-          const vol = this.modal.querySelector('#vpVolume');
-          if (vol) vol.value = v;
-        }
-        const s = parseFloat(localStorage.getItem('aero_vp_speed') || '1');
-        if (!isNaN(s) && s !== 1) this._setSpeed(s);
-      } catch (e) {}
-      this._updateVolumeIcon();
-    }
-
-    _onKeyDown(e) {
-      if (!this.active) return;
-      const tag = ((e.target && e.target.tagName) || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea') return;
-
-      if (e.key === 'Escape') {
-        if (!document.fullscreenElement) { e.preventDefault(); this.close(); }
-        return;
-      }
-      if (e.key === ' ' || e.key === 'k') { e.preventDefault(); this._togglePlay(); }
-      else if (e.key === 'ArrowRight' || e.key === 'l') this._seek(this._getTime() + 10);
-      else if (e.key === 'ArrowLeft'  || e.key === 'j') this._seek(this._getTime() - 10);
-      else if (e.key === 'ArrowUp')   {
-        e.preventDefault();
-        const cur = this.mode === 'youtube'
-          ? ((this.ytPlayer && this.ytPlayer.getVolume && this.ytPlayer.getVolume() / 100) || 0)
-          : (this.video ? this.video.volume : 0);
-        this._setVolume(Math.min(1, cur + 0.1));
-      }
-      else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        const cur = this.mode === 'youtube'
-          ? ((this.ytPlayer && this.ytPlayer.getVolume && this.ytPlayer.getVolume() / 100) || 0)
-          : (this.video ? this.video.volume : 0);
-        this._setVolume(Math.max(0, cur - 0.1));
-      }
-      else if (e.key === 'm') this._toggleMute();
-      else if (e.key === 'f') this._toggleFullscreen();
-      else if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); e.stopPropagation(); }
-    }
-
-    close() {
-      if (!this.active) return;
-      this.active = false;
-
-      clearInterval(this._resumeTimer);
-      clearTimeout(this._hideTimer);
-      clearTimeout(this._toastTimer);
-      this._stopYtPolling();
-
-      if (this.mode === 'direct' && this.video) {
-        try { this.video.pause(); } catch (e) {}
-        this._saveResume();
-      }
-      if (this.mode === 'youtube' && this.ytPlayer) {
-        try { this.ytPlayer.stopVideo && this.ytPlayer.stopVideo(); } catch (e) {}
-        try { this.ytPlayer.destroy && this.ytPlayer.destroy(); } catch (e) {}
-        this.ytPlayer = null;
-      }
-
-      document.removeEventListener('keydown', this._onKeyDown, true);
-      document.removeEventListener('fullscreenchange', this._onFsChange);
-      document.removeEventListener('webkitfullscreenchange', this._onFsChange);
-      if (this._onDocClick) document.removeEventListener('click', this._onDocClick);
-
-      if (document.fullscreenElement) {
-        const ex = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
-        if (ex) { const p = ex.call(document); if (p && p.catch) p.catch(function () {}); }
-      }
-
-      document.body.style.overflow = this._prevBodyOverflow || '';
-
-      const m = this.modal;
-      if (m) {
-        m.classList.remove('active');
-        setTimeout(function () { try { m.remove(); } catch (e) {} }, 240);
-      }
-
-      const savedId = this.materialId;
-      this._init();
-      this.materialId = savedId;
-    }
-  }
-
-  /* ---------- Expose singletons ---------- */
-  window.PDFViewer   = new PDFViewer();
-  window.VideoPlayer = new VideoPlayer();
-
+  window.PDFViewer = new PDFViewer();
   console.log('[AeroMediaViewer v4] Ready');
 })();
