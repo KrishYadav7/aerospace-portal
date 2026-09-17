@@ -229,6 +229,20 @@ function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 let _courseCacheAt = 0;
 const COURSE_CACHE_MS = 60 * 1000;
 
+/* ============================================================
+   COURSES
+   ============================================================ */
+let liveCourses = [];
+function getCourses() { return liveCourses; }
+function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
+
+/* Client-side course catalog cache.
+   - Students: cached for 60s → instant navigation between pages.
+   - Admins:   always fresh → no risk of stale admin dashboard.
+   - Manual refresh: call fetchCoursesFromDB(true). */
+let _courseCacheAt = 0;
+const COURSE_CACHE_MS = 60 * 1000;
+
 async function fetchCoursesFromDB(force = false) {
   const isAdmin = currentUser && currentUser.role === 'admin';
 
@@ -239,11 +253,26 @@ async function fetchCoursesFromDB(force = false) {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/courses`);
+    // Cache-buster: browser / proxy / CDN cannot return a stale list.
+    const response = await fetch(`${API_BASE}/courses?_t=${Date.now()}`, {
+      cache: 'no-store'
+    });
     const data = await response.json();
+
+    if (!Array.isArray(data)) {
+      console.error('[fetchCoursesFromDB] Expected an array, got:', data);
+      renderApp();
+      return;
+    }
+
     liveCourses = data.map(course => {
       const fixedMaterials = (course.materials || []).map(m => ({ ...m, id: m._id }));
-      return { ...course, id: course._id, materials: fixedMaterials, playlists: course.playlists || [] };
+      return {
+        ...course,
+        id: course._id,
+        materials: fixedMaterials,
+        playlists: course.playlists || []
+      };
     });
     _courseCacheAt = Date.now();
     renderApp();
@@ -4163,15 +4192,15 @@ function resetNewMaterialInlineForm() {
   if (grp) grp.style.display = 'none';
 }
 async function saveNewMaterialInline(courseId) {
-  const titleEl = $('newMatInlineTitle');
-  const typeEl = $('newMatInlineType');
+  const titleEl  = $('newMatInlineTitle');
+  const typeEl   = $('newMatInlineType');
   const customEl = $('newMatInlineCustomType');
-  const descEl = $('newMatInlineDescription');
-  const urlEl = $('newMatInlineUrl');
-  const premEl = $('newMatInlinePremium');
-  const priceEl = $('newMatInlinePrice');
-  const fileEl = $('newMatInlineFile');
-  const btn = $('newMatInlineSubmitBtn');
+  const descEl   = $('newMatInlineDescription');
+  const urlEl    = $('newMatInlineUrl');
+  const premEl   = $('newMatInlinePremium');
+  const priceEl  = $('newMatInlinePrice');
+  const fileEl   = $('newMatInlineFile');
+  const btn      = $('newMatInlineSubmitBtn');
 
   const title = titleEl ? titleEl.value.trim() : '';
   if (!title) {
@@ -4207,48 +4236,74 @@ async function saveNewMaterialInline(courseId) {
     };
 
     try {
-      const res = await fetch(
-        `/api/courses/${courseId}/materials`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        }
-      );
+      const res = await fetch(`/api/courses/${courseId}/materials`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
       const data = await res.json();
 
       if (data.success) {
         showToast('📎 Material added!', 'success');
         resetNewMaterialInlineForm();
 
-        // ---- 1) Force-refresh the full course catalog from server ----
-        await fetchCoursesFromDB(true);
+        // ---- 1) INSTANT local update from the POST response ----
+        // The server returns the updated course document. Merge it into
+        // liveCourses immediately so the new material renders without
+        // waiting on any refetch.
+        if (data.course && data.course._id) {
+          const updated = data.course;
+          const idx = liveCourses.findIndex(
+            c => c.id === updated._id || c._id === updated._id
+          );
+          if (idx >= 0) {
+            liveCourses[idx].materials = (updated.materials || []).map(m => ({
+              _id: m._id,
+              id: m._id,
+              title: m.title,
+              type: m.type,
+              description: m.description || '',
+              url: m.url || '',
+              fileName: m.fileName || '',
+              isPremium: !!m.isPremium,
+              price: m.price || 0,
+              estimatedTime: m.estimatedTime || '',
+              tags: m.tags || '',
+              examConfig: m.examConfig || {},
+              quizCount: (m.quiz || []).length
+            }));
+          }
+          _courseCacheAt = Date.now();
+        }
 
-        // ---- 2) Explicitly re-render the current editor (safety net) ----
+        // ---- 2) Re-render with fresh data ----
+        renderApp();
         if (editingCourseId === courseId) {
           renderCourseEditor(courseId);
         }
 
-        // ---- 3) Scroll to the newest material + highlight it ----
+        // ---- 3) Background refetch for full consistency (cache-busted) ----
+        fetchCoursesFromDB(true).catch(err =>
+          console.warn('[material add] background refetch failed:', err)
+        );
+
+        // ---- 4) Scroll to the newest card + flash highlight ----
         setTimeout(() => {
           const cards = document.querySelectorAll(
             '#courseEditorContent .material-editor:not(.material-editor-new)'
           );
           if (cards.length > 0) {
             const newest = cards[cards.length - 1];
-
-            // Open it so user can see the details
             newest.setAttribute('open', '');
-
-            // Scroll into view
             newest.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
-            // Flashy green glow for 3 seconds
             const originalShadow = newest.style.boxShadow;
             newest.style.transition = 'box-shadow .4s ease';
             newest.style.boxShadow =
               '0 0 0 3px rgba(16,185,129,.55), 0 0 32px rgba(16,185,129,.4)';
-            setTimeout(() => { newest.style.boxShadow = originalShadow || ''; }, 3200);
+            setTimeout(() => {
+              newest.style.boxShadow = originalShadow || '';
+            }, 3200);
           }
         }, 300);
       } else {
