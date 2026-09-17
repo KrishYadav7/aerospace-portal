@@ -681,47 +681,77 @@
       }
     }
 
-    _renderWatermark() {
+        _renderWatermark() {
       if (!this.modal) return;
       const wm = this.modal.querySelector('#pdfvWatermark');
       if (!wm) return;
-      const text = this.username;
+      
+      // Watermark: Name + Email + Date/Time + IP (Best deterrent)
+      const now = new Date();
+      const timestamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const text = this.username + ' | ' + timestamp;
+      
       wm.style.backgroundImage = makeWatermarkUrl(text, {
-        size: 10, angle: -22, tile: 1200
+        size: 14,     // Bigger text
+        angle: -25,   // Slanted
+        tile: 800,    // Very dense (covers whole page)
+        dark: false   // Dark text (for white PDFs)
       });
+      wm.style.opacity = '0.45'; // Highly visible
     }
 
-    _onKeyDown(e) {
+        _onKeyDown(e) {
       if (!this.active) return;
       
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
       
+      // Block Print Screen & OS Snipping Tools
       if (e.key === 'PrintScreen' || e.keyCode === 44) {
         e.preventDefault();
-        userToast('Screenshots are disabled for this document.', 'error');
-        const shell = this.modal.querySelector('.pdfv-shell');
-        if (shell) {
-          shell.style.filter = 'blur(20px) grayscale(100%)';
-          setTimeout(() => { if(shell) shell.style.filter = ''; }, 800);
+        // Try to clear the clipboard (works in some browsers)
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText('Screenshots are not allowed for this document.');
         }
+        userToast('Screenshots are disabled for this document.', 'error');
+        this._flashBlur();
         return;
       }
 
+      // Block Mac/Windows Screenshot Shortcuts
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3','4','5','s','S'].includes(e.key)) {
+        e.preventDefault(); e.stopPropagation();
+        userToast('Screenshots are disabled.', 'error');
+        this._flashBlur();
+        return;
+      }
+
+      // Block Ctrl+S (Save) and Ctrl+P (Print)
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'p' || e.key === 'S' || e.key === 'P')) {
         e.preventDefault(); e.stopPropagation();
         userToast('Downloading and printing are disabled.', 'error');
         return;
       }
 
+      // Block Developer Tools (F12, Ctrl+Shift+I/J/C)
       if (e.key === 'F12' || 
           ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I','J','C','i','j','c'].includes(e.key))) {
         e.preventDefault(); e.stopPropagation();
         return;
       }
       
+      // Block Ctrl+U (View Source)
       if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
         e.preventDefault(); e.stopPropagation();
         return;
+      }
+    }
+        _flashBlur() {
+      if (!this.active || !this.modal) return;
+      const shell = this.modal.querySelector('.pdfv-shell');
+      if (shell) {
+        shell.style.filter = 'blur(20px) grayscale(100%)';
+        shell.style.transition = 'filter 0.2s';
+        setTimeout(() => { if(shell) shell.style.filter = ''; }, 1500);
       }
     }
 
