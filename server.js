@@ -2112,9 +2112,9 @@ app.delete('/api/professors/:id', async (req, res) => {
    Keeps: quizCount (computed), basic metadata, playlists, announcements */
 app.get('/api/courses', async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(50, parseInt(req.query.limit) || 12);
-    const skip = (page - 1) * limit;
+    const page  = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(500, parseInt(req.query.limit) || 500);
+    const skip  = (page - 1) * limit;
 
     const cacheKey = `courses:list:${page}:${limit}`;
     const cached = cacheGet(cacheKey);
