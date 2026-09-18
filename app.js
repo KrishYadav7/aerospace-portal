@@ -2198,20 +2198,24 @@ function _renderAppNow() {
   // Case-insensitive role check — defends against legacy "Admin" values
   const _isAdminRole = String(currentUser.role || '').trim().toLowerCase() === 'admin';
   if (_isAdminRole) { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
+
+  // ─── AI DOUBT SOLVER (default landing page for students) ───
   if (studentNav === 'ai') {
+    ensureStudentAIHomeView();              // injects the section if it's missing
     const aiHome = $('studentAIHomeView');
     if (aiHome) {
       aiHome.classList.add('active');
       renderStudentAIHome();
     } else {
-      // Fallback: if the HTML section wasn't added yet, use the old home
-      console.warn('[nav] studentAIHomeView missing — falling back to studentHomeView');
+      console.warn('[nav] studentAIHomeView could not be created — falling back');
       const fallback = $('studentHomeView');
       if (fallback) fallback.classList.add('active');
       renderStudentHome();
     }
+    return;
   }
-  else if (studentNav === 'home') {
+
+  if (studentNav === 'home') {
     const homeView = $('studentHomeView');
     if (homeView) homeView.classList.add('active');
     renderStudentHome();
@@ -9179,7 +9183,87 @@ const AI_HOME_SUGGESTIONS = [
   { icon: 'fa-satellite',   text: "Summarize the key concepts of orbital mechanics" },
   { icon: 'fa-gauge-high',  text: "What is Mach number and why does it matter?" }
 ];
+/* ============================================================
+   ENSURE AI HOME SECTION EXISTS
+   ------------------------------------------------------------
+   If the HTML file doesn't contain <section id="studentAIHomeView">,
+   this creates it on-the-fly and injects it into the DOM.
+   This way, even if the deployed index.html is stale, the AI
+   home page still works.
+   ============================================================ */
+function ensureStudentAIHomeView() {
+  if (document.getElementById('studentAIHomeView')) return;
 
+  const section = document.createElement('section');
+  section.id = 'studentAIHomeView';
+  section.className = 'view';
+  section.innerHTML = `
+    <div class="ai-home-hero">
+      <div class="ai-home-orb ai-home-orb-1"></div>
+      <div class="ai-home-orb ai-home-orb-2"></div>
+      <div class="ai-home-orb ai-home-orb-3"></div>
+
+      <div class="ai-home-brand">
+        <div class="ai-home-icon">
+          <i class="fas fa-robot"></i>
+          <span class="ai-home-pulse"></span>
+        </div>
+        <div class="ai-home-title-block">
+          <span class="ai-home-badge">
+            <i class="fas fa-bolt"></i> Powered by AI
+          </span>
+          <h1>AI Doubt Solver</h1>
+          <p>Ask anything about your aerospace courses — get step-by-step solutions, clear explanations, and real-world context in seconds.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="ai-chat-shell">
+      <div class="ai-chat-messages" id="aiChatMessages"></div>
+
+      <div class="ai-chat-composer">
+        <textarea
+          id="aiHomeInput"
+          class="ai-composer-input"
+          placeholder="Ask a doubt… e.g. Explain Bernoulli's equation with an example"
+          rows="1"
+          maxlength="2000"
+          oninput="aiHomeAutoGrow(this)"
+          onkeydown="aiHomeKeydown(event)"></textarea>
+        <div class="ai-composer-row">
+          <span class="ai-composer-hint">
+            <i class="fas fa-keyboard"></i>
+            <strong>Enter</strong> to send · <strong>Shift+Enter</strong> for new line
+          </span>
+          <div class="ai-composer-btns">
+            <button type="button" class="ai-clear-btn" onclick="resetAIHomeChat()" title="Clear conversation">
+              <i class="fas fa-trash-alt"></i>
+            </button>
+            <button type="button" class="ai-send-btn" id="aiHomeSendBtn" onclick="askAIDoubtHome()">
+              <i class="fas fa-paper-plane"></i> Ask AI
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Inject right after loginView (or at the top of main-content)
+  const mainContent = document.querySelector('.main-content');
+  if (!mainContent) {
+    console.error('[nav] .main-content not found — cannot inject AI home');
+    return;
+  }
+
+  const loginView = document.getElementById('loginView');
+  if (loginView && loginView.parentNode === mainContent) {
+    loginView.insertAdjacentElement('afterend', section);
+  } else {
+    mainContent.insertBefore(section, mainContent.firstChild);
+  }
+
+  console.log('[nav] ✅ studentAIHomeView injected dynamically');
+}
 function renderStudentAIHome() {
   const messagesEl = document.getElementById('aiChatMessages');
   if (!messagesEl) return;
