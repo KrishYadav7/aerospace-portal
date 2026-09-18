@@ -644,7 +644,12 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
-
+/* ============================================================
+   Role helpers — case/whitespace-tolerant admin check
+   ============================================================ */
+function isAdmin(u) {
+  return String((u && u.role) || '').trim().toLowerCase() === 'admin';
+}
 /* Safely embed a value as a JS string literal inside an HTML attribute.
    Handles ', ", <, >, & and any unicode without breaking out of the string.
    NOTE: the output already includes surrounding double-quotes. */
