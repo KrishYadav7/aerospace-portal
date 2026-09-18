@@ -293,7 +293,8 @@ async function fetchCoursesFromDB(force = false, page = 1) {
   }
 
   try {
-    const data = await fetchJSON(`${API_BASE}/courses?page=${page}&limit=12&_t=${Date.now()}`);
+    // Fetch everything in one shot. Server-side cap is 500.
+    const data = await fetchJSON(`${API_BASE}/courses?limit=500&_t=${Date.now()}`);
 
     // Handle BOTH new paginated shape and old array shape
     const list = Array.isArray(data) ? data : (data.courses || []);
@@ -1082,14 +1083,31 @@ async function handleLogin(e) {
       if (data.success && data.user) {
         currentUser = data.user;
         saveSession(data.user, data.token);
-        studentNav = 'home';
-        adminTab = 'overview';
+
+        // Reset ALL routing / editor state so a fresh login
+        // can never leak views from a previous session.
         editingCourseId = null;
-        setLoginRole('student');
-        pushHash(data.user.role === 'admin' ? '#/admin/overview' : '#/home');
+        currentCourseId = null;
+        window.currentSelectedCourseId = null;
+        addingCourse = false;
+        addingProfessor = false;
+        addingMaterialCourseId = null;
+        addingStudent = false;
+
+        // Route STRICTLY by the role the server returned.
+        if (data.user.role === 'admin') {
+          adminTab = 'overview';
+          studentNav = 'home';
+          pushHash('#/admin/overview');
+        } else {
+          studentNav = 'home';
+          adminTab = 'overview';
+          pushHash('#/home');
+        }
+
         showToast(data.message || 'Login successful!', 'success');
         _sessionKilled = false;
-        startSessionHeartbeat();     // ← NEW
+        startSessionHeartbeat();
         renderApp();
         return;
       }
@@ -1337,7 +1355,7 @@ async function _handleAdminLoginOtp(otp) {
       otp
     })
   });
-  
+
   if (!data.success) throw new Error(data.message || 'Invalid OTP.');
 
   // Success — establish session
@@ -1346,14 +1364,22 @@ async function _handleAdminLoginOtp(otp) {
   _adminPendingToken = null;
   _otpContext = null;
 
-  closeModal('otpVerificationModal');
+  // Reset ALL routing / editor state
+  editingCourseId = null;
+  currentCourseId = null;
+  window.currentSelectedCourseId = null;
+  addingCourse = false;
+  addingProfessor = false;
+  addingMaterialCourseId = null;
+  addingStudent = false;
   studentNav = 'home';
   adminTab = 'overview';
-  editingCourseId = null;
+
+  closeModal('otpVerificationModal');
   pushHash('#/admin/overview');
   showToast('🎉 Admin login successful.', 'success');
   _sessionKilled = false;
-  startSessionHeartbeat();     // ← NEW
+  startSessionHeartbeat();
   renderApp();
 }
 
@@ -8483,13 +8509,14 @@ document.addEventListener('click', (e) => {
 // Listen for both hash changes and browser back/forward buttons
 window.addEventListener('hashchange', () => { syncHashToState(); renderApp(); });
 window.addEventListener('popstate', () => { syncHashToState(); renderApp(); });
-// Auto-switch role based on username input
+// Auto-switch role based on username input.
+// Only AUTO-UPGRADE to Admin (e.g. when the username contains "admin").
+// Never auto-downgrade — the user may have deliberately clicked the Admin
+// tab, and many admin usernames aren't literally the word "admin".
 document.getElementById('loginUsername')?.addEventListener('input', (e) => {
   const val = e.target.value.trim().toLowerCase();
-  if (val === 'admin') {
+  if (/admin/i.test(val) && loginRole !== 'admin') {
     setLoginRole('admin');
-  } else if (loginRole === 'admin' && val !== 'admin') {
-    setLoginRole('student');
   }
 });
 /* ============================================================
