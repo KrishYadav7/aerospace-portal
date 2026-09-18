@@ -1070,11 +1070,11 @@ async function handleLogin(e) {
         _adminPendingToken = data.pendingToken;
         openOtpModal({
           title: 'Admin 2FA Verification',
-          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your email'}. Enter it to finish logging in.`,
+          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your registered email'}. Enter it to finish logging in.`,
           type: 'admin-login',
           data: { pendingToken: data.pendingToken }
         });
-        showToast('OTP sent to your email.', 'info');
+        showToast('OTP sent — check your inbox (and spam).', 'info');
         resetBtn();
         return;
       }
@@ -1107,11 +1107,10 @@ async function handleLogin(e) {
           await new Promise(r => setTimeout(r, 5000));
           return attemptLogin(retries - 1);
         }
-      } else if (err.message && (
-          err.message.includes('Failed to fetch') ||
-          err.message.includes('NetworkError') ||
-          err.message.includes('Load failed')
-        )) {
+      } else if (
+        err.name === 'TypeError' ||
+        /Failed to fetch|NetworkError|Load failed/i.test(err.message || '')
+      ) {
         if (retries > 0) {
           showToast(`Server is waking up... Retrying (${3 - retries}/2)`, 'info');
           await new Promise(r => setTimeout(r, 5000));

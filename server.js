@@ -455,7 +455,7 @@ async function brevoSend({ to, subject, text, html, replyTo }) {
 
 // ---- SMTP fallback (only used if Brevo is not configured) ----
 let smtpTransport = null;
-if (USE_SMTP && !USE_BREVO) {
+if (USE_SMTP) {
   smtpTransport = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port: 587,
@@ -1014,10 +1014,19 @@ app.post('/api/login', async (req, res) => {
           'Admin 2FA OTP send'
         );
       } catch (emailErr) {
-        console.error('[login-2fa] OTP send failed:', emailErr.message);
+        console.error('[login-2fa] ❌ OTP send failed for', otpDestination, '·', emailErr.message);
+
+        let hint = 'Please try again in a moment.';
+        const m = String(emailErr.message || '');
+        if (/Brevo 401|Brevo 403/i.test(m))                          hint = 'Email API key is invalid — check BREVO_API_KEY.';
+        else if (/Brevo 400/i.test(m))                               hint = 'Brevo rejected the sender — verify BREVO_SENDER_EMAIL.';
+        else if (/EAUTH|535|Username and Password/i.test(m))         hint = 'SMTP auth failed — EMAIL_PASS must be a Gmail App Password.';
+        else if (/ENETUNREACH|ETIMEDOUT|ECONNREFUSED/i.test(m))      hint = 'Server cannot reach the mail host. Enable Brevo (HTTPS) — Render blocks outbound SMTP.';
+        else if (/All email transports failed/i.test(m))             hint = 'No mail transport is configured. Set BREVO_API_KEY + BREVO_SENDER_EMAIL.';
+
         return res.status(500).json({
           success: false,
-          message: 'Could not send 2FA OTP. Please try again.'
+          message: `Could not send 2FA OTP. ${hint}`
         });
       }
 
@@ -4018,6 +4027,76 @@ app.get('/api/admin/email-replies', async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 });
+/* ============================================================
+   DIAGNOSTIC — Admin login transport check
+   Open: /api/admin/login-diag        (status only)
+   Open: /api/admin/login-diag?send=1 (also sends a real test email)
+   ============================================================ */
+app.get('/api/admin/login-diag', async (req, res) => {
+  const report = {
+    ok: true,
+    env: {
+      BREVO_API_KEY:      !!process.env.BREVO_API_KEY,
+      BREVO_SENDER_EMAIL: process.env.BREVO_SENDER_EMAIL || null,
+      RESEND_API_KEY:     !!process.env.RESEND_API_KEY,
+      EMAIL_USER:         process.env.EMAIL_USER || null,
+      EMAIL_PASS:         !!process.env.EMAIL_PASS,
+      JWT_SECRET:         !!process.env.JWT_SECRET,
+      ADMIN_EMAIL:        process.env.ADMIN_EMAIL || null
+    },
+    transports: { brevo: USE_BREVO, smtp: USE_SMTP, resend: USE_RESEND },
+    verify: null,
+    adminUser: null,
+    sendTest: null
+  };
+
+  try {
+    report.verify = await transporter.verify();
+  } catch (e) {
+    report.verify = { ok: false, error: e.message };
+    report.ok = false;
+  }
+
+  try {
+    const admin = await User.findOne({ role: 'admin' }).select('username email').lean();
+    if (!admin) {
+      report.adminUser = '(no admin exists — run /setup-admin)';
+      report.ok = false;
+    } else {
+      report.adminUser = {
+        username: admin.username,
+        email: admin.email || '(none — will fall back to ADMIN_EMAIL)'
+      };
+      if (!admin.email && !process.env.ADMIN_EMAIL) {
+        report.adminUser.warning = 'No email anywhere — 2FA can never be delivered.';
+        report.ok = false;
+      }
+    }
+  } catch (e) {
+    report.adminUser = 'DB error: ' + e.message;
+    report.ok = false;
+  }
+
+  if (req.query.send === '1' && report.verify && report.verify.ok) {
+    try {
+      const admin = await User.findOne({ role: 'admin' }).select('email username').lean();
+      const to = (admin && admin.email) || process.env.ADMIN_EMAIL;
+      if (!to) throw new Error('No recipient address available.');
+      await transporter.sendMail({
+        to,
+        subject: 'Aerospace Portal — Login Diagnostic',
+        text: `Diagnostic email sent at ${new Date().toISOString()}.\nIf you received this, 2FA OTP delivery will work.`
+      });
+      report.sendTest = { ok: true, to };
+    } catch (e) {
+      report.sendTest = { ok: false, to: null, error: e.message };
+      report.ok = false;
+    }
+  }
+
+  res.json(report);
+});
+
 /* ============================================================
    EMAIL SELF-TEST (open in browser to verify sending works)
    ============================================================ */
