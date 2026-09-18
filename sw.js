@@ -1,12 +1,7 @@
 /* ============================================================
-   SERVICE WORKER — offline shell caching (v26)
-   ------------------------------------------------------------
-   v26 changes:
-     • Cache name bumped from v25 → v26 (forces fresh files)
-     • Network-first strategy (always tries server before cache)
-     • Query-string cache buster on install
+   SERVICE WORKER — offline shell caching (v34)
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v30';
+const CACHE_NAME = 'aero-shell-v34';
 
 const SHELL_ASSETS = [
   './',
@@ -22,7 +17,7 @@ self.addEventListener('install', (event) => {
     caches.open(CACHE_NAME).then((cache) =>
       Promise.all(
         SHELL_ASSETS.map((url) =>
-          cache.add(url + '?v=30').catch((err) => console.warn('[SW] cache miss:', url, err))
+          cache.add(url + '?v=34').catch((err) => console.warn('[SW] cache miss:', url, err))
         )
       )
     )
@@ -46,21 +41,17 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(req.url);
 
-  // Never intercept API calls, uploads, or cross-origin requests
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return;
   if (url.pathname.startsWith('/uploads/')) return;
 
-  // ⚡ NETWORK-FIRST: Always try server first, fall back to cache offline
-  const isShell = SHELL_ASSETS.some((a) =>
-    url.pathname.endsWith(a.replace('./', '/')) || url.pathname === '/'
-  );
+  const isShell = SHELL_ASSETS.some((a) => {
+    const p = (a === './' || a === './index.html') ? '/' : a.replace(/^\.\//, '/');
+    return url.pathname === p;
+  });
 
   if (isShell) {
     event.respondWith(
-      // ⚡ cache: 'no-store' → bypass browser HTTP cache.
-      // Without this, the SW gets a stale 1-hour-cached /app.js
-      // even on "network-first" fetch.
       fetch(req, { cache: 'no-store' })
         .then((res) => {
           if (res && res.ok) {

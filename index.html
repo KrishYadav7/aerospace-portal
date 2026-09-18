@@ -24,7 +24,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=30">
+  <link rel="stylesheet" href="styles.css?v=34">
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
   <style>
@@ -178,7 +178,59 @@
           </div>
         </div>
       </section>
+      <!-- ============================================================
+           STUDENT — AI DOUBT SOLVER (NEW HOME PAGE)
+           ============================================================ -->
+      <section id="studentAIHomeView" class="view">
+        <div class="ai-home-hero">
+          <div class="ai-home-orb ai-home-orb-1"></div>
+          <div class="ai-home-orb ai-home-orb-2"></div>
+          <div class="ai-home-orb ai-home-orb-3"></div>
 
+          <div class="ai-home-brand">
+            <div class="ai-home-icon">
+              <i class="fas fa-robot"></i>
+              <span class="ai-home-pulse"></span>
+            </div>
+            <div class="ai-home-title-block">
+              <span class="ai-home-badge">
+                <i class="fas fa-bolt"></i> Powered by AI
+              </span>
+              <h1>AI Doubt Solver</h1>
+              <p>Ask anything about your aerospace courses — get step-by-step solutions, clear explanations, and real-world context in seconds.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="ai-chat-shell">
+          <div class="ai-chat-messages" id="aiChatMessages"></div>
+
+          <div class="ai-chat-composer">
+            <textarea
+              id="aiHomeInput"
+              class="ai-composer-input"
+              placeholder="Ask a doubt… e.g. Explain Bernoulli's equation with an example"
+              rows="1"
+              maxlength="2000"
+              oninput="aiHomeAutoGrow(this)"
+              onkeydown="aiHomeKeydown(event)"></textarea>
+            <div class="ai-composer-row">
+              <span class="ai-composer-hint">
+                <i class="fas fa-keyboard"></i>
+                <strong>Enter</strong> to send · <strong>Shift+Enter</strong> for new line
+              </span>
+              <div class="ai-composer-btns">
+                <button type="button" class="ai-clear-btn" onclick="resetAIHomeChat()" title="Clear conversation">
+                  <i class="fas fa-trash-alt"></i>
+                </button>
+                <button type="button" class="ai-send-btn" id="aiHomeSendBtn" onclick="askAIDoubtHome()">
+                  <i class="fas fa-paper-plane"></i> Ask AI
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
       <!-- STUDENT HOME -->
       <section id="studentHomeView" class="view">
         <div id="streakCardContainer"></div>
@@ -1188,8 +1240,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
-  <script src="media-viewer.js?v=30" defer></script>
-  <script src="app.js?v=30" defer></script>
+  <script src="media-viewer.js?v=34" defer></script>
+  <script src="app.js?v=34" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {

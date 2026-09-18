@@ -80,16 +80,53 @@ app.use(helmet({
 }));
 app.use(compression());
 app.use(cors());
+/* Raw body capture for Razorpay webhook — MUST run before global express.json() */
+app.use('/api/razorpay-webhook', express.raw({ type: 'application/json', limit: '2mb' }));
 // File uploads use multer (separate path); JSON bodies never exceed a few MB
 app.use(express.json({ limit: '4mb' }));
 app.use(express.urlencoded({ limit: '4mb', extended: true }));
+/* ---- Slow request logger (must be registered BEFORE routes) ---- */
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    if (duration > 1000) {
+      console.warn(`[SLOW] ${req.method} ${req.url} - ${duration}ms`);
+    }
+  });
+  next();
+});
 /* ============================================================
    FILE UPLOADS — save to disk, serve from /uploads, never store in MongoDB
    ============================================================ */
+const ALLOWED_MIMES = new Set([
+  // Documents
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain',
+  // Images
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+  // Video
+  'video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
+  // Audio
+  'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg'
+]);
+
+function fileFilter(req, file, cb) {
+  if (ALLOWED_MIMES.has(file.mimetype)) return cb(null, true);
+  cb(new Error('File type not allowed: ' + file.mimetype));
+}
+
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 12 * 1024 * 1024 } // 12 MB — larger files use /api/upload/chunk
+  limits: { fileSize: 12 * 1024 * 1024 },
+  fileFilter
 });
 app.use('/uploads', express.static(UPLOAD_DIR, {
   maxAge: '7d',
@@ -198,7 +235,8 @@ const chunkUpload = multer({
       cb(null, `chunk-${String(idx).padStart(6, '0')}`);
     }
   }),
-  limits: { fileSize: 8 * 1024 * 1024 } // hard cap per chunk
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter
 });
 
 app.post('/api/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
@@ -382,6 +420,28 @@ app.use('/api/admin/login/verify-otp', authLimiter);
 const JWT_SECRET = process.env.JWT_SECRET || 'SuperSecretAeroKey';
 if (!process.env.JWT_SECRET) {
   console.warn('⚠️  WARNING: JWT_SECRET not set. Using insecure fallback.');
+}
+/* ============================================================
+   ADMIN AUTH MIDDLEWARE
+   Verifies the Bearer token belongs to a real admin.
+   Attach to any route that only admins should call.
+   ============================================================ */
+async function requireAdminAuth(req, res, next) {
+  try {
+    const auth = req.headers.authorization || '';
+    if (!auth.startsWith('Bearer ')) {
+      return res.status(401).json({ success: false, message: 'Authentication required.' });
+    }
+    const decoded = jwt.verify(auth.slice(7), JWT_SECRET);
+    const u = await User.findById(decoded.id).select('role').lean();
+    if (!u || u.role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Admin access only.' });
+    }
+    req.adminUser = u;
+    next();
+  } catch (e) {
+    return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
+  }
 }
 
 /* ============================================================
@@ -1166,7 +1226,6 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Missing token or OTP.' });
     }
 
-    // 1. Verify the stateless JWT
     let decoded;
     try {
       decoded = jwt.verify(pendingToken, JWT_SECRET);
@@ -1174,21 +1233,35 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Session expired or invalid. Please log in again.' });
     }
 
-    // 2. Check the OTP
-    if (String(otp).trim() !== decoded.otp) {
+    const record = adminLoginStore.get(decoded.pendingId);
+    if (!record) {
+      return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
+    }
+    if (Date.now() > record.expiresAt) {
+      adminLoginStore.delete(decoded.pendingId);
+      return res.status(400).json({ success: false, message: 'OTP expired. Please log in again.' });
+    }
+    if (record.attempts >= 5) {
+      adminLoginStore.delete(decoded.pendingId);
+      return res.status(429).json({ success: false, message: 'Too many incorrect attempts. Please log in again.' });
+    }
+    if (String(otp).trim() !== record.otp) {
+      record.attempts++;
       return res.status(400).json({
         success: false,
-        message: 'Incorrect OTP. Please check your email and try again.'
+        message: `Incorrect OTP. ${5 - record.attempts} attempt${5 - record.attempts === 1 ? '' : 's'} remaining.`
       });
     }
 
-    // 3. Fetch the user
-    const user = await User.findById(decoded.userId);
+    // OTP verified — burn it
+    adminLoginStore.delete(decoded.pendingId);
+
+    const user = await User.findById(record.userId);
     if (!user || user.role !== 'admin') {
       return res.status(401).json({ success: false, message: 'Admin account not found.' });
     }
 
-    // 4. SINGLE-DEVICE SESSION — generate fresh sessionId
+    // Single-device session
     let sessionId;
     try {
       sessionId = crypto.randomBytes(24).toString('hex');
@@ -1204,7 +1277,6 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
       return res.status(500).json({ success: false, message: 'Could not establish session.' });
     }
 
-    // 5. Issue the real login token (with sessionId)
     const token = jwt.sign(
       { id: user._id, role: user.role, sessionId },
       JWT_SECRET,
@@ -1340,7 +1412,6 @@ app.post('/api/admin/login/resend-otp', async (req, res) => {
     const { pendingToken } = req.body || {};
     if (!pendingToken) return res.status(400).json({ success: false, message: 'Missing token.' });
 
-    // 1. Verify the old token to get the user ID
     let decoded;
     try {
       decoded = jwt.verify(pendingToken, JWT_SECRET);
@@ -1348,18 +1419,27 @@ app.post('/api/admin/login/resend-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
     }
 
-    const user = await User.findById(decoded.userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Admin account not found.' });
+    const oldRecord = adminLoginStore.get(decoded.pendingId);
+    if (!oldRecord) {
+      return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
     }
 
-    // 2. Generate a new OTP and a new stateless token
+    const user = await User.findById(oldRecord.userId);
+    if (!user) return res.status(404).json({ success: false, message: 'Admin account not found.' });
+
+    // Generate new OTP + new pendingId (single-use)
     const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
-    const newPendingToken = jwt.sign(
-      { userId: user._id.toString(), otp: newOtp }, 
-      JWT_SECRET, 
-      { expiresIn: '10m' }
-    );
+    const newPendingId = crypto.randomBytes(24).toString('hex');
+    adminLoginStore.set(newPendingId, {
+      userId: user._id.toString(),
+      otp: newOtp,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      attempts: 0
+    });
+    adminLoginStore.delete(decoded.pendingId);  // invalidate the old one
+    setTimeout(() => adminLoginStore.delete(newPendingId), 10 * 60 * 1000);
+
+    const newPendingToken = jwt.sign({ pendingId: newPendingId }, JWT_SECRET, { expiresIn: '10m' });
 
     await withTimeout(
       transporter.sendMail({
@@ -1381,11 +1461,11 @@ app.post('/api/admin/login/resend-otp', async (req, res) => {
 /* ============================================================
    ADMIN — self-service credential update
    ============================================================ */
-app.put('/api/admin/update-credentials', async (req, res) => {
+app.put('/api/admin/update-credentials', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId, currentPassword, newUsername, newPassword } = req.body || {};
+    const adminId = String(req.adminUser._id);
+    const { currentPassword, newUsername, newPassword } = req.body || {};
 
-    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
     if (!currentPassword) return res.status(400).json({ success: false, message: 'Current password required.' });
     if (!newUsername && !newPassword) {
       return res.status(400).json({ success: false, message: 'Provide a new username and/or new password.' });
@@ -1858,7 +1938,7 @@ app.post('/api/forgot-password/reset', async (req, res) => {
 /* ============================================================
    ADMIN — Student Management
    ============================================================ */
-app.post('/api/admin/create-student', async (req, res) => {
+app.post('/api/admin/create-student', requireAdminAuth, async (req, res) => {
   try {
     const { fullName, username, email, password } = req.body;
     if (!fullName || !username || !password) {
@@ -1905,7 +1985,7 @@ app.post('/api/admin/create-student', async (req, res) => {
   }
 });
 
-app.post('/api/admin/reset-password/:userId', async (req, res) => {
+app.post('/api/admin/reset-password/:userId', requireAdminAuth, async (req, res) => {
   try {
     const { newPassword } = req.body;
     if (!newPassword || newPassword.length < 6) {
@@ -1921,7 +2001,7 @@ app.post('/api/admin/reset-password/:userId', async (req, res) => {
   }
 });
 
-app.delete('/api/admin/students/:userId', async (req, res) => {
+	app.delete('/api/admin/students/:userId', requireAdminAuth, async (req, res) => {
   try {
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
@@ -1936,20 +2016,26 @@ app.delete('/api/admin/students/:userId', async (req, res) => {
 /* ============================================================
    ADMIN — EMAIL DIAGNOSTIC
    ============================================================ */
-app.get('/api/admin/email-status', async (req, res) => {
+app.get('/api/admin/email-status', requireAdminAuth, async (req, res) => {
   try {
-    if (!EMAIL_USER || !EMAIL_PASS) {
+    if (!USE_BREVO && !USE_SMTP && !USE_RESEND) {
       return res.json({
         success: true,
         ready: false,
-        message: 'EMAIL_USER or EMAIL_PASS missing in server .env'
+        message: 'No mail transport configured. Set BREVO_API_KEY + BREVO_SENDER_EMAIL.'
       });
     }
     try {
-      await withTimeout(transporter.verify(), 10000, 'verify');
-      res.json({ success: true, ready: true, from: EMAIL_USER, message: 'Email is configured and reachable.' });
+      const v = await withTimeout(transporter.verify(), 10000, 'verify');
+      res.json({
+        success: true,
+        ready: true,
+        via: v.via,
+        from: v.from,
+        message: `Email ready via ${v.via}.`
+      });
     } catch (err) {
-      res.json({ success: true, ready: false, from: EMAIL_USER, message: 'Verification failed: ' + err.message });
+      res.json({ success: true, ready: false, message: 'Verification failed: ' + err.message });
     }
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
@@ -1969,19 +2055,11 @@ const BULK_CONCURRENCY = 8;
 const PER_SEND_TIMEOUT_MS = 30000; // Changed from 8000
 const TOTAL_BUDGET_MS = 45000;
 
-app.post('/api/admin/send-email', async (req, res) => {
+app.post('/api/admin/send-email', requireAdminAuth, async (req, res) => {
   const startedAt = Date.now();
   try {
-    const { adminId, recipientIds, subject, body } = req.body || {};
-
-    // ---- Admin verification ----
-    if (!adminId) {
-      return res.status(400).json({ success: false, message: 'Admin identity required.' });
-    }
-    const admin = await User.findById(adminId).select('role fullName username');
-    if (!admin || admin.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Only admins can send bulk emails.' });
-    }
+    const { recipientIds, subject, body } = req.body || {};
+    const admin = req.adminUser;
 
     // ---- Email config check ----
     if (!EMAIL_USER || !EMAIL_PASS) {
@@ -2119,7 +2197,7 @@ app.get('/api/professors', async (req, res) => {
   }
 });
 
-app.post('/api/professors', async (req, res) => {
+app.post('/api/professors', requireAdminAuth, async (req, res) => {
   try {
     const newProf = new Professor(req.body);
     await newProf.save();
@@ -2129,7 +2207,7 @@ app.post('/api/professors', async (req, res) => {
   }
 });
 
-app.delete('/api/professors/:id', async (req, res) => {
+	app.delete('/api/professors/:id', requireAdminAuth, async (req, res) => {
   try {
     // Safety check: ensure the ID is a valid MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
@@ -2310,7 +2388,7 @@ app.get('/api/courses/:id', async (req, res) => {
   }
 });
 
-app.post('/api/courses', async (req, res) => {
+app.post('/api/courses', requireAdminAuth, async (req, res) => {
   try {
     const newCourse = new Course(req.body);
     await newCourse.save();
@@ -2319,7 +2397,7 @@ app.post('/api/courses', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
-app.put('/api/courses/:id', async (req, res) => {
+app.put('/api/courses/:id', requireAdminAuth, async (req, res) => {
   try {
     const allowed = ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price'];
     const update = {};
@@ -2331,7 +2409,7 @@ app.put('/api/courses/:id', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Error updating course: ' + e.message }); }
 });
 
-app.delete('/api/courses/:id', async (req, res) => {
+app.delete('/api/courses/:id', requireAdminAuth, async (req, res) => {
   try {
     await Course.findByIdAndDelete(req.params.id);
     cacheClear('courses:');
@@ -2342,7 +2420,7 @@ app.delete('/api/courses/:id', async (req, res) => {
 /* ============================================================
    MATERIALS
    ============================================================ */
-app.post('/api/courses/:courseId/materials', async (req, res) => {
+app.post('/api/courses/:courseId/materials', requireAdminAuth, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ message: 'Course not found' });
@@ -2358,7 +2436,7 @@ app.post('/api/courses/:courseId/materials', async (req, res) => {
   }
 });
 
-app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
+app.put('/api/courses/:courseId/materials/:materialId', requireAdminAuth, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
@@ -2372,7 +2450,7 @@ app.put('/api/courses/:courseId/materials/:materialId', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Error updating material: ' + e.message }); }
 });
 
-app.delete('/api/courses/:courseId/materials/:materialId', async (req, res) => {
+app.delete('/api/courses/:courseId/materials/:materialId', requireAdminAuth, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
@@ -2389,7 +2467,7 @@ app.delete('/api/courses/:courseId/materials/:materialId', async (req, res) => {
 /* ============================================================
    ANNOUNCEMENTS
    ============================================================ */
-app.post('/api/courses/:courseId/announcements', async (req, res) => {
+app.post('/api/courses/:courseId/announcements', requireAdminAuth, async (req, res) => {
   try {
     const { title, body, authorName } = req.body;
     if (!title || !title.trim()) return res.status(400).json({ success: false, message: 'Title required' });
@@ -2406,7 +2484,7 @@ app.post('/api/courses/:courseId/announcements', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Error posting announcement: ' + e.message }); }
 });
 
-app.delete('/api/courses/:courseId/announcements/:annId', async (req, res) => {
+app.delete('/api/courses/:courseId/announcements/:annId', requireAdminAuth, async (req, res) => {
   try {
     await Course.findByIdAndUpdate(req.params.courseId, { $pull: { announcements: { id: req.params.annId } } });
     cacheClear('courses:');
@@ -2509,24 +2587,13 @@ app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', async 
     res.json({ success: true, message: 'Answer accepted!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error: ' + e.message }); }
 });
-// server.js mein, app.use(express.json()) ke baad
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    if (duration > 1000) { // 1 second se zyada slow
-      console.warn(`[SLOW] ${req.method} ${req.url} - ${duration}ms`);
-    }
-  });
-  next();
-});
 /* ============================================================
    QUIZ
    ============================================================ */
 /* ============================================================
    QUIZ — Save paper (admin)
    ============================================================ */
-app.post('/api/courses/:courseId/materials/:materialId/quiz', async (req, res) => {
+app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth, async (req, res) => {
   try {
     const { quiz, examConfig } = req.body || {};
     if (!Array.isArray(quiz)) {
@@ -2923,15 +2990,9 @@ app.get('/api/settings/owner', async (req, res) => {
   }
 });
 
-app.put('/api/admin/settings/owner', async (req, res) => {
+app.put('/api/admin/settings/owner', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId, name, title, role, bio, email, phone, photo } = req.body || {};
-    if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required.' });
-
-    const admin = await User.findById(adminId).select('role');
-    if (!admin || admin.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin only.' });
-    }
+    const { name, title, role, bio, email, phone, photo } = req.body || {};
 
     const s = await getGlobalSettings();
     if (!s.ownerProfile) s.ownerProfile = {};
@@ -3042,14 +3103,9 @@ app.post('/api/contact/team', contactTeamLimiter, async (req, res) => {
 });
 
 /* ---- Admin: update plan info ---- */
-app.put('/api/admin/settings/subscription', async (req, res) => {
+app.put('/api/admin/settings/subscription', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId, amount, title, description, enabled } = req.body || {};
-    if (!adminId) return res.status(400).json({ success: false, message: 'Admin identity required.' });
-    const admin = await User.findById(adminId).select('role');
-    if (!admin || admin.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin only.' });
-    }
+    const { amount, title, description, enabled } = req.body || {};
 
     const s = await getGlobalSettings();
     if (typeof amount === 'number' && amount >= 0) s.subscriptionAmount = amount;
@@ -3439,14 +3495,8 @@ app.post('/api/subscribe/cancel/verify', async (req, res) => {
 });
 
 /* ---- Admin: list all subscriptions + current settings ---- */
-app.get('/api/admin/subscriptions', async (req, res) => {
+app.get('/api/admin/subscriptions', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId } = req.query;
-    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
-    const admin = await User.findById(adminId).select('role');
-    if (!admin || admin.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin only.' });
-    }
 
     const users = await User.find({ 'subscription.status': { $in: ['pending','active','expired','cancelled','halted'] } })
       .select('fullName username email subscription').lean();
@@ -3487,12 +3537,9 @@ app.get('/api/admin/subscriptions', async (req, res) => {
 });
 
 /* ---- Admin: grant subscription manually ---- */
-app.post('/api/admin/subscription/:userId/grant', async (req, res) => {
+app.post('/api/admin/subscription/:userId/grant', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId, days, note } = req.body || {};
-    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
-    const admin = await User.findById(adminId).select('role');
-    if (!admin || admin.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only.' });
+    const { days, note } = req.body || {};
 
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
@@ -3523,12 +3570,9 @@ app.post('/api/admin/subscription/:userId/grant', async (req, res) => {
 });
 
 /* ---- Admin: revoke ---- */
-app.post('/api/admin/subscription/:userId/revoke', async (req, res) => {
+app.post('/api/admin/subscription/:userId/revoke', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId, note } = req.body || {};
-    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
-    const admin = await User.findById(adminId).select('role');
-    if (!admin || admin.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only.' });
+    const { note } = req.body || {};
 
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
@@ -3556,12 +3600,9 @@ app.post('/api/admin/subscription/:userId/revoke', async (req, res) => {
 });
 
 /* ---- Admin: extend ---- */
-app.post('/api/admin/subscription/:userId/extend', async (req, res) => {
+app.post('/api/admin/subscription/:userId/extend', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId, days } = req.body || {};
-    if (!adminId) return res.status(400).json({ success: false, message: 'adminId required.' });
-    const admin = await User.findById(adminId).select('role');
-    if (!admin || admin.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin only.' });
+    const { days } = req.body || {};
 
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
@@ -3628,15 +3669,17 @@ app.post('/api/verify-payment', async (req, res) => {
 /* ============================================================
    RAZORPAY WEBHOOK — Auto-capture payments (ADD THIS BLOCK)
    ============================================================ */
-app.post('/api/razorpay-webhook', express.json(), async (req, res) => {
+app.post('/api/razorpay-webhook', async (req, res) => {
   try {
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
     const signature = req.headers['x-razorpay-signature'];
 
-    // 1. Verify the webhook signature to ensure it's from Razorpay
+    // req.body is a raw Buffer here (thanks to express.raw above)
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+
     const expectedSignature = crypto
       .createHmac('sha256', webhookSecret)
-      .update(JSON.stringify(req.body))
+      .update(rawBody)
       .digest('hex');
 
     if (signature !== expectedSignature) {
@@ -3644,16 +3687,18 @@ app.post('/api/razorpay-webhook', express.json(), async (req, res) => {
       return res.status(400).send('Invalid signature');
     }
 
-    // 2. Handle the payment.captured event (one-time course purchase)
-    const event = req.body.event;
-    const payload = req.body.payload || {};
+    let payload;
+    try { payload = JSON.parse(rawBody.toString('utf8')); }
+    catch (e) { return res.status(400).send('Invalid JSON'); }
+
+    const event = payload.event;
+    const data  = payload.payload || {};
 
     if (event === 'payment.captured') {
-      const payment = payload.payment && payload.payment.entity;
+      const payment = data.payment && data.payment.entity;
       if (payment && payment.order_id) {
         const orderId = payment.order_id;
         const paymentId = payment.id;
-
         console.log(`[Webhook] Payment captured: ${paymentId} for order ${orderId}`);
 
         const order = await razorpay.orders.fetch(orderId);
@@ -3671,10 +3716,9 @@ app.post('/api/razorpay-webhook', express.json(), async (req, res) => {
       }
     }
 
-    /* ---- SUBSCRIPTION EVENTS ---- */
     if (event === 'subscription.charged' || event === 'subscription.authenticated') {
-      const subEntity = (payload.subscription && payload.subscription.entity) || {};
-      const payEntity = (payload.payment && payload.payment.entity) || {};
+      const subEntity = (data.subscription && data.subscription.entity) || {};
+      const payEntity = (data.payment && data.payment.entity) || {};
       const notes = subEntity.notes || {};
       const userId = notes.userId;
 
@@ -3710,7 +3754,7 @@ app.post('/api/razorpay-webhook', express.json(), async (req, res) => {
         event === 'subscription.halted' ||
         event === 'subscription.completed' ||
         event === 'subscription.paused') {
-      const subEntity = (payload.subscription && payload.subscription.entity) || {};
+      const subEntity = (data.subscription && data.subscription.entity) || {};
       const notes = subEntity.notes || {};
       const userId = notes.userId;
       if (userId) {
@@ -3826,7 +3870,7 @@ app.post('/api/user/notifications/:userId/mark-read', async (req, res) => {
 /* ============================================================
    STUDENTS LIST
    ============================================================ */
-app.get('/api/students', async (req, res) => {
+app.get('/api/students', requireAdminAuth, async (req, res) => {
   try {
     const students = await User.find({ role: 'student' })
       .select('-password')
@@ -3892,7 +3936,7 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
 /* ============================================================
    PLAYLISTS
    ============================================================ */
-app.post('/api/courses/:courseId/playlists', async (req, res) => {
+app.post('/api/courses/:courseId/playlists', requireAdminAuth, async (req, res) => {
   try {
     const { title, description, materialIds } = req.body || {};
     if (!title || !title.trim()) return res.status(400).json({ success: false, message: 'Title is required.' });
@@ -3913,7 +3957,7 @@ app.post('/api/courses/:courseId/playlists', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
 
-app.post('/api/courses/:courseId/playlists/auto-videos', async (req, res) => {
+app.post('/api/courses/:courseId/playlists/auto-videos', requireAdminAuth, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
@@ -3944,7 +3988,7 @@ app.post('/api/courses/:courseId/playlists/auto-videos', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
 
-app.put('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
+app.put('/api/courses/:courseId/playlists/:playlistId', requireAdminAuth, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
@@ -3959,7 +4003,7 @@ app.put('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
 
-app.delete('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
+app.delete('/api/courses/:courseId/playlists/:playlistId', requireAdminAuth, async (req, res) => {
   try {
     await Course.findByIdAndUpdate(
       req.params.courseId,
@@ -3970,7 +4014,7 @@ app.delete('/api/courses/:courseId/playlists/:playlistId', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
 
-app.post('/api/courses/:courseId/playlists/:playlistId/materials', async (req, res) => {
+app.post('/api/courses/:courseId/playlists/:playlistId/materials', requireAdminAuth, async (req, res) => {
   try {
     const { materialId } = req.body || {};
     if (!materialId) return res.status(400).json({ success: false, message: 'materialId required.' });
@@ -3985,7 +4029,7 @@ app.post('/api/courses/:courseId/playlists/:playlistId/materials', async (req, r
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
 
-app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId', async (req, res) => {
+app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId', requireAdminAuth, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
@@ -4058,7 +4102,7 @@ if (process.env.ENABLE_IMAP_POLLING === 'true') {
 }
 
 // API Endpoint for admin dashboard
-app.get('/api/admin/email-replies', async (req, res) => {
+app.get('/api/admin/email-replies', requireAdminAuth, async (req, res) => {
   try {
     // Live IMAP pull when the admin explicitly asks for a refresh
     if (req.query.refresh === '1' && USE_SMTP) {
@@ -4079,7 +4123,7 @@ app.get('/api/admin/email-replies', async (req, res) => {
    Open: /api/admin/login-diag        (status only)
    Open: /api/admin/login-diag?send=1 (also sends a real test email)
    ============================================================ */
-app.get('/api/admin/login-diag', async (req, res) => {
+app.get('/api/admin/login-diag', requireAdminAuth, async (req, res) => {
   const report = {
     ok: true,
     env: {
@@ -4089,6 +4133,7 @@ app.get('/api/admin/login-diag', async (req, res) => {
       EMAIL_USER:         process.env.EMAIL_USER || null,
       EMAIL_PASS:         !!process.env.EMAIL_PASS,
       JWT_SECRET:         !!process.env.JWT_SECRET,
+      
       ADMIN_EMAIL:        process.env.ADMIN_EMAIL || null
     },
     transports: { brevo: USE_BREVO, smtp: USE_SMTP, resend: USE_RESEND },
@@ -4147,7 +4192,7 @@ app.get('/api/admin/login-diag', async (req, res) => {
 /* ============================================================
    EMAIL SELF-TEST (open in browser to verify sending works)
    ============================================================ */
-app.get('/api/admin/test-email', async (req, res) => {
+app.get('/api/admin/test-email', requireAdminAuth, async (req, res) => {
   try {
     const info = await transporter.sendMail({
       to: process.env.EMAIL_USER,
@@ -4283,11 +4328,8 @@ app.get('/api/friends', async (req, res) => {
 });
 
 /* ---------- Admin: List all community entries ---------- */
-app.get('/api/admin/community', async (req, res) => {
+app.get('/api/admin/community', requireAdminAuth, async (req, res) => {
   try {
-    const { adminId } = req.query;
-    const admin = await requireAdmin(adminId);
-    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
 
     const alumni  = await Alumni.find().sort({ submittedAt: -1 }).lean();
     const friends = await Friend.find().sort({ submittedAt: -1 }).lean();
@@ -4299,10 +4341,8 @@ app.get('/api/admin/community', async (req, res) => {
 });
 
 /* ---------- Admin: Approve / Reject / Delete ALUMNI ---------- */
-app.put('/api/admin/alumni/:id/approve', async (req, res) => {
+app.put('/api/admin/alumni/:id/approve', requireAdminAuth, async (req, res) => {
   try {
-    const admin = await requireAdmin(req.body.adminId);
-    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
     const doc = await Alumni.findByIdAndUpdate(
       req.params.id,
       { status: 'approved', approvedAt: new Date(), approvedBy: admin._id.toString() },
@@ -4335,8 +4375,6 @@ app.put('/api/admin/alumni/:id/reject', async (req, res) => {
 
 app.delete('/api/admin/alumni/:id', async (req, res) => {
   try {
-    const admin = await requireAdmin(req.body.adminId || req.query.adminId);
-    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
     await Alumni.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: 'Alumni deleted.' });
   } catch (e) {
@@ -4406,13 +4444,11 @@ const aiDoubtLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, message: 'Too many AI requests. Please wait a minute.' }
 });
-
 app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
   try {
-    // ---- STEP 1: Frontend se data nikalo ----
     const { question, courseId, materialId, userId } = req.body || {};
 
-    // ---- STEP 2: Validation ----
+    // ---- Validation ----
     if (!question || !question.trim()) {
       return res.status(400).json({ success: false, message: 'Question is required.' });
     }
@@ -4420,10 +4456,14 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Question too long (max 2000 chars).' });
     }
     if (!process.env.GROQ_API_KEY) {
-      return res.status(500).json({ success: false, message: 'AI service not configured.' });
+      console.error('[ai] ❌ GROQ_API_KEY is not set in environment');
+      return res.status(500).json({
+        success: false,
+        message: 'AI is not configured. Please ask the admin to set GROQ_API_KEY.'
+      });
     }
 
-    // ---- STEP 3: Course context fetch karo (RAG-lite) ----
+    // ---- Course context (RAG-lite) ----
     let contextBlock = '';
     if (courseId) {
       try {
@@ -4444,63 +4484,93 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
         }
       } catch (e) {
         console.warn('[ai/solve-doubt] Course fetch failed:', e.message);
-        // Continue without context — not fatal
       }
     }
 
-    // ---- STEP 4: Prompt banao ----
+    // ---- Prompt ----
     const systemPrompt =
-      `You are a helpful teaching assistant for the Aerospace Department at IIT Kharagpur. ` +
-      `You help students understand concepts from their course materials. ` +
-      `Answer in a clear, student-friendly way. Use simple language and real-world analogies. ` +
-      `If the question involves math or physics, show the derivation step-by-step. ` +
+      `You are an expert teaching assistant for the Aerospace Department at IIT Kharagpur. ` +
+      `Answer questions in a clear, student-friendly way. Use simple language and real-world analogies. ` +
+      `For math/physics, show the derivation step-by-step. ` +
       `If you don't know something, say so honestly. ` +
       `Keep answers focused (under 400 words unless a derivation needs more). ` +
-      `Use markdown formatting (bold, bullet points, code blocks, LaTeX with $...$ for math).`;
+      `Use markdown (bold, bullet lists, code blocks) and LaTeX with $...$ for inline math and $$...$$ for display math. ` +
+      `Format your response in clean, readable Markdown.`;
 
     const userPrompt = contextBlock
       ? `${contextBlock}\nStudent's doubt: ${question}`
       : `Student's doubt: ${question}`;
 
-    // ---- STEP 5: Groq API call ----
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'llama-3.1-8b-instant',   // Best free model
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user',   content: userPrompt }
-        ],
-        temperature: 0.5,        // 0 = boring, 1 = creative, 0.5 = balanced
-        max_tokens: 1200         // Answer length cap
-      })
-    });
+    // ---- Try multiple models for resilience ----
+    const MODELS = [
+      'llama-3.3-70b-versatile',
+      'llama-3.1-8b-instant',
+      'gemma2-9b-it'
+    ];
 
-    // ---- STEP 6: Error handling ----
-    if (!groqRes.ok) {
-      const errText = await groqRes.text();
-      console.error('[ai/solve-doubt] Groq error:', groqRes.status, errText);
-      return res.status(500).json({
-        success: false,
-        message: 'AI service is busy. Please try again in a moment.'
-      });
+    let groqData = null;
+    let lastError = null;
+
+    for (const model of MODELS) {
+      try {
+        console.log(`[ai] Trying model: ${model}`);
+        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user',   content: userPrompt }
+            ],
+            temperature: 0.5,
+            max_tokens: 1200
+          })
+        });
+
+        if (!groqRes.ok) {
+          const errBody = await groqRes.text();
+          console.error(`[ai] ❌ Model "${model}" failed (HTTP ${groqRes.status}):`, errBody.slice(0, 400));
+          lastError = { status: groqRes.status, body: errBody, model };
+          continue; // try next model
+        }
+
+        groqData = await groqRes.json();
+        console.log(`[ai] ✅ Model "${model}" succeeded.`);
+        break;
+      } catch (e) {
+        console.error(`[ai] Model "${model}" threw:`, e.message);
+        lastError = { status: 0, body: e.message, model };
+      }
     }
 
-    // ---- STEP 7: Answer extract karo ----
-    const groqData = await groqRes.json();
+    if (!groqData) {
+      // Build a helpful error message for the frontend
+      let friendly = 'AI is temporarily unavailable. Please try again in a moment.';
+      if (lastError) {
+        if (lastError.status === 401 || lastError.status === 403)
+          friendly = 'AI authentication failed. Please ask the admin to verify GROQ_API_KEY.';
+        else if (lastError.status === 429)
+          friendly = 'AI rate limit reached. Please wait a minute and try again.';
+        else if (lastError.status === 400)
+          friendly = 'AI could not process that request. Try rephrasing your question.';
+        else if (lastError.status === 404)
+          friendly = 'AI model unavailable. Please contact admin to update the model.';
+      }
+      return res.status(503).json({ success: false, message: friendly });
+    }
+
     const answer = groqData.choices?.[0]?.message?.content || 'No answer generated.';
 
-    console.log(`[ai/solve-doubt] ✅ Answered (${answer.length} chars)`);
+    console.log(`[ai/solve-doubt] ✅ Answered (${answer.length} chars, model: ${groqData.model})`);
 
-    // ---- STEP 8: Frontend ko bhejo ----
     res.json({
       success: true,
       answer,
-      model: 'llama-3.1-8b-instant',
+      model: groqData.model || 'unknown',
       tokensUsed: groqData.usage?.total_tokens || 0
     });
 
@@ -4509,6 +4579,7 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+
 /* ============================================================
    LISTEN
    ============================================================ */
