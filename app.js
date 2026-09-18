@@ -2198,11 +2198,39 @@ function _renderAppNow() {
   // Case-insensitive role check — defends against legacy "Admin" values
   const _isAdminRole = String(currentUser.role || '').trim().toLowerCase() === 'admin';
   if (_isAdminRole) { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
-  if (studentNav === 'ai')        { $('studentAIHomeView').classList.add('active');   renderStudentAIHome(); }
-  else if (studentNav === 'home') { $('studentHomeView').classList.add('active');     renderStudentHome(); }
-  else if (studentNav === 'saved'){ $('studentSavedView').classList.add('active');    renderSavedCourses(); }
-  else if (studentNav === 'analytics') { $('studentAnalyticsView').classList.add('active'); renderStudentAnalytics(); }
-  else                            { $('studentCoursesView').classList.add('active');  renderStudentCourses(); }
+  if (studentNav === 'ai') {
+    const aiHome = $('studentAIHomeView');
+    if (aiHome) {
+      aiHome.classList.add('active');
+      renderStudentAIHome();
+    } else {
+      // Fallback: if the HTML section wasn't added yet, use the old home
+      console.warn('[nav] studentAIHomeView missing — falling back to studentHomeView');
+      const fallback = $('studentHomeView');
+      if (fallback) fallback.classList.add('active');
+      renderStudentHome();
+    }
+  }
+  else if (studentNav === 'home') {
+    const homeView = $('studentHomeView');
+    if (homeView) homeView.classList.add('active');
+    renderStudentHome();
+  }
+  else if (studentNav === 'saved') {
+    const savedView = $('studentSavedView');
+    if (savedView) savedView.classList.add('active');
+    renderSavedCourses();
+  }
+  else if (studentNav === 'analytics') {
+    const analyticsView = $('studentAnalyticsView');
+    if (analyticsView) analyticsView.classList.add('active');
+    renderStudentAnalytics();
+  }
+  else {
+    const coursesView = $('studentCoursesView');
+    if (coursesView) coursesView.classList.add('active');
+    renderStudentCourses();
+  }
 }
 
 function buildNav() {
