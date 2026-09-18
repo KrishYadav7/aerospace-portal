@@ -271,6 +271,34 @@ function clearSession() {
    COURSES
    ============================================================ */
 let liveCourses = [];
+/* ============================================================
+   COURSE LOADING STATE
+   ============================================================ */
+let _coursesLoading = false;
+
+function renderCoursesLoadingSkeleton(message) {
+  const skelCards = Array.from({ length: 6 }).map(() => `
+    <div class="course-skeleton-card">
+      <div class="skel-line chip"></div>
+      <div class="skel-line tall w-80"></div>
+      <div class="skel-line w-60"></div>
+      <div class="skel-line w-40"></div>
+      <div class="skel-line w-100"></div>
+      <div class="skel-row">
+        <div class="skel-btn"></div>
+        <div class="skel-btn"></div>
+      </div>
+    </div>
+  `).join('');
+
+  return `
+    <div class="courses-loading">
+      <div class="pdfv-spinner"></div>
+      <p>${escapeHtml(message || 'Loading courses…')}</p>
+    </div>
+    <div class="courses-skeleton-grid">${skelCards}</div>
+  `;
+}
 function getCourses() { return liveCourses; }
 function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 
@@ -292,13 +320,27 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     return;
   }
 
+  // ---- Show loading state on first page ----
+  if (page === 1) {
+    _coursesLoading = true;
+    // Repaint any visible course view immediately with skeletons
+    if (currentUser) {
+      const isAdminUser = String(currentUser.role || '').toLowerCase() === 'admin';
+      if (isAdminUser && adminTab === 'courses') {
+        const el = $('adminCourseList');
+        if (el) el.innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
+      } else if (!isAdminUser && studentNav === 'courses') {
+        const el = $('studentCourseList');
+        if (el) el.innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
+      }
+    }
+  }
+
   try {
-    // Ask for up to 500 courses in one shot.
     const data = await fetchJSON(
       `${API_BASE}/courses?limit=500&page=${page}&_t=${Date.now()}`
     );
 
-    // Handle BOTH new paginated shape and old array shape
     const list = Array.isArray(data) ? data : (data.courses || []);
     const pagination = data.pagination || { page, hasMore: false, total: list.length };
 
@@ -322,17 +364,38 @@ async function fetchCoursesFromDB(force = false, page = 1) {
       `[courses] page ${page}: fetched ${list.length}, total ${pagination.total}, hasMore=${pagination.hasMore}`
     );
 
-    // Auto-fetch subsequent pages until we have everything.
-    // Safety cap at 20 pages (= 10,000 courses) to prevent runaway loops.
     if (pagination.hasMore && page < 20) {
       return fetchCoursesFromDB(force, page + 1);
     }
-
-    renderApp();
   } catch (error) {
     console.error('Error fetching courses:', error);
-    renderApp();
+    if (page === 1) {
+      // Surface the error to the user with a retry button
+      const errHtml = `
+        <div class="empty-state" style="border-color:var(--rose-500);">
+          <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);opacity:.9;"></i>
+          <p style="color:var(--rose-500);font-weight:600;">Could not load courses</p>
+          <p style="margin-top:8px;font-size:13px;max-width:520px;margin-left:auto;margin-right:auto;line-height:1.5;">
+            ${escapeHtml(error.message || 'Network error.')}
+          </p>
+          <button class="btn btn-outline" style="margin-top:16px;" onclick="fetchCoursesFromDB(true)">
+            <i class="fas fa-rotate"></i> Try Again
+          </button>
+        </div>`;
+      const isAdminUser = String(currentUser?.role || '').toLowerCase() === 'admin';
+      if (isAdminUser) {
+        const el = $('adminCourseList'); if (el) el.innerHTML = errHtml;
+      } else {
+        const el = $('studentCourseList'); if (el) el.innerHTML = errHtml;
+      }
+      _coursesLoading = false;
+      return;
+    }
   }
+
+  // ---- Clear loading state ----
+  _coursesLoading = false;
+  renderApp();
 }
 
 // Naya helper — on-demand full course (with all data)
@@ -2520,7 +2583,7 @@ async function renderAdminOverview() {
   } catch { $('statStudents').textContent = '—'; }
 }
 
-async function renderAdminCourses() {
+async function renderAdminCourses() {  
   const courses = getCourses();
   const searchTerm = ($('adminCourseSearch')?.value || '').toLowerCase().trim();
   const filtered = courses.filter(c =>
@@ -5173,6 +5236,13 @@ function clearCourseFilters() {
 }
 
 function renderStudentCourses() {
+  // ⚡ Loading guard — show skeleton until first fetch completes
+  if (_coursesLoading && liveCourses.length === 0) {
+    const el = $('studentCourseList');
+    if (el) el.innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
+    return;
+  }
+
   const courses = getCourses().filter(c => c.status !== 'draft' && c.status !== 'archived');
   const searchTerm  = ($('studentCourseSearch')?.value || '').toLowerCase().trim();
   const fSemester   = ($('filterSemester')?.value   || '').trim();
@@ -5180,8 +5250,6 @@ function renderStudentCourses() {
   const fDifficulty = ($('filterDifficulty')?.value || '').trim();
   const fPrice      = ($('filterPrice')?.value      || '').trim();
 
-  // Normalizes any semester value to just its first number as a string.
-  // "1" → "1" | 1 → "1" | "Semester 1" → "1" | "Sem 1" → "1" | "1st" → "1"
   function normalizeSemester(v) {
     if (v === null || v === undefined) return '';
     const s = String(v).trim();
@@ -5190,31 +5258,21 @@ function renderStudentCourses() {
   }
 
   const filtered = courses.filter(c => {
-    // Search
     if (searchTerm) {
       const hit = (c.name || '').toLowerCase().includes(searchTerm) ||
                   (c.code && c.code.toLowerCase().includes(searchTerm)) ||
                   (c.instructor && c.instructor.toLowerCase().includes(searchTerm));
       if (!hit) return false;
     }
-
-    // Semester — normalized comparison
     if (fSemester) {
       const courseSem = normalizeSemester(c.semester);
       const filterSem = normalizeSemester(fSemester);
       if (courseSem !== filterSem) return false;
     }
-
-    // Category
     if (fCategory && c.category !== fCategory) return false;
-
-    // Difficulty
     if (fDifficulty && c.difficulty !== fDifficulty) return false;
-
-    // Price
     if (fPrice === 'free'    &&  c.isPremium) return false;
     if (fPrice === 'premium' && !c.isPremium) return false;
-
     return true;
   });
 
@@ -5300,6 +5358,14 @@ function renderStudentCourseCard(c) {
 
 function renderSavedCourses() {
   const container = $('studentSavedList');
+  if (!container) return;
+
+  // ⚡ Loading guard — show skeleton until first fetch completes
+  if (_coursesLoading && liveCourses.length === 0) {
+    container.innerHTML = renderCoursesLoadingSkeleton('Loading your saved courses…');
+    return;
+  }
+
   const savedIds = currentUser.bookmarks || [];
   if (savedIds.length === 0) {
     container.innerHTML = `<div class="empty-state">
