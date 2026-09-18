@@ -366,7 +366,7 @@ let currentUser = null;
 let currentCourseId = null;
 let currentMaterialFilter = 'all';
 let loginRole = 'student';
-let studentNav = 'ai';
+let studentNav = 'home';
 let adminTab = 'overview';
 let editingCourseId = null;
 let editingTab = 'details';
@@ -449,7 +449,7 @@ function forceLogoutDueToNewLogin(message) {
   editingCourseId = null;
   window.currentSelectedCourseId = null;
   currentMaterialFilter = 'all';
-  studentNav = 'ai';
+  studentNav = 'home';
   adminTab = 'overview';
   clearSession();
   try { _emailSelectedIds.clear(); } catch (e) {}
@@ -683,7 +683,7 @@ function syncHashToState() {
   } else if (parts[0] === 'ai') {
     studentNav = 'ai';
   } else {
-    studentNav = 'ai';
+    studentNav = 'home';
   }
 }
 
@@ -1130,10 +1130,10 @@ async function handleLogin(e) {
           try { history.replaceState(null, '', '#/admin/overview'); }
           catch (e) { location.hash = '#/admin/overview'; }
         } else {
-          studentNav = 'ai';
+          studentNav = 'home';
           adminTab = 'overview';
-          try { history.replaceState(null, '', '#/ai'); }
-          catch (e) { location.hash = '#/ai'; }
+          try { history.replaceState(null, '', '#/home'); }
+          catch (e) { location.hash = '#/home'; }
         }
 
         showToast(data.message || 'Login successful!', 'success');
@@ -1196,7 +1196,7 @@ function logout() {
 
   currentUser = null; currentCourseId = null; editingCourseId = null;
   window.currentSelectedCourseId = null;
-  currentMaterialFilter = 'all'; studentNav = 'ai'; adminTab = 'overview';
+  currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
   clearSession();
   loginRole = 'student';
   try { setLoginRole('student'); } catch (e) { }
@@ -2249,11 +2249,11 @@ function buildNav() {
   const analyticsActive = (studentNav === 'analytics' && !currentCourseId) ? 'active' : '';
   const savedCount = (currentUser.bookmarks || []).length;
   $('mainNav').innerHTML = `
-    <a href="#" class="${aiActive}" onclick="event.preventDefault();navigateStudent('ai')"><i class="fas fa-robot"></i> AI Doubt Solver</a>
     <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> Home</a>
     <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> Courses</a>
     <a href="#" class="${savedActive}" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> Saved${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
     <a href="#" class="${analyticsActive}" onclick="event.preventDefault();navigateStudent('analytics')"><i class="fas fa-chart-line"></i> Analytics</a>
+    <a href="#" class="nav-ai-btn ${aiActive}" onclick="event.preventDefault();navigateStudent('ai')"><i class="fas fa-robot"></i> AI Solver</a>
   `;
 }
 
