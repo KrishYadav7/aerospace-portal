@@ -295,6 +295,9 @@ function renderCoursesLoadingSkeleton(message) {
     <div class="courses-loading">
       <div class="pdfv-spinner"></div>
       <p>${escapeHtml(message || 'Loading courses…')}</p>
+      function isAdmin(u) {
+  return String((u && u.role) || '').trim().toLowerCase() === 'admin';
+}
     </div>
     <div class="courses-skeleton-grid">${skelCards}</div>
   `;
@@ -320,10 +323,8 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     return;
   }
 
-  // ---- Show loading state on first page ----
   if (page === 1) {
     _coursesLoading = true;
-    // Repaint any visible course view immediately with skeletons
     if (currentUser) {
       const isAdminUser = String(currentUser.role || '').toLowerCase() === 'admin';
       if (isAdminUser && adminTab === 'courses') {
@@ -364,13 +365,13 @@ async function fetchCoursesFromDB(force = false, page = 1) {
       `[courses] page ${page}: fetched ${list.length}, total ${pagination.total}, hasMore=${pagination.hasMore}`
     );
 
+    // Recurse for next page, but WITHOUT leaking _coursesLoading
     if (pagination.hasMore && page < 20) {
-      return fetchCoursesFromDB(force, page + 1);
+      return await fetchCoursesFromDB(force, page + 1);
     }
   } catch (error) {
     console.error('Error fetching courses:', error);
     if (page === 1) {
-      // Surface the error to the user with a retry button
       const errHtml = `
         <div class="empty-state" style="border-color:var(--rose-500);">
           <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);opacity:.9;"></i>
@@ -388,13 +389,12 @@ async function fetchCoursesFromDB(force = false, page = 1) {
       } else {
         const el = $('studentCourseList'); if (el) el.innerHTML = errHtml;
       }
-      _coursesLoading = false;
-      return;
     }
+    // For page > 1, silently fall through — partial data is better than nothing
+  } finally {
+    _coursesLoading = false;
   }
 
-  // ---- Clear loading state ----
-  _coursesLoading = false;
   renderApp();
 }
 
@@ -2244,7 +2244,7 @@ function _renderAppNow() {
 
   renderNotificationBadge();
   buildNav();
-  if (quizEditingCourseId && quizEditingMaterialId && currentUser && currentUser.role === 'admin') {
+  if (quizEditingCourseId && quizEditingMaterialId && isAdmin(currentUser)) {
     $('adminQuizEditorView').classList.add('active');
     renderQuizEditor();
     return;
@@ -2253,7 +2253,7 @@ function _renderAppNow() {
   if (addingProfessor)       { $('adminAddProfessorView').classList.add('active'); renderAdminAddProfessor(); return; }
   if (addingMaterialCourseId){ $('adminAddMaterialView').classList.add('active');  renderAdminAddMaterial(addingMaterialCourseId); return; }
   if (addingStudent)         { $('adminAddStudentView').classList.add('active');   renderAdminAddStudent(); return; }
-  if (editingCourseId && currentUser.role === 'admin') {
+  if (editingCourseId && isAdmin(currentUser)) {
     $('adminEditView').classList.add('active');
     renderCourseEditor(editingCourseId); return;
   }
@@ -2301,7 +2301,7 @@ function _renderAppNow() {
 }
 
 function buildNav() {
-  if (currentUser.role === 'admin') {
+  if (isAdmin(currentUser)) {
     $('mainNav').innerHTML = `<a href="#" class="active" onclick="event.preventDefault();">Dashboard</a>`;
     return;
   }
@@ -4939,7 +4939,7 @@ function renderStudentHome() {
 function renderStreakCard() {
   const container = document.getElementById('streakCardContainer');
   if (!container) return;
-  if (currentUser.role !== 'student') { container.innerHTML = ''; return; }
+  if (isAdmin(currentUser)) { container.innerHTML = ''; return; }
   const streak = currentUser.streakCount || 0;
   const longest = currentUser.longestStreak || 0;
   if (streak === 0 && longest === 0) { container.innerHTML = ''; return; }
@@ -4964,7 +4964,7 @@ function renderContinueCard() {
   const container = document.getElementById('continueCardContainer');
   if (!container) return;
   const la = currentUser?.lastActivity;
-  if (!la || !la.courseId || currentUser.role !== 'student') { container.innerHTML = ''; return; }
+  if (!la || !la.courseId || isAdmin(currentUser)) { container.innerHTML = ''; return; }
   const course = findCourse(la.courseId);
   if (!course) { container.innerHTML = ''; return; }
   const acc = accentStyle(course.code || course.name);
@@ -4996,7 +4996,7 @@ function renderSubscriptionBanner() {
   const existing = document.getElementById('subscribeBannerHost');
   if (existing) existing.remove();
 
-  if (currentUser.role !== 'student') return;
+  if (isAdmin(currentUser)) return;
   if (!liveSubscriptionSettings.enabled) return;
 
   const wrap = document.createElement('div');
@@ -5580,7 +5580,7 @@ function renderMaterialCard(course, m, isPurchased) {
   const matPrice = parseFloat(m.price) || 0;
   const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
   const isSubscribed = !!currentUser?.isSubscribed;
-  const canAccess = (currentUser.role === 'admin') || isPurchased || isMatPurchased || isSubscribed || !isMatPremium;
+  const canAccess = isAdmin(currentUser) || isPurchased || isMatPurchased || isSubscribed || !isMatPremium;
   const viewed = isMaterialViewed(course.id, m.id);
   const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
   
@@ -5691,7 +5691,7 @@ function renderQASection(course) {
       const emailText = d.studentEmail ? escapeHtml(d.studentEmail) : 'No Email';
       const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
       const isAsker = d.studentUsername === currentUser.username;
-      const isAdmin = currentUser.role === 'admin';
+      const isAdminUser = isAdmin(currentUser);
       const canReply = isAdmin || currentUser.role === 'student';
 
       const replies = d.replies || [];
@@ -5917,12 +5917,6 @@ let quizEditingCourseId   = null;
 let quizEditingMaterialId = null;
 let quizPaperConfig = { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
 let quizDraft = [];
-
-/* ============================================================
-   MathJax v3 renderer — Overleaf-parity LaTeX
-   ============================================================ */
-window.__mathjaxReady = false;
-window.__mathjaxQueue = [];
 
 /* ============================================================
    MathJax v3 renderer — LAZY LOADED
@@ -6180,14 +6174,39 @@ document.addEventListener('keydown', (e) => {
     saveQuizPaper();
   }
 });
+
 /* ============================================================
    QUIZ EDITOR — Full-page open / close / render
    ============================================================ */
-function openQuizEditor(courseId, materialId) {
+async function openQuizEditor(courseId, materialId) {
   const course = findCourse(courseId);
   if (!course) return showToast('Course not found.', 'error');
   const mat = (course.materials || []).find(m => m.id === materialId);
   if (!mat) return showToast('Material not found.', 'error');
+
+  // ─── CRITICAL FIX: load the full quiz array if it hasn't been loaded yet.
+  // The /api/courses list strips `quiz` for perf — only `quizCount` arrives.
+  // Without this fetch, the editor would open with zero questions.
+  if (!Array.isArray(mat.quiz)) {
+    const hasQuestions = (mat.quizCount || 0) > 0;
+    if (hasQuestions) {
+      try {
+        showToast('Loading question paper…', 'info');
+        const res = await fetch(
+          `${API_BASE}/courses/${courseId}/materials/${materialId}/full-quiz?_t=${Date.now()}`
+        );
+        const data = await res.json();
+        mat.quiz = (data && data.success && Array.isArray(data.quiz)) ? data.quiz : [];
+        mat.examConfig = (data && data.examConfig) || mat.examConfig || {};
+      } catch (e) {
+        console.warn('[openQuizEditor] full-quiz fetch failed:', e);
+        mat.quiz = [];
+        showToast('Could not load existing questions — starting fresh.', 'error');
+      }
+    } else {
+      mat.quiz = [];
+    }
+  }
 
   quizEditingCourseId = courseId;
   quizEditingMaterialId = materialId;
@@ -6274,13 +6293,52 @@ function normalizeQuestion(q) {
 /* ============================================================
    QUIZ EDITOR — Render (with live preview + reorder + autosave)
    ============================================================ */
-function renderQuizEditor() {
+let _quizEditorLoading = false;
+async function renderQuizEditor() {
   const container = document.getElementById('quizEditorContent');
   if (!container) return;
   const course = findCourse(quizEditingCourseId);
   if (!course) { container.innerHTML = '<p>Course not found.</p>'; return; }
   const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
   if (!mat) { container.innerHTML = '<p>Material not found.</p>'; return; }
+
+  // ─── Direct-URL access path: if the quiz array isn't loaded yet, fetch it.
+  if (!Array.isArray(mat.quiz) && (mat.quizCount || 0) > 0 && !_quizEditorLoading) {
+    _quizEditorLoading = true;
+    container.innerHTML = `
+      <div class="courses-loading">
+        <div class="pdfv-spinner"></div>
+        <p>Loading question paper…</p>
+      </div>`;
+    try {
+      const res = await fetch(
+        `${API_BASE}/courses/${quizEditingCourseId}/materials/${quizEditingMaterialId}/full-quiz?_t=${Date.now()}`
+      );
+      const data = await res.json();
+      mat.quiz = (data && data.success && Array.isArray(data.quiz)) ? data.quiz : [];
+      mat.examConfig = (data && data.examConfig) || mat.examConfig || {};
+    } catch (e) {
+      console.warn('[renderQuizEditor] fetch failed:', e);
+      mat.quiz = [];
+    } finally {
+      _quizEditorLoading = false;
+    }
+
+    const saved = getSavedQuizDraft(quizEditingMaterialId);
+    if (saved && Array.isArray(saved.quiz) && saved.quiz.length > 0) {
+      quizDraft = saved.quiz.map(q => normalizeQuestion(q));
+      quizPaperConfig = saved.config || { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
+    } else {
+      quizDraft = (mat.quiz || []).map(q => normalizeQuestion(q));
+      const cfg = mat.examConfig || {};
+      quizPaperConfig = {
+        subject:    cfg.subject    || course.name || '',
+        paperCode:  cfg.paperCode  || (course.code ? course.code + '-' + (mat.title || '') : ''),
+        totalTime:  cfg.totalTime  || '',
+        totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0)
+      };
+    }
+  }
 
   const autoTotal = quizDraft.reduce((s, q) => s + (Number(q.marks) || 0), 0);
 
@@ -7454,6 +7512,76 @@ function retakeQuiz() {
   exitQuizSession();
   openQuizPlayer(courseId, materialId);
 }
+/* ============================================================
+   Quiz exam — targeted DOM updates (avoid full re-render)
+   ============================================================ */
+function _isQuestionAnswered(q, a) {
+  const qType = q.type || 'single';
+  if (qType === 'integer') {
+    return a !== '' && a !== null && a !== undefined && !isNaN(Number(a));
+  }
+  if (qType === 'matrix') {
+    const rows = q.matrixRows || [];
+    return Array.isArray(a) && a.filter(x => x !== undefined && x !== '').length >= rows.length;
+  }
+  return Array.isArray(a) ? a.length > 0 : (a >= 0);
+}
+
+function updateQuizProgressUI() {
+  const st = quizPlayerState;
+  if (!st) return;
+  const answered = st.quiz.reduce((s, q, i) => s + (_isQuestionAnswered(q, st.answers[i]) ? 1 : 0), 0);
+
+  const textEl = document.querySelector('.quiz-exam-progress-text');
+  if (textEl) textEl.innerHTML = `<strong>${answered}</strong> / ${st.quiz.length} answered`;
+
+  const fillEl = document.querySelector('.quiz-exam-progress-fill');
+  if (fillEl) {
+    fillEl.style.width = st.quiz.length > 0
+      ? ((answered / st.quiz.length) * 100) + '%'
+      : '0%';
+  }
+}
+
+function updateQuizQuestionCard(qi) {
+  const st = quizPlayerState;
+  if (!st) return;
+  const cards = document.querySelectorAll('.quiz-exam-body-inner .quiz-play-card');
+  const card = cards[qi];
+  if (!card) return;
+
+  const q = st.quiz[qi];
+  const a = st.answers[qi];
+  const qType = q.type || 'single';
+  const isAnswered = _isQuestionAnswered(q, a);
+
+  card.classList.toggle('answered', isAnswered);
+
+  const qnum = card.querySelector('.quiz-play-qnum');
+  if (qnum) {
+    const existingTag = qnum.querySelector('.quiz-answered-tag');
+    if (isAnswered && !existingTag) {
+      const span = document.createElement('span');
+      span.className = 'quiz-answered-tag';
+      span.innerHTML = '<i class="fas fa-check-circle"></i> Answered';
+      qnum.appendChild(span);
+    } else if (!isAnswered && existingTag) {
+      existingTag.remove();
+    }
+  }
+
+  if (qType === 'single' || qType === 'multiple') {
+    const opts = card.querySelectorAll('.quiz-play-option');
+    opts.forEach((opt, oi) => {
+      const selected = qType === 'single'
+        ? (a === oi || (Array.isArray(a) && a[0] === oi))
+        : (Array.isArray(a) && a.includes(oi));
+      opt.classList.toggle('selected', selected);
+      const input = opt.querySelector('input');
+      if (input) input.checked = selected;
+    });
+  }
+}
 
 /* ============================================================
    ANSWER INTERACTION
@@ -7576,12 +7704,15 @@ function selectQuizAnswerMulti(qi, oi, isChecked, type) {
     st.answers[qi] = arr;
   }
   persistQuizAnswers();
-  renderQuizExamShell();
+  updateQuizQuestionCard(qi);
+  updateQuizProgressUI();
 }
 function selectQuizAnswerInteger(qi, val) {
   const st = quizPlayerState; if (!st || st.submitted) return;
   st.answers[qi] = val;
   persistQuizAnswers();
+  updateQuizQuestionCard(qi);
+  updateQuizProgressUI();
 }
 function selectQuizAnswerMatrix(qi, li, val) {
   const st = quizPlayerState; if (!st || st.submitted) return;
@@ -7589,6 +7720,8 @@ function selectQuizAnswerMatrix(qi, li, val) {
   if (val === '') delete arr[li]; else arr[li] = parseInt(val, 10);
   st.answers[qi] = arr;
   persistQuizAnswers();
+  updateQuizQuestionCard(qi);
+  updateQuizProgressUI();
 }
 function selectQuizAnswer(qi, oi) { selectQuizAnswerMulti(qi, oi, true, 'single'); }
 
@@ -7657,7 +7790,11 @@ async function viewFileOnline(courseId, materialId) {
   
 
   if (fileUrl) {
-    const isPdfUrl = fileUrl.toLowerCase().endsWith('.pdf') || fileUrl.includes('/uploads/');
+    // Strip query string before checking extension (Cloudinary / CDN safe)
+    const cleanUrl = fileUrl.toLowerCase().split('?')[0].split('#')[0];
+    const isPdfUrl =
+      cleanUrl.endsWith('.pdf') ||
+      (mat.fileName || '').toLowerCase().endsWith('.pdf');
     if (isPdfUrl) {
       window.PDFViewer.open({
         url: fileUrl,
@@ -8653,8 +8790,6 @@ function buildQuizTrendChart(quizTrend) {
   _analyticsCharts.push(chart);
 }
 
-const _origToggleMaterialViewed = window.toggleMaterialViewed;
-const _origApplyTheme = window.applyTheme;
 document.addEventListener('click', (e) => {
   if (e.target.closest('#themeToggle')) {
     _analyticsCacheAt = 0;
@@ -9210,27 +9345,40 @@ function copyAIAnswer(courseId) {
  */
 function renderMarkdown(text) {
   if (!text) return '';
-  let html = escapeHtml(text);
 
-  // Code blocks (``` ... ```)
-  html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  // Extract code blocks first so we don't mangle them
+  const codeBlocks = [];
+  let html = String(text).replace(/```([\s\S]*?)```/g, (_, body) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push('<pre><code>' + escapeHtml(body.replace(/^\n/, '')) + '</code></pre>');
+    return '\u0000CODEBLOCK' + idx + '\u0000';
+  });
 
-  // Inline code (`...`)
+  html = escapeHtml(html);
+
+  // Inline code
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-  // Bold (**...**)
+  // Bold
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
 
   // Headers
   html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
   html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
 
-  // Bullet lists
-  html = html.replace(/^\s*[-*] (.+)$/gm, '<li>$1</li>');
-  html = html.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
+  // Bullet lists — group consecutive lines into ONE <ul>
+  html = html.replace(/(?:^[ \t]*[-*] .+(?:\n|$))+/gm, block => {
+    const items = block.trimEnd().split('\n')
+      .map(l => `<li>${l.replace(/^[ \t]*[-*]\s*/, '')}</li>`)
+      .join('');
+    return `<ul>${items}</ul>`;
+  });
 
-  // Line breaks
+  // Line breaks (skip ones inside code blocks)
   html = html.replace(/\n/g, '<br>');
+
+  // Restore code blocks
+  html = html.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_, i) => codeBlocks[Number(i)]);
 
   return html;
 }
