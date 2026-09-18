@@ -857,7 +857,7 @@ function nl2br(s) {
 /* ============================================================
    ADMIN 2FA — pending login store
    ============================================================ */
-const adminLoginStore = {}; // pendingToken → { userId, otp, expiresAt, attempts, resends, email }
+const adminLoginStore = new Map(); // pendingId → { userId, otp, expiresAt, attempts }
 
 /* ============================================================
    ADMIN SECURITY ALERT — emailed on any credential change
@@ -1104,11 +1104,18 @@ app.post('/api/login', async (req, res) => {
       }
 
       const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      const pendingToken = jwt.sign(
-        { userId: user._id.toString(), otp },
-        JWT_SECRET,
-        { expiresIn: '10m' }
-      );
+
+      // ⚡ Store OTP server-side; JWT carries only an opaque id
+      const pendingId = crypto.randomBytes(24).toString('hex');
+      adminLoginStore.set(pendingId, {
+        userId: user._id.toString(),
+        otp,
+        expiresAt: Date.now() + 10 * 60 * 1000,
+        attempts: 0
+      });
+      setTimeout(() => adminLoginStore.delete(pendingId), 10 * 60 * 1000);
+
+      const pendingToken = jwt.sign({ pendingId }, JWT_SECRET, { expiresIn: '10m' });
 
       try {
         await withTimeout(
@@ -4345,7 +4352,7 @@ app.put('/api/admin/alumni/:id/approve', requireAdminAuth, async (req, res) => {
   try {
     const doc = await Alumni.findByIdAndUpdate(
       req.params.id,
-      { status: 'approved', approvedAt: new Date(), approvedBy: admin._id.toString() },
+      { status: 'approved', approvedAt: new Date(), approvedBy: String(req.adminUser._id) },
       { new: true }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
@@ -4356,10 +4363,8 @@ app.put('/api/admin/alumni/:id/approve', requireAdminAuth, async (req, res) => {
   }
 });
 
-app.put('/api/admin/alumni/:id/reject', async (req, res) => {
+app.put('/api/admin/alumni/:id/reject', requireAdminAuth, async (req, res) => {
   try {
-    const admin = await requireAdmin(req.body.adminId);
-    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
     const doc = await Alumni.findByIdAndUpdate(
       req.params.id,
       { status: 'rejected', approvedAt: null },
@@ -4373,7 +4378,7 @@ app.put('/api/admin/alumni/:id/reject', async (req, res) => {
   }
 });
 
-app.delete('/api/admin/alumni/:id', async (req, res) => {
+app.delete('/api/admin/alumni/:id', requireAdminAuth, async (req, res) => {
   try {
     await Alumni.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: 'Alumni deleted.' });
@@ -4384,13 +4389,11 @@ app.delete('/api/admin/alumni/:id', async (req, res) => {
 });
 
 /* ---------- Admin: Approve / Reject / Delete FRIEND ---------- */
-app.put('/api/admin/friends/:id/approve', async (req, res) => {
+app.put('/api/admin/friends/:id/approve', requireAdminAuth, async (req, res) => {
   try {
-    const admin = await requireAdmin(req.body.adminId);
-    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
     const doc = await Friend.findByIdAndUpdate(
       req.params.id,
-      { status: 'approved', approvedAt: new Date(), approvedBy: admin._id.toString() },
+      { status: 'approved', approvedAt: new Date(), approvedBy: String(req.adminUser._id) },
       { new: true }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
@@ -4401,10 +4404,8 @@ app.put('/api/admin/friends/:id/approve', async (req, res) => {
   }
 });
 
-app.put('/api/admin/friends/:id/reject', async (req, res) => {
+app.put('/api/admin/friends/:id/reject', requireAdminAuth, async (req, res) => {
   try {
-    const admin = await requireAdmin(req.body.adminId);
-    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
     const doc = await Friend.findByIdAndUpdate(
       req.params.id,
       { status: 'rejected', approvedAt: null },
@@ -4418,10 +4419,8 @@ app.put('/api/admin/friends/:id/reject', async (req, res) => {
   }
 });
 
-app.delete('/api/admin/friends/:id', async (req, res) => {
+app.delete('/api/admin/friends/:id', requireAdminAuth, async (req, res) => {
   try {
-    const admin = await requireAdmin(req.body.adminId || req.query.adminId);
-    if (!admin) return res.status(403).json({ success: false, message: 'Admin only.' });
     await Friend.findByIdAndDelete(req.params.id);
     res.json({ success: true, message: 'Friend deleted.' });
   } catch (e) {
