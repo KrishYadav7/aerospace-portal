@@ -366,7 +366,7 @@ let currentUser = null;
 let currentCourseId = null;
 let currentMaterialFilter = 'all';
 let loginRole = 'student';
-let studentNav = 'home';
+let studentNav = 'ai';
 let adminTab = 'overview';
 let editingCourseId = null;
 let editingTab = 'details';
@@ -449,7 +449,7 @@ function forceLogoutDueToNewLogin(message) {
   editingCourseId = null;
   window.currentSelectedCourseId = null;
   currentMaterialFilter = 'all';
-  studentNav = 'home';
+  studentNav = 'ai';
   adminTab = 'overview';
   clearSession();
   try { _emailSelectedIds.clear(); } catch (e) {}
@@ -680,8 +680,10 @@ function syncHashToState() {
     studentNav = 'saved';
   } else if (parts[0] === 'analytics') {
     studentNav = 'analytics';
+  } else if (parts[0] === 'ai') {
+    studentNav = 'ai';
   } else {
-    studentNav = 'home';
+    studentNav = 'ai';
   }
 }
 
@@ -1128,10 +1130,10 @@ async function handleLogin(e) {
           try { history.replaceState(null, '', '#/admin/overview'); }
           catch (e) { location.hash = '#/admin/overview'; }
         } else {
-          studentNav = 'home';
+          studentNav = 'ai';
           adminTab = 'overview';
-          try { history.replaceState(null, '', '#/home'); }
-          catch (e) { location.hash = '#/home'; }
+          try { history.replaceState(null, '', '#/ai'); }
+          catch (e) { location.hash = '#/ai'; }
         }
 
         showToast(data.message || 'Login successful!', 'success');
@@ -1194,7 +1196,7 @@ function logout() {
 
   currentUser = null; currentCourseId = null; editingCourseId = null;
   window.currentSelectedCourseId = null;
-  currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
+  currentMaterialFilter = 'all'; studentNav = 'ai'; adminTab = 'overview';
   clearSession();
   loginRole = 'student';
   try { setLoginRole('student'); } catch (e) { }
@@ -2113,7 +2115,7 @@ async function loadNotifications() {
 function navigateStudent(dest) {
   currentCourseId = null; window.currentSelectedCourseId = null; editingCourseId = null;
   currentMaterialFilter = 'all';
-  const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home' };
+  const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home', ai: '#/ai' };
   pushHash(pathMap[dest] || '#/home');
   studentNav = dest;
   renderApp();
@@ -2155,7 +2157,7 @@ function renderApp() {
 }
 
 function _renderAppNow() {
-  ['loginView', 'adminView', 'adminEditView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
+  ['loginView', 'adminView', 'adminEditView', 'studentAIHomeView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
     .forEach(id => { const el = $(id); if (el) el.classList.remove('active'); });
   $('appHeader').style.display = 'none';
   $('appFooter').style.display = 'none';
@@ -2196,7 +2198,8 @@ function _renderAppNow() {
   // Case-insensitive role check — defends against legacy "Admin" values
   const _isAdminRole = String(currentUser.role || '').trim().toLowerCase() === 'admin';
   if (_isAdminRole) { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
-  if (studentNav === 'home')      { $('studentHomeView').classList.add('active');     renderStudentHome(); }
+  if (studentNav === 'ai')        { $('studentAIHomeView').classList.add('active');   renderStudentAIHome(); }
+  else if (studentNav === 'home') { $('studentHomeView').classList.add('active');     renderStudentHome(); }
   else if (studentNav === 'saved'){ $('studentSavedView').classList.add('active');    renderSavedCourses(); }
   else if (studentNav === 'analytics') { $('studentAnalyticsView').classList.add('active'); renderStudentAnalytics(); }
   else                            { $('studentCoursesView').classList.add('active');  renderStudentCourses(); }
@@ -2207,12 +2210,14 @@ function buildNav() {
     $('mainNav').innerHTML = `<a href="#" class="active" onclick="event.preventDefault();">Dashboard</a>`;
     return;
   }
+  const aiActive        = (studentNav === 'ai'        && !currentCourseId) ? 'active' : '';
   const homeActive      = (studentNav === 'home'      && !currentCourseId) ? 'active' : '';
   const coursesActive   = (studentNav === 'courses'   && !currentCourseId) ? 'active' : '';
   const savedActive     = (studentNav === 'saved'     && !currentCourseId) ? 'active' : '';
   const analyticsActive = (studentNav === 'analytics' && !currentCourseId) ? 'active' : '';
   const savedCount = (currentUser.bookmarks || []).length;
   $('mainNav').innerHTML = `
+    <a href="#" class="${aiActive}" onclick="event.preventDefault();navigateStudent('ai')"><i class="fas fa-robot"></i> AI Doubt Solver</a>
     <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> Home</a>
     <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> Courses</a>
     <a href="#" class="${savedActive}" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> Saved${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
@@ -9131,5 +9136,254 @@ function renderMarkdown(text) {
 
   return html;
 }
+/* ============================================================
+   AI HOME PAGE — Chat-style Doubt Solver
+   ============================================================ */
+let _aiHomeChat = [];   // [{ role: 'user'|'assistant', text, ts, error? }]
+let _aiHomeBusy = false;
+let _aiHomeRendered = false;
 
+const AI_HOME_SUGGESTIONS = [
+  { icon: 'fa-atom',        text: "Explain Bernoulli's equation with a real-world example" },
+  { icon: 'fa-rocket',      text: "What's the difference between a turbojet and a turbofan engine?" },
+  { icon: 'fa-calculator',  text: "A projectile is launched at 30° with 50 m/s. Find the max height." },
+  { icon: 'fa-shapes',      text: "Derive the lift equation from first principles" },
+  { icon: 'fa-satellite',   text: "Summarize the key concepts of orbital mechanics" },
+  { icon: 'fa-gauge-high',  text: "What is Mach number and why does it matter?" }
+];
+
+function renderStudentAIHome() {
+  const messagesEl = document.getElementById('aiChatMessages');
+  if (!messagesEl) return;
+
+  // Wire the input once
+  if (!_aiHomeRendered) {
+    _aiHomeRendered = true;
+    const input = document.getElementById('aiHomeInput');
+    if (input) setTimeout(() => input.focus(), 80);
+  }
+
+  renderAIHomeChat();
+}
+
+function renderAIHomeChat() {
+  const messagesEl = document.getElementById('aiChatMessages');
+  if (!messagesEl) return;
+
+  if (_aiHomeChat.length === 0) {
+    messagesEl.innerHTML = renderAIWelcomeState();
+    return;
+  }
+
+  let html = '';
+  _aiHomeChat.forEach((m, i) => {
+    if (m.role === 'user') {
+      html += `
+        <div class="ai-msg ai-msg-user">
+          <div class="ai-msg-avatar"><i class="fas fa-user"></i></div>
+          <div class="ai-msg-bubble">${escapeHtml(m.text)}</div>
+        </div>`;
+    } else if (m.error) {
+      html += `
+        <div class="ai-msg ai-msg-assistant ai-msg-error">
+          <div class="ai-msg-avatar ai-avatar-error"><i class="fas fa-triangle-exclamation"></i></div>
+          <div class="ai-msg-bubble">
+            <div class="ai-msg-error-title">Couldn't fetch a response</div>
+            <div class="ai-msg-error-body">${escapeHtml(m.text)}</div>
+            <button class="ai-retry-btn" onclick="retryAILastMessage()">
+              <i class="fas fa-rotate-right"></i> Try again
+            </button>
+          </div>
+        </div>`;
+    } else {
+      html += `
+        <div class="ai-msg ai-msg-assistant">
+          <div class="ai-msg-avatar"><i class="fas fa-robot"></i></div>
+          <div class="ai-msg-bubble">
+            <div class="ai-answer-body" id="aiHomeMsg-${i}">${renderMarkdown(m.text)}</div>
+            <div class="ai-msg-actions">
+              <button class="ai-msg-action" onclick="copyAIHomeMessage(${i})" title="Copy">
+                <i class="fas fa-copy"></i> Copy
+              </button>
+              <span class="ai-msg-model">${escapeHtml(m.model || 'AI')}</span>
+            </div>
+          </div>
+        </div>`;
+    }
+  });
+
+  if (_aiHomeBusy) {
+    html += `
+      <div class="ai-msg ai-msg-assistant">
+        <div class="ai-msg-avatar"><i class="fas fa-robot"></i></div>
+        <div class="ai-msg-bubble ai-typing-bubble">
+          <span class="ai-typing-dot"></span>
+          <span class="ai-typing-dot"></span>
+          <span class="ai-typing-dot"></span>
+          <span class="ai-typing-label">Thinking…</span>
+        </div>
+      </div>`;
+  }
+
+  messagesEl.innerHTML = html;
+
+  // Render LaTeX in all AI answers
+  if (typeof renderMathIn === 'function') {
+    messagesEl.querySelectorAll('.ai-answer-body').forEach(el => renderMathIn(el));
+  }
+
+  // Smooth scroll to bottom
+  requestAnimationFrame(() => {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
+}
+
+function renderAIWelcomeState() {
+  let chips = '';
+  AI_HOME_SUGGESTIONS.forEach(s => {
+    chips += `
+      <button class="ai-suggestion-chip" onclick="suggestAIPrompt(${jsStr(s.text)})">
+        <i class="fas ${s.icon}"></i>
+        <span>${escapeHtml(s.text)}</span>
+      </button>`;
+  });
+
+  return `
+    <div class="ai-welcome">
+      <div class="ai-welcome-icon"><i class="fas fa-comments"></i></div>
+      <h2>What would you like to learn today?</h2>
+      <p>Ask a question below or pick one of these to get started.</p>
+      <div class="ai-suggestions">${chips}</div>
+      <div class="ai-welcome-tips">
+        <div class="ai-tip">
+          <i class="fas fa-lightbulb"></i>
+          <span>Be specific — mention the topic, formulas, or units involved.</span>
+        </div>
+        <div class="ai-tip">
+          <i class="fas fa-superscript"></i>
+          <span>LaTeX is supported: use <code>$x^2$</code> or <code>$$\\int$$</code>.</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function suggestAIPrompt(text) {
+  const input = document.getElementById('aiHomeInput');
+  if (!input) return;
+  input.value = text;
+  aiHomeAutoGrow(input);
+  input.focus();
+}
+
+function aiHomeAutoGrow(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+}
+
+function aiHomeKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    askAIDoubtHome();
+  }
+}
+
+async function askAIDoubtHome() {
+  if (_aiHomeBusy) return;
+
+  const input = document.getElementById('aiHomeInput');
+  if (!input) return;
+
+  const question = input.value.trim();
+  if (!question) return;
+
+  if (question.length > 2000) {
+    return showToast('Question too long (max 2000 characters).', 'error');
+  }
+
+  // Append user message
+  _aiHomeChat.push({ role: 'user', text: question, ts: Date.now() });
+
+  // Clear + reset input
+  input.value = '';
+  input.style.height = 'auto';
+
+  _aiHomeBusy = true;
+  renderAIHomeChat();
+
+  try {
+    const res = await fetchJSON(`${API_BASE}/ai/solve-doubt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        userId: currentUser ? currentUser._id : null
+      })
+    });
+
+    if (res.success) {
+      _aiHomeChat.push({
+        role: 'assistant',
+        text: res.answer,
+        model: res.model,
+        ts: Date.now()
+      });
+    } else {
+      _aiHomeChat.push({
+        role: 'assistant',
+        text: res.message || 'Unknown error.',
+        error: true,
+        ts: Date.now()
+      });
+    }
+  } catch (err) {
+    console.error('[askAIDoubtHome]', err);
+    _aiHomeChat.push({
+      role: 'assistant',
+      text: err.message || 'Network error. Please check your connection.',
+      error: true,
+      ts: Date.now()
+    });
+  } finally {
+    _aiHomeBusy = false;
+    renderAIHomeChat();
+    const btn = document.getElementById('aiHomeSendBtn');
+    if (btn) btn.disabled = false;
+    if (input) input.focus();
+  }
+}
+
+function retryAILastMessage() {
+  // Find the last user message and re-ask
+  const lastUser = [..._aiHomeChat].reverse().find(m => m.role === 'user');
+  if (!lastUser) return;
+  // Remove the error assistant message
+  while (_aiHomeChat.length && _aiHomeChat[_aiHomeChat.length - 1].error) {
+    _aiHomeChat.pop();
+  }
+  // Remove the user message (we'll re-add it inside askAIDoubtHome)
+  if (_aiHomeChat.length && _aiHomeChat[_aiHomeChat.length - 1].role === 'user') {
+    _aiHomeChat.pop();
+  }
+  const input = document.getElementById('aiHomeInput');
+  if (input) input.value = lastUser.text;
+  askAIDoubtHome();
+}
+
+function resetAIHomeChat() {
+  if (_aiHomeChat.length === 0) return;
+  if (!confirm('Clear the entire conversation?')) return;
+  _aiHomeChat = [];
+  renderAIHomeChat();
+  const input = document.getElementById('aiHomeInput');
+  if (input) { input.value = ''; input.focus(); }
+}
+
+function copyAIHomeMessage(idx) {
+  const m = _aiHomeChat[idx];
+  if (!m || !m.text) return;
+  copyToClipboard(m.text).then(ok => {
+    showToast(ok ? '✓ Copied to clipboard.' : 'Copy failed.', ok ? 'success' : 'error');
+  });
+}
 initApp();
