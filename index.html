@@ -24,7 +24,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=30">
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
   <style>
@@ -1186,8 +1186,10 @@
   </script>
 
   <!-- Core app scripts — always loaded, deferred -->
-  <script src="media-viewer.js" defer></script>
-  <script src="app.js" defer></script>
+  <!-- ⚡ Version query busts HTTP cache on every deploy.
+       Just bump the number (v=29, v=30...) to force fresh files. -->
+  <script src="media-viewer.js?v=30" defer></script>
+  <script src="app.js?v=30" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {

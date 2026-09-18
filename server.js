@@ -322,9 +322,27 @@ function sendCached(res, file, maxAge = 300) {
   res.setHeader('Cache-Control', `public, max-age=${maxAge}, stale-while-revalidate=86400`);
   res.sendFile(path.join(__dirname, file));
 }
-app.get('/app.js',          (req, res) => sendCached(res, 'app.js', 3600));
-app.get('/styles.css',      (req, res) => sendCached(res, 'styles.css', 3600));
-app.get('/media-viewer.js', (req, res) => sendCached(res, 'media-viewer.js', 3600));
+// ⚡ App code — NEVER HTTP-cache. The SW fetches these URLs and MUST
+// always get the latest version. Version query (v=30) on the client
+// handles long-term cache busting; here we just want always-fresh.
+app.get('/app.js',          (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.sendFile(path.join(__dirname, 'app.js'));
+});
+app.get('/styles.css',      (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.sendFile(path.join(__dirname, 'styles.css'));
+});
+app.get('/media-viewer.js', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.sendFile(path.join(__dirname, 'media-viewer.js'));
+});
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json', 86400));
 app.get('/sw.js',           (req, res) => {

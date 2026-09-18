@@ -6,7 +6,7 @@
      • Network-first strategy (always tries server before cache)
      • Query-string cache buster on install
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v27';
+const CACHE_NAME = 'aero-shell-v30';
 
 const SHELL_ASSETS = [
   './',
@@ -22,7 +22,7 @@ self.addEventListener('install', (event) => {
     caches.open(CACHE_NAME).then((cache) =>
       Promise.all(
         SHELL_ASSETS.map((url) =>
-          cache.add(url + '?v=27').catch((err) => console.warn('[SW] cache miss:', url, err))
+          cache.add(url + '?v=30').catch((err) => console.warn('[SW] cache miss:', url, err))
         )
       )
     )
@@ -58,7 +58,10 @@ self.addEventListener('fetch', (event) => {
 
   if (isShell) {
     event.respondWith(
-      fetch(req)
+      // ⚡ cache: 'no-store' → bypass browser HTTP cache.
+      // Without this, the SW gets a stale 1-hour-cached /app.js
+      // even on "network-first" fetch.
+      fetch(req, { cache: 'no-store' })
         .then((res) => {
           if (res && res.ok) {
             const copy = res.clone();
