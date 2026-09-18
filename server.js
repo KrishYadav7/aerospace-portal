@@ -4443,6 +4443,15 @@ const aiDoubtLimiter = rateLimit({
   legacyHeaders: false,
   message: { success: false, message: 'Too many AI requests. Please wait a minute.' }
 });
+// Rate limiter — 10 requests per minute per IP (spam protection)
+const aiDoubtLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many AI requests. Please wait a minute.' }
+});
+
 app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
   try {
     const { question, courseId, materialId, userId } = req.body || {};
@@ -4500,11 +4509,13 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
       ? `${contextBlock}\nStudent's doubt: ${question}`
       : `Student's doubt: ${question}`;
 
-    // ---- Try multiple models for resilience ----
+    // ---- Model list (verified working on Groq as of September 2026) ----
+    // llama-3.3-70b-versatile and llama-3.1-8b-instant were decommissioned
+    // on 2026-08-16. New supported models below.
     const MODELS = [
-      'llama-3.3-70b-versatile',
-      'llama-3.1-8b-instant',
-      'gemma2-9b-it'
+      'openai/gpt-oss-120b',        // Primary: best quality, 120B MoE
+      'qwen/qwen3.6-27b',           // Fallback: strong reasoning, 27B
+      'meta-llama/llama-4-scout-17b-16e-instruct'  // Last resort: fast, smaller
     ];
 
     let groqData = null;
@@ -4530,14 +4541,22 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
           })
         });
 
+        const rawBody = await groqRes.text();
+
         if (!groqRes.ok) {
-          const errBody = await groqRes.text();
-          console.error(`[ai] ❌ Model "${model}" failed (HTTP ${groqRes.status}):`, errBody.slice(0, 400));
-          lastError = { status: groqRes.status, body: errBody, model };
+          console.error(`[ai] ❌ Model "${model}" failed (HTTP ${groqRes.status}):`, rawBody.slice(0, 500));
+          lastError = { status: groqRes.status, body: rawBody, model };
           continue; // try next model
         }
 
-        groqData = await groqRes.json();
+        try {
+          groqData = JSON.parse(rawBody);
+        } catch (parseErr) {
+          console.error(`[ai] ❌ Model "${model}" returned invalid JSON:`, rawBody.slice(0, 200));
+          lastError = { status: 0, body: 'Invalid JSON', model };
+          continue;
+        }
+
         console.log(`[ai] ✅ Model "${model}" succeeded.`);
         break;
       } catch (e) {
@@ -4558,6 +4577,8 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
           friendly = 'AI could not process that request. Try rephrasing your question.';
         else if (lastError.status === 404)
           friendly = 'AI model unavailable. Please contact admin to update the model.';
+        else if (lastError.status === 0)
+          friendly = 'Network error reaching the AI service. Check the server internet connection.';
       }
       return res.status(503).json({ success: false, message: friendly });
     }
@@ -4578,7 +4599,6 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
-
 /* ============================================================
    LISTEN
    ============================================================ */
