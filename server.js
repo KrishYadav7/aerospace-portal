@@ -947,6 +947,35 @@ app.post('/api/login', async (req, res) => {
 
     console.log(`[login] user found "${user.username}" role=${user.role}`);
 
+    // ─── SELF-HEALING: fix legacy admin records ──────────────────
+    // If this user's username matches ADMIN_USERNAME from env and their
+    // DB role somehow defaults to 'student' (legacy records created
+    // before the schema default was fixed), upgrade them automatically.
+    const envAdminUser = String(process.env.ADMIN_USERNAME || '').trim().toLowerCase();
+    if (envAdminUser && user.username === envAdminUser && user.role !== 'admin') {
+      console.warn(
+        `[login] ⚠️ self-healing: "${user.username}" had role="${user.role}" ` +
+        `— upgrading to 'admin' because it matches ADMIN_USERNAME`
+      );
+      user.role = 'admin';
+      try { await user.save(); } catch (e) {
+        console.error('[login] self-heal save failed:', e.message);
+      }
+    }
+
+    // Also self-heal if the user's email matches ADMIN_EMAIL
+    const envAdminEmail = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+    if (envAdminEmail && user.email && user.email.toLowerCase() === envAdminEmail && user.role !== 'admin') {
+      console.warn(
+        `[login] ⚠️ self-healing: "${user.username}" had role="${user.role}" ` +
+        `— upgrading to 'admin' because it matches ADMIN_EMAIL`
+      );
+      user.role = 'admin';
+      try { await user.save(); } catch (e) {
+        console.error('[login] self-heal save failed:', e.message);
+      }
+    }
+
     // ---------- Password check ----------
     let isMatch = false;
     try {

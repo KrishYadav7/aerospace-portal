@@ -293,12 +293,14 @@ async function fetchCoursesFromDB(force = false, page = 1) {
   }
 
   try {
-    // Fetch everything in one shot. Server-side cap is 500.
-    const data = await fetchJSON(`${API_BASE}/courses?limit=500&_t=${Date.now()}`);
+    // Ask for up to 500 courses in one shot.
+    const data = await fetchJSON(
+      `${API_BASE}/courses?limit=500&page=${page}&_t=${Date.now()}`
+    );
 
     // Handle BOTH new paginated shape and old array shape
     const list = Array.isArray(data) ? data : (data.courses || []);
-    const pagination = data.pagination || { page: 1, hasMore: false, total: list.length };
+    const pagination = data.pagination || { page, hasMore: false, total: list.length };
 
     const normalized = list.map(course => ({
       ...course,
@@ -315,6 +317,17 @@ async function fetchCoursesFromDB(force = false, page = 1) {
 
     _coursePagination = pagination;
     _courseCacheAt = Date.now();
+
+    console.log(
+      `[courses] page ${page}: fetched ${list.length}, total ${pagination.total}, hasMore=${pagination.hasMore}`
+    );
+
+    // Auto-fetch subsequent pages until we have everything.
+    // Safety cap at 20 pages (= 10,000 courses) to prevent runaway loops.
+    if (pagination.hasMore && page < 20) {
+      return fetchCoursesFromDB(force, page + 1);
+    }
+
     renderApp();
   } catch (error) {
     console.error('Error fetching courses:', error);
@@ -1084,8 +1097,7 @@ async function handleLogin(e) {
         currentUser = data.user;
         saveSession(data.user, data.token);
 
-        // Reset ALL routing / editor state so a fresh login
-        // can never leak views from a previous session.
+        // Reset ALL routing / editor state
         editingCourseId = null;
         currentCourseId = null;
         window.currentSelectedCourseId = null;
@@ -1093,22 +1105,40 @@ async function handleLogin(e) {
         addingProfessor = false;
         addingMaterialCourseId = null;
         addingStudent = false;
+        quizEditingCourseId = null;
+        quizEditingMaterialId = null;
+
+        // Normalize role (trim + lowercase) so "Admin" / " admin " still
+        // route correctly — this defends against legacy DB values.
+        const serverRole = String(data.user.role || '').trim().toLowerCase();
+
+        // If the user explicitly clicked the Admin tab but the server
+        // returned a student, surface that clearly (self-diagnosis).
+        if (loginRole === 'admin' && serverRole !== 'admin') {
+          showToast(
+            'This account is a student account. Logging you in as a student.',
+            'info'
+          );
+        }
 
         // Route STRICTLY by the role the server returned.
-        if (data.user.role === 'admin') {
+        if (serverRole === 'admin') {
           adminTab = 'overview';
           studentNav = 'home';
-          pushHash('#/admin/overview');
+          try { history.replaceState(null, '', '#/admin/overview'); }
+          catch (e) { location.hash = '#/admin/overview'; }
         } else {
           studentNav = 'home';
           adminTab = 'overview';
-          pushHash('#/home');
+          try { history.replaceState(null, '', '#/home'); }
+          catch (e) { location.hash = '#/home'; }
         }
 
         showToast(data.message || 'Login successful!', 'success');
         _sessionKilled = false;
         startSessionHeartbeat();
         renderApp();
+        setTimeout(() => renderApp(), 40);
         return;
       }
 
@@ -1358,13 +1388,19 @@ async function _handleAdminLoginOtp(otp) {
 
   if (!data.success) throw new Error(data.message || 'Invalid OTP.');
 
-  // Success — establish session
+  // ─── HARD-ENFORCE ADMIN ROLE ────────────────────────────────
+  // The user only reached this code path AFTER the server issued an admin
+  // 2FA challenge. Even if the server ever returned the wrong role, we
+  // force it here so the UI can never land on the student dashboard.
+  if (data.user) data.user.role = 'admin';
+
   currentUser = data.user;
   saveSession(data.user, data.token);
   _adminPendingToken = null;
   _otpContext = null;
 
-  // Reset ALL routing / editor state
+  // Reset ALL routing / editor state — nothing from a previous
+  // session must be able to leak into this fresh admin session.
   editingCourseId = null;
   currentCourseId = null;
   window.currentSelectedCourseId = null;
@@ -1372,15 +1408,29 @@ async function _handleAdminLoginOtp(otp) {
   addingProfessor = false;
   addingMaterialCourseId = null;
   addingStudent = false;
+  quizEditingCourseId = null;
+  quizEditingMaterialId = null;
   studentNav = 'home';
   adminTab = 'overview';
 
   closeModal('otpVerificationModal');
-  pushHash('#/admin/overview');
+
+  // Force URL into the admin namespace (replaceState so back-button
+  // doesn't drop us onto the login page).
+  try {
+    history.replaceState(null, '', '#/admin/overview');
+  } catch (e) {
+    location.hash = '#/admin/overview';
+  }
+
   showToast('🎉 Admin login successful.', 'success');
   _sessionKilled = false;
   startSessionHeartbeat();
   renderApp();
+
+  // One extra paint to be absolutely certain — defends against any
+  // rAF-batched render that might have been scheduled with stale state.
+  setTimeout(() => renderApp(), 40);
 }
 
 /* ============================================================
@@ -2143,7 +2193,9 @@ function _renderAppNow() {
     renderCourseEditor(editingCourseId); return;
   }
   if (currentCourseId) { $('courseDetailView').classList.add('active'); renderCourseDetail(currentCourseId); return; }
-  if (currentUser.role === 'admin') { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
+  // Case-insensitive role check — defends against legacy "Admin" values
+  const _isAdminRole = String(currentUser.role || '').trim().toLowerCase() === 'admin';
+  if (_isAdminRole) { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
   if (studentNav === 'home')      { $('studentHomeView').classList.add('active');     renderStudentHome(); }
   else if (studentNav === 'saved'){ $('studentSavedView').classList.add('active');    renderSavedCourses(); }
   else if (studentNav === 'analytics') { $('studentAnalyticsView').classList.add('active'); renderStudentAnalytics(); }
