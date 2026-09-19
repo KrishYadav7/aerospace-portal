@@ -32,9 +32,14 @@ const materialSchema = new mongoose.Schema({
   title: { type: String, required: true },
   type:  { type: String, required: true },
   description: String,
-  url: String,
-  fileData: String,
+
+  url:      String,   // primary URL — usually '/uploads/xxx.pdf' (disk, fast)
+  cloudUrl: String,   // Cloudinary backup — used to restore disk after deploy
+  fileData: String,   // legacy base64 (do not use for new uploads)
   fileName: String,
+
+  cloudinaryPublicId: { type: String, default: '' },  // for deletion on Cloudinary
+
   isPremium: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
   estimatedTime: { type: String, default: '' },
@@ -121,5 +126,8 @@ courseSchema.index({ featured: -1, createdAt: -1 });
 courseSchema.index({ createdAt: -1 });
 courseSchema.index({ status: 1, featured: -1 });
 courseSchema.index({ name: 'text', code: 'text', description: 'text' });
+// Fast lookup by filename for the disk-miss → Cloudinary fallback path
+courseSchema.index({ 'materials.url': 1 });
+courseSchema.index({ 'materials.cloudinaryPublicId': 1 });
 
 module.exports = mongoose.model('Course', courseSchema);

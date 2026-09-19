@@ -2053,6 +2053,9 @@ async function saveNewMaterialPage() {
       showToast(`Uploading ${file.name}…`, 'info');
       const result = await uploadFileToServer(file);
       await processSave(result.url, result.fileName);
+      // (processSave only needs `url` + `fileName` — cloudUrl is optional,
+      //  but if you want cloudUrl stored when creating from the full-page
+      //  material form, modify processSave's payload the same way as doSave.)
     } catch (err) {
       showToast('Upload failed: ' + err.message, 'error');
     }
@@ -4665,7 +4668,7 @@ async function saveNewMaterialInline(courseId) {
   const price = isPremium ? (parseFloat(priceEl ? priceEl.value : '0') || 0) : 0;
   const file = fileEl && fileEl.files ? fileEl.files[0] : null;
 
-  const doSave = async (fileData, fileName) => {
+  const doSave = async (fileData, fileName, cloudUrl, publicId, diskName) => {
     // FIX: Determine if fileData is a URL from an uploaded file
     const isUploadedFile = fileData && (fileData.startsWith('/uploads/') || fileData.startsWith('http'));
 
@@ -4673,10 +4676,13 @@ async function saveNewMaterialInline(courseId) {
       title,
       type: resolvedType,
       description: descEl ? descEl.value.trim() : '',
-      url: isUploadedFile ? fileData : (urlEl ? urlEl.value.trim() : ''), // Put URL here
+      url: isUploadedFile ? fileData : (urlEl ? urlEl.value.trim() : ''),
+      cloudUrl: cloudUrl || '',
+      cloudinaryPublicId: publicId || '',
+      diskName: diskName || '',
       isPremium,
       price,
-      fileData: isUploadedFile ? '' : (fileData || ''), // Keep fileData empty for uploads
+      fileData: isUploadedFile ? '' : (fileData || ''),
       fileName: fileName || ''
     };
 
@@ -4781,7 +4787,7 @@ async function saveNewMaterialInline(courseId) {
       const result = await uploadFileToServer(file, (pct) => {
         if (btn) btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Uploading ${pct}%`;
       });
-      await doSave(result.url, result.fileName);
+      await doSave(result.url, result.fileName, result.cloudUrl, result.publicId, result.diskName);
     } catch (err) {
       showToast('Upload failed: ' + err.message, 'error');
       if (btn) {
@@ -4790,7 +4796,7 @@ async function saveNewMaterialInline(courseId) {
       }
     }
   } else {
-    doSave('', '');
+    doSave('', '', '', '', '');
   }
 }
 async function deleteMaterialFromEditor(courseId, materialId, title) {
@@ -8198,61 +8204,146 @@ async function acceptReply(courseId, doubtId, replyId) {
 /* ============================================================
    PAYMENT
    ============================================================ */
+/* ============================================================
+   PAYMENT MODAL — SECURE + ROBUST
+   ============================================================ */
 async function showPaymentModal(courseId, materialId = null) {
-  const course = findCourse(courseId); if (!course) return;
-  let amount = course.price || 0;
+  if (!currentUser) {
+    return showToast('Please log in first.', 'error');
+  }
+  if (String(currentUser.role || '').toLowerCase() === 'admin') {
+    return showToast('Admins cannot make purchases.', 'info');
+  }
+
+  const course = findCourse(courseId);
+  if (!course) return showToast('Course not found.', 'error');
+
+  let amount = 0;
   let itemName = course.name;
   let purchaseId = course.id;
-  if (materialId) {
-    const mat = course.materials.find(m => m.id === materialId);
-    if (mat) { amount = mat.price || 0; itemName = mat.title; purchaseId = mat.id; }
-  }
-  showToast(`Initiating payment for ${itemName}...`, 'info');
 
-  // Lazy-load Razorpay SDK
-  try { await window.loadRazorpay(); }
-  catch { return showToast('Could not load payment gateway.', 'error'); }
+  if (materialId) {
+    const mat = (course.materials || []).find(m => m.id === materialId);
+    if (!mat) return showToast('Material not found.', 'error');
+    amount     = Number(mat.price) || 0;
+    itemName   = mat.title;
+    purchaseId = mat.id;
+  } else {
+    amount = Number(course.price) || 0;
+  }
+
+  if (Array.isArray(currentUser.purchases) && currentUser.purchases.includes(purchaseId)) {
+    return showToast('You already own this item.', 'info');
+  }
+  if (currentUser.isSubscribed) {
+    return showToast('Your subscription already unlocks this content.', 'success');
+  }
+  if (amount <= 0) {
+    return showToast('This item does not require payment.', 'info');
+  }
+
+  showToast(`Preparing checkout for ₹${amount}…`, 'info');
 
   try {
-    const response = await fetch('/api/create-order', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount })
-    });
-    const data = await response.json();
-    if (!data.success) return showToast('Error creating order.', 'error');
+    await window.loadRazorpay();
+  } catch (e) {
+    console.error('[payment] Razorpay SDK failed to load', e);
+    return showToast('Could not load payment gateway. Check your connection.', 'error');
+  }
 
-    const options = {
-      key: data.key_id,
-      amount: data.order.amount,
-      currency: 'INR',
-      name: 'Aerospace EdTech',
-      description: `Purchase: ${itemName}`,
-      order_id: data.order.id,
-      handler: async function (response) {
-        showToast('Verifying...', 'info');
-        const verifyRes = await fetch('/api/verify-payment', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+  let orderData;
+  try {
+    orderData = await fetchJSON('/api/create-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount:  amount,
+        userId:  currentUser._id,
+        itemId:  purchaseId
+      })
+    });
+  } catch (err) {
+    console.error('[payment] create-order failed', err);
+    return showToast(err.message || 'Could not start payment.', 'error');
+  }
+
+  if (!orderData || !orderData.success || !orderData.order) {
+    return showToast((orderData && orderData.message) || 'Could not create order.', 'error');
+  }
+
+  const options = {
+    key:         orderData.key_id,
+    amount:      orderData.order.amount,
+    currency:    orderData.order.currency || 'INR',
+    name:        'AeroGyan Education',
+    description: `Purchase: ${itemName}`,
+    order_id:    orderData.order.id,
+    prefill: {
+      name:    currentUser.fullName || currentUser.username || '',
+      email:   currentUser.email    || '',
+      contact: currentUser.phone    || ''
+    },
+    theme: { color: '#4f46e5' },
+
+    handler: async function (response) {
+      showToast('Verifying payment…', 'info');
+
+      try {
+        const verifyData = await fetchJSON('/api/verify-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            razorpay_order_id: response.razorpay_order_id,
+            razorpay_order_id:   response.razorpay_order_id,
             razorpay_payment_id: response.razorpay_payment_id,
-            razorpay_signature: response.razorpay_signature,
-            courseId: purchaseId, userId: currentUser._id
+            razorpay_signature:  response.razorpay_signature,
+            courseId: purchaseId,
+            userId:   currentUser._id
           })
         });
-        const verifyData = await verifyRes.json();
-        if (verifyData.success) {
-          if (!currentUser.purchases) currentUser.purchases = [];
-          if (!currentUser.purchases.includes(purchaseId)) currentUser.purchases.push(purchaseId);
+
+        if (verifyData && verifyData.success) {
+          if (!Array.isArray(currentUser.purchases)) currentUser.purchases = [];
+          if (!currentUser.purchases.includes(purchaseId)) {
+            currentUser.purchases.push(purchaseId);
+          }
           saveSessionUser(currentUser);
-          showToast('🎉 Payment Successful!', 'success');
+
+          showToast('🎉 Payment successful! Content unlocked.', 'success');
           renderApp();
-        } else showToast('Verification failed!', 'error');
-      },
-      prefill: { name: currentUser.username, email: currentUser.email || 'student@aerospace.com', contact: '9999999999' },
-      theme: { color: '#4f46e5' }
-    };
-    new Razorpay(options).open();
-  } catch { showToast('Server error during payment.', 'error'); }
+        } else {
+          showToast((verifyData && verifyData.message) || 'Payment verification failed.', 'error');
+        }
+      } catch (err) {
+        console.error('[payment] verify failed', err);
+        showToast(
+          'Payment succeeded but verification failed. Please contact support with your payment ID: ' +
+          response.razorpay_payment_id,
+          'error'
+        );
+      }
+    },
+
+    modal: {
+      ondismiss: function () {
+        showToast('Payment cancelled.', 'info');
+      }
+    }
+  };
+
+  try {
+    const rzp = new Razorpay(options);
+
+    rzp.on('payment.failed', function (response) {
+      console.error('[razorpay] payment.failed', response.error);
+      const desc = (response.error && response.error.description) || 'Payment was declined.';
+      showToast('❌ ' + desc, 'error');
+    });
+
+    rzp.open();
+  } catch (e) {
+    console.error('[payment] Razorpay open failed', e);
+    showToast('Could not open payment window.', 'error');
+  }
 }
 
 /* ============================================================
