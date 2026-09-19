@@ -18,6 +18,63 @@ cloudinary.config({
   secure: true
 });
 
+/* ============================================================
+   HYBRID STORAGE HELPERS
+   ------------------------------------------------------------
+   • Files live on BOTH VPS disk (fast) and Cloudinary (durable).
+   • Disk is the primary source for reads.
+   • If disk is missing a file (e.g. after a redeploy on Render),
+     we transparently re-download from Cloudinary and cache it.
+   ============================================================ */
+const fs   = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const UPLOAD_DIR = process.env.UPLOAD_DIR
+  ? path.resolve(process.env.UPLOAD_DIR)
+  : path.join(__dirname, 'uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+/* Sidecar: next to every /uploads/xxx.pdf we write /uploads/xxx.pdf.cloudurl
+   containing the Cloudinary URL. This lets us restore even without a DB
+   lookup. If the sidecar is also missing (fresh deploy), we fall back to
+   a DB query. */
+function writeCloudSidecar(diskFilename, cloudUrl) {
+  try {
+    fs.writeFileSync(path.join(UPLOAD_DIR, diskFilename + '.cloudurl'), cloudUrl, 'utf8');
+  } catch (e) { console.warn('[hybrid] sidecar write failed:', e.message); }
+}
+function readCloudSidecar(diskFilename) {
+  try {
+    const p = path.join(UPLOAD_DIR, diskFilename + '.cloudurl');
+    if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8').trim();
+  } catch (e) {}
+  return null;
+}
+
+/* Safe filename — no path traversal, no weird chars */
+function safeDiskName(originalName) {
+  const ext = (path.extname(originalName || '') || '').toLowerCase().slice(0, 10);
+  return Date.now() + '-' + crypto.randomBytes(8).toString('hex') + ext;
+}
+
+/* Upload a local file to Cloudinary (returns { url, publicId } or null) */
+async function uploadToCloudinary(localPath, originalName) {
+  try {
+    const result = await cloudinary.uploader.upload(localPath, {
+      resource_type: 'auto',
+      folder: 'aerogyan/uploads',
+      timeout: 600000,
+      use_filename: true,
+      unique_filename: true,
+      filename_override: originalName
+    });
+    return { url: result.secure_url, publicId: result.public_id };
+  } catch (e) {
+    console.error('[hybrid] Cloudinary upload failed:', e.message);
+    return null;
+  }
+}
+
 console.log('[cloudinary] Configured:', !!process.env.CLOUDINARY_CLOUD_NAME);
 if (!process.env.CLOUDINARY_CLOUD_NAME) {
   console.error('❌ CLOUDINARY_CLOUD_NAME missing from .env');
@@ -34,7 +91,6 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const nodemailer = require('nodemailer');
 const Razorpay = require('razorpay');
-const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
@@ -177,39 +233,126 @@ const upload = multer({
   limits: { fileSize: 12 * 1024 * 1024 },
   fileFilter
 });
-app.use('/uploads', express.static(UPLOAD_DIR, {
-  maxAge: '7d',
-  immutable: true,
-  etag: true
-}));
+/* ============================================================
+   HYBRID STATIC FILE SERVING
+   ------------------------------------------------------------
+   1. If disk has the file → send it (fast path).
+   2. If disk is missing (fresh deploy / wiped disk) →
+      look up Cloudinary URL → download → save to disk → serve.
+   ------------------------------------------------------------
+   On a real VPS, Nginx serves step 1 directly (see nginx config)
+   and only forwards MISSES to this Node handler.
+   ============================================================ */
+app.get('/uploads/:filename', async (req, res, next) => {
+  const filename = path.basename(req.params.filename);   // sanitize
+  if (!filename || filename.includes('..')) {
+    return res.status(400).send('Invalid filename');
+  }
 
-/* Upload endpoint — accepts one file, returns its public URL */
+  const diskPath = path.join(UPLOAD_DIR, filename);
+
+  // ---- Fast path: file exists on disk ----
+  if (fs.existsSync(diskPath)) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(diskPath);
+  }
+
+  // ---- Slow path: try to restore from Cloudinary ----
+  console.log('[uploads] 💾 Disk miss for', filename, '— attempting Cloudinary restore…');
+
+  let cloudUrl = readCloudSidecar(filename);
+
+  // Sidecar also missing (fresh deploy) → look up in DB
+  if (!cloudUrl) {
+    try {
+      const course = await Course.findOne({
+        $or: [
+          { 'materials.url':      new RegExp('/uploads/' + filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') },
+          { 'materials.diskName': filename }
+        ]
+      })
+      .select('materials.url materials.cloudUrl materials.cloudinaryPublicId')
+      .lean();
+
+      if (course) {
+        const mat = (course.materials || []).find(m =>
+          (m.url && m.url.endsWith('/' + filename)) || m.diskName === filename
+        );
+        if (mat) {
+          cloudUrl = mat.cloudUrl;
+          if (!cloudUrl && mat.cloudinaryPublicId) {
+            // Reconstruct — will redirect instead of download
+            cloudUrl = cloudinary.url(mat.cloudinaryPublicId, { secure: true, resource_type: 'auto' });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[uploads] DB lookup failed:', e.message);
+    }
+  }
+
+  if (!cloudUrl) {
+    console.warn('[uploads] ❌ No Cloudinary URL for', filename);
+    return res.status(404).send('File not found and no cloud backup available.');
+  }
+
+  // ---- Download from Cloudinary, cache to disk, then serve ----
+  try {
+    const response = await fetch(cloudUrl, { redirect: 'follow' });
+    if (!response.ok) throw new Error('Cloudinary HTTP ' + response.status);
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    fs.writeFileSync(diskPath, buffer);
+    writeCloudSidecar(filename, cloudUrl);
+    console.log('[uploads] ✅ Restored from Cloudinary:', filename,
+                '(' + Math.round(buffer.length / 1024 / 1024) + ' MB)');
+
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
+    res.send(buffer);
+  } catch (e) {
+    console.error('[uploads] ❌ Restore failed:', e.message);
+    res.status(502).send('Could not restore file from backup.');
+  }
+});
+
+/* ============================================================
+   HYBRID UPLOAD — Disk (fast) + Cloudinary (durable backup)
+   ============================================================ */
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded.' });
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded.' });
+    }
 
-    console.log('[upload] 📤 Cloudinary:', req.file.originalname,
-                '(' + Math.round(req.file.size / 1024 / 1024) + ' MB)');
+    const sizeMB = Math.round(req.file.size / 1024 / 1024);
+    console.log('[upload] 📥 Received:', req.file.originalname, '(' + sizeMB + ' MB)');
 
-    const result = await new Promise((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        {
-          resource_type: 'auto',
-          folder: 'aerogyan/uploads',
-          timeout: 600000
-        },
-        (err, result) => err ? reject(err) : resolve(result)
-      );
-      stream.end(req.file.buffer);
-    });
+    // ---- 1) Save to VPS disk IMMEDIATELY (this is what users will fetch) ----
+    const diskName = safeDiskName(req.file.originalname);
+    const diskPath = path.join(UPLOAD_DIR, diskName);
+    fs.writeFileSync(diskPath, req.file.buffer);
+    const diskUrl = '/uploads/' + diskName;
+    console.log('[upload] ✅ Disk saved:', diskName);
 
-    console.log('[upload] ✅ Cloudinary URL:', result.secure_url);
+    // ---- 2) Upload to Cloudinary (durable backup) ----
+    const cloud = await uploadToCloudinary(diskPath, req.file.originalname);
+    if (cloud) {
+      writeCloudSidecar(diskName, cloud.url);
+      console.log('[upload] ☁️  Cloudinary backup:', cloud.url);
+    } else {
+      console.warn('[upload] ⚠️  Cloudinary backup FAILED — file only on disk');
+    }
+
+    // ---- 3) Respond with BOTH urls ----
     res.json({
       success: true,
-      url: result.secure_url,
-      fileName: req.file.originalname,
-      fileSize: req.file.size,
-      publicId: result.public_id
+      url:        diskUrl,                 // ← primary (fast)
+      cloudUrl:   cloud ? cloud.url : '',  // ← backup
+      publicId:   cloud ? cloud.publicId : '',
+      fileName:   req.file.originalname,
+      fileSize:   req.file.size,
+      diskName:   diskName
     });
   } catch (e) {
     console.error('[upload] ❌ Error:', e.message);
@@ -347,28 +490,38 @@ app.post('/api/upload/complete', async (req, res) => {
       throw mergeErr;
     }
 
-    // ---- 2) Upload merged file to Cloudinary ----
-    console.log('[chunked] 📤 Cloudinary upload:', session.fileName,
+    // ---- 2) Rename the merged temp file into its FINAL disk slot ----
+    const diskName = safeDiskName(session.fileName);
+    const finalPath = path.join(UPLOAD_DIR, diskName);
+    fs.renameSync(tempPath, finalPath);        // instant, same filesystem
+    const diskUrl = '/uploads/' + diskName;
+    console.log('[chunked] ✅ Disk saved:', diskName,
                 '(' + Math.round(session.fileSize / 1024 / 1024) + ' MB)');
 
-    const result = await cloudinary.uploader.upload(tempPath, {
-      resource_type: 'auto',
-      folder: 'aerogyan/uploads',
-      timeout: 600000
-    });
+    // ---- 3) Upload to Cloudinary in the background (non-blocking for response) ----
+    // We AWAIT it so the response includes the cloudUrl + publicId,
+    // but if Cloudinary is slow/down we still return the disk URL.
+    let cloud = null;
+    try {
+      console.log('[chunked] ☁️  Cloudinary backup starting…');
+      cloud = await uploadToCloudinary(finalPath, session.fileName);
+      if (cloud) writeCloudSidecar(diskName, cloud.url);
+    } catch (e) {
+      console.warn('[chunked] ⚠️  Cloudinary backup failed:', e.message);
+    }
 
-    // ---- 3) Cleanup temp file + chunk directory ----
-    try { fs.unlinkSync(tempPath); } catch (_) {}
+    // ---- 4) Cleanup chunk directory (temp file was renamed, not deleted) ----
     try { fs.rmSync(session.sessionDir, { recursive: true, force: true }); } catch (_) {}
     uploadSessions.delete(uploadId);
 
-    console.log('[chunked] ✅ Cloudinary URL:', result.secure_url);
     res.json({
       success: true,
-      url: result.secure_url,
+      url:      diskUrl,
+      cloudUrl: cloud ? cloud.url : '',
+      publicId: cloud ? cloud.publicId : '',
       fileName: session.fileName,
       fileSize: session.fileSize,
-      publicId: result.public_id
+      diskName: diskName
     });
   } catch (e) {
     console.error('[chunked/complete]', e);
@@ -3131,23 +3284,114 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
+/* ============================================================
+   CREATE RAZORPAY ORDER — SECURE VERSION
+   ============================================================ */
 app.post('/api/create-order', async (req, res) => {
   try {
-    const { amount, userId, itemId } = req.body; // Accept userId and itemId
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      console.error('[create-order] ❌ Razorpay keys missing from env');
+      return res.status(500).json({
+        success: false,
+        message: 'Payment gateway is not configured. Please contact support.'
+      });
+    }
+
+    const { amount, userId, itemId } = req.body || {};
+
+    if (!userId || !itemId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing user or item information.'
+      });
+    }
+
+    const amountRupees = Number(amount);
+    if (!Number.isFinite(amountRupees) || amountRupees <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid amount. Please refresh the page and try again.'
+      });
+    }
+
+    let itemName = 'Item';
+    let expectedPrice = 0;
+
+    const course = await Course.findById(itemId)
+      .select('name price isPremium materials')
+      .lean();
+
+    if (course) {
+      itemName = course.name;
+      expectedPrice = Number(course.price) || 0;
+    } else {
+      const parent = await Course.findOne({ 'materials._id': itemId })
+        .select('name materials')
+        .lean();
+
+      if (parent) {
+        const mat = (parent.materials || []).find(m => String(m._id) === String(itemId));
+        if (mat) {
+          itemName = mat.title;
+          expectedPrice = Number(mat.price) || 0;
+        }
+      }
+    }
+
+    if (expectedPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'This item does not require payment.'
+      });
+    }
+
+    if (Math.abs(expectedPrice - amountRupees) > 0.01) {
+      console.warn('[create-order] ⚠️ Price mismatch', { sent: amountRupees, expected: expectedPrice, itemId });
+      return res.status(400).json({
+        success: false,
+        message: 'Price mismatch. Please refresh and try again.'
+      });
+    }
+
+    const buyer = await User.findById(userId).select('purchases').lean();
+    if (buyer && Array.isArray(buyer.purchases) && buyer.purchases.includes(String(itemId))) {
+      return res.status(400).json({
+        success: false,
+        message: 'You already own this item.'
+      });
+    }
+
+    const amountPaise = Math.round(amountRupees * 100);
     const order = await razorpay.orders.create({
-      amount: amount * 100, currency: 'INR',
-      receipt: 'aero_receipt_' + Math.random().toString(36).substring(7),
-      notes: { userId, itemId } // Add notes for the webhook to read
+      amount: amountPaise,
+      currency: 'INR',
+      receipt: 'aero_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+      notes: {
+        userId:   String(userId),
+        itemId:   String(itemId),
+        itemName: String(itemName).slice(0, 120),
+        purpose:  'course-purchase'
+      }
     });
-    
-    // Send the public Key ID to the frontend securely
-    res.json({ 
-      success: true, 
-      order,
-      key_id: process.env.RAZORPAY_KEY_ID 
+
+    console.log(`[create-order] ✅ ${order.id} · ₹${amountRupees} · user=${userId} · item=${itemId}`);
+
+    res.json({
+      success: true,
+      key_id: process.env.RAZORPAY_KEY_ID,
+      order: {
+        id:       order.id,
+        amount:   order.amount,
+        currency: order.currency
+      }
     });
-  } catch (e) { 
-    res.status(500).json({ success: false, message: 'Server error creating order' }); 
+
+  } catch (e) {
+    console.error('[create-order] ❌', e);
+    const friendly = (e && e.error && e.error.description)
+      ? e.error.description
+      : (e.message || 'Could not create order.');
+    res.status(500).json({ success: false, message: friendly });
   }
 });
 /* ============================================================
@@ -4479,41 +4723,76 @@ app.post('/api/admin/subscription/:userId/extend', requireAdminAuth, async (req,
 /* ============================================================
    VERIFY PAYMENT
    ============================================================ */
+/* ============================================================
+   VERIFY RAZORPAY PAYMENT — SECURE VERSION
+   ============================================================ */
 app.post('/api/verify-payment', async (req, res) => {
   try {
-    const { 
-      razorpay_order_id, 
-      razorpay_payment_id, 
-      razorpay_signature, 
-      courseId, 
-      userId 
-    } = req.body;
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      courseId,
+      userId
+    } = req.body || {};
 
-    // 1. Verify the signature to ensure payment is genuine
-    const sign = razorpay_order_id + "|" + razorpay_payment_id;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, message: 'Missing payment verification fields.' });
+    }
+    if (!courseId || !userId) {
+      return res.status(400).json({ success: false, message: 'Missing item or user information.' });
+    }
+    if (!process.env.RAZORPAY_KEY_SECRET) {
+      return res.status(500).json({ success: false, message: 'Payment gateway is not configured.' });
+    }
+
     const expectedSign = crypto
-      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-      .update(sign.toString())
-      .digest("hex");
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(razorpay_order_id + '|' + razorpay_payment_id)
+      .digest('hex');
 
     if (razorpay_signature !== expectedSign) {
-      return res.status(400).json({ success: false, message: 'Invalid payment signature!' });
+      console.warn('[verify-payment] ❌ Signature mismatch', { razorpay_order_id, userId });
+      return res.status(400).json({ success: false, message: 'Invalid payment signature.' });
     }
 
-    // 2. Update the user's purchases array in the database
+    let order;
+    try {
+      order = await razorpay.orders.fetch(razorpay_order_id);
+    } catch (e) {
+      console.error('[verify-payment] Could not fetch order:', e.message);
+      return res.status(400).json({ success: false, message: 'Could not verify order with payment gateway.' });
+    }
+
+    const notes = order.notes || {};
+    if (String(notes.userId) !== String(userId)) {
+      return res.status(403).json({ success: false, message: 'This payment belongs to a different account.' });
+    }
+    if (String(notes.itemId) !== String(courseId)) {
+      return res.status(403).json({ success: false, message: 'This payment is for a different item.' });
+    }
+
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
-    if (!user.purchases) user.purchases = [];
-    if (!user.purchases.includes(courseId)) {
-      user.purchases.push(courseId);
+    if (!Array.isArray(user.purchases)) user.purchases = [];
+    if (!user.purchases.includes(String(courseId))) {
+      user.purchases.push(String(courseId));
       await user.save();
+      console.log(`[verify-payment] ✅ Unlocked ${courseId} for ${user.username}`);
+    } else {
+      console.log(`[verify-payment] ℹ️ ${user.username} already owned ${courseId}`);
     }
 
-    res.json({ success: true, message: 'Payment verified successfully!' });
+    res.json({
+      success: true,
+      message: 'Payment verified successfully!',
+      purchases: user.purchases
+    });
+
   } catch (error) {
-    console.error('[verify-payment] Error:', error);
-    res.status(500).json({ success: false, message: 'Server error verifying payment.' });
+    console.error('[verify-payment] ❌', error);
+    res.status(500).json({ success: false, message: 'Server error while verifying payment.' });
   }
 });
 /* ============================================================
@@ -4522,10 +4801,21 @@ app.post('/api/verify-payment', async (req, res) => {
 app.post('/api/razorpay-webhook', async (req, res) => {
   try {
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-    const signature = req.headers['x-razorpay-signature'];
 
-    // req.body is a raw Buffer here (thanks to express.raw above)
-    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
+    if (!webhookSecret) {
+      console.error('[Webhook] ❌ RAZORPAY_WEBHOOK_SECRET not set — rejecting');
+      return res.status(500).send('Webhook not configured');
+    }
+
+    const signature = req.headers['x-razorpay-signature'];
+    if (!signature) {
+      console.error('[Webhook] ❌ Missing signature header');
+      return res.status(400).send('Missing signature');
+    }
+
+    const rawBody = Buffer.isBuffer(req.body)
+      ? req.body
+      : Buffer.from(JSON.stringify(req.body));
 
     const expectedSignature = crypto
       .createHmac('sha256', webhookSecret)
@@ -4533,7 +4823,7 @@ app.post('/api/razorpay-webhook', async (req, res) => {
       .digest('hex');
 
     if (signature !== expectedSignature) {
-      console.error('[Webhook] Invalid signature');
+      console.error('[Webhook] ❌ Invalid signature');
       return res.status(400).send('Invalid signature');
     }
 
