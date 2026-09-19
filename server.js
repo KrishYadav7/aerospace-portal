@@ -409,25 +409,20 @@ function sendCached(res, file, maxAge = 300) {
   res.setHeader('Cache-Control', `public, max-age=${maxAge}, stale-while-revalidate=86400`);
   res.sendFile(path.join(__dirname, file));
 }
-// ⚡ App code — NEVER HTTP-cache. The SW fetches these URLs and MUST
-// always get the latest version. Version query (v=30) on the client
-// handles long-term cache busting; here we just want always-fresh.
+// ⚡ App code — the ?v=NN query on the URL IS the cache-buster.
+// A new deploy ships a new URL (v=42), so a 1-year immutable cache
+// is 100% safe AND makes repeat visits near-instant.
+// Only index.html and sw.js stay no-cache (they must always be fresh).
 app.get('/app.js',          (req, res) => {
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(path.join(__dirname, 'app.js'));
 });
 app.get('/styles.css',      (req, res) => {
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(path.join(__dirname, 'styles.css'));
 });
 app.get('/media-viewer.js', (req, res) => {
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.sendFile(path.join(__dirname, 'media-viewer.js'));
 });
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
@@ -2471,7 +2466,7 @@ app.post('/api/professors', requireAdminAuth, async (req, res) => {
 app.get('/api/courses', async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(500, parseInt(req.query.limit) || 500);
+    const limit = Math.min(100, parseInt(req.query.limit) || 80);
     const skip  = (page - 1) * limit;
 
     const cacheKey = `courses:list:${page}:${limit}`;

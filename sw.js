@@ -6,7 +6,7 @@
    changes on every deploy, and they MUST always come from the network.
    Only truly static assets (manifest, images) go in the cache.
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v41';
+const CACHE_NAME = 'aero-shell-v42';
 
 /* ONLY these go into the offline cache — they never change silently */
 const SHELL_ASSETS = [
@@ -62,11 +62,14 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/api/')) return;
   if (url.pathname.startsWith('/uploads/')) return;
 
-  // ─── APP CODE: network ONLY, no cache fallback for fresh content ───
+  // ─── APP CODE: network first, RESPECTING the browser HTTP cache ───
+  // The URL carries ?v=NN, so a new deploy ships a new URL → cache miss
+  // → fresh fetch. Within the same version, the browser serves from
+  // its own HTTP cache (instant). This is the fastest safe strategy.
   const isAppCode = NEVER_CACHE_PATTERNS.some((re) => re.test(url.pathname));
   if (isAppCode) {
     event.respondWith(
-      fetch(req, { cache: 'no-store' })
+      fetch(req)   // ← respects Cache-Control: immutable set by server
         .catch(() => {
           // Offline only: fall back to cached index.html if we have it
           return caches.match('./index.html').then((c) => c || Response.error());

@@ -335,8 +335,10 @@ async function fetchCoursesFromDB(force = false, page = 1) {
   }
 
   try {
+    const PER_PAGE = 80;   // 80 is enough for most portals to be 1 request;
+                           // large catalogs fall back to multi-page streaming
     const data = await fetchJSON(
-      `${API_BASE}/courses?limit=500&page=${page}&_t=${Date.now()}`
+      `${API_BASE}/courses?limit=${PER_PAGE}&page=${page}&_t=${Date.now()}`
     );
 
     const list = Array.isArray(data) ? data : (data.courses || []);
@@ -2266,13 +2268,14 @@ function _renderAppNow() {
 
   // ─── AI DOUBT SOLVER (default landing page for students) ───
   if (studentNav === 'ai') {
-    ensureStudentAIHomeView();              // injects the section if it's missing
+    // ensureStudentAIHomeView() runs once in initApp(); no need to
+    // re-check on every render.
     const aiHome = $('studentAIHomeView');
     if (aiHome) {
       aiHome.classList.add('active');
       renderStudentAIHome();
     } else {
-      console.warn('[nav] studentAIHomeView could not be created — falling back');
+      console.warn('[nav] studentAIHomeView missing — falling back to home');
       const fallback = $('studentHomeView');
       if (fallback) fallback.classList.add('active');
       renderStudentHome();
@@ -5949,21 +5952,10 @@ function renderMathIn(el) {
   }
 }
 
-/* ---- One-time preload when app.js runs ---- */
-(function preloadMathJaxOnce() {
-  if (typeof window.loadMathJax !== 'function') {
-    console.warn('[MathJax] loadMathJax() not found — check index.html');
-    return;
-  }
-  window.loadMathJax()
-    .then(() => {
-      window.__mathjaxReady = true;
-      console.log('[MathJax] ✅ ready (preload)');
-      const q = (window.__mathjaxQueue || []).splice(0);
-      q.forEach(el => { if (el && el.isConnected) renderMathIn(el); });
-    })
-    .catch(err => console.warn('[MathJax] preload failed:', err && err.message));
-})();
+/* ---- MathJax is loaded ON-DEMAND by renderMathIn() above ----
+   Do NOT preload — it's ~1 MB and only needed for quizzes / AI answers.
+   The queue is drained automatically inside renderMathIn() once MathJax
+   finishes loading. */
 
 /* ---------- Debounced live LaTeX preview ---------- */
 const _latexPreviewTimers = new WeakMap();
@@ -8310,6 +8302,11 @@ async function initApp() {
   }
   updateThemeIcon();
   syncHashToState();
+
+  /* ---- Make sure the AI home section exists before first paint ---- */
+  if (currentUser && String(currentUser.role || '').toLowerCase() === 'student') {
+    try { ensureStudentAIHomeView(); } catch (e) {}
+  }
 
   /* ---- Single first paint ---- */
   renderApp();
