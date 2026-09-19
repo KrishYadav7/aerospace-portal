@@ -36,50 +36,79 @@ const userSchema = new mongoose.Schema({
   quizResults: { type: Map, of: Object, default: {} },
 
   /* ============================================================
-     SUBSCRIPTION / AUTO-PAY
+     SUBSCRIPTION / AUTO-PAY  (multi-tier aware)
      ============================================================ */
   subscription: {
-    active:         { type: Boolean, default: false },
-    status:         { type: String,  default: 'none' },     // none | pending | active | expired | cancelled | halted
-    planId:         { type: String,  default: null },       // Razorpay plan_id
-    subscriptionId: { type: String,  default: null },       // Razorpay subscription_id
-    startedAt:      { type: Date,    default: null },
-    expiresAt:      { type: Date,    default: null },
-    amount:         { type: Number,  default: 0 },          // ₹ / month
-    autoRenew:      { type: Boolean, default: false },
-    lastPaymentId:  { type: String,  default: null },
+    active:           { type: Boolean, default: false },
+    status:           { type: String,  default: 'none' },
+    // none | pending | active | expired | cancelled | halted
+
+    planId:           { type: String,  default: null },   // e.g. 'plan_6m'
+    planTitle:        { type: String,  default: '' },     // snapshot for display
+    planDurationDays: { type: Number,  default: 0 },
+
+    razorpayPlanId:   { type: String,  default: null },
+    subscriptionId:   { type: String,  default: null },   // Razorpay sub id (if subscription mode)
+    lastOrderId:      { type: String,  default: null },   // Razorpay order id (if one-time mode)
+
+    startedAt:        { type: Date,    default: null },
+    expiresAt:        { type: Date,    default: null },
+    amount:           { type: Number,  default: 0 },
+    amountPaid:       { type: Number,  default: 0 },
+    couponApplied:    { type: String,  default: null },
+
+    autoRenew:        { type: Boolean, default: false },
+    paymentMode:      { type: String,  default: 'subscription' }, // 'subscription' | 'one-time'
+    lastPaymentId:    { type: String,  default: null },
+
     history: [{
       paymentId: String,
       amount:    Number,
-      status:    String,                                     // charged | granted | revoked | failed | refunded
+      status:    String,   // charged | granted | revoked | failed | refunded | referred-reward | coupon
       note:      String,
       date:      { type: Date, default: Date.now }
     }]
   },
 
   /* ============================================================
-     ANALYTICS — rolling log of study events
-     Kept small by deduping per (date, courseId, materialId, type)
-     Capped at 3000 entries (drop oldest on overflow).
+     REFERRAL PROGRAM
+     ------------------------------------------------------------
+     IMPORTANT: `unique: true` ALONE creates the index.
+     DO NOT add `index: true` — Mongoose 8.9+/9.x throws
+     "Duplicate schema index" and crashes the process on boot.
+     ============================================================ */
+  referralCode: {
+    type: String,
+    unique: true,
+    sparse: true,
+    uppercase: true,
+    trim: true
+  },
+  referredBy: { type: String, default: null },   // referral code of the person who invited this user
+
+  referralStats: {
+    totalReferred:   { type: Number, default: 0 },
+    totalSubscribed: { type: Number, default: 0 },
+    rewardsEarned:   { type: Number, default: 0 },
+    rewardedFor:     { type: Number, default: 0 },   // last totalReferred count that was rewarded
+    lastRewardAt:    { type: Date,   default: null }
+  },
+
+  /* ============================================================
+     ANALYTICS
      ============================================================ */
   activityLog: [{
-    date:       { type: String },                          // 'YYYY-MM-DD'
+    date:       { type: String },
     timestamp:  { type: Date, default: Date.now },
-    type:       { type: String, default: 'view' },         // 'view' | 'quiz'
+    type:       { type: String, default: 'view' },
     courseId:   { type: String, default: null },
     materialId: { type: String, default: null },
-    score:      { type: Number, default: null },           // for quiz events
-    total:      { type: Number, default: null }            // for quiz events
+    score:      { type: Number, default: null },
+    total:      { type: Number, default: null }
   }],
 
   /* ============================================================
-     ACTIVE SESSION — Single-device login enforcement
-     ------------------------------------------------------------
-     Only the LATEST login's sessionId is considered valid.
-     Whenever a user logs in from a new device/browser, we
-     regenerate sessionId. All older tokens become instantly
-     invalid (the server compares token.sessionId with the
-     current activeSession.sessionId on every heartbeat).
+     ACTIVE SESSION
      ============================================================ */
   activeSession: {
     sessionId:  { type: String, default: null },

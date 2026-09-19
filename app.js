@@ -9879,656 +9879,1441 @@ function copyAIHomeMessage(idx) {
     });
   }
 })();
+
 /* ============================================================
-   STUDENT FEEDBACK — Submit + Public wall
+   MONETIZATION & GROWTH MODULE
+   ------------------------------------------------------------
+   • Multi-tier subscription plans (student pricing cards)
+   • Coupon code input at checkout
+   • Referral program (code, copy, progress, leaderboard)
+   • Admin tabs: Plans, Coupons, Referrals
    ============================================================ */
-let _feedbackRating = 5;
 
-function setFeedbackRating(v) {
-  _feedbackRating = Math.min(5, Math.max(1, v));
-  const hidden = document.getElementById('feedbackRating');
-  if (hidden) hidden.value = _feedbackRating;
-  const stars = document.getElementById('feedbackStars');
-  if (stars) {
-    stars.querySelectorAll('button').forEach(b => {
-      const val = parseInt(b.dataset.v, 10);
-      b.classList.toggle('active', val <= _feedbackRating);
-    });
-  }
-}
+/* ---------- Shared state ---------- */
+let _livePlans = [];
+let _liveReferralProgram = { enabled: false, threshold: 3, rewardDays: 30, rewardTitle: '', rewardDesc: '' };
+let _activeCheckoutCoupon = null;
+let _activeCheckoutPlan   = null;
 
-function openFeedbackModal() {
-  if (!currentUser) return showToast('Please log in to submit feedback.', 'error');
-  const t = document.getElementById('feedbackTitle');
-  const m = document.getElementById('feedbackMessage');
-  if (t) t.value = '';
-  if (m) m.value = '';
-  setFeedbackRating(5);
-  openModal('feedbackModal');
-}
-
-async function submitStudentFeedback(e) {
-  if (e) e.preventDefault();
-  const title = (document.getElementById('feedbackTitle')?.value || '').trim();
-  const message = (document.getElementById('feedbackMessage')?.value || '').trim();
-  const rating = _feedbackRating || 5;
-
-  if (!message) return showToast('Please write your feedback.', 'error');
-
-  const btn = document.getElementById('feedbackSubmitBtn');
-  const original = btn ? btn.innerHTML : '';
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…'; }
-
+/* ============================================================
+   STUDENT: fetch & render subscription plans
+   ============================================================ */
+async function fetchSubscriptionPlans() {
   try {
-    const res = await fetch(`${API_BASE}/feedback/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        studentName:     currentUser.fullName || currentUser.username,
-        studentUsername: currentUser.username,
-        studentEmail:    currentUser.email || '',
-        rating, title, message
-      })
-    });
+    const res = await fetch(`${API_BASE}/subscription/plans?_t=${Date.now()}`, { cache: 'no-store' });
     const data = await res.json();
     if (data.success) {
-      closeModal('feedbackModal');
-      showToast('✅ ' + (data.message || 'Feedback submitted for review.'), 'success');
-    } else {
-      showToast(data.message || 'Failed to submit.', 'error');
+      _livePlans = data.plans || [];
+      _liveReferralProgram = data.referral || _liveReferralProgram;
+      // keep legacy settings in sync for old code paths
+      if (_livePlans.length > 0) {
+        liveSubscriptionSettings.enabled = !!data.enabled;
+        liveSubscriptionSettings.amount = _livePlans[0].amount;
+      }
     }
-  } catch (err) {
-    showToast('Network error.', 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = original; }
-  }
+  } catch (e) { /* silent */ }
 }
 
-async function loadApprovedFeedback() {
-  const container = document.getElementById('studentFeedbackList');
+/* ---------- Pricing cards (student home + subscription checkout) ---------- */
+function renderSubscriptionPlansGrid(containerId) {
+  const container = document.getElementById(containerId);
   if (!container) return;
-  try {
-    const res = await fetch(`${API_BASE}/feedback?_t=${Date.now()}`, { cache: 'no-store' });
-    const data = await res.json();
-    const list = (data && data.success && Array.isArray(data.feedback)) ? data.feedback : [];
 
-    if (list.length === 0) {
-      container.innerHTML = `
-        <div class="empty-state" style="padding:30px 20px;">
-          <i class="fas fa-comment-dots"></i>
-          <p>No reviews yet — be the first to share yours!</p>
-        </div>`;
-      return;
-    }
-
-    container.innerHTML = `<div class="feedback-wall">${list.map(f => {
-      const stars = '★'.repeat(f.rating || 5) + '☆'.repeat(5 - (f.rating || 5));
-      const initials = getInitials(f.studentName || f.studentUsername || '?');
-      const dateStr = f.approvedAt
-        ? new Date(f.approvedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-        : '';
-      return `
-        <div class="feedback-card">
-          <div class="feedback-card-head">
-            <div class="feedback-avatar">${escapeHtml(initials)}</div>
-            <div class="feedback-card-meta">
-              <strong>${escapeHtml(f.studentName || f.studentUsername || 'Student')}</strong>
-              <div class="feedback-stars-display">${stars}</div>
-            </div>
-            <span class="feedback-card-date">${dateStr}</span>
-          </div>
-          ${f.title ? `<h4 class="feedback-card-title">${escapeHtml(f.title)}</h4>` : ''}
-          <p class="feedback-card-body">${escapeHtml(f.message)}</p>
-          ${f.courseName ? `<div class="feedback-card-course"><i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}</div>` : ''}
-        </div>`;
-    }).join('')}</div>`;
-  } catch (e) {
-    container.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
-      <p style="color:var(--rose-500);">Could not load reviews.</p>
-    </div>`;
-  }
-}
-
-
-/* ============================================================
-   STUDENT CONTRIBUTIONS — Submit + Own list
-   ============================================================ */
-function openContributionModal() {
-  if (!currentUser) return showToast('Please log in first.', 'error');
-  ['contribTitle', 'contribSubject', 'contribDescription'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
-  const f = document.getElementById('contribFile');
-  if (f) f.value = '';
-  openModal('contributionModal');
-}
-
-async function submitContribution(e) {
-  if (e) e.preventDefault();
-  const title       = (document.getElementById('contribTitle')?.value || '').trim();
-  const subject     = (document.getElementById('contribSubject')?.value || '').trim();
-  const description = (document.getElementById('contribDescription')?.value || '').trim();
-  const fileInput   = document.getElementById('contribFile');
-  const file        = fileInput && fileInput.files ? fileInput.files[0] : null;
-
-  if (!title) return showToast('Title is required.', 'error');
-  if (!file)  return showToast('Please choose a file.', 'error');
-  if (file.size > 50 * 1024 * 1024) return showToast('File too large (max 50 MB).', 'error');
-
-  const btn = document.getElementById('contribSubmitBtn');
-  const original = btn ? btn.innerHTML : '';
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading…'; }
-
-  try {
-    showToast(`Uploading ${file.name}…`, 'info');
-    const upload = await uploadFileToServer(file, (pct) => {
-      if (btn) btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${pct}%`;
-    });
-
-    const res = await fetch(`${API_BASE}/contributions/submit`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        studentName:     currentUser.fullName || currentUser.username,
-        studentUsername: currentUser.username,
-        studentEmail:    currentUser.email || '',
-        title, subject, description,
-        fileUrl:            upload.url,
-        fileName:           upload.fileName || file.name,
-        fileSize:           upload.fileSize || file.size,
-        fileType:           file.type || '',
-        cloudinaryPublicId: upload.publicId || ''
-      })
-    });
-    const data = await res.json();
-    if (data.success) {
-      closeModal('contributionModal');
-      showToast('✅ ' + (data.message || 'Contribution submitted!'), 'success');
-      loadMyContributions();
-    } else {
-      showToast(data.message || 'Submission failed.', 'error');
-    }
-  } catch (err) {
-    console.error('[submitContribution]', err);
-    showToast('Upload failed: ' + (err.message || 'Unknown error'), 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = original; }
-  }
-}
-
-async function loadMyContributions() {
-  const container = document.getElementById('myContributionsList');
-  if (!container) return;
-  if (!currentUser || !currentUser.username) return;
-
-  try {
-    const res = await fetch(`${API_BASE}/contributions/mine/${encodeURIComponent(currentUser.username)}?_t=${Date.now()}`);
-    const data = await res.json();
-    const list = (data && data.success && Array.isArray(data.contributions)) ? data.contributions : [];
-
-    if (list.length === 0) {
-      container.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
-        <i class="fas fa-inbox"></i>
-        <p>You haven't contributed anything yet.</p>
+  if (!_livePlans || _livePlans.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-crown"></i>
+        <p>No plans available right now.</p>
       </div>`;
-      return;
-    }
-
-    container.innerHTML = `<div class="contribution-list">${list.map(c => {
-      const size = c.fileSize
-        ? (c.fileSize < 1024 * 1024
-            ? Math.round(c.fileSize / 1024) + ' KB'
-            : (c.fileSize / 1024 / 1024).toFixed(1) + ' MB')
-        : '';
-      const date = c.submittedAt
-        ? new Date(c.submittedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-        : '';
-      const statusClass = c.status === 'downloaded' ? 'ok' : c.status === 'deleted' ? 'bad' : 'pending';
-      const statusLabel = c.status === 'downloaded' ? 'Downloaded by admin'
-                        : c.status === 'deleted'    ? 'Removed'
-                        : 'Pending review';
-      return `
-        <div class="contribution-row">
-          <div class="contribution-icon"><i class="fas fa-file-alt"></i></div>
-          <div class="contribution-info">
-            <h4>${escapeHtml(c.title)}</h4>
-            ${c.subject ? `<div class="contribution-subject">${escapeHtml(c.subject)}</div>` : ''}
-            ${c.description ? `<p class="contribution-desc">${escapeHtml(c.description)}</p>` : ''}
-            <div class="contribution-meta">
-              <span><i class="fas fa-paperclip"></i> ${escapeHtml(c.fileName || 'file')}${size ? ' · ' + size : ''}</span>
-              <span class="contribution-status ${statusClass}"><i class="fas fa-circle"></i> ${statusLabel}</span>
-              <span><i class="far fa-clock"></i> ${date}</span>
-            </div>
-          </div>
-        </div>`;
-    }).join('')}</div>`;
-  } catch (e) {
-    console.warn('[loadMyContributions]', e);
-    container.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
-      <p style="color:var(--rose-500);">Could not load contributions.</p>
-    </div>`;
-  }
-}
-
-
-/* ============================================================
-   ADMIN — FEEDBACK MODERATION TAB
-   ============================================================ */
-async function renderAdminFeedback() {
-  const container = document.getElementById('adminFeedbackContent');
-  if (!container) return;
-  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading feedback…</p></div>`;
-
-  try {
-    const res = await fetch(`${API_BASE}/admin/feedback?t=${Date.now()}`, { cache: 'no-store' });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.message || 'Failed to load.');
-
-    const list = data.feedback || [];
-    const pend = list.filter(x => x.status === 'pending');
-    const appr = list.filter(x => x.status === 'approved');
-    const rej  = list.filter(x => x.status === 'rejected');
-
-    let html = `<div class="editor-section">
-      <div class="editor-section-header">
-        <div class="editor-section-title">
-          <i class="fas fa-comment-dots"></i> Student Feedback
-          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
-            ${pend.length} pending · ${appr.length} approved · ${rej.length} rejected
-          </span>
-        </div>
-        <button class="btn btn-outline btn-sm" onclick="renderAdminFeedback()">
-          <i class="fas fa-rotate"></i> Refresh
-        </button>
-      </div>
-      ${renderFeedbackGroup('Pending Approval', pend, 'pending')}
-      ${renderFeedbackGroup('Approved (live on portal)', appr, 'approved')}
-      ${renderFeedbackGroup('Rejected', rej, 'rejected')}
-    </div>`;
-
-    container.innerHTML = html;
-  } catch (e) {
-    console.error('[renderAdminFeedback]', e);
-    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error: ${escapeHtml(e.message)}</p></div>`;
-  }
-}
-
-function renderFeedbackGroup(title, items, status) {
-  if (items.length === 0) {
-    return `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">0</span></div>
-            <p class="community-empty">No entries.</p>`;
-  }
-  let html = `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">${items.length}</span></div>`;
-  html += `<div class="community-list">`;
-  items.forEach(f => {
-    const initials = getInitials(f.studentName || f.studentUsername || '?');
-    const stars = '★'.repeat(f.rating || 5) + '☆'.repeat(5 - (f.rating || 5));
-    const dateStr = f.submittedAt
-      ? new Date(f.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-      : '';
-
-    let actions = '';
-    if (status === 'pending') {
-      actions = `
-        <button class="btn btn-success btn-sm" onclick="approveFeedback('${f._id}')"><i class="fas fa-check"></i> Approve</button>
-        <button class="btn btn-warning btn-sm" onclick="rejectFeedback('${f._id}')"><i class="fas fa-times"></i> Reject</button>`;
-    } else if (status === 'approved') {
-      actions = `
-        <button class="btn btn-warning btn-sm" onclick="rejectFeedback('${f._id}')"><i class="fas fa-eye-slash"></i> Unpublish</button>`;
-    } else if (status === 'rejected') {
-      actions = `
-        <button class="btn btn-success btn-sm" onclick="approveFeedback('${f._id}')"><i class="fas fa-check"></i> Approve</button>`;
-    }
-    actions += ` <button class="btn btn-danger btn-sm" onclick="deleteFeedback('${f._id}')"><i class="fas fa-trash"></i></button>`;
-
-    html += `
-      <div class="community-item">
-        <div class="community-avatar"><div class="community-avatar-fallback">${escapeHtml(initials)}</div></div>
-        <div class="community-info">
-          <h4>${escapeHtml(f.studentName || f.studentUsername || 'Student')}
-            <span class="feedback-stars-display" style="margin-left:8px;">${stars}</span>
-          </h4>
-          <div class="community-meta">@${escapeHtml(f.studentUsername || '')} ${f.studentEmail ? '· ' + escapeHtml(f.studentEmail) : ''}</div>
-          ${f.title ? `<div style="font-weight:700;margin-top:6px;">${escapeHtml(f.title)}</div>` : ''}
-          <div class="community-bio">${escapeHtml(f.message)}</div>
-          <div class="community-contact" style="margin-top:6px;">
-            <i class="far fa-clock"></i> ${dateStr}
-            ${f.courseName ? `· <i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}` : ''}
-          </div>
-        </div>
-        <div class="community-actions">${actions}</div>
-      </div>`;
-  });
-  html += `</div>`;
-  return html;
-}
-
-async function approveFeedback(id) {
-  try {
-    const res = await fetch(`${API_BASE}/admin/feedback/${id}/approve`, { method: 'PUT' });
-    const data = await res.json();
-    if (data.success) { showToast('✅ Feedback approved & now visible.', 'success'); renderAdminFeedback(); }
-    else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
-}
-async function rejectFeedback(id) {
-  try {
-    const res = await fetch(`${API_BASE}/admin/feedback/${id}/reject`, { method: 'PUT' });
-    const data = await res.json();
-    if (data.success) { showToast('Feedback unpublished.', 'info'); renderAdminFeedback(); }
-    else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
-}
-async function deleteFeedback(id) {
-  if (!confirm('Permanently delete this feedback?')) return;
-  try {
-    const res = await fetch(`${API_BASE}/admin/feedback/${id}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (data.success) { showToast('Deleted.', 'info'); renderAdminFeedback(); }
-    else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
-}
-
-
-/* ============================================================
-   ADMIN — CONTRIBUTIONS TAB
-   ============================================================ */
-async function renderAdminContributions() {
-  const container = document.getElementById('adminContributionsContent');
-  if (!container) return;
-  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading contributions…</p></div>`;
-
-  try {
-    const res = await fetch(`${API_BASE}/admin/contributions?t=${Date.now()}`, { cache: 'no-store' });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.message || 'Failed to load.');
-
-    const list = data.contributions || [];
-
-    if (list.length === 0) {
-      container.innerHTML = `<div class="empty-state">
-        <i class="fas fa-hand-holding-heart"></i>
-        <p>No contributions submitted yet.</p>
-        <p style="margin-top:8px;font-size:13px;">Student submissions will appear here once they upload files.</p>
-      </div>`;
-      return;
-    }
-
-    let html = `<div class="editor-section">
-      <div class="editor-section-header">
-        <div class="editor-section-title">
-          <i class="fas fa-hand-holding-heart"></i> Student Contributions
-          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
-            ${list.length} submission${list.length === 1 ? '' : 's'}
-          </span>
-        </div>
-        <button class="btn btn-outline btn-sm" onclick="renderAdminContributions()">
-          <i class="fas fa-rotate"></i> Refresh
-        </button>
-      </div>
-      <div class="community-list">`;
-
-    list.forEach(c => {
-      const initials = getInitials(c.studentName || c.studentUsername || '?');
-      const size = c.fileSize
-        ? (c.fileSize < 1024 * 1024
-            ? Math.round(c.fileSize / 1024) + ' KB'
-            : (c.fileSize / 1024 / 1024).toFixed(2) + ' MB')
-        : '—';
-      const dateStr = c.submittedAt
-        ? new Date(c.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-        : '';
-
-      const statusBadge = c.status === 'downloaded'
-        ? '<span class="contribution-status ok"><i class="fas fa-download"></i> Downloaded</span>'
-        : c.status === 'deleted'
-          ? '<span class="contribution-status bad"><i class="fas fa-trash"></i> Deleted</span>'
-          : '<span class="contribution-status pending"><i class="fas fa-hourglass-half"></i> New</span>';
-
-      html += `
-        <div class="community-item">
-          <div class="community-avatar"><div class="community-avatar-fallback">${escapeHtml(initials)}</div></div>
-          <div class="community-info">
-            <h4>${escapeHtml(c.title)} ${statusBadge}</h4>
-            <div class="community-meta">
-              ${escapeHtml(c.studentName || c.studentUsername || 'Student')}
-              ${c.studentEmail ? '· ' + escapeHtml(c.studentEmail) : ''}
-              ${c.subject ? `· <i class="fas fa-book"></i> ${escapeHtml(c.subject)}` : ''}
-            </div>
-            ${c.description ? `<div class="community-bio">${escapeHtml(c.description)}</div>` : ''}
-            <div class="community-contact" style="margin-top:8px;">
-              <i class="fas fa-paperclip"></i> ${escapeHtml(c.fileName || 'file')} · ${size}
-              &nbsp;·&nbsp; <i class="far fa-clock"></i> ${dateStr}
-            </div>
-          </div>
-          <div class="community-actions">
-            <button class="btn btn-primary btn-sm" onclick="downloadContributionFile('${c._id}')">
-              <i class="fas fa-download"></i> Download
-            </button>
-            <button class="btn btn-danger btn-sm" onclick="deleteContributionFile('${c._id}', ${jsStr(c.title)})">
-              <i class="fas fa-trash"></i> Delete
-            </button>
-          </div>
-        </div>`;
-    });
-
-    html += `</div></div>`;
-    container.innerHTML = html;
-  } catch (e) {
-    console.error('[renderAdminContributions]', e);
-    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error: ${escapeHtml(e.message)}</p></div>`;
-  }
-}
-
-async function downloadContributionFile(id) {
-  try {
-    showToast('Preparing download…', 'info');
-    const res = await fetch(`${API_BASE}/admin/contributions/${id}/download`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      return showToast(err.message || 'Download failed.', 'error');
-    }
-    const blob = await res.blob();
-    const cd = res.headers.get('content-disposition') || '';
-    const m = cd.match(/filename="?([^"]+)"?/);
-    const filename = m ? m[1] : 'contribution';
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    showToast('✅ Downloaded. You can now safely delete it.', 'success');
-    renderAdminContributions();
-  } catch (e) {
-    console.error('[downloadContributionFile]', e);
-    showToast('Download failed.', 'error');
-  }
-}
-
-async function deleteContributionFile(id, title) {
-  if (!confirm(`Permanently delete "${title}"?\n\nThe file will be removed from Cloudinary and the database.`)) return;
-  try {
-    const res = await fetch(`${API_BASE}/admin/contributions/${id}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (data.success) {
-      showToast('🗑️ Contribution deleted.', 'info');
-      renderAdminContributions();
-    } else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
-}
-
-
-/* ============================================================
-   ADMIN — BACKUP TAB (Export / Import students)
-   ============================================================ */
-function renderAdminBackup() {
-  const container = document.getElementById('adminBackupContent');
-  if (!container) return;
-
-  container.innerHTML = `
-    <div class="editor-section">
-      <div class="editor-section-title">
-        <i class="fas fa-database"></i> Student Data Backup & Restore
-      </div>
-      <p class="editor-hint">
-        Export a complete CSV snapshot of every student account (username, hashed password, role, full name, email, phone, join date).
-        Save it somewhere safe. In the event of a database issue, re-import the file below to restore all accounts — including their login credentials.
-      </p>
-    </div>
-
-    <div class="backup-grid">
-      <div class="backup-card">
-        <div class="backup-card-icon tone-brand"><i class="fas fa-file-export"></i></div>
-        <h3>Export Student Data</h3>
-        <p>Download a CSV file containing <strong>every</strong> student record. Works with Excel, Google Sheets, and Numbers.</p>
-        <button class="btn btn-primary btn-block" onclick="exportStudentsCSV()" id="backupExportBtn">
-          <i class="fas fa-download"></i> Export CSV
-        </button>
-        <span class="hint" style="display:block;margin-top:10px;">
-          <i class="fas fa-info-circle"></i> Only student accounts are exported — admin accounts are never included.
-        </span>
-      </div>
-
-      <div class="backup-card">
-        <div class="backup-card-icon tone-emerald"><i class="fas fa-file-import"></i></div>
-        <h3>Import / Restore</h3>
-        <p>Upload a CSV backup to restore student accounts. Existing students with the same username will be updated; new students will be created.</p>
-        <input type="file" id="backupImportInput" accept=".csv" style="display:none;" onchange="importStudentsCSV(this)">
-        <button class="btn btn-success btn-block" onclick="document.getElementById('backupImportInput').click()" id="backupImportBtn">
-          <i class="fas fa-upload"></i> Choose CSV File
-        </button>
-        <span class="hint" style="display:block;margin-top:10px;">
-          <i class="fas fa-triangle-exclamation" style="color:var(--gold-500);"></i>
-          Passwords are restored as-is (hashed). Students will log in with their previous credentials.
-        </span>
-      </div>
-    </div>
-
-    <div class="editor-section" id="backupResultBox" style="display:none;margin-top:20px;"></div>
-  `;
-}
-
-async function exportStudentsCSV() {
-  const btn = document.getElementById('backupExportBtn');
-  const original = btn ? btn.innerHTML : '';
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…'; }
-
-  try {
-    showToast('Preparing CSV backup…', 'info');
-    const res = await fetch(`${API_BASE}/admin/students/export-csv`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      return showToast(err.message || 'Export failed.', 'error');
-    }
-    const blob = await res.blob();
-    const cd = res.headers.get('content-disposition') || '';
-    const m = cd.match(/filename="?([^"]+)"?/);
-    const filename = m ? m[1] : `aero-students-backup-${new Date().toISOString().slice(0, 10)}.csv`;
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    showToast(`✅ Exported ${filename}`, 'success');
-  } catch (err) {
-    console.error('[exportStudentsCSV]', err);
-    showToast('Export failed.', 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = original; }
-  }
-}
-
-async function importStudentsCSV(input) {
-  const file = input.files && input.files[0];
-  if (!file) return;
-
-  if (!confirm(
-    `Restore from "${file.name}"?\n\n` +
-    `• Existing students will be UPDATED with the CSV data\n` +
-    `• New students will be CREATED\n` +
-    `• Nothing is ever deleted\n\n` +
-    `Continue?`
-  )) {
-    input.value = '';
     return;
   }
 
-  const btn = document.getElementById('backupImportBtn');
-  const original = btn ? btn.innerHTML : '';
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Restoring…'; }
+  const cards = _livePlans.map(p => {
+    const perMonth = p.durationDays > 0 ? Math.round(p.amount / (p.durationDays / 30)) : p.amount;
+    const featuredClass = p.featured ? 'plan-card-featured' : '';
+    const badgeHtml = p.badge ? `<span class="plan-badge">${escapeHtml(p.badge)}</span>` : '';
+    const savings = p.durationDays > 30
+      ? `<div class="plan-savings">≈ ₹${perMonth}/month</div>`
+      : '';
+
+    return `
+      <div class="plan-card ${featuredClass}">
+        ${badgeHtml}
+        <div class="plan-card-head">
+          <div class="plan-duration">${p.durationDays} days</div>
+          <div class="plan-title">${escapeHtml(p.title)}</div>
+        </div>
+        <div class="plan-price">
+          <span class="plan-currency">₹</span>
+          <span class="plan-amount">${p.amount}</span>
+        </div>
+        ${savings}
+        <p class="plan-desc">${escapeHtml(p.description || '')}</p>
+        <ul class="plan-features">
+          <li><i class="fas fa-check"></i> Every course unlocked</li>
+          <li><i class="fas fa-check"></i> All premium materials</li>
+          <li><i class="fas fa-check"></i> AI Doubt Solver (unlimited)</li>
+          <li><i class="fas fa-check"></i> Full quiz & analytics</li>
+        </ul>
+        <button class="btn btn-primary btn-block plan-select-btn"
+                onclick="startCheckoutForPlan(${jsStr(p.id)})">
+          <i class="fas fa-bolt"></i> Choose this plan
+        </button>
+      </div>`;
+  }).join('');
+
+  container.innerHTML = `<div class="plans-grid">${cards}</div>`;
+}
+
+/* ============================================================
+   CHECKOUT MODAL — plan + coupon + proceed
+   ============================================================ */
+function startCheckoutForPlan(planId) {
+  if (!currentUser || currentUser.role !== 'student') {
+    return showToast('Please log in as a student first.', 'error');
+  }
+  if (currentUser.isSubscribed) {
+    return showToast('You already have an active subscription.', 'info');
+  }
+
+  const plan = (_livePlans || []).find(p => p.id === planId);
+  if (!plan) return showToast('Plan not found.', 'error');
+
+  _activeCheckoutPlan = plan;
+  _activeCheckoutCoupon = null;
+
+  // Build modal (inject once)
+  let modal = document.getElementById('checkoutPlanModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.id = 'checkoutPlanModal';
+    modal.innerHTML = `
+      <div class="modal-box" style="max-width:560px;">
+        <div class="modal-icon-header">
+          <div class="modal-icon-tile tone-emerald" style="background:linear-gradient(135deg,#fbbf24,#f59e0b);">
+            <i class="fas fa-crown"></i>
+          </div>
+          <div>
+            <h3 id="checkoutPlanTitle">Confirm Subscription</h3>
+            <p class="modal-sub" style="margin:2px 0 0;">Review your plan, apply a coupon, then proceed to pay.</p>
+          </div>
+        </div>
+
+        <div class="checkout-plan-summary" id="checkoutPlanSummary"></div>
+
+        <div class="form-group">
+          <label>Have a coupon code?</label>
+          <div class="coupon-row">
+            <input type="text" id="checkoutCouponInput" placeholder="e.g. WELCOME20" maxlength="30" autocomplete="off"
+                   oninput="this.value = this.value.toUpperCase().replace(/[^A-Z0-9_-]/g,'')">
+            <button type="button" class="btn btn-outline" onclick="applyCheckoutCoupon()">
+              <i class="fas fa-tag"></i> Apply
+            </button>
+          </div>
+          <div id="checkoutCouponStatus" class="coupon-status"></div>
+        </div>
+
+        <div class="checkout-totals" id="checkoutTotals"></div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('checkoutPlanModal')">
+            <i class="fas fa-arrow-left"></i> Cancel
+          </button>
+          <button type="button" class="btn btn-primary btn-lg" id="checkoutProceedBtn" onclick="proceedCheckout()">
+            <i class="fas fa-lock"></i> Proceed to Pay
+          </button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  document.getElementById('checkoutPlanTitle').textContent = plan.title;
+  document.getElementById('checkoutCouponInput').value = '';
+  document.getElementById('checkoutCouponStatus').innerHTML = '';
+  renderCheckoutSummary();
+  openModal('checkoutPlanModal');
+}
+
+function renderCheckoutSummary() {
+  const plan = _activeCheckoutPlan;
+  if (!plan) return;
+
+  document.getElementById('checkoutPlanSummary').innerHTML = `
+    <div class="checkout-plan-row">
+      <div>
+        <strong>${escapeHtml(plan.title)}</strong>
+        <div class="checkout-plan-meta">
+          <i class="fas fa-clock"></i> ${plan.durationDays} days · <i class="fas fa-infinity"></i> Full access
+        </div>
+      </div>
+      <div class="checkout-plan-price">₹${plan.amount}</div>
+    </div>
+    <p class="checkout-plan-desc">${escapeHtml(plan.description || '')}</p>
+  `;
+
+  const final = _activeCheckoutCoupon ? _activeCheckoutCoupon.finalAmount : plan.amount;
+  const discount = _activeCheckoutCoupon ? _activeCheckoutCoupon.discountAmount : 0;
+
+  document.getElementById('checkoutTotals').innerHTML = `
+    <div class="totals-row"><span>Original</span><span>₹${plan.amount}</span></div>
+    ${discount > 0
+      ? `<div class="totals-row discount"><span>Coupon (${_activeCheckoutCoupon.discountPercent}%)</span><span>− ₹${discount}</span></div>`
+      : ''}
+    <div class="totals-row grand"><span>Total payable</span><span>₹${final}</span></div>
+  `;
+}
+
+async function applyCheckoutCoupon() {
+  const input = document.getElementById('checkoutCouponInput');
+  const status = document.getElementById('checkoutCouponStatus');
+  const code = (input.value || '').trim().toUpperCase();
+  if (!code) { status.innerHTML = ''; return; }
+  if (!_activeCheckoutPlan) return;
+
+  status.innerHTML = `<span class="coupon-status-loading"><i class="fas fa-spinner fa-spin"></i> Checking…</span>`;
 
   try {
-    const formData = new FormData();
-    formData.append('csvFile', file);
-
-    const res = await fetch(`${API_BASE}/admin/students/import-csv`, {
+    const res = await fetchJSON(`${API_BASE}/validate-coupon`, {
       method: 'POST',
-      body: formData
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, planId: _activeCheckoutPlan.id })
     });
-    const data = await res.json();
 
-    const box = document.getElementById('backupResultBox');
-    if (box) {
-      box.style.display = 'block';
-      const errList = (data.errors || []).slice(0, 20).map(e =>
-        `<li><code>row ${e.row}</code> · <strong>${escapeHtml(e.username || '')}</strong> — ${escapeHtml(e.error)}</li>`
-      ).join('');
-
-      box.innerHTML = `
-        <div class="editor-section-title">
-          <i class="fas fa-clipboard-check" style="color:var(--emerald-500);"></i>
-          Import Result
-        </div>
-        <div class="email-report-stats" style="grid-template-columns:repeat(3,1fr);">
-          <div class="email-report-stat">
-            <div class="num ok">${data.created || 0}</div>
-            <div class="label">Created</div>
-          </div>
-          <div class="email-report-stat">
-            <div class="num">${data.updated || 0}</div>
-            <div class="label">Updated</div>
-          </div>
-          <div class="email-report-stat">
-            <div class="num skip">${data.skipped || 0}</div>
-            <div class="label">Skipped</div>
-          </div>
-        </div>
-        ${data.errors && data.errors.length > 0 ? `
-          <div class="email-report-hint" style="margin-top:12px;">
-            <i class="fas fa-triangle-exclamation"></i>
-            <div>
-              <strong>${data.errors.length} row${data.errors.length === 1 ? '' : 's'} failed:</strong>
-              <ul style="margin:6px 0 0 18px;padding:0;font-size:12px;">${errList}</ul>
-            </div>
-          </div>
-        ` : ''}
-        <p style="margin-top:12px;color:var(--emerald-600);font-weight:600;">
-          <i class="fas fa-check-circle"></i> ${escapeHtml(data.message || 'Import complete.')}
-        </p>
-      `;
+    if (res.success && res.valid) {
+      _activeCheckoutCoupon = res;
+      status.innerHTML = `<span class="coupon-status-ok"><i class="fas fa-check-circle"></i> ${escapeHtml(res.message)}</span>`;
+      renderCheckoutSummary();
+    } else {
+      _activeCheckoutCoupon = null;
+      status.innerHTML = `<span class="coupon-status-err"><i class="fas fa-times-circle"></i> ${escapeHtml(res.message || 'Invalid code.')}</span>`;
+      renderCheckoutSummary();
     }
-
-    if (data.success) showToast('✅ ' + (data.message || 'Import complete.'), 'success');
-    else showToast(data.message || 'Import failed.', 'error');
-
-    if (adminTab === 'students') renderAdminStudents();
   } catch (err) {
-    console.error('[importStudentsCSV]', err);
-    showToast('Import failed: ' + (err.message || 'Unknown'), 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = original; }
-    input.value = '';
+    _activeCheckoutCoupon = null;
+    status.innerHTML = `<span class="coupon-status-err"><i class="fas fa-times-circle"></i> ${escapeHtml(err.message || 'Could not validate.')}</span>`;
+    renderCheckoutSummary();
   }
 }
 
+async function proceedCheckout() {
+  if (!_activeCheckoutPlan) return;
+  if (!currentUser || currentUser.role !== 'student') return;
+
+  const btn = document.getElementById('checkoutProceedBtn');
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…'; }
+
+  try {
+    // 1) Lazy-load Razorpay
+    await window.loadRazorpay();
+
+    // 2) Create order / subscription on server
+    const createRes = await fetchJSON(`${API_BASE}/subscribe/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: currentUser._id,
+        planId: _activeCheckoutPlan.id,
+        couponCode: _activeCheckoutCoupon ? _activeCheckoutCoupon.code : null
+      })
+    });
+
+    if (!createRes.success) {
+      showToast(createRes.message || 'Could not start checkout.', 'error');
+      return;
+    }
+
+    closeModal('checkoutPlanModal');
+
+    const rzpOptions = {
+      key: createRes.key_id,
+      name: 'Aerospace Department',
+      description: `${createRes.planTitle} — ${createRes.durationDays} days${createRes.couponCode ? ' · ' + createRes.couponCode : ''}`,
+      prefill: {
+        name: currentUser.fullName || currentUser.username,
+        email: currentUser.email || 'student@aerospace.com',
+        contact: '9999999999'
+      },
+      theme: { color: '#4f46e5' },
+      modal: { ondismiss: function () { showToast('Checkout cancelled.', 'info'); } }
+    };
+
+    if (createRes.mode === 'one-time') {
+      rzpOptions.amount = Math.round(createRes.amount * 100);
+      rzpOptions.order_id = createRes.orderId;
+      rzpOptions.handler = async function (response) {
+        await _finalizeOneTimeSubscription(response);
+      };
+    } else {
+      rzpOptions.subscription_id = createRes.subscriptionId;
+      rzpOptions.handler = async function (response) {
+        await _finalizeSubscription(response);
+      };
+    }
+
+    const rzp = new Razorpay(rzpOptions);
+    rzp.open();
+  } catch (err) {
+    console.error('[proceedCheckout]', err);
+    showToast(err.message || 'Could not start checkout.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = orig || '<i class="fas fa-lock"></i> Proceed to Pay'; }
+  }
+}
+
+async function _finalizeSubscription(response) {
+  showToast('Verifying subscription…', 'info');
+  try {
+    const vres = await fetchJSON(`${API_BASE}/subscribe/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: currentUser._id,
+        razorpay_subscription_id: response.razorpay_subscription_id,
+        razorpay_payment_id: response.razorpay_payment_id,
+        razorpay_signature: response.razorpay_signature
+      })
+    });
+    if (vres.success) {
+      currentUser = vres.user;
+      saveSessionUser(currentUser);
+      showToast('🎉 Subscription activated! All courses unlocked.', 'success');
+      renderApp();
+    } else {
+      showToast(vres.message || 'Verification failed.', 'error');
+    }
+  } catch (err) {
+    showToast('Verification error — contact support.', 'error');
+  }
+}
+
+async function _finalizeOneTimeSubscription(response) {
+  showToast('Verifying payment…', 'info');
+  try {
+    const vres = await fetchJSON(`${API_BASE}/subscribe/verify-order`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: currentUser._id,
+        razorpay_order_id: response.razorpay_order_id,
+        razorpay_payment_id: response.razorpay_payment_id,
+        razorpay_signature: response.razorpay_signature
+      })
+    });
+    if (vres.success) {
+      currentUser = vres.user;
+      saveSessionUser(currentUser);
+      showToast('🎉 Subscription activated! All courses unlocked.', 'success');
+      renderApp();
+    } else {
+      showToast(vres.message || 'Verification failed.', 'error');
+    }
+  } catch (err) {
+    showToast('Verification error — contact support.', 'error');
+  }
+}
+
+/* ============================================================
+   OVERRIDE old startSubscriptionCheckout to use new flow
+   (keeps backward compatibility with existing buttons)
+   ============================================================ */
+window.startSubscriptionCheckout = function () {
+  if (!currentUser || currentUser.role !== 'student') {
+    return showToast('Please log in as a student first.', 'error');
+  }
+  if (currentUser.isSubscribed) return showToast('You already have an active subscription.', 'info');
+  if (!_livePlans.length) {
+    showToast('No plans available right now.', 'error');
+    return;
+  }
+  // Route to the first plan's checkout
+  startCheckoutForPlan(_livePlans[0].id);
+};
+
+/* ============================================================
+   STUDENT: Referral card
+   ============================================================ */
+async function renderReferralCard() {
+  const anchor = document.getElementById('referralCardHost');
+  if (anchor) anchor.remove();
+
+  if (!currentUser || currentUser.role !== 'student') return;
+
+  const host = document.getElementById('streakCardContainer');
+  if (!host) return;
+
+  let data;
+  try {
+    data = await fetchJSON(`${API_BASE}/user/referral/${currentUser._id}?_t=${Date.now()}`);
+  } catch (e) {
+    console.warn('[referral]', e.message);
+    return;
+  }
+  if (!data.success || !data.program.enabled) return;
+
+  const s = data.stats || {};
+  const p = data.program || {};
+  const shareLink = `${location.origin}${location.pathname}?ref=${data.referralCode}`;
+  const progress = Math.min(100, Math.round((s.progressInCycle / Math.max(1, p.threshold)) * 100));
+
+  const wrap = document.createElement('div');
+  wrap.id = 'referralCardHost';
+  wrap.innerHTML = `
+    <div class="referral-card">
+      <div class="referral-card-icon"><i class="fas fa-gift"></i></div>
+      <div class="referral-card-body">
+        <div class="referral-card-head">
+          <div>
+            <h4>Refer & earn free premium</h4>
+            <p>Invite ${p.threshold} student${p.threshold === 1 ? '' : 's'} — get <strong>${escapeHtml(p.rewardTitle)}</strong>.</p>
+          </div>
+          <button class="btn btn-outline btn-sm" onclick="openReferralDetailsModal()">
+            <i class="fas fa-info-circle"></i> View details
+          </button>
+        </div>
+
+        <div class="referral-code-row">
+          <div class="referral-code-box">
+            <span class="referral-code-label">Your code</span>
+            <span class="referral-code-value">${escapeHtml(data.referralCode)}</span>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="copyReferralLink()">
+            <i class="fas fa-copy"></i> Copy link
+          </button>
+        </div>
+
+        <div class="referral-progress-row">
+          <div class="referral-progress-bar">
+            <div class="referral-progress-fill" style="width:${progress}%"></div>
+          </div>
+          <div class="referral-progress-text">
+            <strong>${s.totalReferred}</strong> referred · ${s.progressInCycle}/${p.threshold} toward next reward
+          </div>
+        </div>
+
+        <div class="referral-stats-row">
+          <div class="referral-stat">
+            <div class="num">${s.totalReferred}</div>
+            <div class="lbl">Total referred</div>
+          </div>
+          <div class="referral-stat">
+            <div class="num">${s.totalSubscribed}</div>
+            <div class="lbl">Subscribed</div>
+          </div>
+          <div class="referral-stat">
+            <div class="num">${s.rewardsEarned}</div>
+            <div class="lbl">Rewards earned</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  host.parentNode.insertBefore(wrap, host);
+}
+
+async function copyReferralLink() {
+  if (!currentUser) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/user/referral/${currentUser._id}`);
+    const link = `${location.origin}${location.pathname}?ref=${data.referralCode}`;
+    const ok = await copyToClipboard(link);
+    showToast(ok ? '✓ Referral link copied!' : 'Copy failed.', ok ? 'success' : 'error');
+  } catch (e) { showToast('Could not copy link.', 'error'); }
+}
+
+async function openReferralDetailsModal() {
+  if (!currentUser) return;
+  let data;
+  try {
+    data = await fetchJSON(`${API_BASE}/user/referral/${currentUser._id}?_t=${Date.now()}`);
+  } catch (e) { return showToast('Could not load referral details.', 'error'); }
+
+  const s = data.stats || {};
+  const p = data.program || {};
+  const referred = data.referredUsers || [];
+
+  const old = document.getElementById('referralDetailsModal');
+  if (old) old.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'referralDetailsModal';
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:620px;">
+      <h3><i class="fas fa-gift"></i> Referral Program</h3>
+      <p class="modal-sub">Invite friends and unlock free premium time.</p>
+
+      <div class="referral-info-banner">
+        <div class="referral-info-icon"><i class="fas fa-trophy"></i></div>
+        <div>
+          <strong>${escapeHtml(p.rewardTitle)}</strong>
+          <p>Refer <strong>${p.threshold}</strong> student${p.threshold === 1 ? '' : 's'} → get <strong>${p.rewardDays} days</strong> of premium, free.</p>
+        </div>
+      </div>
+
+      <div class="referral-share-block">
+        <label>Your referral code</label>
+        <div class="referral-share-row">
+          <input type="text" value="${escapeHtml(data.referralCode)}" readonly onclick="this.select()">
+          <button class="btn btn-primary" onclick="copyReferralLink()"><i class="fas fa-copy"></i> Copy Link</button>
+        </div>
+      </div>
+
+      <div class="referral-progress-large">
+        <div class="referral-progress-bar">
+          <div class="referral-progress-fill" style="width:${Math.min(100, Math.round((s.progressInCycle / Math.max(1, p.threshold)) * 100))}%"></div>
+        </div>
+        <div class="referral-progress-text">
+          Next reward at <strong>${s.nextRewardAt}</strong> total referrals · You have <strong>${s.totalReferred}</strong>
+        </div>
+      </div>
+
+      <h4 style="margin:18px 0 8px;font-size:14px;font-weight:700;">Students you've referred (${referred.length})</h4>
+      ${referred.length === 0
+        ? `<div class="empty-state" style="padding:20px;">
+             <i class="fas fa-user-friends"></i>
+             <p>No referrals yet — share your link to get started!</p>
+           </div>`
+        : `<div class="referral-list">
+             ${referred.map(u => `
+               <div class="referral-list-row">
+                 <div class="referral-list-avatar">${escapeHtml(getInitials(u.fullName || u.username))}</div>
+                 <div class="referral-list-info">
+                   <strong>${escapeHtml(u.fullName || u.username)}</strong>
+                   <span>@${escapeHtml(u.username)} · joined ${new Date(u.joinedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}</span>
+                 </div>
+                 ${u.isSubscribed
+                   ? `<span class="referral-tag ok"><i class="fas fa-crown"></i> Premium</span>`
+                   : `<span class="referral-tag">Free</span>`}
+               </div>
+             `).join('')}
+           </div>`}
+
+      <div class="modal-actions">
+        <button class="btn btn-primary" onclick="document.getElementById('referralDetailsModal').remove()">
+          <i class="fas fa-check"></i> Done
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+/* ============================================================
+   Handle ?ref=CODE in URL — autofill register form
+   ============================================================ */
+function _consumeRefParam() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const ref = params.get('ref');
+    if (!ref) return;
+    const code = String(ref).toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 30);
+    if (!code) return;
+    // Store for later use
+    sessionStorage.setItem('aero_pending_ref', code);
+    // If the login screen is showing, prompt the user
+    const loginView = document.getElementById('loginView');
+    if (loginView && loginView.classList.contains('active')) {
+      setTimeout(() => {
+        showToast(`🎁 You were invited with code ${code}. Register to get started!`, 'info');
+      }, 700);
+    }
+  } catch (e) {}
+}
+_consumeRefParam();
+window.addEventListener('popstate', _consumeRefParam);
+
+/* ============================================================
+   HOOKS — auto-run when pages render
+   ============================================================ */
+const _origRenderStudentHome = window.renderStudentHome;
+window.renderStudentHome = function () {
+  if (typeof _origRenderStudentHome === 'function') _origRenderStudentHome.apply(this, arguments);
+  renderReferralCard();
+  renderStudentSubscriptionBanner();
+};
+
+async function renderStudentSubscriptionBanner() {
+  // Ensure plans are loaded
+  if (!_livePlans || _livePlans.length === 0) await fetchSubscriptionPlans();
+
+  const existing = document.getElementById('studentSubscriptionBannerHost');
+  if (existing) existing.remove();
+
+  if (!currentUser || currentUser.role !== 'student') return;
+  if (!liveSubscriptionSettings.enabled) return;
+
+  const host = document.getElementById('streakCardContainer');
+  if (!host) return;
+
+  const wrap = document.createElement('div');
+  wrap.id = 'studentSubscriptionBannerHost';
+
+  if (currentUser.isSubscribed) {
+    const sub = currentUser.subscription || {};
+    const exp = sub.expiresAt
+      ? new Date(sub.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      : '—';
+    wrap.innerHTML = `
+      <div class="subscribe-active-banner">
+        <div class="subscribe-active-icon"><i class="fas fa-crown"></i></div>
+        <div class="subscribe-active-info">
+          <h4>${escapeHtml(sub.planTitle || 'Premium')} active</h4>
+          <p>Renews on <strong>${exp}</strong> · ₹${sub.amount || 0}${sub.autoRenew ? ' · auto-renew on' : ''}</p>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="showMyPlanModal()">
+          <i class="fas fa-info-circle"></i> Manage
+        </button>
+      </div>`;
+  } else if (liveSubscriptionSettings.enabled && _livePlans.length > 0) {
+    const cheapest = _livePlans.reduce((min, p) => (p.amount < min.amount ? p : min), _livePlans[0]);
+    wrap.innerHTML = `
+      <div class="subscribe-banner" style="cursor:pointer;" onclick="openPlansShowcaseModal()">
+        <div class="subscribe-banner-icon"><i class="fas fa-bolt"></i></div>
+        <div class="subscribe-banner-info">
+          <h4>Unlock everything — from ₹${cheapest.amount}</h4>
+          <p>Choose a plan that fits · flexible durations available</p>
+        </div>
+        <button class="btn btn-primary" onclick="event.stopPropagation();openPlansShowcaseModal()">
+          <i class="fas fa-crown"></i> View Plans
+        </button>
+      </div>`;
+  }
+
+  if (wrap.innerHTML.trim()) {
+    host.parentNode.insertBefore(wrap, host);
+  }
+}
+
+function openPlansShowcaseModal() {
+  let modal = document.getElementById('plansShowcaseModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'plansShowcaseModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+      <div class="modal-box" style="max-width:960px;">
+        <div class="modal-icon-header">
+          <div class="modal-icon-tile tone-emerald" style="background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#422006;">
+            <i class="fas fa-crown"></i>
+          </div>
+          <div>
+            <h3>Choose your premium plan</h3>
+            <p class="modal-sub" style="margin:2px 0 0;">Unlock every course, every quiz, every material.</p>
+          </div>
+        </div>
+        <div id="plansShowcaseGrid" style="margin-top:8px;"></div>
+        <div class="modal-actions" style="margin-top:20px;">
+          <button class="btn btn-outline" onclick="closeModal('plansShowcaseModal')">Close</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  renderSubscriptionPlansGrid('plansShowcaseGrid');
+  openModal('plansShowcaseModal');
+}
+
+/* ============================================================
+   ADMIN — Subscription Plans, Coupons, Referrals
+   ============================================================ */
+
+/* ----- Add admin tabs dynamically (only once) ----- */
+(function ensureAdminTabs() {
+  const tabsEl = document.querySelector('.admin-tabs');
+  if (!tabsEl) return;
+  if (tabsEl.querySelector('[data-tab="plans"]')) return;
+
+  const tabsToAdd = [
+    { id: 'plans',      icon: 'fa-crown',          label: 'Plans' },
+    { id: 'coupons',    icon: 'fa-tag',            label: 'Coupons' },
+    { id: 'referrals',  icon: 'fa-gift',           label: 'Referrals' }
+  ];
+
+  const anchor = tabsEl.querySelector('[data-tab="subscriptions"]');
+  tabsToAdd.forEach(t => {
+    const btn = document.createElement('button');
+    btn.className = 'admin-tab';
+    btn.dataset.tab = t.id;
+    btn.setAttribute('onclick', `switchAdminTab('${t.id}')`);
+    btn.innerHTML = `<i class="fas ${t.icon}"></i> ${t.label}`;
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+    else tabsEl.appendChild(btn);
+  });
+
+  // Add content containers
+  ['plans','coupons','referrals'].forEach(id => {
+    if (document.getElementById('adminTab' + id.charAt(0).toUpperCase() + id.slice(1))) return;
+    const c = document.createElement('div');
+    c.className = 'admin-tab-content';
+    c.id = 'adminTab' + id.charAt(0).toUpperCase() + id.slice(1);
+    document.getElementById('adminView').appendChild(c);
+  });
+})();
+
+/* ----- Intercept admin tab rendering ----- */
+const _origUpdateAdminTabUI = window.updateAdminTabUI;
+window.updateAdminTabUI = function () {
+  if (typeof _origUpdateAdminTabUI === 'function') _origUpdateAdminTabUI.apply(this, arguments);
+
+  // Extend title map for our new tabs
+  if (adminTab === 'plans')      document.getElementById('adminPageTitle').innerHTML = '<i class="fas fa-crown"></i> Subscription Plans';
+  if (adminTab === 'coupons')    document.getElementById('adminPageTitle').innerHTML = '<i class="fas fa-tag"></i> Coupon Codes';
+  if (adminTab === 'referrals')  document.getElementById('adminPageTitle').innerHTML = '<i class="fas fa-gift"></i> Referral Program';
+};
+
+const _origRenderAdminDashboard = window.renderAdminDashboard;
+window.renderAdminDashboard = function () {
+  if (adminTab === 'plans')      return renderAdminPlans();
+  if (adminTab === 'coupons')    return renderAdminCoupons();
+  if (adminTab === 'referrals')  return renderAdminReferrals();
+  if (typeof _origRenderAdminDashboard === 'function') _origRenderAdminDashboard.apply(this, arguments);
+};
+
+/* ---------------- ADMIN: PLANS TAB ---------------- */
+async function renderAdminPlans() {
+  const el = document.getElementById('adminTabPlans');
+  if (!el) return;
+  el.classList.add('active');
+  el.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading plans…</p></div>`;
+
+  let plans = [];
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription-plans?adminId=${currentUser._id}&t=${Date.now()}`);
+    if (data.success) plans = data.plans || [];
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+
+  let html = `
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-crown"></i> Subscription Plans
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${plans.length} plan${plans.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <button class="btn btn-success" onclick="openCreatePlanModal()">
+          <i class="fas fa-plus"></i> New Plan
+        </button>
+      </div>
+      <p class="editor-hint">
+        Create as many plans as you like — students will see them as pricing cards on the home page and subscription page.
+        Each plan can have its own duration and price.
+      </p>
+    </div>
+    <div class="admin-plans-grid">
+  `;
+
+  if (plans.length === 0) {
+    html += `<div class="empty-state" style="grid-column:1/-1;"><i class="fas fa-crown"></i><p>No plans yet. Create one above.</p></div>`;
+  } else {
+    plans.forEach(p => {
+      html += `
+        <div class="admin-plan-card ${p.featured ? 'featured' : ''} ${p.enabled ? '' : 'disabled'}">
+          <div class="admin-plan-card-head">
+            ${p.badge ? `<span class="plan-badge">${escapeHtml(p.badge)}</span>` : ''}
+            <div class="plan-title">${escapeHtml(p.title)}</div>
+            <div class="plan-duration">${p.durationDays} days</div>
+          </div>
+          <div class="plan-price" style="margin:8px 0;">
+            <span class="plan-currency">₹</span><span class="plan-amount">${p.amount}</span>
+          </div>
+          <p class="plan-desc">${escapeHtml(p.description || '')}</p>
+          <div class="plan-status-row">
+            <span class="status-badge ${p.enabled ? 'published' : 'draft'}">
+              ${p.enabled ? 'ACTIVE' : 'DISABLED'}
+            </span>
+            ${p.featured ? '<span class="status-badge featured"><i class="fas fa-star"></i> FEATURED</span>' : ''}
+          </div>
+          <div class="plan-actions">
+            <button class="btn btn-outline btn-sm" onclick="openEditPlanModal(${jsStr(p.id)})">
+              <i class="fas fa-pen"></i> Edit
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="togglePlanEnabled(${jsStr(p.id)}, ${!p.enabled})">
+              <i class="fas fa-${p.enabled ? 'eye-slash' : 'eye'}"></i> ${p.enabled ? 'Disable' : 'Enable'}
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="deleteAdminPlan(${jsStr(p.id)}, ${jsStr(p.title)})">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+      `;
+    });
+  }
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+function openCreatePlanModal() {
+  openPlanEditModal(null);
+}
+function openEditPlanModal(planId) {
+  const plan = (_livePlans || []).find(p => p.id === planId);
+  openPlanEditModal(planId);
+}
+
+async function openPlanEditModal(planId) {
+  // Always fetch fresh
+  let plans = [];
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription-plans?t=${Date.now()}`);
+    if (data.success) plans = data.plans || [];
+  } catch (e) {}
+
+  const plan = planId ? plans.find(p => p.id === planId) : null;
+
+  let modal = document.getElementById('planEditModal');
+  if (modal) modal.remove();
+
+  modal = document.createElement('div');
+  modal.id = 'planEditModal';
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:520px;">
+      <h3><i class="fas fa-crown"></i> ${plan ? 'Edit Plan' : 'Create Plan'}</h3>
+      <p class="modal-sub">${plan ? 'Update this subscription plan.' : 'Add a new subscription tier.'}</p>
+
+      <form id="planEditForm" onsubmit="savePlanFromModal(event, ${jsStr(planId)})">
+        <div class="form-group">
+          <label>Plan Title *</label>
+          <input type="text" id="planModalTitle" value="${escapeHtml(plan ? plan.title : '')}" maxlength="80" required>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea id="planModalDesc" rows="2" maxlength="240">${escapeHtml(plan ? plan.description : '')}</textarea>
+        </div>
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Duration (days) *</label>
+            <input type="number" id="planModalDays" value="${plan ? plan.durationDays : 30}" min="1" max="3650" required>
+            <span class="hint">e.g. 30 (1M), 180 (6M), 365 (12M)</span>
+          </div>
+          <div class="form-group">
+            <label>Price (₹) *</label>
+            <input type="number" id="planModalAmount" value="${plan ? plan.amount : 499}" min="0" step="1" required>
+          </div>
+        </div>
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Badge (optional)</label>
+            <input type="text" id="planModalBadge" value="${escapeHtml(plan ? plan.badge : '')}" maxlength="30" placeholder="e.g. Popular, Best Value">
+          </div>
+          <div class="form-group">
+            <label>Options</label>
+            <label class="toggle-box" style="margin-top:6px;">
+              <input type="checkbox" id="planModalFeatured" ${plan && plan.featured ? 'checked' : ''}>
+              <span><i class="fas fa-star"></i> Featured</span>
+            </label>
+            <label class="toggle-box" style="margin-top:6px;">
+              <input type="checkbox" id="planModalEnabled" ${!plan || plan.enabled ? 'checked' : ''}>
+              <span><i class="fas fa-eye"></i> Enabled</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="document.getElementById('planEditModal').remove()">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="planEditSubmitBtn">
+            <i class="fas fa-save"></i> ${plan ? 'Save Changes' : 'Create Plan'}
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+async function savePlanFromModal(e, planId) {
+  if (e) e.preventDefault();
+  const payload = {
+    title:        document.getElementById('planModalTitle').value.trim(),
+    description:  document.getElementById('planModalDesc').value.trim(),
+    durationDays: parseInt(document.getElementById('planModalDays').value, 10),
+    amount:       Number(document.getElementById('planModalAmount').value),
+    badge:        document.getElementById('planModalBadge').value.trim(),
+    featured:     document.getElementById('planModalFeatured').checked,
+    enabled:      document.getElementById('planModalEnabled').checked
+  };
+  if (!payload.title) return showToast('Title required.', 'error');
+  if (!payload.durationDays || payload.durationDays < 1) return showToast('Duration must be at least 1 day.', 'error');
+  if (!(payload.amount >= 0)) return showToast('Amount invalid.', 'error');
+
+  const btn = document.getElementById('planEditSubmitBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+
+  try {
+    const url = planId
+      ? `${API_BASE}/admin/subscription-plans/${planId}`
+      : `${API_BASE}/admin/subscription-plans`;
+    const method = planId ? 'PUT' : 'POST';
+
+    const data = await fetchJSON(url, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (data.success) {
+      showToast('✅ Plan saved.', 'success');
+      document.getElementById('planEditModal').remove();
+      await fetchSubscriptionPlans();
+      renderAdminPlans();
+    } else {
+      showToast(data.message || 'Failed.', 'error');
+    }
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Save'; }
+  }
+}
+
+async function togglePlanEnabled(planId, enabled) {
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription-plans/${planId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+    if (data.success) {
+      showToast(enabled ? 'Plan enabled.' : 'Plan disabled.', 'success');
+      await fetchSubscriptionPlans();
+      renderAdminPlans();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message || 'Server error.', 'error'); }
+}
+
+async function deleteAdminPlan(planId, title) {
+  if (!confirm(`Delete plan "${title}"? Students will no longer see it.`)) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription-plans/${planId}`, { method: 'DELETE' });
+    if (data.success) {
+      showToast('Plan deleted.', 'info');
+      await fetchSubscriptionPlans();
+      renderAdminPlans();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message || 'Server error.', 'error'); }
+}
+
+/* ---------------- ADMIN: COUPONS TAB ---------------- */
+async function renderAdminCoupons() {
+  const el = document.getElementById('adminTabCoupons');
+  if (!el) return;
+  el.classList.add('active');
+  el.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading coupons…</p></div>`;
+
+  let coupons = [];
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/coupons?t=${Date.now()}`);
+    if (data.success) coupons = data.coupons || [];
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+
+  let html = `
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-tag"></i> Coupon Codes
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${coupons.length} code${coupons.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <button class="btn btn-success" onclick="openCreateCouponModal()">
+          <i class="fas fa-plus"></i> New Coupon
+        </button>
+      </div>
+      <p class="editor-hint">
+        Each coupon gives a fixed percentage discount on any plan. Students enter the code at checkout.
+        Coupons are one-time per purchase and can be limited by total uses or expiry date.
+      </p>
+    </div>
+  `;
+
+  if (coupons.length === 0) {
+    html += `<div class="empty-state"><i class="fas fa-tag"></i><p>No coupons yet. Create your first one.</p></div>`;
+  } else {
+    html += `<div class="coupons-table"><table class="data-table">
+      <thead>
+        <tr>
+          <th>Code</th>
+          <th>Discount</th>
+          <th>Uses</th>
+          <th>Expires</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+    coupons.forEach(c => {
+      const usage = c.maxUses > 0 ? `${c.usedCount}/${c.maxUses}` : `${c.usedCount} / ∞`;
+      const expires = c.expiresAt
+        ? new Date(c.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '—';
+      const statusBadge = c.active ? '<span class="status-badge published">ACTIVE</span>' : '<span class="status-badge draft">DISABLED</span>';
+
+      html += `
+        <tr>
+          <td><code class="coupon-code">${escapeHtml(c.code)}</code></td>
+          <td><strong>${c.discountPercent}%</strong></td>
+          <td>${usage}</td>
+          <td>${expires}</td>
+          <td>${statusBadge}</td>
+          <td class="actions-cell">
+            <button class="btn btn-outline btn-sm" onclick="copyToClipboard(${jsStr(c.code)}).then(ok=>showToast(ok?'Copied!':'Copy failed',ok?'success':'error'))" title="Copy code">
+              <i class="fas fa-copy"></i>
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="toggleCouponActive(${jsStr(c._id)}, ${!c.active})">
+              <i class="fas fa-${c.active ? 'eye-slash' : 'eye'}"></i>
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="deleteAdminCoupon(${jsStr(c._id)}, ${jsStr(c.code)})">
+              <i class="fas fa-trash"></i>
+            </button>
+          </td>
+        </tr>
+      `;
+    });
+
+    html += `</tbody></table></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function openCreateCouponModal() {
+  let modal = document.getElementById('couponCreateModal');
+  if (modal) modal.remove();
+
+  modal = document.createElement('div');
+  modal.id = 'couponCreateModal';
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:480px;">
+      <h3><i class="fas fa-tag"></i> Create Coupon</h3>
+      <p class="modal-sub">Generate a discount code for your students.</p>
+
+      <form onsubmit="saveNewCoupon(event)">
+        <div class="form-group">
+          <label>Coupon Code *</label>
+          <input type="text" id="couponCodeInput" maxlength="30" required
+                 placeholder="e.g. WELCOME20"
+                 style="text-transform:uppercase;font-family:ui-monospace,'SF Mono',monospace;font-weight:700;"
+                 oninput="this.value = this.value.toUpperCase().replace(/[^A-Z0-9_-]/g,'')">
+          <span class="hint">A–Z, 0–9, _ and - only. 3–30 characters.</span>
+        </div>
+        <div class="form-group">
+          <label>Discount (%) *</label>
+          <input type="number" id="couponPctInput" min="1" max="100" value="20" required>
+        </div>
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <input type="text" id="couponDescInput" maxlength="200" placeholder="e.g. Welcome offer for new students">
+        </div>
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Max Uses</label>
+            <input type="number" id="couponMaxUsesInput" min="0" value="0" placeholder="0 = unlimited">
+            <span class="hint">0 = unlimited uses</span>
+          </div>
+          <div class="form-group">
+            <label>Expires On</label>
+            <input type="date" id="couponExpiresInput">
+            <span class="hint">Leave empty for no expiry</span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="document.getElementById('couponCreateModal').remove()">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="couponSubmitBtn">
+            <i class="fas fa-save"></i> Create Coupon
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+async function saveNewCoupon(e) {
+  if (e) e.preventDefault();
+  const code = document.getElementById('couponCodeInput').value.trim().toUpperCase();
+  const discountPercent = parseInt(document.getElementById('couponPctInput').value, 10);
+  const description = document.getElementById('couponDescInput').value.trim();
+  const maxUses = parseInt(document.getElementById('couponMaxUsesInput').value, 10) || 0;
+  const expiresAt = document.getElementById('couponExpiresInput').value || null;
+
+  if (!code || code.length < 3) return showToast('Code must be at least 3 characters.', 'error');
+  if (!discountPercent || discountPercent < 1 || discountPercent > 100) return showToast('Discount must be 1–100.', 'error');
+
+  const btn = document.getElementById('couponSubmitBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating…'; }
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/coupons`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, discountPercent, description, maxUses, expiresAt })
+    });
+    if (data.success) {
+      showToast('✅ Coupon created.', 'success');
+      document.getElementById('couponCreateModal').remove();
+      renderAdminCoupons();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Create Coupon'; }
+  }
+}
+
+async function toggleCouponActive(id, active) {
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/coupons/${id}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active })
+    });
+    if (data.success) { showToast('Updated.', 'success'); renderAdminCoupons(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message || 'Server error.', 'error'); }
+}
+
+async function deleteAdminCoupon(id, code) {
+  if (!confirm(`Delete coupon "${code}"?`)) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/coupons/${id}`, { method: 'DELETE' });
+    if (data.success) { showToast('Coupon deleted.', 'info'); renderAdminCoupons(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message || 'Server error.', 'error'); }
+}
+
+/* ---------------- ADMIN: REFERRALS TAB ---------------- */
+async function renderAdminReferrals() {
+  const el = document.getElementById('adminTabReferrals');
+  if (!el) return;
+  el.classList.add('active');
+  el.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading referrals…</p></div>`;
+
+  let data;
+  try {
+    data = await fetchJSON(`${API_BASE}/admin/referrals?t=${Date.now()}`);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+
+  const s = data.settings || {};
+  const totals = data.totals || {};
+  const referrers = data.referrers || [];
+
+  let html = `
+    <div class="editor-section">
+      <div class="editor-section-title">
+        <i class="fas fa-gift"></i> Referral Program Settings
+      </div>
+      <p class="editor-hint">
+        Every student gets a unique code automatically. When a friend registers with that code, the referrer's count goes up.
+        When the count hits the threshold, the student's premium is automatically extended.
+      </p>
+
+      <div class="sub-toggle-row" style="margin-bottom:14px;">
+        <label>
+          <input type="checkbox" id="refEnabledInput" ${s.enabled ? 'checked' : ''}>
+          <span>Enable referral program</span>
+        </label>
+      </div>
+
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Referral Threshold *</label>
+          <input type="number" id="refThresholdInput" value="${s.threshold || 3}" min="1" max="100">
+          <span class="hint">How many referrals needed per reward</span>
+        </div>
+        <div class="form-group">
+          <label>Reward Duration (days) *</label>
+          <input type="number" id="refRewardDaysInput" value="${s.rewardDays || 30}" min="1" max="3650">
+          <span class="hint">Free premium days granted per reward</span>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Reward Title (shown to students)</label>
+        <input type="text" id="refRewardTitleInput" value="${escapeHtml(s.rewardTitle || '')}" maxlength="80" placeholder="e.g. 1 Month Free Premium">
+      </div>
+
+      <div class="form-group">
+        <label>Reward Description</label>
+        <textarea id="refRewardDescInput" rows="2" maxlength="240">${escapeHtml(s.rewardDesc || '')}</textarea>
+      </div>
+
+      <div class="editor-footer" style="position:static;box-shadow:none;padding:14px 0 0;border:none;background:none;">
+        <div class="editor-footer-left"></div>
+        <div class="editor-footer-right">
+          <button class="btn btn-primary" onclick="saveReferralSettings()">
+            <i class="fas fa-save"></i> Save Settings
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-chart-simple"></i> Program Overview
+        </div>
+      </div>
+      <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
+        <div class="stat-card">
+          <div class="stat-icon tone-brand"><i class="fas fa-users"></i></div>
+          <div class="stat-info">
+            <div class="num">${totals.totalWithCode || 0}</div>
+            <div class="label">Students with code</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon tone-emerald"><i class="fas fa-user-plus"></i></div>
+          <div class="stat-info">
+            <div class="num">${totals.totalReferred || 0}</div>
+            <div class="label">Total referred</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon tone-gold"><i class="fas fa-trophy"></i></div>
+          <div class="stat-info">
+            <div class="num">${referrers.length}</div>
+            <div class="label">Active referrers</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-ranking-star"></i> Top Referrers
+        </div>
+      </div>
+  `;
+
+  if (referrers.length === 0) {
+    html += `<div class="empty-state"><i class="fas fa-users"></i><p>No referrals yet.</p></div>`;
+  } else {
+    html += `<div class="coupons-table"><table class="data-table">
+      <thead>
+        <tr>
+          <th>Student</th>
+          <th>Code</th>
+          <th>Referred</th>
+          <th>Subscribed</th>
+          <th>Rewards</th>
+          <th>Premium Until</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+    referrers.forEach(r => {
+      const exp = r.subscriptionExpiresAt
+        ? new Date(r.subscriptionExpiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '—';
+      const premiumBadge = r.isSubscribed
+        ? '<span class="status-badge published">PREMIUM</span>'
+        : '<span class="status-badge draft">FREE</span>';
+
+      html += `
+        <tr>
+          <td>
+            <strong>${escapeHtml(r.fullName || r.username)}</strong>
+            <div style="font-size:11.5px;color:var(--text-tertiary);">@${escapeHtml(r.username)}</div>
+          </td>
+          <td><code class="coupon-code">${escapeHtml(r.referralCode || '—')}</code></td>
+          <td><strong>${r.totalReferred}</strong></td>
+          <td>${r.totalSubscribed}</td>
+          <td>${r.rewardsEarned}</td>
+          <td>${exp} ${premiumBadge}</td>
+          <td class="actions-cell">
+            <button class="btn btn-success btn-sm" onclick="adminGrantReferralReward(${jsStr(r._id)}, ${jsStr(r.username)})" title="Grant manual reward">
+              <i class="fas fa-gift"></i> Grant
+            </button>
+          </td>
+        </tr>
+      `;
+    });
+
+    html += `</tbody></table></div>`;
+  }
+
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+async function saveReferralSettings() {
+  const payload = {
+    enabled:     document.getElementById('refEnabledInput').checked,
+    threshold:   parseInt(document.getElementById('refThresholdInput').value, 10),
+    rewardDays:  parseInt(document.getElementById('refRewardDaysInput').value, 10),
+    rewardTitle: document.getElementById('refRewardTitleInput').value.trim(),
+    rewardDesc:  document.getElementById('refRewardDescInput').value.trim()
+  };
+  if (!payload.threshold || payload.threshold < 1) return showToast('Threshold must be ≥ 1.', 'error');
+  if (!payload.rewardDays || payload.rewardDays < 1) return showToast('Reward days must be ≥ 1.', 'error');
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/referral-settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (data.success) {
+      showToast('✅ Referral settings saved.', 'success');
+      renderAdminReferrals();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message || 'Server error.', 'error'); }
+}
+
+async function adminGrantReferralReward(userId, username) {
+  const days = prompt(`Grant how many days of free premium to @${username}?`, '30');
+  if (days === null) return;
+  const d = parseInt(days, 10);
+  if (!d || d < 1) return showToast('Invalid number.', 'error');
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/referrals/${userId}/grant-reward`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: d })
+    });
+    if (data.success) { showToast(`✅ ${d} days granted to @${username}.`, 'success'); renderAdminReferrals(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message || 'Server error.', 'error'); }
+}
+
+/* ============================================================
+   BOOT: load plans + program info
+   ============================================================ */
+(async function bootMonetizationModule() {
+  try {
+    await fetchSubscriptionPlans();
+    // Auto-open the register form with ref if the URL had ?ref=CODE
+    const pending = sessionStorage.getItem('aero_pending_ref');
+    if (pending && !currentUser) {
+      // Auto-open the register modal for convenience
+      setTimeout(() => {
+        if (typeof showRegisterModal === 'function') {
+          try { showRegisterModal(); } catch (e) {}
+          // Pre-fill hidden ref state on the register form
+          const form = document.getElementById('registerForm');
+          if (form && !document.getElementById('regReferralCode')) {
+            const hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.id = 'regReferralCode';
+            hidden.value = pending;
+            form.appendChild(hidden);
+          }
+        }
+      }, 900);
+    }
+  } catch (e) { console.warn('[monetization boot]', e.message); }
+})();
+
+/* Patch registerStudent() to send the referral code */
+const _origRegisterStudent = window.registerStudent;
+window.registerStudent = function (e) {
+  if (e && e.preventDefault) e.preventDefault();
+  // Call original but inject referral code into tempRegisterData
+  try {
+    const code = (document.getElementById('regReferralCode')?.value ||
+                  sessionStorage.getItem('aero_pending_ref') || '').trim().toUpperCase();
+    const fullName = document.getElementById('regFullName')?.value.trim();
+    const username = document.getElementById('regUsername')?.value.trim();
+    const email    = document.getElementById('regEmail')?.value.trim();
+    const phone    = document.getElementById('regPhone')?.value.trim();
+    const password = document.getElementById('regPassword')?.value.trim();
+
+    if (!fullName || !username || !password || !email || !phone) {
+      return showToast('Please fill all fields.', 'error');
+    }
+
+    showToast('Sending OTP…', 'info');
+    fetch(`${API_BASE}/send-otp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, username, phone })
+    }).then(r => r.json()).then(data => {
+      if (data.success) {
+        tempRegisterData = { fullName, username, email, phone, password, referralCode: code };
+        closeModal('registerModal');
+        openOtpModal({
+          title: 'Verify Email & Phone',
+          subtitle: `We've sent a 6-digit OTP to ${email} and your phone. Enter it below to finish registration.`,
+          type: 'register',
+          data: tempRegisterData
+        });
+      } else {
+        showToast(data.message || 'Could not send OTP.', 'error');
+      }
+    }).catch(() => showToast('Server network error.', 'error'));
+  } catch (err) {
+    console.error('[registerStudent]', err);
+    if (typeof _origRegisterStudent === 'function') _origRegisterStudent.call(this, e);
+  }
+};
+function showMyPlanModal() {
+  if (!currentUser || !currentUser.subscription) return;
+  const sub = currentUser.subscription;
+  const exp = sub.expiresAt
+    ? new Date(sub.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '—';
+  const started = sub.startedAt
+    ? new Date(sub.startedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+    : '—';
+
+  const old = document.getElementById('myPlanModal');
+  if (old) old.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'myPlanModal';
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:480px;">
+      <div class="modal-icon-header">
+        <div class="modal-icon-tile tone-emerald" style="background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#422006;">
+          <i class="fas fa-crown"></i>
+        </div>
+        <div>
+          <h3>Your Premium Plan</h3>
+          <p class="modal-sub" style="margin:2px 0 0;">Active subscription details</p>
+        </div>
+      </div>
+
+      <div class="checkout-plan-summary">
+        <div class="checkout-plan-row">
+          <div>
+            <strong>${escapeHtml(sub.planTitle || 'Premium')}</strong>
+            <div class="checkout-plan-meta">
+              <i class="fas fa-clock"></i> ${sub.planDurationDays || 30} days · ${sub.paymentMode === 'one-time' ? 'One-time' : 'Auto-renew'}
+            </div>
+          </div>
+          <div class="checkout-plan-price">₹${sub.amount || 0}</div>
+        </div>
+        <p class="checkout-plan-desc">
+          Started: <strong>${started}</strong><br>
+          ${sub.paymentMode === 'subscription' ? 'Renews' : 'Expires'}: <strong>${exp}</strong>
+        </p>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="document.getElementById('myPlanModal').remove()">
+          <i class="fas fa-times"></i> Close
+        </button>
+        ${sub.autoRenew
+          ? `<button class="btn btn-danger" onclick="document.getElementById('myPlanModal').remove(); cancelSubscription();">
+               <i class="fas fa-times-circle"></i> Cancel Auto-Pay
+             </button>`
+          : ''}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
 initApp();
