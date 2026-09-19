@@ -24,7 +24,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=35">
+  <link rel="stylesheet" href="styles.css?v=36">
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
   <style>
@@ -1223,16 +1223,48 @@
         document.head.appendChild(s);
       });
     };
-    /* MathJax — loads ONLY when a quiz view is opened */
+    /* MathJax — loads ONLY when a quiz / AI answer needs it */
     window.loadMathJax = function () {
       return new Promise((resolve, reject) => {
-        if (window.MathJax && window.MathJax.startup) return resolve();
-        const s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js';
-        s.async = true;
-        s.onload = resolve;
-        s.onerror = reject;
-        document.head.appendChild(s);
+
+        // The ONLY reliable "is MathJax fully loaded?" check is
+        // MathJax.typesetPromise — it's defined by the actual library
+        // script AFTER it initialises, and does NOT exist on the inline
+        // config object we place in <head>.
+        const isLoaded = () =>
+          window.MathJax && typeof window.MathJax.typesetPromise === 'function';
+
+        if (isLoaded()) return resolve();
+
+        // Reuse an in-flight load if one is already running
+        if (window.__mathjaxLoaderPromise) {
+          return window.__mathjaxLoaderPromise.then(resolve, reject);
+        }
+
+        window.__mathjaxLoaderPromise = new Promise((res, rej) => {
+          const s = document.createElement('script');
+          s.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js';
+          s.async = true;
+
+          s.onload = () => {
+            // Script tag loaded — but MathJax may still be initialising.
+            // Poll until typesetPromise exists (usually <200 ms).
+            const waitReady = () => {
+              if (isLoaded()) res();
+              else setTimeout(waitReady, 50);
+            };
+            waitReady();
+          };
+
+          s.onerror = (err) => {
+            window.__mathjaxLoaderPromise = null;
+            rej(err);
+          };
+
+          document.head.appendChild(s);
+        });
+
+        window.__mathjaxLoaderPromise.then(resolve, reject);
       });
     };
   </script>
@@ -1240,8 +1272,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
-  <script src="media-viewer.js?v=35" defer></script>
-  <script src="app.js?v=35" defer></script>
+  <script src="media-viewer.js?v=36" defer></script>
+  <script src="app.js?v=36" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {

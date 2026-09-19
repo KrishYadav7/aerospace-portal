@@ -1,7 +1,7 @@
 /* ============================================================
    SERVICE WORKER — offline shell caching (v34)
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v35';
+const CACHE_NAME = 'aero-shell-v36';
 
 const SHELL_ASSETS = [
   './',
@@ -17,7 +17,7 @@ self.addEventListener('install', (event) => {
     caches.open(CACHE_NAME).then((cache) =>
       Promise.all(
         SHELL_ASSETS.map((url) =>
-          cache.add(url + '?v=35').catch((err) => console.warn('[SW] cache miss:', url, err))
+          cache.add(url + '?v=36').catch((err) => console.warn('[SW] cache miss:', url, err))
         )
       )
     )
