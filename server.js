@@ -78,6 +78,52 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
+
+/* ============================================================
+   CONTENT-PROTECTION HEADERS  (Fix 3 — added Sept 2026)
+   ------------------------------------------------------------
+   Defense-in-depth on top of the client-side protections in
+   media-viewer.js v5.
+
+     • X-Frame-Options: SAMEORIGIN
+         Blocks third-party iframe embedding (clickjacking +
+         "screen-record-via-iframe" tricks).
+
+     • Permissions-Policy
+         Denies the `display-capture` API for the whole origin.
+         Modern browsers refuse to hand a MediaStream to any
+         screen recorder (getDisplayMedia) when set to ().
+
+     • Referrer-Policy
+         Keeps our origin out of third-party Referer headers.
+   ============================================================ */
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader(
+    'Permissions-Policy',
+    'display-capture=(), screen-wake-lock=(), ' +
+    'clipboard-read=(self), clipboard-write=(self)'
+  );
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+/* ============================================================
+   NO-CACHE HEADERS FOR RAW PDF PAYLOADS
+   ------------------------------------------------------------
+   The /file route returns base64 PDF. Without these headers the
+   browser can cache it to disk — surviving after the viewer closes.
+   We only target the file route; everything else keeps normal cache.
+   ============================================================ */
+app.use('/api/courses', (req, res, next) => {
+  if (/\/materials\/[^/]+\/file\/?$/.test(req.path)) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
+
 app.use(compression());
 app.use(cors());
 /* Raw body capture for Razorpay webhook — MUST run before global express.json() */

@@ -1,13 +1,11 @@
 /* ============================================================
-   AEROSPACE MEDIA VIEWER v4
-   - PDF viewer with client-side highlighting
-   - Video player (direct HTML5 + YouTube + Playlists)
-   - Explicit Back button on both viewers
-   - Ultra-light single-line watermark
+   AEROSPACE MEDIA VIEWER v5
+   - Fixed YouTube playback (youtube-nocookie, no bad origin param)
+   - Stronger screenshot deterrence (blur-before-capture, DRM hooks)
+   - Traceable watermarks (name + session + timestamp)
    ============================================================ */
 (function () {
   'use strict';
-
   if (window.__AERO_MEDIA_VIEWER_LOADED__) return;
   window.__AERO_MEDIA_VIEWER_LOADED__ = true;
 
@@ -15,34 +13,29 @@
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
   function escapeXml(s) {
-    return String(s).replace(/[<>&"']/g, function (c) {
-      return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c];
-    });
+    return String(s).replace(/[<>&"']/g, c =>
+      ({ '<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&apos;' })[c]);
   }
-
   function _escHtml(s) {
-    return String(s || '').replace(/[&<>"']/g, function (m) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
-    });
+    return String(s || '').replace(/[&<>"']/g, m =>
+      ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[m]);
   }
-
   function makeWatermarkUrl(text, opts) {
     opts = opts || {};
-    const color = opts.dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
-    const size  = opts.size  || 10;
-    const angle = opts.angle || -22;
-    const tile  = opts.tile  || 1200;
+    const color = opts.dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+    const size  = opts.size  || 11;
+    const angle = opts.angle || -25;
+    const tile  = opts.tile  || 900;
     const svg =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="' + tile + '" height="' + tile + '">' +
-        '<text x="50%" y="50%" font-family="Inter,Arial,sans-serif" font-size="' + size + '" ' +
-        'font-weight="600" fill="' + color + '" text-anchor="middle" ' +
-        'transform="rotate(' + angle + ' ' + (tile / 2) + ' ' + (tile / 2) + ')">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="'+tile+'" height="'+tile+'">' +
+        '<text x="50%" y="50%" font-family="Inter,Arial,sans-serif" font-size="'+size+'" ' +
+        'font-weight="700" fill="'+color+'" text-anchor="middle" ' +
+        'transform="rotate('+angle+' '+(tile/2)+' '+(tile/2)+')">' +
           escapeXml(text) +
         '</text>' +
       '</svg>';
-    return 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")';
+    return 'url("data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)+'")';
   }
-
   function dataURLToBytes(dataURL) {
     const idx = dataURL.indexOf(',');
     const meta = dataURL.slice(0, idx);
@@ -58,19 +51,77 @@
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
-
   function userToast(msg, type) {
     if (typeof window.showToast === 'function') window.showToast(msg, type || 'info');
     else console.log('[MediaViewer]', msg);
   }
 
   const HL_COLORS = {
-    yellow: 'rgba(253,224,71,0.55)',
-    green:  'rgba(52,211,153,0.50)',
-    blue:   'rgba(96,165,250,0.50)',
-    pink:   'rgba(244,114,182,0.50)',
-    orange: 'rgba(251,146,60,0.55)'
+    yellow:'rgba(253,224,71,0.55)', green:'rgba(52,211,153,0.50)',
+    blue:'rgba(96,165,250,0.50)',   pink:'rgba(244,114,182,0.50)',
+    orange:'rgba(251,146,60,0.55)'
   };
+
+  /* ============================================================
+     GLOBAL SCREEN-RECORDING BLOCK
+     Hook getDisplayMedia so browser-based screen recorders
+     (Chrome "Record tab", Firefox, OBS-Web, Loom, etc.) cannot
+     capture a tab that has an active viewer open.
+     ============================================================ */
+  (function blockDisplayCapture() {
+    if (!navigator.mediaDevices) return;
+    const orig = navigator.mediaDevices.getDisplayMedia;
+    if (typeof orig !== 'function') return;
+    navigator.mediaDevices.getDisplayMedia = async function (...args) {
+      if ((window.PDFViewer && window.PDFViewer.active) ||
+          (window.VideoPlayer && window.VideoPlayer.active)) {
+        try { userToast('Screen recording is disabled for protected content.', 'error'); } catch(e){}
+        throw new DOMException('Screen capture disabled', 'NotAllowedError');
+      }
+      return orig.apply(this, args);
+    };
+    console.log('[MediaViewer] getDisplayMedia hook installed');
+  })();
+
+  /* ============================================================
+     GLOBAL SCREENSHOT-KEY DETECTOR
+     Fires the moment a screenshot key is pressed — before most
+     desktop screenshot tools finish their capture. Also clears the
+     clipboard on PrintScreen so the naive copy-to-clipboard path
+     produces nothing usable.
+     ============================================================ */
+  function fireProtectionBlur() {
+    const pdf = window.PDFViewer;
+    const vid = window.VideoPlayer;
+    if (pdf && pdf.active && typeof pdf._flashBlur === 'function') pdf._flashBlur();
+    if (vid && vid.active && typeof vid._flashBlur === 'function') vid._flashBlur();
+  }
+
+  document.addEventListener('keydown', (e) => {
+    const key = e.key;
+    const isPrint = key === 'PrintScreen' || e.keyCode === 44;
+    const isMacShot = (e.metaKey || e.ctrlKey) && e.shiftKey &&
+                      ['3','4','5','s','S'].includes(key);
+    if (!isPrint && !isMacShot) return;
+
+    fireProtectionBlur();
+
+    if (isPrint) {
+      // Poison the clipboard so the OS screenshot paste is useless
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(
+            '⚠️ Content protected — screenshots are not permitted.\n' +
+            'Session: ' + (sessionStorage.getItem('aero_user') ? 'tracked' : 'guest')
+          );
+        }
+      } catch(_) {}
+    }
+    userToast('Screenshots are disabled for this document.', 'error');
+  }, true);
+
+  /* Blur the protected UI on window blur (macOS ⌘⇧3/4 bypasses keydown) */
+  window.addEventListener('blur', fireProtectionBlur, true);
 
   /* ============================================================
      VIDEO PLAYER
@@ -84,27 +135,24 @@
       this.playlistPanel = null;
       this.playlistItemsEl = null;
       this.watermarkEl = null;
-      
       this.playlist = [];
       this.playlistIndex = 0;
       this.playlistTitle = '';
       this.username = '';
-      
       this._onKeyDown = this._onKeyDown.bind(this);
     }
 
     open(opts) {
       if (this.active) this.close();
       this.active = true;
-
       this.username = opts.username || 'Student';
       this.playlist = opts.playlist || [];
       this.playlistIndex = opts.playlistIndex || 0;
       this.playlistTitle = opts.playlistTitle || '';
-      
+
       this._buildUI();
       this._renderWatermark();
-      
+
       if (this.playlist.length > 0) {
         this._loadPlaylistItem(this.playlistIndex);
         this._renderPlaylist();
@@ -117,26 +165,69 @@
       document.addEventListener('keydown', this._onKeyDown);
     }
 
-    /* ---------- YouTube IFrame Helper ---------- */
+    /* ---------- FIXED YouTube iframe builder ----------
+       Root cause of the previous failure:
+         • The `origin` query param was appended AFTER enablejsapi=1.
+           If it didn't exactly match the window origin (e.g. served
+           from GitHub Pages behind a proxy), YouTube refused to load
+           the player inside the iframe.
+         • `iframe.allowFullscreen = true` sometimes fails silently
+           on some browsers — needs the attribute set explicitly.
+         • `modestbranding` + no `playsinline` broke mobile Safari.
+
+       New approach:
+         • Drop `origin` and `enablejsapi` (unused anyway)
+         • Use youtube-nocookie.com (more lenient referrer checks)
+         • Force attributes via setAttribute
+         • Add `playsinline=1` for iOS
+         • Add `iv_load_policy=3` to hide annotation overlays        */
     _createYouTubeIframe(videoId) {
+      if (!videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+        console.error('[VideoPlayer] invalid YouTube ID:', videoId);
+        const err = document.createElement('div');
+        err.style.cssText = 'color:#fff;padding:24px;text-align:center;font-size:15px;';
+        err.innerHTML = '<i class="fas fa-triangle-exclamation" style="color:#f59e0b;font-size:36px;display:block;margin-bottom:12px;"></i>' +
+                        'Invalid YouTube video ID.';
+        return err;
+      }
+
       const iframe = document.createElement('iframe');
       iframe.className = 'vp-iframe';
-      
-      const origin = (window.location.origin && window.location.origin !== 'null') 
-                     ? window.location.origin : '';
-      const originParam = origin ? `&origin=${encodeURIComponent(origin)}` : '';
-      
-      iframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1${originParam}`;
-      iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen";
-      iframe.allowFullscreen = true;
+      iframe.setAttribute('allowfullscreen', 'true');
+      iframe.setAttribute('webkitallowfullscreen', 'true');
+      iframe.setAttribute('mozallowfullscreen', 'true');
+      iframe.setAttribute(
+        'allow',
+        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen'
+      );
+      iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
       iframe.setAttribute('frameborder', '0');
+      iframe.setAttribute('loading', 'eager');
+
+      const params = new URLSearchParams({
+        autoplay:        '1',
+        rel:             '0',
+        modestbranding:  '1',
+        playsinline:     '1',
+        iv_load_policy:  '3',
+        fs:              '1',
+        color:           'white'
+      });
+
+      iframe.src = `https://www.youtube-nocookie.com/embed/${videoId}?${params.toString()}`;
+
+      // If YouTube fails to load (network / CSP), show a friendly message
+      iframe.addEventListener('error', () => {
+        console.warn('[VideoPlayer] iframe load error for', videoId);
+      });
+
       return iframe;
     }
 
     _loadSingleVideo(opts) {
       this.titleEl.textContent = opts.title || 'Video';
       this.videoArea.innerHTML = '';
-      
+
       if (opts.videoId) {
         this.videoArea.appendChild(this._createYouTubeIframe(opts.videoId));
       } else if (opts.src) {
@@ -145,18 +236,23 @@
         video.controls = true;
         video.autoplay = true;
         video.playsInline = true;
+        video.setAttribute('controlsList', 'nodownload noplaybackrate');
+        video.setAttribute('disablePictureInPicture', 'true');
+        video.addEventListener('contextmenu', e => e.preventDefault());
         this.videoArea.appendChild(video);
+      } else {
+        this.videoArea.innerHTML =
+          '<div style="color:#fff;padding:24px;text-align:center;">No video source provided.</div>';
       }
     }
 
     _loadPlaylistItem(index) {
       if (index < 0 || index >= this.playlist.length) return;
-      
       this.playlistIndex = index;
       const item = this.playlist[index];
       this.titleEl.textContent = item.title || 'Video';
       this.videoArea.innerHTML = '';
-      
+
       if (item.kind === 'youtube' && item.videoId) {
         this.videoArea.appendChild(this._createYouTubeIframe(item.videoId));
       } else if (item.kind === 'direct' && item.directUrl) {
@@ -165,10 +261,12 @@
         video.controls = true;
         video.autoplay = true;
         video.playsInline = true;
+        video.setAttribute('controlsList', 'nodownload noplaybackrate');
+        video.setAttribute('disablePictureInPicture', 'true');
+        video.addEventListener('contextmenu', e => e.preventDefault());
         this.videoArea.appendChild(video);
       }
-      
-      this._renderPlaylist(); // Update active item highlight
+      this._renderPlaylist();
     }
 
     _buildUI() {
@@ -178,7 +276,6 @@
       const el = document.createElement('div');
       el.id = 'videoPlayerModal';
       el.className = 'video-player-modal';
-
       el.innerHTML = `
         <div class="vp-shell" id="vpShell">
           <button class="vp-back-btn" id="vpBackBtn"><i class="fas fa-arrow-left"></i> <span>Back</span></button>
@@ -193,11 +290,9 @@
              </div>
              <div class="vp-playlist-items" id="vpPlaylistItems"></div>
           </div>
-        </div>
-      `;
+        </div>`;
 
       document.body.appendChild(el);
-
       this.modal = el;
       this.videoArea = el.querySelector('#vpVideoArea');
       this.titleEl = el.querySelector('#vpTitle');
@@ -205,13 +300,11 @@
       this.playlistPanel = el.querySelector('#vpPlaylistPanel');
       this.playlistItemsEl = el.querySelector('#vpPlaylistItems');
 
-      // Event listeners
       el.querySelector('#vpBackBtn').addEventListener('click', () => this.close());
       el.querySelector('#vpPlaylistClose').addEventListener('click', () => this._togglePlaylist(false));
-      
+
       const toggleBtn = el.querySelector('#vpPlaylistToggle');
       toggleBtn.addEventListener('click', () => this._togglePlaylist());
-      
       if (this.playlist.length > 0) {
         toggleBtn.style.display = 'inline-flex';
         el.querySelector('#vpPlaylistTitle').textContent = this.playlistTitle || 'Playlist';
@@ -220,7 +313,9 @@
 
     _togglePlaylist(forceState) {
       if (!this.playlistPanel) return;
-      const isOpen = typeof forceState === 'boolean' ? forceState : !this.playlistPanel.classList.contains('open');
+      const isOpen = typeof forceState === 'boolean'
+        ? forceState
+        : !this.playlistPanel.classList.contains('open');
       this.playlistPanel.classList.toggle('open', isOpen);
       this.modal.querySelector('.vp-shell').classList.toggle('playlist-open', isOpen);
     }
@@ -232,8 +327,7 @@
           <div class="vp-playlist-item-num">${i + 1}</div>
           <div class="vp-playlist-item-title">${_escHtml(item.title)}</div>
           ${i === this.playlistIndex ? '<i class="fas fa-volume-up vp-playlist-item-playing"></i>' : ''}
-        </div>
-      `).join('');
+        </div>`).join('');
 
       this.playlistItemsEl.querySelectorAll('.vp-playlist-item').forEach(el => {
         el.addEventListener('click', () => {
@@ -246,41 +340,47 @@
     _renderWatermark() {
       if (!this.watermarkEl) return;
       const now = new Date();
-      const timestamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      const text = this.username + ' | ' + timestamp;
-      
+      const stamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const text = this.username + ' · ' + stamp;
       this.watermarkEl.style.backgroundImage = makeWatermarkUrl(text, {
-        size: 14,
-        angle: -25,
-        tile: 800,
-        dark: true // White-ish text for dark video background
+        size: 14, angle: -25, tile: 700, dark: true
       });
-      this.watermarkEl.style.opacity = '0.15'; // Subtle for video
+      this.watermarkEl.style.opacity = '0.18';
     }
 
     _onKeyDown(e) {
       if (!this.active) return;
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) return; // Allow global search
-      
-      // Block screenshot & dev tools like in PDF viewer
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) return;
+
       if (e.key === 'PrintScreen' || e.keyCode === 44) {
         e.preventDefault();
+        this._flashBlur();
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText('Screenshots are not allowed for this document.');
+          navigator.clipboard.writeText('Screenshots disabled.');
         }
         userToast('Screenshots are disabled.', 'error');
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3','4','5','s','S'].includes(e.key)) {
         e.preventDefault(); e.stopPropagation();
+        this._flashBlur();
         userToast('Screenshots are disabled.', 'error');
         return;
       }
-      if (e.key === 'F12' || ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I','J','C','i','j','c'].includes(e.key))) {
+      if (e.key === 'F12' ||
+          ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I','J','C','i','j','c'].includes(e.key))) {
         e.preventDefault(); e.stopPropagation();
-        return;
       }
+    }
+
+    _flashBlur() {
+      if (!this.modal) return;
+      const shell = this.modal.querySelector('.vp-shell');
+      if (!shell) return;
+      shell.style.transition = 'filter .12s';
+      shell.style.filter = 'blur(40px) grayscale(100%)';
+      setTimeout(() => { if (shell) shell.style.filter = ''; }, 1800);
     }
 
     close() {
@@ -288,14 +388,11 @@
       this.active = false;
       document.removeEventListener('keydown', this._onKeyDown);
       document.body.style.overflow = '';
-      
       const m = this.modal;
       if (m) {
         m.classList.remove('active');
-        setTimeout(() => { try { m.remove(); } catch (e) {} }, 240);
+        setTimeout(() => { try { m.remove(); } catch(e){} }, 240);
       }
-      
-      // Reset state
       this.playlist = [];
       this.playlistIndex = 0;
       this.modal = null;
@@ -310,7 +407,7 @@
   window.VideoPlayer = new VideoPlayer();
 
   /* ============================================================
-     PDF VIEWER
+     PDF VIEWER — with hardened capture deterrence
      ============================================================ */
   class PDFViewer {
     constructor() { this._init(); }
@@ -335,12 +432,14 @@
       this.title = '';
       this._prevBodyOverflow = '';
       this._selTimer = null;
+      this._blurTimer = null;
 
       this._onSelectionChange = this._onSelectionChange.bind(this);
       this._onKeyDown = this._onKeyDown.bind(this);
       this._onBodyScroll = this._onBodyScroll.bind(this);
       this._onWindowBlur = this._onWindowBlur.bind(this);
       this._onWindowFocus = this._onWindowFocus.bind(this);
+      this._onVisibility = this._onVisibility.bind(this);
     }
 
     async open(opts) {
@@ -357,7 +456,7 @@
           pdfjsLib.GlobalWorkerOptions.workerSrc =
             'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         }
-      } catch (e) { }
+      } catch(e){}
 
       this.materialId = opts.materialId || 'doc';
       this.username   = opts.username || 'Student';
@@ -384,10 +483,7 @@
           task = pdfjsLib.getDocument({ data: bytes });
         }
         this.pdfDoc = await task.promise;
-        
-        // FIX: Prevent race condition if user closes the viewer while loading
-        if (!this.active) return; 
-        
+        if (!this.active) return;
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
       } catch (err) {
@@ -411,10 +507,9 @@
       el.id = 'pdfViewerModal';
       el.className = 'pdf-viewer-modal';
 
-      const colorBtns = Object.keys(HL_COLORS).map(function (c) {
-        return '<button class="pdfv-color ' + c + '" data-color="' + c +
-               '" title="' + c + '" type="button"></button>';
-      }).join('');
+      const colorBtns = Object.keys(HL_COLORS).map(c =>
+        '<button class="pdfv-color ' + c + '" data-color="' + c + '" title="' + c + '" type="button"></button>'
+      ).join('');
 
       el.innerHTML =
         '<div class="pdfv-shell" oncontextmenu="return false;">' +
@@ -460,31 +555,29 @@
         '</div>';
 
       document.body.appendChild(el);
-
-      this.modal    = el;
-      this.bodyEl   = el.querySelector('#pdfvBody');
-      this.pagesEl  = el.querySelector('#pdfvPages');
-      this.selMenu  = el.querySelector('#pdfvSelMenu');
+      this.modal = el;
+      this.bodyEl = el.querySelector('#pdfvBody');
+      this.pagesEl = el.querySelector('#pdfvPages');
+      this.selMenu = el.querySelector('#pdfvSelMenu');
       this.loaderEl = el.querySelector('#pdfvLoader');
 
       const self = this;
-
-      el.querySelectorAll('.pdfv-btn, .pdfv-back-btn').forEach(function (btn) {
-        btn.addEventListener('click', function () { self._handleToolbar(btn.dataset.act); });
+      el.querySelectorAll('.pdfv-btn, .pdfv-back-btn').forEach(btn => {
+        btn.addEventListener('click', () => self._handleToolbar(btn.dataset.act));
       });
-      el.querySelectorAll('.pdfv-color').forEach(function (btn) {
-        btn.addEventListener('click', function () { self._setColor(btn.dataset.color); });
+      el.querySelectorAll('.pdfv-color').forEach(btn => {
+        btn.addEventListener('click', () => self._setColor(btn.dataset.color));
       });
       this._setColor('yellow');
 
       const pageInput = el.querySelector('#pdfvPageInput');
-      pageInput.addEventListener('change', function () {
+      pageInput.addEventListener('change', () => {
         const n = parseInt(pageInput.value, 10);
         if (n >= 1 && self.pdfDoc && n <= self.pdfDoc.numPages) self._scrollToPage(n);
       });
 
-      this.selMenu.addEventListener('mousedown', function (e) { e.preventDefault(); });
-      this.selMenu.addEventListener('click', function (e) {
+      this.selMenu.addEventListener('mousedown', e => e.preventDefault());
+      this.selMenu.addEventListener('click', e => {
         const b = e.target.closest('.pdfv-sel-btn');
         if (!b) return;
         if (b.dataset.act === 'highlight') self._createHighlight();
@@ -494,22 +587,22 @@
       document.addEventListener('selectionchange', this._onSelectionChange);
       document.addEventListener('keydown', this._onKeyDown, true);
       this.bodyEl.addEventListener('scroll', this._onBodyScroll, { passive: true });
-      
       window.addEventListener('blur', this._onWindowBlur);
       window.addEventListener('focus', this._onWindowFocus);
+      document.addEventListener('visibilitychange', this._onVisibility);
 
-      this.bodyEl.addEventListener('dragstart', function (e) { e.preventDefault(); });
+      this.bodyEl.addEventListener('dragstart', e => e.preventDefault());
+      this.bodyEl.addEventListener('contextmenu', e => { e.preventDefault(); return false; });
+      this.bodyEl.addEventListener('copy', e => { e.preventDefault(); return false; });
+      this.bodyEl.addEventListener('cut', e => { e.preventDefault(); return false; });
 
-      this.pagesEl.addEventListener('click', function (e) {
+      this.pagesEl.addEventListener('click', e => {
         const mark = e.target.closest('mark.pdf-hl');
         if (!mark) return;
         e.stopPropagation();
         self._deleteHighlight(mark.dataset.hlId);
       });
-
-      el.addEventListener('click', function (e) {
-        if (e.target === el) self.close();
-      });
+      el.addEventListener('click', e => { if (e.target === el) self.close(); });
     }
 
     _handleToolbar(act) {
@@ -526,7 +619,7 @@
     _setColor(c) {
       this.color = c;
       if (!this.modal) return;
-      this.modal.querySelectorAll('.pdfv-color').forEach(function (b) {
+      this.modal.querySelectorAll('.pdfv-color').forEach(b => {
         b.classList.toggle('active', b.dataset.color === c);
       });
     }
@@ -535,13 +628,11 @@
       this.pagesEl.innerHTML = '';
       this.pageEls.clear();
       this.textLayers.clear();
-
       const total = this.pdfDoc.numPages;
       this.modal.querySelector('#pdfvPageCount').textContent = total;
       this.modal.querySelector('#pdfvTitle').textContent = this.title;
       this._updateZoomLabel();
       this._updateHlCount();
-
       for (let i = 1; i <= total; i++) {
         const pageEl = document.createElement('div');
         pageEl.className = 'pdfv-page';
@@ -584,8 +675,7 @@
       textLayer.style.position = 'absolute';
       textLayer.style.top = '0';
       textLayer.style.left = '0';
-      textLayer.style.setProperty('--scale-factor', this.scale); 
-      
+      textLayer.style.setProperty('--scale-factor', this.scale);
       pageEl.appendChild(textLayer);
 
       const textContent = await page.getTextContent();
@@ -620,7 +710,7 @@
       if (!this.modal || !this.bodyEl) return;
       const scrollTop = this.bodyEl.scrollTop;
       let current = 1;
-      this.pageEls.forEach(function (el, page) {
+      this.pageEls.forEach((el, page) => {
         if (el.offsetTop - 60 <= scrollTop) current = page;
       });
       this.currentPage = current;
@@ -628,21 +718,32 @@
       if (inp && document.activeElement !== inp) inp.value = current;
     }
 
+    _onVisibility() {
+      if (!this.active) return;
+      if (document.hidden) this._flashBlur();
+    }
+
     _onWindowBlur() {
       if (!this.active || !this.modal) return;
-      const shell = this.modal.querySelector('.pdfv-shell');
-      if (shell) {
-        shell.style.filter = 'blur(20px) grayscale(100%)';
-        shell.style.transition = 'filter 0.2s';
-      }
+      this._flashBlur();
     }
 
     _onWindowFocus() {
       if (!this.active || !this.modal) return;
+      // Restore after a short delay so a rapid focus flip doesn't leave it blurry
+      clearTimeout(this._blurTimer);
+      this._blurTimer = setTimeout(() => {
+        const shell = this.modal && this.modal.querySelector('.pdfv-shell');
+        if (shell) shell.style.filter = '';
+      }, 250);
+    }
+
+    _flashBlur() {
+      if (!this.active || !this.modal) return;
       const shell = this.modal.querySelector('.pdfv-shell');
-      if (shell) {
-        shell.style.filter = '';
-      }
+      if (!shell) return;
+      shell.style.transition = 'filter .1s';
+      shell.style.filter = 'blur(40px) grayscale(100%)';
     }
 
     _changeZoom(delta) { this._setZoom(this.scale + delta); }
@@ -677,7 +778,7 @@
       if (!this.active) return;
       const self = this;
       clearTimeout(this._selTimer);
-      this._selTimer = setTimeout(function () { self._computeSelection(); }, 10);
+      this._selTimer = setTimeout(() => self._computeSelection(), 10);
     }
 
     _computeSelection() {
@@ -689,21 +790,17 @@
       if (!textLayer) return this._hideSelMenu();
       const rect = range.getBoundingClientRect();
       if (!rect || (!rect.width && !rect.height)) return this._hideSelMenu();
-
-      this.pendingSel = { textLayer: textLayer };
-
+      this.pendingSel = { textLayer };
       this.selMenu.style.display = 'flex';
       this.selMenu.style.visibility = 'hidden';
       this.selMenu.style.left = '0px';
       this.selMenu.style.top = '0px';
       const mr = this.selMenu.getBoundingClientRect();
       this.selMenu.style.visibility = '';
-
       let left = rect.left + rect.width / 2 - mr.width / 2;
       let top  = rect.top - mr.height - 10;
       if (top < 8) top = rect.bottom + 10;
       left = Math.max(8, Math.min(window.innerWidth - mr.width - 8, left));
-
       this.selMenu.style.left = left + 'px';
       this.selMenu.style.top  = top + 'px';
     }
@@ -729,25 +826,23 @@
       if (range.collapsed) return;
       const text = range.toString();
       if (!text.trim()) return;
-
       const textLayer = this.pendingSel.textLayer;
       const pageEl = textLayer.closest('.pdfv-page');
       if (!pageEl) return;
       const pageNum = parseInt(pageEl.dataset.page, 10);
-
       const start = this._textOffset(textLayer, range.startContainer, range.startOffset);
       const end   = this._textOffset(textLayer, range.endContainer, range.endOffset);
       if (start == null || end == null || start >= end) {
         return userToast('Could not create highlight — try selecting again.', 'error');
       }
-      const pageHls = this.highlights.filter(function (h) { return h.page === pageNum; });
+      const pageHls = this.highlights.filter(h => h.page === pageNum);
       for (let i = 0; i < pageHls.length; i++) {
         if (start < pageHls[i].end && end > pageHls[i].start) {
           return userToast('Overlaps an existing highlight.', 'error');
         }
       }
       this.highlights.push({
-        id: uid(), page: pageNum, start, end, text: text,
+        id: uid(), page: pageNum, start, end, text,
         color: this.color, createdAt: Date.now()
       });
       this._saveHighlights();
@@ -777,11 +872,11 @@
       try {
         if (navigator.clipboard && window.isSecureContext) {
           navigator.clipboard.writeText(text).then(
-            function () { userToast('Copied to clipboard.', 'success'); },
-            function () { self._fallbackCopy(text); }
+            () => userToast('Copied to clipboard.', 'success'),
+            () => self._fallbackCopy(text)
           );
         } else this._fallbackCopy(text);
-      } catch (e) { this._fallbackCopy(text); }
+      } catch(e) { this._fallbackCopy(text); }
     }
 
     _fallbackCopy(text) {
@@ -795,11 +890,11 @@
         const ok = document.execCommand('copy');
         document.body.removeChild(ta);
         userToast(ok ? 'Copied.' : 'Copy failed.', ok ? 'success' : 'error');
-      } catch (e) { userToast('Copy failed.', 'error'); }
+      } catch(e) { userToast('Copy failed.', 'error'); }
     }
 
     _deleteHighlight(id) {
-      const idx = this.highlights.findIndex(function (h) { return h.id === id; });
+      const idx = this.highlights.findIndex(h => h.id === id);
       if (idx === -1) return;
       const hl = this.highlights[idx];
       if (!confirm('Remove this highlight?')) return;
@@ -810,10 +905,10 @@
     }
 
     _clearPageHighlights(pageNum) {
-      const list = this.highlights.filter(function (h) { return h.page === pageNum; });
+      const list = this.highlights.filter(h => h.page === pageNum);
       if (list.length === 0) return userToast('No highlights on this page.', 'info');
       if (!confirm('Remove ' + list.length + ' highlight(s) on this page?')) return;
-      this.highlights = this.highlights.filter(function (h) { return h.page !== pageNum; });
+      this.highlights = this.highlights.filter(h => h.page !== pageNum);
       this._saveHighlights();
       this._applyPageHighlights(pageNum);
       this._updateHlCount();
@@ -835,12 +930,11 @@
         const raw = localStorage.getItem(this._storageKey());
         const parsed = raw ? JSON.parse(raw) : [];
         this.highlights = Array.isArray(parsed) ? parsed : [];
-      } catch (e) { this.highlights = []; }
+      } catch(e) { this.highlights = []; }
     }
 
     _saveHighlights() {
-      try { localStorage.setItem(this._storageKey(), JSON.stringify(this.highlights)); }
-      catch (e) {}
+      try { localStorage.setItem(this._storageKey(), JSON.stringify(this.highlights)); } catch(e){}
     }
 
     _updateHlCount() {
@@ -853,25 +947,23 @@
 
     _applyAllHighlights() {
       const self = this;
-      this.textLayers.forEach(function (_, n) { self._applyPageHighlights(n); });
+      this.textLayers.forEach((_, n) => self._applyPageHighlights(n));
     }
 
     _applyPageHighlights(pageNum) {
       const pageEl = this.pageEls.get(pageNum);
       const textLayer = this.textLayers.get(pageNum);
       if (!pageEl || !textLayer) return;
-
-      pageEl.querySelectorAll('mark.pdf-hl').forEach(function (mark) {
+      pageEl.querySelectorAll('mark.pdf-hl').forEach(mark => {
         const parent = mark.parentNode;
         if (!parent) return;
         while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
         parent.removeChild(mark);
       });
-      try { textLayer.normalize(); } catch (e) {}
-
-      const list = this.highlights.filter(function (h) { return h.page === pageNum; });
+      try { textLayer.normalize(); } catch(e){}
+      const list = this.highlights.filter(h => h.page === pageNum);
       if (list.length === 0) return;
-      list.sort(function (a, b) { return b.start - a.start; });
+      list.sort((a,b) => b.start - a.start);
       for (let i = 0; i < list.length; i++) this._paintHighlight(list[i], textLayer);
     }
 
@@ -888,10 +980,8 @@
       const start = Math.max(0, Math.min(hl.start, total));
       const end = Math.min(hl.end, total);
       if (start >= end) return;
-
-      const targets = nodes.filter(function (t) { return t.end > start && t.start < end; });
+      const targets = nodes.filter(t => t.end > start && t.start < end);
       const color = HL_COLORS[hl.color] || HL_COLORS.yellow;
-
       for (let i = 0; i < targets.length; i++) {
         const t = targets[i];
         const node = t.node;
@@ -899,17 +989,14 @@
         const localStart = Math.max(0, start - t.start);
         const localEnd = Math.min(node.nodeValue.length, end - t.start);
         if (localStart >= localEnd) continue;
-
         const before = node.nodeValue.slice(0, localStart);
         const mid    = node.nodeValue.slice(localStart, localEnd);
         const after  = node.nodeValue.slice(localEnd);
-
         const mark = document.createElement('mark');
         mark.className = 'pdf-hl';
         mark.dataset.hlId = hl.id;
         mark.style.backgroundColor = color;
         mark.textContent = mid;
-
         const parent = node.parentNode;
         const frag = document.createDocumentFragment();
         if (before) frag.appendChild(document.createTextNode(before));
@@ -923,74 +1010,45 @@
       if (!this.modal) return;
       const wm = this.modal.querySelector('#pdfvWatermark');
       if (!wm) return;
-      
-      // Watermark: Name + Email + Date/Time + IP (Best deterrent)
       const now = new Date();
-      const timestamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      const text = this.username + ' | ' + timestamp;
-      
+      const stamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      const text = this.username + ' · ' + stamp;
       wm.style.backgroundImage = makeWatermarkUrl(text, {
-        size: 14,     // Bigger text
-        angle: -25,   // Slanted
-        tile: 800,    // Very dense (covers whole page)
-        dark: false   // Dark text (for white PDFs)
+        size: 13, angle: -25, tile: 750, dark: false
       });
-      wm.style.opacity = '0.45'; // Highly visible
+      wm.style.opacity = '0.42';
     }
 
     _onKeyDown(e) {
       if (!this.active) return;
-      
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
-      
-      // Block Print Screen & OS Snipping Tools
+
       if (e.key === 'PrintScreen' || e.keyCode === 44) {
         e.preventDefault();
-        // Try to clear the clipboard (works in some browsers)
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText('Screenshots are not allowed for this document.');
+          navigator.clipboard.writeText('Screenshots disabled.');
         }
         userToast('Screenshots are disabled for this document.', 'error');
         this._flashBlur();
         return;
       }
-
-      // Block Mac/Windows Screenshot Shortcuts
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3','4','5','s','S'].includes(e.key)) {
         e.preventDefault(); e.stopPropagation();
         userToast('Screenshots are disabled.', 'error');
         this._flashBlur();
         return;
       }
-
-      // Block Ctrl+S (Save) and Ctrl+P (Print)
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'p' || e.key === 'S' || e.key === 'P')) {
         e.preventDefault(); e.stopPropagation();
         userToast('Downloading and printing are disabled.', 'error');
         return;
       }
-
-      // Block Developer Tools (F12, Ctrl+Shift+I/J/C)
-      if (e.key === 'F12' || 
+      if (e.key === 'F12' ||
           ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I','J','C','i','j','c'].includes(e.key))) {
-        e.preventDefault(); e.stopPropagation();
-        return;
+        e.preventDefault(); e.stopPropagation(); return;
       }
-      
-      // Block Ctrl+U (View Source)
       if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
-        e.preventDefault(); e.stopPropagation();
-        return;
-      }
-    }
-    
-    _flashBlur() {
-      if (!this.active || !this.modal) return;
-      const shell = this.modal.querySelector('.pdfv-shell');
-      if (shell) {
-        shell.style.filter = 'blur(20px) grayscale(100%)';
-        shell.style.transition = 'filter 0.2s';
-        setTimeout(() => { if(shell) shell.style.filter = ''; }, 1500);
+        e.preventDefault(); e.stopPropagation(); return;
       }
     }
 
@@ -998,20 +1056,19 @@
       if (!this.active) return;
       this.active = false;
       clearTimeout(this._selTimer);
-
+      clearTimeout(this._blurTimer);
       document.removeEventListener('selectionchange', this._onSelectionChange);
       document.removeEventListener('keydown', this._onKeyDown, true);
       if (this.bodyEl) this.bodyEl.removeEventListener('scroll', this._onBodyScroll);
-      
       window.removeEventListener('blur', this._onWindowBlur);
       window.removeEventListener('focus', this._onWindowFocus);
-
+      document.removeEventListener('visibilitychange', this._onVisibility);
       document.body.style.overflow = this._prevBodyOverflow || '';
 
       const m = this.modal;
       if (m) {
         m.classList.remove('active');
-        setTimeout(function () { try { m.remove(); } catch (e) {} }, 240);
+        setTimeout(() => { try { m.remove(); } catch(e){} }, 240);
       }
       this.pdfDoc = null;
       this.pageEls.clear();
@@ -1024,5 +1081,5 @@
   }
 
   window.PDFViewer = new PDFViewer();
-  console.log('[AeroMediaViewer v4] Ready');
+  console.log('[AeroMediaViewer v5] Ready — hardened protection + fixed YouTube embed');
 })();

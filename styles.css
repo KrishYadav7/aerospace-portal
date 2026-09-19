@@ -6564,3 +6564,53 @@ body.hide-latex-previews .latex-preview { display: none; }
 /* ---- Strong emphasis ---- */
 .ai-answer-body strong { color: var(--text-primary); font-weight: 700; }
 .ai-answer-body em     { font-style: italic; color: var(--text-secondary); }
+/* ============================================================
+   56. HARDENED CONTENT PROTECTION
+   ============================================================ */
+
+/* Disable iOS long-press "Save Image" menu on protected surfaces */
+.pdfv-pages,
+.pdfv-page,
+.pdfv-canvas,
+.vp-video-area,
+.vp-watermark {
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+}
+
+/* Text layer still needs select-for-highlight on desktop */
+.pdfv-textlayer,
+.pdfv-textlayer * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* Prevent drag-and-drop image extraction */
+.pdfv-canvas,
+.vp-video-area img,
+.vp-video-area video,
+.course-thumb img {
+  pointer-events: none;
+}
+.pdfv-canvas { pointer-events: auto; }  /* keep canvas interactive for scrolling */
+
+/* Additional blur fallback if the shell loses focus for any reason */
+body.body-content-hidden .pdfv-shell,
+body.body-content-hidden .vp-shell {
+  filter: blur(40px) grayscale(100%) !important;
+}
+
+/* Give the "Back" button and controls a slightly higher stacking context */
+.pdfv-back-btn,
+.vp-back-btn { z-index: 15 !important; }
+
+/* Make the watermark layer sit above the canvas but below controls */
+.pdfv-watermark { z-index: 2; }
+.pdfv-textlayer  { z-index: 3; }
+.pdfv-toolbar    { z-index: 20; }
+.vp-watermark    { z-index: 4; }
+.vp-controls     { z-index: 10; }
+.vp-title        { z-index: 10; }
