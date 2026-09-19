@@ -4648,36 +4648,91 @@ app.get('/api/admin/contributions', requireAdminAuth, async (req, res) => {
   }
 });
 
-/* Admin: download a contribution file (proxied, forces Content-Disposition) */
+/* Admin: download a contribution file (proxied via Cloudinary signed URL) */
 app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, res) => {
   try {
     const doc = await Contribution.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
 
-    // Fetch the raw file directly from Cloudinary — no URL transformation.
-    // (The old fl_attachment trick fails on Cloudinary's free plan for raw PDFs.)
-    console.log('[contribution/download] fetching:', doc.fileUrl);
+    console.log('[contribution/download] ─────────────────────────────');
+    console.log('[contribution/download] id       :', doc._id);
+    console.log('[contribution/download] fileName :', doc.fileName);
+    console.log('[contribution/download] publicId :', doc.cloudinaryPublicId);
+    console.log('[contribution/download] fileUrl  :', doc.fileUrl);
 
-    let response;
-    try {
-      response = await fetch(doc.fileUrl, { redirect: 'follow' });
-    } catch (netErr) {
-      console.error('[contribution/download] network error:', netErr.message);
+    // ---- Build a list of candidate URLs to try ----
+    const candidates = [];
+
+    // 1) Try the signed private_download_url — always works even when
+    //    Cloudinary blocks direct PDF delivery for security reasons.
+    if (doc.cloudinaryPublicId) {
+      try {
+        // Determine the resource_type from the stored URL, if possible
+        let rt = 'image';
+        const url = doc.fileUrl || '';
+        if (/\/video\/upload\//.test(url)) rt = 'video';
+        else if (/\/raw\/upload\//.test(url)) rt = 'raw';
+        else if (/\.(mp4|webm|mov|avi|mkv|mp3|wav|ogg)$/i.test(doc.fileName || '')) rt = 'video';
+        else if (/\.(pdf|docx?|pptx?|xlsx?|txt|csv|zip|ppt|doc|xls)$/i.test(doc.fileName || '')) rt = 'raw';
+
+        const format = (doc.fileName || '').split('.').pop() || '';
+        const signedUrl = cloudinary.utils.private_download_url(
+          doc.cloudinaryPublicId,
+          format,
+          {
+            resource_type: rt,
+            type: 'upload',
+            expires_at: Math.floor(Date.now() / 1000) + 300,  // 5 min
+            attachment: true
+          }
+        );
+        candidates.push({ name: 'signed', url: signedUrl });
+        console.log('[contribution/download] signed URL built:', signedUrl);
+      } catch (signErr) {
+        console.warn('[contribution/download] signed URL build failed:', signErr.message);
+      }
+    }
+
+    // 2) Fall back to the stored URL
+    if (doc.fileUrl) {
+      candidates.push({ name: 'stored', url: doc.fileUrl });
+    }
+
+    // ---- Try each candidate until one works ----
+    let response = null;
+    let usedUrl = '';
+    let usedName = '';
+    let lastErrMsg = '';
+
+    for (const c of candidates) {
+      try {
+        console.log(`[contribution/download] trying ${c.name}:`, c.url);
+        const r = await fetch(c.url, { redirect: 'follow' });
+        if (r.ok) {
+          response = r;
+          usedUrl = c.url;
+          usedName = c.name;
+          console.log(`[contribution/download] ✅ success via ${c.name} (HTTP ${r.status})`);
+          break;
+        } else {
+          lastErrMsg = `HTTP ${r.status}`;
+          console.warn(`[contribution/download] ❌ ${c.name} → HTTP ${r.status}`);
+        }
+      } catch (e) {
+        lastErrMsg = e.message;
+        console.warn(`[contribution/download] ❌ ${c.name} → ${e.message}`);
+      }
+    }
+
+    if (!response) {
+      console.error('[contribution/download] all candidates failed:', lastErrMsg);
       return res.status(502).json({
         success: false,
-        message: 'Could not reach storage: ' + netErr.message
+        message: `Could not fetch file from storage (${lastErrMsg}). The file may have been removed.`
       });
     }
 
-    if (!response.ok) {
-      console.error('[contribution/download] storage HTTP', response.status, '· url:', doc.fileUrl);
-      return res.status(502).json({
-        success: false,
-        message: `Storage returned HTTP ${response.status}. The file may have been removed.`
-      });
-    }
-
-    // Mark as downloaded (fire-and-forget; never block the user's download)
+    // Mark as downloaded (fire-and-forget)
     Contribution.findByIdAndUpdate(doc._id, {
       status: 'downloaded',
       downloadedAt: new Date()
@@ -4694,6 +4749,7 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
 
     const arrBuf = await response.arrayBuffer();
     res.send(Buffer.from(arrBuf));
+    console.log(`[contribution/download] ✅ sent ${arrBuf.byteLength} bytes to client (via ${usedName})`);
   } catch (e) {
     console.error('[admin/contributions/download] fatal:', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
