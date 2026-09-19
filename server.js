@@ -105,10 +105,6 @@ const Coupon       = require('./models/Coupon');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const app = express();
 app.set('trust proxy', 1);
 
