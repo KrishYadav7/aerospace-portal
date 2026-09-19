@@ -4654,30 +4654,49 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
     const doc = await Contribution.findById(req.params.id).lean();
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
 
-    let url = doc.fileUrl;
-    if (/res\.cloudinary\.com/.test(url) && !/fl_attachment/.test(url)) {
-      url = url.replace('/upload/', `/upload/fl_attachment:${encodeURIComponent(doc.fileName || 'file')}/`);
+    // Fetch the raw file directly from Cloudinary — no URL transformation.
+    // (The old fl_attachment trick fails on Cloudinary's free plan for raw PDFs.)
+    console.log('[contribution/download] fetching:', doc.fileUrl);
+
+    let response;
+    try {
+      response = await fetch(doc.fileUrl, { redirect: 'follow' });
+    } catch (netErr) {
+      console.error('[contribution/download] network error:', netErr.message);
+      return res.status(502).json({
+        success: false,
+        message: 'Could not reach storage: ' + netErr.message
+      });
     }
 
-    await Contribution.findByIdAndUpdate(doc._id, {
+    if (!response.ok) {
+      console.error('[contribution/download] storage HTTP', response.status, '· url:', doc.fileUrl);
+      return res.status(502).json({
+        success: false,
+        message: `Storage returned HTTP ${response.status}. The file may have been removed.`
+      });
+    }
+
+    // Mark as downloaded (fire-and-forget; never block the user's download)
+    Contribution.findByIdAndUpdate(doc._id, {
       status: 'downloaded',
       downloadedAt: new Date()
-    });
+    }).catch(e => console.warn('[contribution/download] status update failed:', e.message));
 
-    const response = await fetch(url);
-    if (!response.ok) {
-      return res.status(502).json({ success: false, message: 'Could not fetch file from storage.' });
-    }
     const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const contentLength = response.headers.get('content-length');
     const filename = (doc.fileName || 'contribution').replace(/"/g, '');
+
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
 
     const arrBuf = await response.arrayBuffer();
     res.send(Buffer.from(arrBuf));
   } catch (e) {
-    console.error('[admin/contributions/download]', e);
-    res.status(500).json({ success: false, message: 'Server error.' });
+    console.error('[admin/contributions/download] fatal:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
 
