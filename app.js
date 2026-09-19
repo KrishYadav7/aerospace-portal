@@ -9453,6 +9453,568 @@ function renderMarkdown(text) {
   return html;
 }
 /* ============================================================
+   STUDENT FEEDBACK SYSTEM — Frontend
+   ============================================================ */
+let _feedbackRating = 5;
+
+function openFeedbackModal() {
+  const modal = document.getElementById('feedbackModal');
+  if (!modal) return showToast('Feedback modal missing.', 'error');
+
+  // Reset form
+  const titleEl = document.getElementById('feedbackTitle');
+  const msgEl   = document.getElementById('feedbackMessage');
+  if (titleEl) titleEl.value = '';
+  if (msgEl)   msgEl.value = '';
+  setFeedbackRating(5);
+
+  openModal('feedbackModal');
+  setTimeout(() => titleEl && titleEl.focus(), 120);
+}
+
+function setFeedbackRating(v) {
+  _feedbackRating = Math.min(5, Math.max(1, parseInt(v, 10) || 5));
+  const hidden = document.getElementById('feedbackRating');
+  if (hidden) hidden.value = _feedbackRating;
+
+  document.querySelectorAll('#feedbackStars button').forEach(btn => {
+    const bv = parseInt(btn.dataset.v, 10);
+    btn.classList.toggle('active', bv <= _feedbackRating);
+  });
+}
+
+async function submitStudentFeedback(e) {
+  if (e) e.preventDefault();
+
+  const title = (document.getElementById('feedbackTitle')?.value || '').trim();
+  const msg   = (document.getElementById('feedbackMessage')?.value || '').trim();
+  if (!msg) return showToast('Please write your feedback.', 'error');
+
+  const btn = document.getElementById('feedbackSubmitBtn');
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Submitting…'; }
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/feedback/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentName:     currentUser?.fullName || currentUser?.username || '',
+        studentUsername: currentUser?.username || '',
+        studentEmail:    currentUser?.email || '',
+        rating:          _feedbackRating,
+        title,
+        message:         msg
+      })
+    });
+    if (data.success) {
+      closeModal('feedbackModal');
+      showToast('✅ Thanks! Your feedback is pending admin review.', 'success');
+    } else {
+      showToast(data.message || 'Could not submit feedback.', 'error');
+    }
+  } catch (err) {
+    showToast(err.message || 'Network error.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = orig || '<i class="fas fa-paper-plane"></i> Submit Feedback'; }
+  }
+}
+
+async function loadApprovedFeedback() {
+  const host = document.getElementById('studentFeedbackList');
+  if (!host) return;
+
+  host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+    <i class="fas fa-spinner fa-spin"></i><p>Loading reviews…</p></div>`;
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/feedback?_t=${Date.now()}`);
+    const list = (data && data.success && Array.isArray(data.feedback)) ? data.feedback : [];
+
+    if (list.length === 0) {
+      host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+        <i class="fas fa-star-half-alt"></i>
+        <p>No reviews yet — be the first to share yours!</p>
+      </div>`;
+      return;
+    }
+
+    let html = '<div class="feedback-wall">';
+    list.forEach(f => {
+      const initials = (f.studentName || f.studentUsername || '?')
+        .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+      const stars = '★'.repeat(f.rating || 5) + '☆'.repeat(5 - (f.rating || 5));
+      const when = f.approvedAt || f.submittedAt
+        ? new Date(f.approvedAt || f.submittedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '';
+
+      html += `
+        <div class="feedback-card">
+          <div class="feedback-card-head">
+            <div class="feedback-avatar">${escapeHtml(initials)}</div>
+            <div class="feedback-card-meta">
+              <strong>${escapeHtml(f.studentName || f.studentUsername || 'Student')}</strong>
+              <span class="feedback-stars-display">${stars}</span>
+            </div>
+            <span class="feedback-card-date">${when}</span>
+          </div>
+          ${f.title ? `<div class="feedback-card-title">${escapeHtml(f.title)}</div>` : ''}
+          <p class="feedback-card-body">${escapeHtml(f.message)}</p>
+          ${f.courseName ? `<div class="feedback-card-course"><i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}</div>` : ''}
+        </div>`;
+    });
+    html += '</div>';
+    host.innerHTML = html;
+  } catch (err) {
+    console.error('[loadApprovedFeedback]', err);
+    host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+      <p style="color:var(--rose-500);">Could not load reviews.</p>
+    </div>`;
+  }
+}
+
+/* ============================================================
+   STUDENT CONTRIBUTIONS — Frontend
+   ============================================================ */
+function openContributionModal() {
+  const modal = document.getElementById('contributionModal');
+  if (!modal) return showToast('Contribution modal missing.', 'error');
+
+  ['contribTitle', 'contribSubject', 'contribDescription'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const fileEl = document.getElementById('contribFile');
+  if (fileEl) fileEl.value = '';
+
+  openModal('contributionModal');
+  setTimeout(() => document.getElementById('contribTitle')?.focus(), 120);
+}
+
+async function submitContribution(e) {
+  if (e) e.preventDefault();
+
+  const title  = (document.getElementById('contribTitle')?.value || '').trim();
+  const fileEl = document.getElementById('contribFile');
+  const file   = fileEl && fileEl.files ? fileEl.files[0] : null;
+
+  if (!title) return showToast('Please enter a title.', 'error');
+  if (!file)  return showToast('Please attach a file.', 'error');
+  if (file.size > 50 * 1024 * 1024) return showToast('File too large (max 50 MB).', 'error');
+
+  const btn = document.getElementById('contribSubmitBtn');
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading…'; }
+
+  try {
+    // Upload file first
+    const up = await uploadFileToServer(file, pct => {
+      if (btn) btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Uploading ${pct}%`;
+    });
+
+    const data = await fetchJSON(`${API_BASE}/contributions/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentName:     currentUser?.fullName || currentUser?.username || '',
+        studentUsername: currentUser?.username || '',
+        studentEmail:    currentUser?.email || '',
+        title,
+        subject:         (document.getElementById('contribSubject')?.value || '').trim(),
+        description:     (document.getElementById('contribDescription')?.value || '').trim(),
+        fileUrl:         up.url,
+        fileName:        up.fileName || file.name,
+        fileSize:        file.size,
+        fileType:        file.type,
+        cloudinaryPublicId: up.publicId || ''
+      })
+    });
+
+    if (data.success) {
+      closeModal('contributionModal');
+      showToast('✅ ' + (data.message || 'Contribution submitted!'), 'success');
+      loadMyContributions();
+    } else {
+      showToast(data.message || 'Upload failed.', 'error');
+    }
+  } catch (err) {
+    console.error('[submitContribution]', err);
+    showToast(err.message || 'Upload failed.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = orig || '<i class="fas fa-upload"></i> Upload Contribution'; }
+  }
+}
+
+async function loadMyContributions() {
+  const host = document.getElementById('myContributionsList');
+  if (!host) return;
+
+  if (!currentUser || !currentUser.username) {
+    host.innerHTML = '';
+    return;
+  }
+
+  host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+    <i class="fas fa-spinner fa-spin"></i><p>Loading your contributions…</p></div>`;
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/contributions/mine/${encodeURIComponent(currentUser.username)}?_t=${Date.now()}`);
+    const list = (data && data.success && Array.isArray(data.contributions)) ? data.contributions : [];
+
+    if (list.length === 0) {
+      host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+        <i class="fas fa-inbox"></i>
+        <p>You haven't contributed anything yet.</p>
+      </div>`;
+      return;
+    }
+
+    let html = '<div class="contribution-list">';
+    list.forEach(c => {
+      const status = c.status === 'pending'
+        ? '<span class="contribution-status pending"><i class="fas fa-circle"></i> Pending review</span>'
+        : c.status === 'downloaded'
+          ? '<span class="contribution-status ok"><i class="fas fa-check-circle"></i> Approved & downloaded</span>'
+          : '<span class="contribution-status bad"><i class="fas fa-times-circle"></i> Removed</span>';
+      const when = c.submittedAt
+        ? new Date(c.submittedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '';
+      const sizeMB = c.fileSize ? (c.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : '';
+
+      html += `
+        <div class="contribution-row">
+          <div class="contribution-icon"><i class="fas fa-file-alt"></i></div>
+          <div class="contribution-info">
+            <h4>${escapeHtml(c.title)}</h4>
+            ${c.subject ? `<div class="contribution-subject">${escapeHtml(c.subject)}</div>` : ''}
+            ${c.description ? `<p class="contribution-desc">${escapeHtml(c.description)}</p>` : ''}
+            <div class="contribution-meta">
+              ${status}
+              ${when ? `<span><i class="fas fa-calendar"></i> ${when}</span>` : ''}
+              ${sizeMB ? `<span><i class="fas fa-hdd"></i> ${sizeMB}</span>` : ''}
+            </div>
+          </div>
+        </div>`;
+    });
+    html += '</div>';
+    host.innerHTML = html;
+  } catch (err) {
+    console.error('[loadMyContributions]', err);
+    host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+      <p style="color:var(--rose-500);">Could not load your contributions.</p>
+    </div>`;
+  }
+}
+
+/* ============================================================
+   ADMIN — FEEDBACK MODERATION TAB
+   ============================================================ */
+async function renderAdminFeedback() {
+  const el = document.getElementById('adminFeedbackContent');
+  if (!el) return;
+  el.classList.add('active');
+  el.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading feedback…</p></div>`;
+
+  let list = [];
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/feedback?t=${Date.now()}`);
+    if (data.success) list = data.feedback || [];
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+
+  const pend = list.filter(f => f.status === 'pending');
+  const appr = list.filter(f => f.status === 'approved');
+  const rej  = list.filter(f => f.status === 'rejected');
+
+  const renderGroup = (title, items, status) => {
+    if (items.length === 0) {
+      return `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">0</span></div>
+              <p class="community-empty">No entries.</p>`;
+    }
+    let h = `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">${items.length}</span></div>`;
+    h += '<div class="community-list">';
+    items.forEach(f => {
+      const stars = '★'.repeat(f.rating || 5);
+      const initials = (f.studentName || f.studentUsername || '?')
+        .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+
+      let actions = '';
+      if (status === 'pending') {
+        actions = `
+          <button class="btn btn-success btn-sm" onclick="approveFeedback('${f._id}')"><i class="fas fa-check"></i> Approve</button>
+          <button class="btn btn-warning btn-sm" onclick="rejectFeedback('${f._id}')"><i class="fas fa-times"></i> Reject</button>`;
+      } else if (status === 'approved') {
+        actions = `<button class="btn btn-warning btn-sm" onclick="rejectFeedback('${f._id}')"><i class="fas fa-times"></i> Unpublish</button>`;
+      } else if (status === 'rejected') {
+        actions = `<button class="btn btn-success btn-sm" onclick="approveFeedback('${f._id}')"><i class="fas fa-check"></i> Approve</button>`;
+      }
+      actions += ` <button class="btn btn-danger btn-sm" onclick="deleteFeedback('${f._id}', ${jsStr(f.studentName || f.studentUsername || 'Feedback')})"><i class="fas fa-trash"></i></button>`;
+
+      h += `
+        <div class="community-item">
+          <div class="community-avatar"><div class="community-avatar-fallback">${escapeHtml(initials)}</div></div>
+          <div class="community-info">
+            <h4>${escapeHtml(f.studentName || f.studentUsername || 'Student')} <span style="color:var(--gold-500);font-size:12px;">${stars}</span></h4>
+            ${f.title ? `<div class="community-meta"><strong>${escapeHtml(f.title)}</strong></div>` : ''}
+            <div class="community-bio">${escapeHtml(f.message)}</div>
+            ${f.courseName ? `<div class="community-contact"><i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}</div>` : ''}
+          </div>
+          <div class="community-actions">${actions}</div>
+        </div>`;
+    });
+    h += '</div>';
+    return h;
+  };
+
+  el.innerHTML = `
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-comment-dots"></i> Student Feedback
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${pend.length} pending · ${appr.length} approved · ${rej.length} rejected
+          </span>
+        </div>
+      </div>
+      ${renderGroup('Pending Approval', pend, 'pending')}
+      ${renderGroup('Approved (visible to students)', appr, 'approved')}
+      ${renderGroup('Rejected', rej, 'rejected')}
+    </div>`;
+}
+
+async function approveFeedback(id) {
+  if (!confirm('Approve this feedback? It will become public.')) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/feedback/${id}/approve`, { method: 'PUT' });
+    if (data.success) { showToast('✅ Approved.', 'success'); renderAdminFeedback(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+async function rejectFeedback(id) {
+  if (!confirm('Reject / Unpublish this feedback?')) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/feedback/${id}/reject`, { method: 'PUT' });
+    if (data.success) { showToast('Rejected.', 'info'); renderAdminFeedback(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+async function deleteFeedback(id, who) {
+  if (!confirm(`Delete feedback from "${who}"?`)) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/feedback/${id}`, { method: 'DELETE' });
+    if (data.success) { showToast('Deleted.', 'info'); renderAdminFeedback(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+/* ============================================================
+   ADMIN — CONTRIBUTIONS TAB
+   ============================================================ */
+async function renderAdminContributions() {
+  const el = document.getElementById('adminContributionsContent');
+  if (!el) return;
+  el.classList.add('active');
+  el.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading contributions…</p></div>`;
+
+  let list = [];
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/contributions?t=${Date.now()}`);
+    if (data.success) list = data.contributions || [];
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+
+  const pend = list.filter(c => c.status === 'pending');
+  const done = list.filter(c => c.status === 'downloaded');
+
+  const renderGroup = (title, items) => {
+    if (items.length === 0) {
+      return `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">0</span></div>
+              <p class="community-empty">No entries.</p>`;
+    }
+    let h = `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">${items.length}</span></div>`;
+    h += '<div class="community-list">';
+    items.forEach(c => {
+      const when = c.submittedAt
+        ? new Date(c.submittedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '';
+      const sizeMB = c.fileSize ? (c.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : '';
+
+      h += `
+        <div class="community-item">
+          <div class="community-avatar"><div class="community-avatar-fallback"><i class="fas fa-file-alt"></i></div></div>
+          <div class="community-info">
+            <h4>${escapeHtml(c.title)}</h4>
+            ${c.subject ? `<div class="community-meta">${escapeHtml(c.subject)}</div>` : ''}
+            ${c.description ? `<div class="community-bio">${escapeHtml(c.description.slice(0, 200))}</div>` : ''}
+            <div class="community-contact">
+              <i class="fas fa-user"></i> ${escapeHtml(c.studentName || c.studentUsername)}
+              ${c.studentEmail ? ` · <i class="fas fa-envelope"></i> ${escapeHtml(c.studentEmail)}` : ''}
+              ${when ? ` · <i class="fas fa-calendar"></i> ${when}` : ''}
+              ${sizeMB ? ` · <i class="fas fa-hdd"></i> ${sizeMB}` : ''}
+            </div>
+          </div>
+          <div class="community-actions">
+            <a class="btn btn-primary btn-sm" href="${API_BASE}/admin/contributions/${c._id}/download" target="_blank" rel="noopener">
+              <i class="fas fa-download"></i> Download
+            </a>
+            <button class="btn btn-danger btn-sm" onclick="deleteContribution('${c._id}', ${jsStr(c.title)})">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>`;
+    });
+    h += '</div>';
+    return h;
+  };
+
+  el.innerHTML = `
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-hand-holding-heart"></i> Student Contributions
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${pend.length} pending · ${done.length} downloaded
+          </span>
+        </div>
+      </div>
+      <p class="editor-hint">
+        Click <strong>Download</strong> to save a contribution to your machine. Marked as "downloaded"
+        once you've grabbed it — you can then upload it to a course yourself.
+      </p>
+      ${renderGroup('Pending Download', pend)}
+      ${renderGroup('Already Downloaded', done)}
+    </div>`;
+}
+
+async function deleteContribution(id, title) {
+  if (!confirm(`Delete contribution "${title}" from Cloudinary AND the database? This cannot be undone.`)) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/contributions/${id}`, { method: 'DELETE' });
+    if (data.success) { showToast('Deleted.', 'info'); renderAdminContributions(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+/* ============================================================
+   ADMIN — BACKUP & RESTORE TAB
+   ============================================================ */
+function renderAdminBackup() {
+  const el = document.getElementById('adminBackupContent');
+  if (!el) return;
+  el.classList.add('active');
+
+  el.innerHTML = `
+    <div class="editor-section">
+      <div class="editor-section-title">
+        <i class="fas fa-database"></i> Backup & Restore Students
+      </div>
+      <p class="editor-hint">
+        Export all students to a CSV file you can keep as a backup. The CSV contains
+        <strong>username, passwordHash, role, fullName, email, phone, createdAt</strong>.
+        Import the same file back to restore — existing users are updated, new users are created.
+      </p>
+    </div>
+
+    <div class="backup-grid">
+      <div class="backup-card">
+        <div class="backup-card-icon tone-brand"><i class="fas fa-download"></i></div>
+        <h3>Export Students</h3>
+        <p>Download a CSV file containing every student account. Store it somewhere safe.</p>
+        <button class="btn btn-primary btn-lg" onclick="exportStudentsCSV()">
+          <i class="fas fa-file-csv"></i> Download CSV
+        </button>
+      </div>
+
+      <div class="backup-card">
+        <div class="backup-card-icon tone-emerald"><i class="fas fa-upload"></i></div>
+        <h3>Import Students</h3>
+        <p>Upload a CSV backup to restore or merge student accounts. Existing usernames are updated.</p>
+        <input type="file" id="csvImportInput" accept=".csv,text/csv" style="display:none;" onchange="handleCSVImport(this)">
+        <button class="btn btn-success btn-lg" onclick="document.getElementById('csvImportInput').click()">
+          <i class="fas fa-upload"></i> Upload CSV
+        </button>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-title"><i class="fas fa-shield-halved"></i> Safety Notes</div>
+      <ul style="margin:8px 0 0 22px;color:var(--text-secondary);line-height:1.7;font-size:13.5px;">
+        <li>CSV export contains <strong>bcrypt password hashes</strong>, not plaintext. Keep the file secure.</li>
+        <li>Importing does <strong>not</strong> delete existing students — it only adds or updates.</li>
+        <li>Max file size for import: <strong>25 MB</strong>.</li>
+      </ul>
+    </div>
+  `;
+}
+
+async function exportStudentsCSV() {
+  try {
+    showToast('Preparing CSV…', 'info');
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(`${API_BASE}/admin/students/export-csv`, {
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `aero-students-backup-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+    showToast('✅ CSV downloaded.', 'success');
+  } catch (err) {
+    console.error('[exportStudentsCSV]', err);
+    showToast('Export failed: ' + err.message, 'error');
+  }
+}
+
+async function handleCSVImport(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (file.size > 25 * 1024 * 1024) {
+    input.value = '';
+    return showToast('File too large (max 25 MB).', 'error');
+  }
+
+  if (!confirm(`Import students from "${file.name}"?\n\nExisting usernames will be UPDATED. New ones CREATED. Nothing is deleted.`)) {
+    input.value = '';
+    return;
+  }
+
+  const form = new FormData();
+  form.append('csvFile', file);
+
+  showToast('Importing…', 'info');
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(`${API_BASE}/admin/students/import-csv`, {
+      method: 'POST',
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      body: form
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('✅ ' + data.message, 'success');
+      if (Array.isArray(data.errors) && data.errors.length > 0) {
+        console.warn('[csv-import] Errors:', data.errors);
+        showToast(`${data.errors.length} row(s) had issues — see console.`, 'info');
+      }
+    } else {
+      showToast(data.message || 'Import failed.', 'error');
+    }
+  } catch (err) {
+    console.error('[handleCSVImport]', err);
+    showToast('Import error: ' + err.message, 'error');
+  } finally {
+    input.value = '';
+  }
+}
+/* ============================================================
    AI HOME PAGE — Chat-style Doubt Solver
    ============================================================ */
 let _aiHomeChat = [];   // [{ role: 'user'|'assistant', text, ts, error? }]
