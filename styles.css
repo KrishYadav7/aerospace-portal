@@ -6390,3 +6390,177 @@ body.hide-latex-previews .latex-preview { display: none; }
   border-radius: var(--radius-sm);
   background: var(--bg-surface-3);
 }
+
+
+/* ============================================================
+   AI ANSWER — rich content rendering (tables, math, code)
+   ------------------------------------------------------------
+   Placed at end of file so these rules override any earlier
+   .ai-answer-body declarations (there are two of them above).
+   ============================================================ */
+
+/* ---- Paragraphs & rhythm ---- */
+.ai-answer-body p { margin: 10px 0; }
+.ai-answer-body p:first-child { margin-top: 0; }
+.ai-answer-body p:last-child  { margin-bottom: 0; }
+
+/* ---- Headings ---- */
+.ai-answer-body h3 {
+  font-size: 16px; font-weight: 800;
+  color: var(--text-primary);
+  letter-spacing: -.2px;
+  margin: 18px 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ai-answer-body h4 {
+  font-size: 14.5px; font-weight: 700;
+  color: var(--text-primary);
+  margin: 16px 0 6px;
+  letter-spacing: -.1px;
+}
+.ai-answer-body h5 {
+  font-size: 13.5px; font-weight: 700;
+  color: var(--text-secondary);
+  margin: 12px 0 6px;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+
+/* ---- Horizontal rule ---- */
+.ai-answer-body hr {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  margin: 16px 0;
+}
+
+/* ---- Links ---- */
+.ai-answer-body a {
+  color: var(--brand-600);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.ai-answer-body a:hover { color: var(--brand-700); }
+[data-theme="dark"] .ai-answer-body a,
+[data-theme="dim"]   .ai-answer-body a { color: var(--brand-300); }
+
+/* ---- Lists ---- */
+.ai-answer-body ul,
+.ai-answer-body ol {
+  margin: 8px 0 10px 22px;
+  padding: 0;
+}
+.ai-answer-body li { margin-bottom: 4px; line-height: 1.65; }
+.ai-answer-body li > ul,
+.ai-answer-body li > ol { margin-top: 4px; margin-bottom: 4px; }
+
+/* ---- Blockquote ---- */
+.ai-answer-body blockquote {
+  border-left: 3px solid var(--brand-500);
+  padding: 8px 14px;
+  margin: 12px 0;
+  background: var(--bg-surface-3);
+  border-radius: 0 8px 8px 0;
+  color: var(--text-secondary);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+[data-theme="dark"] .ai-answer-body blockquote,
+[data-theme="dim"]   .ai-answer-body blockquote {
+  background: rgba(99,102,241,.12);
+  color: var(--text-secondary);
+}
+
+/* ---- Inline code ---- */
+.ai-answer-body code {
+  background: var(--bg-surface-3);
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--brand-600);
+  word-break: break-word;
+}
+[data-theme="dark"] .ai-answer-body code,
+[data-theme="dim"]   .ai-answer-body code { color: var(--brand-300); }
+
+/* ---- Code blocks ---- */
+.ai-answer-body pre {
+  background: var(--bg-surface-3);
+  border: 1px solid var(--border-subtle);
+  padding: 12px 14px;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 12px 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.ai-answer-body pre code {
+  background: transparent;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: inherit;
+}
+
+/* ---- Tables (from AI markdown) ---- */
+.ai-table-wrap {
+  overflow-x: auto;
+  margin: 14px 0;
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+}
+.ai-answer-body table.ai-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 420px;
+}
+.ai-answer-body table.ai-table th,
+.ai-answer-body table.ai-table td {
+  padding: 9px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+  line-height: 1.55;
+}
+.ai-answer-body table.ai-table th:last-child,
+.ai-answer-body table.ai-table td:last-child { border-right: none; }
+.ai-answer-body table.ai-table tr:last-child td { border-bottom: none; }
+
+.ai-answer-body table.ai-table thead th {
+  background: var(--bg-surface-2);
+  font-weight: 800;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ai-answer-body table.ai-table tbody tr:nth-child(even) {
+  background: var(--bg-surface-2);
+}
+.ai-answer-body table.ai-table tbody tr:hover {
+  background: var(--bg-surface-3);
+}
+[data-theme="dark"] .ai-answer-body table.ai-table tbody tr:hover,
+[data-theme="dim"]   .ai-answer-body table.ai-table tbody tr:hover {
+  background: rgba(99,102,241,.08);
+}
+
+/* ---- MathJax block spacing ---- */
+.ai-answer-body mjx-container[display="true"] {
+  margin: 12px 0 !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+.ai-answer-body mjx-container:not([display="true"]) {
+  vertical-align: -0.15em;
+}
+
+/* ---- Strong emphasis ---- */
+.ai-answer-body strong { color: var(--text-primary); font-weight: 700; }
+.ai-answer-body em     { font-style: italic; color: var(--text-secondary); }

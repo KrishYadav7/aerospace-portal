@@ -4435,15 +4435,10 @@ app.delete('/api/admin/friends/:id', requireAdminAuth, async (req, res) => {
    FREE tier: 14,400 requests/day
    ============================================================ */
 
-// Rate limiter — 10 requests per minute per IP (spam protection)
-const aiDoubtLimiter = rateLimit({
-  windowMs: 60 * 1000,   // 1 minute
-  max: 10,               // 10 doubts/minute
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, message: 'Too many AI requests. Please wait a minute.' }
-});
-// Rate limiter — 10 requests per minute per IP (spam protection)
+/* ============================================================
+   AI DOUBT SOLVER — Groq
+   Rate limiter — 10 requests per minute per IP (spam protection)
+   ============================================================ */
 const aiDoubtLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,

@@ -295,9 +295,6 @@ function renderCoursesLoadingSkeleton(message) {
     <div class="courses-loading">
       <div class="pdfv-spinner"></div>
       <p>${escapeHtml(message || 'Loading courses…')}</p>
-      function isAdmin(u) {
-  return String((u && u.role) || '').trim().toLowerCase() === 'admin';
-}
     </div>
     <div class="courses-skeleton-grid">${skelCards}</div>
   `;
@@ -5943,7 +5940,7 @@ function renderMathIn(el) {
               window.MathJax.startup.promise.then(() => {
                 window.__mathjaxReady = true;
                 const q = window.__mathjaxQueue.splice(0);
-                q.forEach(e => renderMathIn(e));
+                q.forEach(e => { if (e && e.isConnected) renderMathIn(e); });
               });
             } else {
               setTimeout(wait, 120);
@@ -5967,7 +5964,7 @@ function renderMathIn(el) {
     window.MathJax.startup.promise.then(() => {
       window.__mathjaxReady = true;
       const q = window.__mathjaxQueue.splice(0);
-      q.forEach(el => renderMathIn(el));
+      q.forEach(el => { if (el && el.isConnected) renderMathIn(el); });
     }).catch(() => {});
     return;
   }
@@ -9344,46 +9341,118 @@ function copyAIAnswer(courseId) {
   });
 }
 
-/**
- * Simple Markdown → HTML converter
- * (Bold, lists, code blocks, headers)
- */
+/* ============================================================
+   renderMarkdown — AI answer → safe HTML
+   ------------------------------------------------------------
+   Handles: fenced code blocks, display math ($$…$$ and \[…\]),
+   inline math ($…$ and \(…\)), markdown tables, headers,
+   blockquotes, ordered + unordered lists, bold/italic/inline-code.
+
+   KEY INSIGHT: math AND code blocks are stashed away as sentinel
+   tokens BEFORE markdown processing, so the newline→<br> step
+   can never split a math expression across lines (which breaks
+   MathJax). They are restored verbatim at the very end.
+   ============================================================ */
 function renderMarkdown(text) {
   if (!text) return '';
 
-  // Extract code blocks first so we don't mangle them
+  // ---- Step 1: Stash fenced code blocks ----
   const codeBlocks = [];
   let html = String(text).replace(/```([\s\S]*?)```/g, (_, body) => {
     const idx = codeBlocks.length;
-    codeBlocks.push('<pre><code>' + escapeHtml(body.replace(/^\n/, '')) + '</code></pre>');
-    return '\u0000CODEBLOCK' + idx + '\u0000';
+    codeBlocks.push('<pre><code>' + escapeHtml(body.replace(/^\n+/, '')) + '</code></pre>');
+    return '\u0001CB' + idx + '\u0001';
   });
 
+  // ---- Step 2: Stash math (BEFORE escaping, so TeX survives) ----
+  const mathBlocks = [];
+  const stashMath = (content) => {
+    const idx = mathBlocks.length;
+    mathBlocks.push(content);
+    return '\u0001MB' + idx + '\u0001';
+  };
+
+  // Display math: $$ ... $$
+  html = html.replace(/\$\$([\s\S]*?)\$\$/g, (_, body) => stashMath('$$' + body + '$$'));
+  // Display math: \[ ... \]
+  html = html.replace(/\\\[([\s\S]*?)\\\]/g, (_, body) => stashMath('\\[' + body + '\\]'));
+  // Inline math: \( ... \)
+  html = html.replace(/\\\(([\s\S]*?)\\\)/g, (_, body) => stashMath('\\(' + body + '\\)'));
+  // Inline math: $ ... $  (skip already-stashed $$)
+  html = html.replace(/(^|[^\\$])\$([^\$\n]+?)\$/g, (full, before, body) => {
+    return before + stashMath('$' + body + '$');
+  });
+
+  // ---- Step 3: Escape remaining HTML ----
   html = escapeHtml(html);
 
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // ---- Step 4: Markdown tables ----
+  html = html.replace(
+    /(?:^\|.+\|[ \t]*\n)(?:^\|[\s\-:|]+\|[ \t]*\n)(?:^\|.+\|[ \t]*\n?)+/gm,
+    (block) => {
+      const lines = block.trim().split('\n').filter(l => l.trim());
+      if (lines.length < 2) return block;
 
-  // Bold
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      const parseRow = (line) =>
+        line.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
 
-  // Headers
-  html = html.replace(/^### (.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+      const headers = parseRow(lines[0]);
+      const rows    = lines.slice(2).map(parseRow); // skip the separator row
 
-  // Bullet lists — group consecutive lines into ONE <ul>
-  html = html.replace(/(?:^[ \t]*[-*] .+(?:\n|$))+/gm, block => {
+      let tbl = '<div class="ai-table-wrap"><table class="ai-table"><thead><tr>';
+      headers.forEach(h => { tbl += `<th>${h}</th>`; });
+      tbl += '</tr></thead><tbody>';
+      rows.forEach(r => {
+        tbl += '<tr>';
+        r.forEach(c => { tbl += `<td>${c}</td>`; });
+        tbl += '</tr>';
+      });
+      tbl += '</tbody></table></div>';
+      return tbl;
+    }
+  );
+
+  // ---- Step 5: Headers ----
+  html = html.replace(/^#### (.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^### (.+)$/gm,  '<h4>$1</h4>');
+  html = html.replace(/^## (.+)$/gm,   '<h3>$1</h3>');
+  html = html.replace(/^# (.+)$/gm,    '<h3>$1</h3>');
+
+  // ---- Step 6: Blockquotes ----
+  html = html.replace(/^&gt;[ \t]?(.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // ---- Step 7: Lists ----
+  // Unordered
+  html = html.replace(/(?:^[ \t]*[-*+] .+(?:\n|$))+/gm, (block) => {
     const items = block.trimEnd().split('\n')
-      .map(l => `<li>${l.replace(/^[ \t]*[-*]\s*/, '')}</li>`)
-      .join('');
+      .map(l => `<li>${l.replace(/^[ \t]*[-*+]\s*/, '')}</li>`).join('');
     return `<ul>${items}</ul>`;
   });
+  // Ordered
+  html = html.replace(/(?:^[ \t]*\d+\. .+(?:\n|$))+/gm, (block) => {
+    const items = block.trimEnd().split('\n')
+      .map(l => `<li>${l.replace(/^[ \t]*\d+\.\s*/, '')}</li>`).join('');
+    return `<ol>${items}</ol>`;
+  });
 
-  // Line breaks (skip ones inside code blocks)
-  html = html.replace(/\n/g, '<br>');
+  // ---- Step 8: Inline formatting ----
+  html = html.replace(/`([^`\n]+)`/g,       '<code>$1</code>');
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
 
-  // Restore code blocks
-  html = html.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_, i) => codeBlocks[Number(i)]);
+  // ---- Step 9: Paragraphs & single line breaks ----
+  const blocks = html.split(/\n{2,}/);
+  html = blocks.map(p => {
+    const t = p.trim();
+    if (!t) return '';
+    // Block-level HTML must not be wrapped in <p>
+    if (/^<(h[1-6]|table|ul|ol|blockquote|div|pre|hr)\b/i.test(t)) return t;
+    return '<p>' + t.replace(/\n/g, '<br>') + '</p>';
+  }).filter(Boolean).join('\n');
+
+  // ---- Step 10: Restore stashed math + code blocks ----
+  html = html.replace(/\u0001MB(\d+)\u0001/g, (_, i) => mathBlocks[Number(i)]);
+  html = html.replace(/\u0001CB(\d+)\u0001/g, (_, i) => codeBlocks[Number(i)]);
 
   return html;
 }
