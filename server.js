@@ -45,6 +45,7 @@ const Alumni = require('./models/Alumni');
 const Friend = require('./models/Friend');
 const Feedback     = require('./models/Feedback');
 const Contribution = require('./models/Contribution');
+const Coupon       = require('./models/Coupon');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
@@ -803,6 +804,39 @@ mongoose.connection.on('connected', () => console.log('[mongo] connected'));
 mongoose.connection.on('error', (e) => console.error('[mongo] error:', e.message));
 mongoose.connection.on('disconnected', () => console.warn('[mongo] disconnected'));
 /* ============================================================
+   ONE-TIME MIGRATION — backfill referralCode for existing users
+   ============================================================ */
+(async () => {
+  try {
+    await new Promise(r => setTimeout(r, 2500)); // let DB connect settle
+    const usersWithoutCode = await User.find({
+      role: 'student',
+      $or: [{ referralCode: { $exists: false } }, { referralCode: null }, { referralCode: '' }]
+    }).select('_id username fullName').limit(5000);
+
+    if (usersWithoutCode.length === 0) {
+      console.log('[migration] ✅ All students already have referral codes.');
+      return;
+    }
+
+    console.log(`[migration] Backfilling referral codes for ${usersWithoutCode.length} user(s)…`);
+    for (const u of usersWithoutCode) {
+      let code;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        code = generateReferralCode(u.username, u.fullName);
+        const clash = await User.findOne({ referralCode: code, _id: { $ne: u._id } }).select('_id').lean();
+        if (!clash) break;
+      }
+      try {
+        await User.updateOne({ _id: u._id }, { $set: { referralCode: code } });
+      } catch (e) { /* ignore */ }
+    }
+    console.log('[migration] ✅ Referral code backfill complete.');
+  } catch (e) {
+    console.warn('[migration] Referral backfill failed (non-fatal):', e.message);
+  }
+})();
+/* ============================================================
    EMAIL REPLIES SCHEMA
    ============================================================ */
 const emailReplySchema = new mongoose.Schema({
@@ -871,8 +905,86 @@ function serializeUser(user) {
     notifications: user.notifications || [],
     quizResults: Object.fromEntries(user.quizResults || new Map()),
     subscription: user.subscription || null,
-    isSubscribed: userHasActiveSubscription(user)
+    isSubscribed: userHasActiveSubscription(user),
+
+    /* Referral program */
+    referralCode:  user.referralCode || null,
+    referredBy:    user.referredBy || null,
+    referralStats: user.referralStats || {
+      totalReferred: 0, totalSubscribed: 0, rewardsEarned: 0,
+      rewardedFor: 0, lastRewardAt: null
+    }
   };
+}
+
+/* ---- Referral helpers ---- */
+function generateReferralCode(username, fullName) {
+  const base = String(username || fullName || 'AERO')
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase()
+    .slice(0, 6) || 'AERO';
+  const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `${base}${suffix}`;
+}
+
+async function ensureReferralCode(user) {
+  if (user.referralCode) return user.referralCode;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const code = generateReferralCode(user.username, user.fullName);
+    const clash = await User.findOne({ referralCode: code }).select('_id').lean();
+    if (!clash) {
+      user.referralCode = code;
+      try { await user.save(); } catch (e) { /* race — retry */ continue; }
+      return code;
+    }
+  }
+  // Fallback — timestamp-based unique code
+  user.referralCode = 'AERO' + Date.now().toString(36).toUpperCase();
+  try { await user.save(); } catch (e) {}
+  return user.referralCode;
+}
+
+/* Grant referral reward to a referrer and notify them. */
+async function grantReferralReward(referrer, rewardDays, settings) {
+  const now = new Date();
+
+  if (!referrer.subscription) referrer.subscription = {};
+  const base = (referrer.subscription.expiresAt && new Date(referrer.subscription.expiresAt) > now)
+    ? new Date(referrer.subscription.expiresAt)
+    : now;
+
+  referrer.subscription.expiresAt = new Date(base.getTime() + rewardDays * 24 * 60 * 60 * 1000);
+  referrer.subscription.active = true;
+  referrer.subscription.status = 'active';
+  referrer.subscription.autoRenew = referrer.subscription.autoRenew || false;
+  referrer.subscription.history = referrer.subscription.history || [];
+  referrer.subscription.history.push({
+    status: 'referred-reward',
+    amount: 0,
+    note: `Referral reward: +${rewardDays} days`,
+    date: now
+  });
+
+  if (!referrer.referralStats) referrer.referralStats = {};
+  referrer.referralStats.rewardsEarned = (referrer.referralStats.rewardsEarned || 0) + 1;
+  referrer.referralStats.lastRewardAt = now;
+
+  if (!referrer.notifications) referrer.notifications = [];
+  referrer.notifications.push({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    type: 'referral-reward',
+    title: `🎁 Referral reward unlocked!`,
+    body: `You earned ${settings.referralRewardTitle || rewardDays + ' days of premium'} for referring ${settings.referralThreshold} students.`,
+    link: '#/home',
+    read: false,
+    createdAt: now
+  });
+  if (referrer.notifications.length > 50) {
+    referrer.notifications = referrer.notifications.slice(-50);
+  }
+
+  await referrer.save();
+  console.log(`[referral] ✅ Reward granted to ${referrer.username} (+${rewardDays} days)`);
 }
 
 function extractYouTubeId(url) {
@@ -1120,6 +1232,10 @@ app.post('/api/login', async (req, res) => {
         success: false,
         message: 'Invalid username or password.'
       });
+    }
+        // Ensure student has a referral code (on-the-fly backfill)
+    if (user.role === 'student' && !user.referralCode) {
+      try { await ensureReferralCode(user); } catch (e) {}
     }
 
     // ---------- Role check — LENIENT (warn only, never block) ----------
@@ -1649,7 +1765,7 @@ app.post('/api/send-otp', async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   try {
-    const { fullName, username, email, phone, password, otp } = req.body || {};
+    const { fullName, username, email, phone, password, otp, referralCode } = req.body || {};
     const cleanEmail    = String(email || '').trim().toLowerCase();
     const cleanUsername = String(username || '').trim().toLowerCase();
     const cleanPhone    = normalizePhone(phone);
@@ -1679,14 +1795,76 @@ app.post('/api/register', async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    await new User({
+
+    // ---- Referral code lookup (before creating the new user) ----
+    let referrerUser = null;
+    const cleanRefCode = String(referralCode || '').trim().toUpperCase();
+    if (cleanRefCode) {
+      try {
+        referrerUser = await User.findOne({
+          referralCode: cleanRefCode,
+          role: 'student'
+        });
+        if (!referrerUser) {
+          console.warn(`[register] Unknown referral code: ${cleanRefCode}`);
+          referrerUser = null;
+        } else if (referrerUser.email === cleanEmail || referrerUser.username === cleanUsername) {
+          referrerUser = null; // self-referral guard
+        }
+      } catch (e) {
+        console.warn('[register] referral lookup failed:', e.message);
+        referrerUser = null;
+      }
+    }
+
+    // ---- Create the new user ----
+    const newUser = new User({
       fullName: String(fullName).trim(),
       username: cleanUsername,
       email:    cleanEmail,
       phone:    cleanPhone,
       password: hashedPassword,
-      role: 'student'
-    }).save();
+      role: 'student',
+      referredBy: referrerUser ? referrerUser.referralCode : null
+    });
+    newUser.referralCode = generateReferralCode(cleanUsername, fullName);
+
+    // Safety: ensure uniqueness (rare collision)
+    for (let i = 0; i < 6; i++) {
+      const clash = await User.findOne({ referralCode: newUser.referralCode }).select('_id').lean();
+      if (!clash) break;
+      newUser.referralCode = generateReferralCode(cleanUsername, fullName);
+    }
+
+    await newUser.save();
+    console.log(`[register] ✅ Created ${cleanUsername} · referralCode=${newUser.referralCode}${referrerUser ? ' · referredBy=' + referrerUser.referralCode : ''}`);
+
+    // ---- Referral tracking: bump referrer + grant reward if threshold met ----
+    if (referrerUser) {
+      try {
+        const settings = await getGlobalSettings();
+        if (!referrerUser.referralStats) referrerUser.referralStats = {};
+        referrerUser.referralStats.totalReferred = (referrerUser.referralStats.totalReferred || 0) + 1;
+
+        const threshold = Math.max(1, Number(settings.referralThreshold) || 3);
+        const rewardDays = Math.max(1, Number(settings.referralRewardDays) || 30);
+        const rewardedFor = referrerUser.referralStats.rewardedFor || 0;
+        const total = referrerUser.referralStats.totalReferred || 0;
+        const expectedRewards = Math.floor(total / threshold);
+
+        if (settings.referralEnabled && expectedRewards > rewardedFor) {
+          const rewardsToGrant = expectedRewards - rewardedFor;
+          for (let i = 0; i < rewardsToGrant; i++) {
+            referrerUser.referralStats.rewardedFor = rewardedFor + i + 1;
+            await grantReferralReward(referrerUser, rewardDays, settings);
+          }
+        } else {
+          await referrerUser.save();
+        }
+      } catch (refErr) {
+        console.warn('[register] referral update failed (non-fatal):', refErr.message);
+      }
+    }
 
     delete otpStore[cleanEmail];
     res.json({ success: true, message: 'Registration successful! You can now log in.' });
@@ -3242,51 +3420,726 @@ async function ensureRazorpayPlan(s) {
 }
 
 /* ---- Student: start subscription checkout ---- */
-app.post('/api/subscribe/create', async (req, res) => {
+/* ============================================================
+   SUBSCRIPTION PLANS — multi-tier CRUD + checkout + coupons
+   ============================================================ */
+
+/* ---- Public: list all enabled plans ---- */
+app.get('/api/subscription/plans', async (req, res) => {
   try {
-    const { userId } = req.body || {};
-    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+    const s = await getGlobalSettings();
+    const plans = (s.subscriptionPlans || [])
+      .filter(p => p.enabled)
+      .map(p => ({
+        id: p.id,
+        title: p.title,
+        description: p.description,
+        durationDays: p.durationDays,
+        amount: p.amount,
+        badge: p.badge || '',
+        featured: !!p.featured
+      }));
+    res.json({
+      success: true,
+      enabled: !!s.subscriptionEnabled,
+      plans,
+      referral: {
+        enabled: !!s.referralEnabled,
+        threshold: s.referralThreshold,
+        rewardDays: s.referralRewardDays,
+        rewardTitle: s.referralRewardTitle,
+        rewardDesc:  s.referralRewardDesc
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: list ALL plans (including disabled) ---- */
+app.get('/api/admin/subscription-plans', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    res.json({
+      success: true,
+      plans: (s.subscriptionPlans || []).map(p => p.toObject ? p.toObject() : p)
+    });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: create custom plan ---- */
+app.post('/api/admin/subscription-plans', requireAdminAuth, async (req, res) => {
+  try {
+    const { title, description, durationDays, amount, badge, featured, enabled } = req.body || {};
+    if (!title || !String(title).trim()) return res.status(400).json({ success:false, message:'Title is required.' });
+    const days = parseInt(durationDays, 10);
+    if (!days || days < 1)   return res.status(400).json({ success:false, message:'Valid duration (days) is required.' });
+    const amt = Number(amount);
+    if (!(amt >= 0))         return res.status(400).json({ success:false, message:'Valid amount is required.' });
 
     const s = await getGlobalSettings();
-    if (!s.subscriptionEnabled) {
-      return res.status(400).json({ success: false, message: 'Subscription is not enabled by admin yet.' });
-    }
-    if (!s.subscriptionAmount || s.subscriptionAmount <= 0) {
-      return res.status(400).json({ success: false, message: 'Subscription amount not configured.' });
+    if (!Array.isArray(s.subscriptionPlans)) s.subscriptionPlans = [];
+    if (s.subscriptionPlans.length >= 20) {
+      return res.status(400).json({ success:false, message:'Max 20 plans allowed.' });
     }
 
-    const planId = await ensureRazorpayPlan(s);
-
-    const subscription = await razorpay.subscriptions.create({
-      plan_id: planId,
-      customer_notify: 1,
-      quantity: 1,
-      total_count: 120,                       // 10 years of monthly cycles
-      notes: { userId: String(user._id), purpose: 'aero-all-access' }
+    const id = 'plan_' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+    s.subscriptionPlans.push({
+      id,
+      title: String(title).trim().slice(0, 80),
+      description: String(description || '').trim().slice(0, 240),
+      durationDays: days,
+      amount: amt,
+      badge: String(badge || '').trim().slice(0, 30),
+      featured: !!featured,
+      enabled: enabled !== false,
+      razorpayPlanId: null,
+      createdAt: new Date()
     });
+    s.updatedAt = new Date();
+    await s.save();
+    cacheClear('settings:');
+    res.json({ success: true, message: 'Plan created.', plan: s.subscriptionPlans[s.subscriptionPlans.length - 1] });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
 
-    if (!user.subscription) user.subscription = {};
-    user.subscription.subscriptionId = subscription.id;
-    user.subscription.planId = planId;
-    user.subscription.amount = s.subscriptionAmount;
-    user.subscription.status = 'pending';
-    user.subscription.autoRenew = true;
-    await user.save();
+/* ---- Admin: update plan ---- */
+app.put('/api/admin/subscription-plans/:planId', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    const plan = (s.subscriptionPlans || []).find(p => p.id === req.params.planId);
+    if (!plan) return res.status(404).json({ success:false, message:'Plan not found.' });
+
+    const { title, description, durationDays, amount, badge, featured, enabled } = req.body || {};
+    if (title !== undefined)       plan.title = String(title).trim().slice(0, 80);
+    if (description !== undefined) plan.description = String(description).trim().slice(0, 240);
+    if (durationDays !== undefined) {
+      const d = parseInt(durationDays, 10);
+      if (d >= 1) plan.durationDays = d;
+    }
+    if (amount !== undefined) {
+      const a = Number(amount);
+      if (a >= 0) plan.amount = a;
+    }
+    if (badge !== undefined)   plan.badge = String(badge).trim().slice(0, 30);
+    if (featured !== undefined) plan.featured = !!featured;
+    if (enabled !== undefined)  plan.enabled = !!enabled;
+
+    /* Invalidate cached Razorpay plan id if amount changed */
+    if (amount !== undefined) plan.razorpayPlanId = null;
+
+    s.updatedAt = new Date();
+    await s.save();
+    cacheClear('settings:');
+    res.json({ success: true, message: 'Plan updated.', plan });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: delete plan ---- */
+app.delete('/api/admin/subscription-plans/:planId', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    const before = (s.subscriptionPlans || []).length;
+    s.subscriptionPlans = (s.subscriptionPlans || []).filter(p => p.id !== req.params.planId);
+    if (s.subscriptionPlans.length === before) {
+      return res.status(404).json({ success:false, message:'Plan not found.' });
+    }
+    s.updatedAt = new Date();
+    await s.save();
+    cacheClear('settings:');
+    res.json({ success: true, message: 'Plan deleted.' });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ============================================================
+   COUPONS
+   ============================================================ */
+
+/* ---- Admin: list coupons ---- */
+app.get('/api/admin/coupons', requireAdminAuth, async (req, res) => {
+  try {
+    const list = await Coupon.find().sort({ createdAt: -1 }).lean();
+    res.json({ success: true, coupons: list });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: create coupon ---- */
+app.post('/api/admin/coupons', requireAdminAuth, async (req, res) => {
+  try {
+    const { code, description, discountPercent, maxUses, expiresAt } = req.body || {};
+    const cleanCode = String(code || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+    if (cleanCode.length < 3 || cleanCode.length > 30) {
+      return res.status(400).json({ success:false, message:'Coupon code must be 3–30 characters (A-Z, 0-9, _, -).' });
+    }
+    const pct = parseInt(discountPercent, 10);
+    if (!pct || pct < 1 || pct > 100) {
+      return res.status(400).json({ success:false, message:'Discount must be 1–100.' });
+    }
+    const exists = await Coupon.findOne({ code: cleanCode });
+    if (exists) return res.status(409).json({ success:false, message:'That code already exists.' });
+
+    const doc = await Coupon.create({
+      code: cleanCode,
+      description: String(description || '').trim().slice(0, 200),
+      discountPercent: pct,
+      maxUses: Math.max(0, parseInt(maxUses, 10) || 0),
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+      createdBy: String(req.adminUser._id)
+    });
+    console.log(`[coupon] ✅ Created ${cleanCode} (${pct}%) by admin ${req.adminUser._id}`);
+    res.json({ success: true, message: 'Coupon created.', coupon: doc });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: update coupon ---- */
+app.put('/api/admin/coupons/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const doc = await Coupon.findById(req.params.id);
+    if (!doc) return res.status(404).json({ success:false, message:'Not found.' });
+    const { description, discountPercent, maxUses, active, expiresAt } = req.body || {};
+    if (description !== undefined) doc.description = String(description).trim().slice(0, 200);
+    if (discountPercent !== undefined) {
+      const p = parseInt(discountPercent, 10);
+      if (p >= 1 && p <= 100) doc.discountPercent = p;
+    }
+    if (maxUses !== undefined) doc.maxUses = Math.max(0, parseInt(maxUses, 10) || 0);
+    if (active !== undefined)  doc.active = !!active;
+    if (expiresAt !== undefined) doc.expiresAt = expiresAt ? new Date(expiresAt) : null;
+    await doc.save();
+    res.json({ success: true, message: 'Coupon updated.', coupon: doc });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: delete coupon ---- */
+app.delete('/api/admin/coupons/:id', requireAdminAuth, async (req, res) => {
+  try {
+    await Coupon.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Coupon deleted.' });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Public: validate coupon (preview discount before payment) ---- */
+app.post('/api/validate-coupon', async (req, res) => {
+  try {
+    const { code, planId } = req.body || {};
+    const cleanCode = String(code || '').trim().toUpperCase();
+    if (!cleanCode) return res.status(400).json({ success:false, message:'Coupon code is required.' });
+
+    const coupon = await Coupon.findOne({ code: cleanCode });
+    if (!coupon) return res.status(404).json({ success:false, message:'Invalid coupon code.' });
+    if (!coupon.isValid()) {
+      let reason = 'This coupon is no longer valid.';
+      if (!coupon.active) reason = 'This coupon has been disabled.';
+      else if (coupon.expiresAt && new Date(coupon.expiresAt) < new Date()) reason = 'This coupon has expired.';
+      else if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses) reason = 'This coupon has reached its usage limit.';
+      return res.status(400).json({ success:false, message: reason });
+    }
+
+    const s = await getGlobalSettings();
+    const plan = (s.subscriptionPlans || []).find(p => p.id === planId);
+    if (!plan) return res.status(404).json({ success:false, message:'Plan not found.' });
+
+    const originalAmount = Number(plan.amount) || 0;
+    const discountAmount = Math.round(originalAmount * coupon.discountPercent) / 100;
+    const finalAmount = Math.max(1, Math.round((originalAmount - discountAmount) * 100) / 100);
 
     res.json({
       success: true,
-      subscriptionId: subscription.id,
+      valid: true,
+      code: coupon.code,
+      discountPercent: coupon.discountPercent,
+      originalAmount,
+      discountAmount,
+      finalAmount,
+      message: `Coupon applied — ${coupon.discountPercent}% off!`
+    });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ============================================================
+   SUBSCRIPTION CHECKOUT — supports plans + coupons
+   ------------------------------------------------------------
+   Two modes:
+     • No coupon  → Razorpay SUBSCRIPTION (auto-renewing)
+     • With coupon → Razorpay ORDER (one-time payment for plan.durationDays)
+   ============================================================ */
+async function ensureRazorpayPlanForThisPlan(plan) {
+  if (plan.razorpayPlanId) {
+    try {
+      const fetched = await razorpay.plans.fetch(plan.razorpayPlanId);
+      const fetchedAmt = fetched && fetched.item ? Number(fetched.item.amount) : null;
+      const wanted = Math.round(Number(plan.amount) * 100);
+      if (fetchedAmt === wanted) return plan.razorpayPlanId;
+    } catch (e) {
+      console.warn('[plan] cached razorpayPlanId invalid:', e.message);
+    }
+  }
+  // Create a new Razorpay plan (monthly interval = 1) — Razorpay uses
+  // interval/period; we approximate any duration with monthly cycles.
+  const months = Math.max(1, Math.round(plan.durationDays / 30));
+  const created = await razorpay.plans.create({
+    period: 'monthly',
+    interval: months,
+    item: {
+      name: plan.title,
+      amount: Math.round(plan.amount * 100),
+      currency: 'INR',
+      description: plan.description || ''
+    },
+    notes: { internalPlanId: plan.id }
+  });
+  return created.id;
+}
+
+app.post('/api/subscribe/create', async (req, res) => {
+  try {
+    const { userId, planId, couponCode } = req.body || {};
+    if (!userId) return res.status(400).json({ success:false, message:'userId required.' });
+    if (!planId) return res.status(400).json({ success:false, message:'planId required.' });
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success:false, message:'User not found.' });
+
+    const s = await getGlobalSettings();
+    if (!s.subscriptionEnabled) {
+      return res.status(400).json({ success:false, message:'Subscription is not enabled yet.' });
+    }
+    const plan = (s.subscriptionPlans || []).find(p => p.id === planId && p.enabled);
+    if (!plan) return res.status(404).json({ success:false, message:'Plan not found or disabled.' });
+
+    /* ---- Coupon (optional) ---- */
+    let coupon = null;
+    let finalAmount = Number(plan.amount) || 0;
+    if (couponCode) {
+      const cleanCode = String(couponCode).trim().toUpperCase();
+      coupon = await Coupon.findOne({ code: cleanCode });
+      if (!coupon || !coupon.isValid()) {
+        return res.status(400).json({ success:false, message:'Coupon is invalid or expired.' });
+      }
+      const discount = Math.round(finalAmount * coupon.discountPercent) / 100;
+      finalAmount = Math.max(1, Math.round((finalAmount - discount) * 100) / 100);
+    }
+
+    /* ---- Mode 1: One-time ORDER (with coupon) ---- */
+    if (coupon) {
+      const order = await razorpay.orders.create({
+        amount: Math.round(finalAmount * 100),   // paise
+        currency: 'INR',
+        receipt: 'aero_plan_' + Date.now().toString(36),
+        notes: {
+          userId: String(user._id),
+          planId: plan.id,
+          couponCode: coupon.code,
+          purpose: 'aero-one-time-subscription',
+          durationDays: plan.durationDays
+        }
+      });
+
+      if (!user.subscription) user.subscription = {};
+      user.subscription.status = 'pending';
+      user.subscription.planId = plan.id;
+      user.subscription.planTitle = plan.title;
+      user.subscription.planDurationDays = plan.durationDays;
+      user.subscription.amount = plan.amount;
+      user.subscription.amountPaid = finalAmount;
+      user.subscription.couponApplied = coupon.code;
+      user.subscription.lastOrderId = order.id;
+      user.subscription.paymentMode = 'one-time';
+      user.subscription.autoRenew = false;
+      await user.save();
+
+      console.log(`[subscribe/create] one-time order ${order.id} for ${user.username} · ₹${finalAmount} (coupon ${coupon.code})`);
+
+      return res.json({
+        success: true,
+        mode: 'one-time',
+        key_id: process.env.RAZORPAY_KEY_ID,
+        orderId: order.id,
+        amount: finalAmount,
+        originalAmount: plan.amount,
+        discountPercent: coupon.discountPercent,
+        couponCode: coupon.code,
+        planTitle: plan.title,
+        durationDays: plan.durationDays
+      });
+    }
+
+    /* ---- Mode 2: Auto-renewing SUBSCRIPTION (no coupon) ---- */
+    const rzpPlanId = await ensureRazorpayPlanForThisPlan(plan);
+    const subscription = await razorpay.subscriptions.create({
+      plan_id: rzpPlanId,
+      customer_notify: 1,
+      quantity: 1,
+      total_count: 120,
+      notes: {
+        userId: String(user._id),
+        planId: plan.id,
+        purpose: 'aero-all-access'
+      }
+    });
+
+    if (!user.subscription) user.subscription = {};
+    user.subscription.status = 'pending';
+    user.subscription.planId = plan.id;
+    user.subscription.planTitle = plan.title;
+    user.subscription.planDurationDays = plan.durationDays;
+    user.subscription.razorpayPlanId = rzpPlanId;
+    user.subscription.subscriptionId = subscription.id;
+    user.subscription.amount = plan.amount;
+    user.subscription.amountPaid = plan.amount;
+    user.subscription.couponApplied = null;
+    user.subscription.paymentMode = 'subscription';
+    user.subscription.autoRenew = true;
+    await user.save();
+
+    console.log(`[subscribe/create] subscription ${subscription.id} for ${user.username} · ₹${plan.amount} · plan ${plan.id}`);
+
+    res.json({
+      success: true,
+      mode: 'subscription',
       key_id: process.env.RAZORPAY_KEY_ID,
-      amount: s.subscriptionAmount,
-      title: s.subscriptionTitle,
-      description: s.subscriptionDesc
+      subscriptionId: subscription.id,
+      amount: plan.amount,
+      originalAmount: plan.amount,
+      planTitle: plan.title,
+      durationDays: plan.durationDays
     });
   } catch (e) {
     console.error('[subscribe/create]', e);
     res.status(500).json({ success: false, message: 'Could not start subscription: ' + e.message });
   }
+});
+
+/* ---- Verify (subscription mode) ---- */
+app.post('/api/subscribe/verify', async (req, res) => {
+  try {
+    const { userId, razorpay_subscription_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+    if (!userId || !razorpay_subscription_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success:false, message:'Missing verification fields.' });
+    }
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(razorpay_payment_id + '|' + razorpay_subscription_id)
+      .digest('hex');
+    if (razorpay_signature !== expected) {
+      return res.status(400).json({ success:false, message:'Invalid subscription signature.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success:false, message:'User not found.' });
+
+    let sub = null;
+    try { sub = await razorpay.subscriptions.fetch(razorpay_subscription_id); } catch (e) {}
+
+    const s = await getGlobalSettings();
+    const planId = (user.subscription && user.subscription.planId) || null;
+    const plan = (s.subscriptionPlans || []).find(p => p.id === planId);
+    const durationDays = plan ? plan.durationDays : 30;
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    if (!user.subscription) user.subscription = {};
+    user.subscription.active = true;
+    user.subscription.status = 'active';
+    user.subscription.subscriptionId = razorpay_subscription_id;
+    user.subscription.razorpayPlanId = (sub && sub.plan_id) || user.subscription.razorpayPlanId;
+    user.subscription.startedAt = user.subscription.startedAt || now;
+    user.subscription.expiresAt = expiresAt;
+    user.subscription.planDurationDays = durationDays;
+    user.subscription.autoRenew = true;
+    user.subscription.paymentMode = 'subscription';
+    user.subscription.lastPaymentId = razorpay_payment_id;
+    user.subscription.history = user.subscription.history || [];
+    user.subscription.history.push({
+      paymentId: razorpay_payment_id,
+      amount: user.subscription.amountPaid || user.subscription.amount || 0,
+      status: 'charged',
+      note: 'Subscription activated',
+      date: now
+    });
+    await user.save();
+
+    // ---- Referral: bump referrer's subscribed count ----
+    if (user.referredBy) {
+      try {
+        const referrer = await User.findOne({ referralCode: user.referredBy });
+        if (referrer) {
+          if (!referrer.referralStats) referrer.referralStats = {};
+          referrer.referralStats.totalSubscribed = (referrer.referralStats.totalSubscribed || 0) + 1;
+          await referrer.save();
+        }
+      } catch (e) { /* silent */ }
+    }
+
+    res.json({ success: true, message: 'Subscription activated!', user: serializeUser(user) });
+  } catch (e) {
+    console.error('[subscribe/verify]', e);
+    res.status(500).json({ success: false, message: 'Verify failed: ' + e.message });
+  }
+});
+
+/* ---- Verify (one-time order mode with coupon) ---- */
+app.post('/api/subscribe/verify-order', async (req, res) => {
+  try {
+    const {
+      userId,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    } = req.body || {};
+    if (!userId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({ success:false, message:'Missing verification fields.' });
+    }
+
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(razorpay_order_id + '|' + razorpay_payment_id)
+      .digest('hex');
+    if (razorpay_signature !== expected) {
+      return res.status(400).json({ success:false, message:'Invalid payment signature.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success:false, message:'User not found.' });
+
+    if (!user.subscription) user.subscription = {};
+    const now = new Date();
+    const durationDays = user.subscription.planDurationDays || 30;
+    const base = (user.subscription.expiresAt && new Date(user.subscription.expiresAt) > now)
+      ? new Date(user.subscription.expiresAt) : now;
+    const expiresAt = new Date(base.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    user.subscription.active = true;
+    user.subscription.status = 'active';
+    user.subscription.startedAt = user.subscription.startedAt || now;
+    user.subscription.expiresAt = expiresAt;
+    user.subscription.autoRenew = false;
+    user.subscription.paymentMode = 'one-time';
+    user.subscription.lastPaymentId = razorpay_payment_id;
+    user.subscription.history = user.subscription.history || [];
+    user.subscription.history.push({
+      paymentId: razorpay_payment_id,
+      amount: user.subscription.amountPaid || 0,
+      status: 'charged',
+      note: `One-time purchase${user.subscription.couponApplied ? ' · coupon ' + user.subscription.couponApplied : ''}`,
+      date: now
+    });
+    await user.save();
+
+    // ---- Mark coupon used ----
+    if (user.subscription.couponApplied) {
+      try {
+        const coupon = await Coupon.findOne({ code: user.subscription.couponApplied });
+        if (coupon) {
+          coupon.usedCount = (coupon.usedCount || 0) + 1;
+          coupon.usedBy = coupon.usedBy || [];
+          coupon.usedBy.push({
+            userId: String(user._id),
+            userEmail: user.email || '',
+            planId: user.subscription.planId,
+            amountSaved: Math.max(0, (user.subscription.amount || 0) - (user.subscription.amountPaid || 0)),
+            usedAt: now
+          });
+          await coupon.save();
+        }
+      } catch (e) { console.warn('[coupon-use]', e.message); }
+    }
+
+    // ---- Referral tracking ----
+    if (user.referredBy) {
+      try {
+        const referrer = await User.findOne({ referralCode: user.referredBy });
+        if (referrer) {
+          if (!referrer.referralStats) referrer.referralStats = {};
+          referrer.referralStats.totalSubscribed = (referrer.referralStats.totalSubscribed || 0) + 1;
+          await referrer.save();
+        }
+      } catch (e) { /* silent */ }
+    }
+
+    res.json({ success: true, message: 'Subscription activated!', user: serializeUser(user) });
+  } catch (e) {
+    console.error('[subscribe/verify-order]', e);
+    res.status(500).json({ success: false, message: 'Verify failed: ' + e.message });
+  }
+});
+
+/* ============================================================
+   REFERRAL PROGRAM — public user endpoint + admin control
+   ============================================================ */
+
+/* ---- Student: my referral info ---- */
+app.get('/api/user/referral/:userId', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.userId)
+      .select('username fullName referralCode referralStats referredBy');
+    if (!user) return res.status(404).json({ success:false, message:'User not found.' });
+
+    // Ensure user has a code
+    if (!user.referralCode) {
+      await ensureReferralCode(user);
+    }
+
+    const s = await getGlobalSettings();
+    const threshold = Math.max(1, Number(s.referralThreshold) || 3);
+    const total = (user.referralStats && user.referralStats.totalReferred) || 0;
+    const rewardedFor = (user.referralStats && user.referralStats.rewardedFor) || 0;
+    const rewardsEarned = (user.referralStats && user.referralStats.rewardsEarned) || 0;
+    const nextRewardAt = (Math.floor(total / threshold) + 1) * threshold;
+
+    // List of people this user has referred (limited)
+    const referredUsers = await User.find({ referredBy: user.referralCode })
+      .select('username fullName createdAt subscription')
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    res.json({
+      success: true,
+      referralCode: user.referralCode,
+      stats: {
+        totalReferred: total,
+        totalSubscribed: (user.referralStats && user.referralStats.totalSubscribed) || 0,
+        rewardsEarned,
+        rewardedFor,
+        nextRewardAt,
+        progressInCycle: total % threshold,
+        threshold
+      },
+      program: {
+        enabled: !!s.referralEnabled,
+        threshold: s.referralThreshold,
+        rewardDays: s.referralRewardDays,
+        rewardTitle: s.referralRewardTitle,
+        rewardDesc:  s.referralRewardDesc
+      },
+      referredUsers: referredUsers.map(u => ({
+        username: u.username,
+        fullName: u.fullName || '',
+        joinedAt: u.createdAt,
+        isSubscribed: !!(u.subscription && u.subscription.active &&
+          (!u.subscription.expiresAt || new Date(u.subscription.expiresAt) > new Date()))
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: read referral settings ---- */
+app.get('/api/admin/referral-settings', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    res.json({
+      success: true,
+      settings: {
+        enabled:     !!s.referralEnabled,
+        threshold:   s.referralThreshold,
+        rewardDays:  s.referralRewardDays,
+        rewardTitle: s.referralRewardTitle,
+        rewardDesc:  s.referralRewardDesc
+      }
+    });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: update referral settings ---- */
+app.put('/api/admin/referral-settings', requireAdminAuth, async (req, res) => {
+  try {
+    const { enabled, threshold, rewardDays, rewardTitle, rewardDesc } = req.body || {};
+    const s = await getGlobalSettings();
+    if (typeof enabled === 'boolean') s.referralEnabled = enabled;
+    if (threshold !== undefined) {
+      const t = parseInt(threshold, 10);
+      if (t >= 1 && t <= 100) s.referralThreshold = t;
+    }
+    if (rewardDays !== undefined) {
+      const d = parseInt(rewardDays, 10);
+      if (d >= 1 && d <= 3650) s.referralRewardDays = d;
+    }
+    if (rewardTitle !== undefined) s.referralRewardTitle = String(rewardTitle).trim().slice(0, 80);
+    if (rewardDesc !== undefined)  s.referralRewardDesc  = String(rewardDesc).trim().slice(0, 240);
+    s.updatedAt = new Date();
+    await s.save();
+    cacheClear('settings:');
+    res.json({
+      success: true,
+      message: 'Referral settings saved.',
+      settings: {
+        enabled: s.referralEnabled,
+        threshold: s.referralThreshold,
+        rewardDays: s.referralRewardDays,
+        rewardTitle: s.referralRewardTitle,
+        rewardDesc: s.referralRewardDesc
+      }
+    });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: top referrers leaderboard ---- */
+app.get('/api/admin/referrals', requireAdminAuth, async (req, res) => {
+  try {
+    const topReferrers = await User.find({ 'referralStats.totalReferred': { $gt: 0 } })
+      .select('username fullName email referralCode referralStats subscription')
+      .sort({ 'referralStats.totalReferred': -1 })
+      .limit(100)
+      .lean();
+
+    const totalWithCode = await User.countDocuments({ role: 'student', referralCode: { $ne: null } });
+    const totalReferred = await User.countDocuments({ referredBy: { $ne: null } });
+
+    const s = await getGlobalSettings();
+    res.json({
+      success: true,
+      settings: {
+        enabled: s.referralEnabled,
+        threshold: s.referralThreshold,
+        rewardDays: s.referralRewardDays,
+        rewardTitle: s.referralRewardTitle,
+        rewardDesc: s.referralRewardDesc
+      },
+      totals: { totalWithCode, totalReferred },
+      referrers: topReferrers.map(u => {
+        const stats = u.referralStats || {};
+        const isSubbed = !!(u.subscription && u.subscription.active &&
+          (!u.subscription.expiresAt || new Date(u.subscription.expiresAt) > new Date()));
+        return {
+          _id: u._id,
+          username: u.username,
+          fullName: u.fullName || '',
+          email: u.email || '',
+          referralCode: u.referralCode,
+          totalReferred: stats.totalReferred || 0,
+          totalSubscribed: stats.totalSubscribed || 0,
+          rewardsEarned: stats.rewardsEarned || 0,
+          rewardedFor: stats.rewardedFor || 0,
+          lastRewardAt: stats.lastRewardAt,
+          isSubscribed: isSubbed,
+          subscriptionExpiresAt: u.subscription && u.subscription.expiresAt
+        };
+      })
+    });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+/* ---- Admin: manually grant a referral reward to a user ---- */
+app.post('/api/admin/referrals/:userId/grant-reward', requireAdminAuth, async (req, res) => {
+  try {
+    const { days } = req.body || {};
+    const user = await User.findById(req.params.userId);
+    if (!user) return res.status(404).json({ success:false, message:'User not found.' });
+
+    const s = await getGlobalSettings();
+    const d = parseInt(days, 10) || s.referralRewardDays || 30;
+
+    await grantReferralReward(user, d, s);
+    res.json({
+      success: true,
+      message: `Granted ${d} day(s) of premium to ${user.username}.`,
+      user: serializeUser(user)
+    });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
 /* ---- Student: verify subscription checkout ---- */
@@ -3766,6 +4619,55 @@ app.post('/api/razorpay-webhook', async (req, res) => {
             user.purchases.push(itemId);
             await user.save();
             console.log(`[Webhook] Unlocked item ${itemId} for user ${userId}`);
+          }
+        }
+
+        // ---- NEW: one-time subscription purchase (via coupon) ----
+        if (userId && order.notes && order.notes.purpose === 'aero-one-time-subscription') {
+          const user = await User.findById(userId);
+          if (user) {
+            const planId = order.notes.planId;
+            const durationDays = parseInt(order.notes.durationDays, 10) || 30;
+            const now = new Date();
+            if (!user.subscription) user.subscription = {};
+            const base = (user.subscription.expiresAt && new Date(user.subscription.expiresAt) > now)
+              ? new Date(user.subscription.expiresAt) : now;
+            user.subscription.active = true;
+            user.subscription.status = 'active';
+            user.subscription.planId = planId;
+            user.subscription.expiresAt = new Date(base.getTime() + durationDays * 24 * 60 * 60 * 1000);
+            user.subscription.autoRenew = false;
+            user.subscription.paymentMode = 'one-time';
+            user.subscription.lastPaymentId = paymentId;
+            user.subscription.history = user.subscription.history || [];
+            user.subscription.history.push({
+              paymentId,
+              amount: (payment.amount || 0) / 100,
+              status: 'charged',
+              note: 'One-time subscription (webhook)',
+              date: now
+            });
+            await user.save();
+            console.log(`[Webhook] ✅ One-time subscription activated for ${user.username} (${durationDays}d)`);
+
+            // Mark coupon used
+            if (order.notes.couponCode) {
+              try {
+                const coupon = await Coupon.findOne({ code: order.notes.couponCode });
+                if (coupon) {
+                  coupon.usedCount = (coupon.usedCount || 0) + 1;
+                  coupon.usedBy = coupon.usedBy || [];
+                  coupon.usedBy.push({
+                    userId: String(user._id),
+                    userEmail: user.email || '',
+                    planId,
+                    amountSaved: 0,
+                    usedAt: now
+                  });
+                  await coupon.save();
+                }
+              } catch (e) { /* silent */ }
+            }
           }
         }
       }
