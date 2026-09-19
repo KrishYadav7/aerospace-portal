@@ -4759,154 +4759,6 @@ body.hide-latex-previews .latex-preview { display: none; }
   .quiz-exam-warning-note { justify-content: center; }
 }
 /* ============================================================
-/* ============================================================
-   52. TEAM, ALUMNI & FRIENDS — SYSTEMATIC BLOCK LAYOUT
-   ============================================================ */
-
-/* --- 1. Grid Layouts (Responsive & Prevents Overlap) --- */
-.professors-grid, 
-.alumni-grid, 
-.friends-grid {
-    display: grid !important;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important;
-    gap: 20px !important;
-    width: 100% !important;
-    align-items: stretch !important; /* Makes cards equal height */
-    margin-bottom: 20px;
-}
-
-/* --- 2. Card Containers (Stops Text from Spilling Out) --- */
-.professor-card, 
-.alumni-card, 
-.friend-card {
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    text-align: center !important;
-    height: 100% !important;
-    padding: 24px 20px !important;
-    background: var(--bg-surface) !important;
-    border: 1px solid var(--border-subtle) !important;
-    border-radius: var(--radius-lg) !important;
-    overflow: hidden !important; /* Crucial: stops overlap */
-    transition: .25s var(--ease) !important;
-}
-
-.professor-card:hover, 
-.alumni-card:hover, 
-.friend-card:hover {
-    transform: translateY(-4px) !important;
-    box-shadow: var(--shadow-md) !important;
-    border-color: var(--brand-300) !important;
-}
-
-/* --- 3. Avatar Lock (Forces Perfect Circles, Fixes Zoom) --- */
-.owner-avatar,
-.alumni-avatar, 
-.professor-avatar, 
-.team-avatar, 
-.community-avatar {
-    width: 130px !important;
-    height: 130px !important;
-    max-width: 130px !important;
-    max-height: 130px !important;
-    min-width: 130px !important;
-    min-height: 130px !important;
-    aspect-ratio: 1 / 1 !important;
-    border-radius: 50% !important;
-    overflow: hidden !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    flex-shrink: 0 !important;
-    margin: 0 auto 16px auto !important;
-    background: var(--bg-surface-3) !important;
-    border: 3px solid var(--brand-500) !important;
-    box-shadow: 0 6px 18px rgba(99,102,241,.25) !important;
-}
-
-/* Force the image inside the avatar to crop correctly (focuses on face) */
-.owner-avatar img,
-.alumni-avatar img,
-.professor-avatar img,
-.team-avatar img,
-.community-avatar img,
-.owner-avatar-img,
-.alumni-avatar-img,
-.community-avatar-img {
-    width: 100% !important;
-    height: 100% !important;
-    object-fit: cover !important;
-    object-position: center 20% !important; /* Shifts up to show face */
-    display: block !important;
-    border-radius: 50% !important;
-}
-
-/* --- 4. Text Truncation (Stops Long Bios from Breaking Layout) --- */
-.professor-card p, 
-.alumni-bio, 
-.friend-card p {
-    font-size: 13px !important;
-    color: var(--text-secondary) !important;
-    line-height: 1.5 !important;
-    margin-bottom: 15px !important;
-    flex: 1 !important;
-    display: -webkit-box !important;
-    -webkit-line-clamp: 4 !important; /* Limits bio to 4 lines */
-    -webkit-box-orient: vertical !important;
-    overflow: hidden !important;
-    text-overflow: ellipsis !important;
-}
-
-/* --- 5. Alumni Specific Fixes --- */
-.alumni-body {
-    flex: 1 !important;
-    width: 100% !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-}
-.alumni-meta, 
-.alumni-contact, 
-.team-contact-row {
-    display: flex !important;
-    justify-content: center !important;
-    flex-wrap: wrap !important;
-    gap: 8px !important;
-    margin-top: auto !important;
-}
-
-/* --- 6. Mobile Responsiveness (Tablets & Phones) --- */
-@media (max-width: 768px) {
-    .professors-grid, 
-    .alumni-grid, 
-    .friends-grid {
-        grid-template-columns: 1fr !important; /* Stack into 1 column */
-    }
-    
-    .owner-avatar { width: 120px !important; height: 120px !important; }
-    .alumni-avatar, 
-    .professor-avatar, 
-    .team-avatar { 
-        width: 100px !important; 
-        height: 100px !important; 
-        min-width: 100px !important; 
-        min-height: 100px !important; 
-    }
-    
-    .section-header-row {
-        flex-direction: column !important;
-        align-items: center !important;
-        text-align: center !important;
-    }
-    
-    .section-header-row button {
-        width: 100% !important;
-        justify-content: center !important;
-        margin-top: 10px !important;
-    }
-}
-/* ============================================================
    AI DOUBT SOLVER — Styles
    ============================================================ */
 
@@ -7478,4 +7330,299 @@ body.body-content-hidden .vp-shell {
   .referral-card-icon { align-self: flex-start; }
   .admin-plans-grid { grid-template-columns: 1fr; }
   .checkout-plan-row { flex-direction: column; align-items: flex-start; }
+}
+/* ============================================================
+   62. CONSOLIDATED LAYOUT FIX
+   ------------------------------------------------------------
+   Resolves duplicate rules across §24 / §52 that were causing
+   cards, avatars, and the owner block to overlap / collapse.
+   Loaded LAST so it wins without !important spaghetti.
+   ============================================================ */
+
+/* ---------- 1. Owner block — clean flex, no auto-margins ---------- */
+.owner-container {
+  display: flex !important;
+  gap: 28px !important;
+  align-items: flex-start !important;
+  flex-wrap: wrap !important;
+}
+.owner-container .owner-avatar,
+.owner-container .owner-image {
+  margin: 0 !important;
+  width: 160px !important;
+  height: 160px !important;
+  flex-shrink: 0 !important;
+  border-radius: 50% !important;
+  overflow: hidden !important;
+  border: 4px solid var(--brand-500) !important;
+  box-shadow: 0 12px 32px rgba(99,102,241,.25) !important;
+  background: var(--bg-surface-3) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  aspect-ratio: 1 / 1 !important;
+}
+.owner-avatar img,
+.owner-avatar-img,
+.owner-preview-img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  object-position: center 25% !important;
+  border-radius: 50% !important;
+  display: block !important;
+}
+.owner-avatar-fallback {
+  font-size: 42px !important;
+  font-weight: 900 !important;
+  color: var(--brand-500) !important;
+}
+.owner-details {
+  flex: 1 1 320px !important;
+  min-width: 0 !important;
+}
+.owner-details h3 {
+  font-size: 20px !important;
+  font-weight: 700 !important;
+  letter-spacing: -.3px !important;
+  color: var(--text-primary) !important;
+  margin: 8px 0 4px !important;
+}
+.owner-role-badge {
+  display: inline-block !important;
+  padding: 3px 10px !important;
+  border-radius: 999px !important;
+  font-size: 10.5px !important;
+  font-weight: 800 !important;
+  letter-spacing: .6px !important;
+  text-transform: uppercase !important;
+  background: linear-gradient(135deg, var(--gold-400), var(--gold-500)) !important;
+  color: #422006 !important;
+}
+.owner-title {
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  color: var(--brand-600) !important;
+  margin-bottom: 10px !important;
+}
+.owner-details p {
+  font-size: 13.5px !important;
+  color: var(--text-secondary) !important;
+  line-height: 1.65 !important;
+  max-width: 640px !important;
+  margin: 0 !important;
+}
+.owner-contact-row {
+  display: flex !important;
+  gap: 8px !important;
+  flex-wrap: wrap !important;
+  margin-top: 14px !important;
+}
+
+/* ---------- 2. Avatar system — ONE canonical size per context ---------- */
+.professor-card .professor-avatar,
+.professor-card .team-avatar,
+.alumni-card  .alumni-avatar,
+.friend-card  .team-avatar,
+.friend-card  .professor-avatar {
+  width: 100px !important;
+  height: 100px !important;
+  min-width: 100px !important;
+  min-height: 100px !important;
+  max-width: 100px !important;
+  max-height: 100px !important;
+  aspect-ratio: 1 / 1 !important;
+  border-radius: 50% !important;
+  overflow: hidden !important;
+  margin: 0 auto 14px auto !important;
+  border: 3px solid var(--brand-500) !important;
+  box-shadow: 0 6px 18px rgba(99,102,241,.22) !important;
+  background: var(--bg-surface-3) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+}
+.professor-card .professor-avatar img,
+.professor-card .team-avatar img,
+.alumni-card  .alumni-avatar img,
+.alumni-card  .alumni-avatar-img,
+.friend-card  .team-avatar img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+  object-position: center 25% !important;
+  border-radius: 50% !important;
+  display: block !important;
+}
+.team-avatar-fallback,
+.alumni-avatar-fallback,
+.community-avatar-fallback {
+  font-size: 32px !important;
+  font-weight: 900 !important;
+  color: var(--brand-500) !important;
+  letter-spacing: -.5px !important;
+}
+
+/* ---------- 3. Card shells — consistent padding, no overlap ---------- */
+.professor-card,
+.alumni-card,
+.friend-card {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  text-align: center !important;
+  height: 100% !important;
+  padding: 22px 20px 20px !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-lg) !important;
+  overflow: hidden !important;
+  gap: 0 !important;
+  box-shadow: var(--shadow-xs) !important;
+  transition: transform .25s var(--ease),
+              box-shadow .25s var(--ease),
+              border-color .25s var(--ease) !important;
+}
+.professor-card:hover,
+.alumni-card:hover,
+.friend-card:hover {
+  transform: translateY(-4px) !important;
+  box-shadow: var(--shadow-md) !important;
+  border-color: var(--brand-300) !important;
+}
+.professor-card h3,
+.alumni-card h3,
+.friend-card h3 {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  color: var(--text-primary) !important;
+  margin: 0 0 4px !important;
+  line-height: 1.3 !important;
+}
+.prof-title,
+.alumni-work {
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: var(--brand-600) !important;
+  margin: 2px 0 8px !important;
+}
+
+/* ---------- 4. Bio truncation — kills overlap from long text ---------- */
+.professor-card p,
+.alumni-bio,
+.friend-card p {
+  font-size: 12.5px !important;
+  color: var(--text-secondary) !important;
+  line-height: 1.55 !important;
+  margin: 6px 0 12px !important;
+  flex: 1 1 auto !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 4 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  word-break: break-word !important;
+}
+
+/* ---------- 5. Meta rows (alumni batch / degree / location) ---------- */
+.alumni-meta,
+.alumni-contact,
+.team-contact-row,
+.professor-card .team-contact-row,
+.friend-card .team-contact-row {
+  display: flex !important;
+  justify-content: center !important;
+  flex-wrap: wrap !important;
+  gap: 6px 12px !important;
+  margin-top: auto !important;
+  padding-top: 10px !important;
+  width: 100% !important;
+  font-size: 11.5px !important;
+  color: var(--text-tertiary) !important;
+}
+.alumni-meta i { color: var(--brand-500) !important; margin-right: 3px !important; }
+
+/* ---------- 6. Contact chips — full standalone styling ---------- */
+.contact-chip {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  padding: 6px 12px !important;
+  border-radius: 999px !important;
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-decoration: none !important;
+  border: 1px solid transparent !important;
+  transition: .2s var(--ease) !important;
+  white-space: nowrap !important;
+}
+.contact-chip-email {
+  background: rgba(99,102,241,.1) !important;
+  color: var(--brand-600) !important;
+  border-color: rgba(99,102,241,.28) !important;
+}
+.contact-chip-email:hover {
+  background: var(--brand-500) !important;
+  color: #fff !important;
+  border-color: var(--brand-500) !important;
+}
+.contact-chip-phone {
+  background: rgba(16,185,129,.1) !important;
+  color: var(--emerald-600) !important;
+  border-color: rgba(16,185,129,.28) !important;
+}
+.contact-chip-phone:hover {
+  background: var(--emerald-500) !important;
+  color: #fff !important;
+  border-color: var(--emerald-500) !important;
+}
+
+/* ---------- 7. Grids — single source of truth ---------- */
+.professors-grid,
+.alumni-grid,
+.friends-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)) !important;
+  gap: 20px !important;
+  width: 100% !important;
+  margin-bottom: 20px !important;
+  align-items: stretch !important;
+}
+.feedback-wall {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)) !important;
+  gap: 20px !important;
+  align-items: stretch !important;
+}
+
+/* ---------- 8. Section spacing — stops sections from touching ---------- */
+.section-card { margin-bottom: 24px !important; }
+.section-card + .section-card { margin-top: 4px !important; }
+
+/* ---------- 9. Mobile stack — no overlap on phones ---------- */
+@media (max-width: 768px) {
+  .owner-container {
+    flex-direction: column !important;
+    align-items: center !important;
+    text-align: center !important;
+    gap: 18px !important;
+  }
+  .owner-container .owner-avatar {
+    width: 130px !important;
+    height: 130px !important;
+    margin: 0 auto !important;
+  }
+  .owner-contact-row { justify-content: center !important; }
+  .owner-details p { margin: 0 auto !important; }
+
+  .professors-grid,
+  .alumni-grid,
+  .friends-grid,
+  .feedback-wall {
+    grid-template-columns: 1fr !important;
+  }
 }

@@ -4862,8 +4862,9 @@ function renderOwnerProfile() {
   if (!container) return;
   const o = liveOwnerProfile;
 
+  // All sizing/cropping handled by .owner-avatar-img in styles.css §62
   const avatarHtml = o.photo
-    ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;">`
+    ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy">`
     : `<div class="owner-avatar-fallback">${escapeHtml(getInitials(o.name))}</div>`;
 
   const contactHtml = [];
@@ -5002,54 +5003,12 @@ function renderContinueCard() {
 /* ============================================================
    SUBSCRIPTION — STUDENT UI
    ============================================================ */
+/* ============================================================
+   DEPRECATED — replaced by renderStudentSubscriptionBanner()
+   (multi-tier aware). Kept as no-op for backward compat.
+   ============================================================ */
 function renderSubscriptionBanner() {
-  const host = document.getElementById('streakCardContainer');
-  // We reuse streakCardContainer's parent area by injecting a sibling right above it.
-  // Simpler approach: inject into a dedicated div in index.html if present,
-  // otherwise append before the streak container.
-  const anchor = document.getElementById('streakCardContainer');
-  if (!anchor) return;
-
-  // Remove existing banner if re-rendering
-  const existing = document.getElementById('subscribeBannerHost');
-  if (existing) existing.remove();
-
-  if (isAdmin(currentUser)) return;
-  if (!liveSubscriptionSettings.enabled) return;
-
-  const wrap = document.createElement('div');
-  wrap.id = 'subscribeBannerHost';
-
-  if (currentUser.isSubscribed) {
-    const exp = currentUser.subscription?.expiresAt
-      ? new Date(currentUser.subscription.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-      : '—';
-    wrap.innerHTML = `
-      <div class="subscribe-active-banner">
-        <div class="subscribe-active-icon"><i class="fas fa-check-circle"></i></div>
-        <div class="subscribe-active-info">
-          <h4>All-Access subscription active</h4>
-          <p>Unlocked every course · Renews on <strong>${exp}</strong> · ₹${currentUser.subscription?.amount || liveSubscriptionSettings.amount}/month</p>
-        </div>
-        <button class="btn btn-outline btn-sm" onclick="cancelSubscription()">
-          <i class="fas fa-times"></i> Cancel Auto-Pay
-        </button>
-      </div>`;
-  } else {
-    wrap.innerHTML = `
-      <div class="subscribe-banner">
-        <div class="subscribe-banner-icon"><i class="fas fa-bolt"></i></div>
-        <div class="subscribe-banner-info">
-          <h4>${escapeHtml(liveSubscriptionSettings.title)}</h4>
-          <p>${escapeHtml(liveSubscriptionSettings.description)} — <strong>₹${liveSubscriptionSettings.amount}/month</strong></p>
-        </div>
-        <button class="btn btn-primary" onclick="startSubscriptionCheckout()">
-          <i class="fas fa-repeat"></i> Subscribe
-        </button>
-      </div>`;
-  }
-
-  anchor.parentNode.insertBefore(wrap, anchor);
+  /* no-op — new banner handles everything */
 }
 
 async function startSubscriptionCheckout() {
@@ -9180,7 +9139,7 @@ function renderCommunityList(type, items, title, status) {
   html += `<div class="community-list">`;
   items.forEach(x => {
     const photoHtml = x.photo
-      ? `<img src="${escapeHtml(x.photo)}" alt="" class="community-avatar-img" loading="lazy" style="width:100% !important;height:100% !important;max-width:100% !important;max-height:100% !important;object-fit:cover !important;object-position:center top !important;border-radius:50% !important;display:block !important;">`
+      ? `<img src="${escapeHtml(x.photo)}" alt="" class="community-avatar-img" loading="lazy">`
       : `<div class="community-avatar-fallback">${escapeHtml(getInitials(x.name))}</div>`;
 
     const meta = [];
