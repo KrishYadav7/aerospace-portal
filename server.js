@@ -4142,59 +4142,6 @@ app.post('/api/admin/referrals/:userId/grant-reward', requireAdminAuth, async (r
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-/* ---- Student: verify subscription checkout ---- */
-app.post('/api/subscribe/verify', async (req, res) => {
-  try {
-    const { userId, razorpay_subscription_id, razorpay_payment_id, razorpay_signature } = req.body || {};
-    if (!userId || !razorpay_subscription_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({ success: false, message: 'Missing verification fields.' });
-    }
-
-    const expected = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(razorpay_payment_id + '|' + razorpay_subscription_id)
-      .digest('hex');
-
-    if (razorpay_signature !== expected) {
-      return res.status(400).json({ success: false, message: 'Invalid subscription signature.' });
-    }
-
-    let sub = null;
-    try { sub = await razorpay.subscriptions.fetch(razorpay_subscription_id); } catch (e) {}
-
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-
-    const s = await getGlobalSettings();
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-    if (!user.subscription) user.subscription = {};
-    user.subscription.active = true;
-    user.subscription.status = 'active';
-    user.subscription.subscriptionId = razorpay_subscription_id;
-    user.subscription.planId = (sub && sub.plan_id) || user.subscription.planId;
-    user.subscription.startedAt = user.subscription.startedAt || now;
-    user.subscription.expiresAt = expiresAt;
-    user.subscription.amount = s.subscriptionAmount;
-    user.subscription.autoRenew = true;
-    user.subscription.lastPaymentId = razorpay_payment_id;
-    user.subscription.history = user.subscription.history || [];
-    user.subscription.history.push({
-      paymentId: razorpay_payment_id,
-      amount: s.subscriptionAmount,
-      status: 'charged',
-      note: 'Subscription activated',
-      date: now
-    });
-    await user.save();
-
-    res.json({ success: true, message: 'Subscription activated!', user: serializeUser(user) });
-  } catch (e) {
-    console.error('[subscribe/verify]', e);
-    res.status(500).json({ success: false, message: 'Verify failed: ' + e.message });
-  }
-});
 
 /* ============================================================
    SUBSCRIPTION CANCELLATION — OTP-VERIFIED
