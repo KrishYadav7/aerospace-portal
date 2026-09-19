@@ -5921,46 +5921,12 @@ let quizPaperConfig = { subject: '', paperCode: '', totalTime: '', totalMarks: 0
 let quizDraft = [];
 
 /* ============================================================
-   MathJax v3 renderer — LAZY LOADED
-   ============================================================ */
-window.__mathjaxReady = false;
-window.__mathjaxQueue = [];
-
-function renderMathIn(el) {
-  if (!el) return;
-  if (!window.__mathjaxReady || !window.MathJax || !window.MathJax.typesetPromise) {
-    if (!window.__mathjaxQueue.includes(el)) window.__mathjaxQueue.push(el);
-    // Kick off MathJax load lazily the first time we need it
-    if (typeof window.loadMathJax === 'function' && !window.__mathjaxLoading) {
-      window.__mathjaxLoading = true;
-      window.loadMathJax()
-        .then(() => {
-          const wait = () => {
-            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-              window.MathJax.startup.promise.then(() => {
-                window.__mathjaxReady = true;
-                const q = window.__mathjaxQueue.splice(0);
-                q.forEach(e => { if (e && e.isConnected) renderMathIn(e); });
-              });
-            } else {
-              setTimeout(wait, 120);
-            }
-          };
-          wait();
-        })
-        .catch(err => console.warn('[MathJax] load failed:', err));
-    }
-    return;
-  }
-  try { window.MathJax.typesetClear([el]); } catch (e) {}
-  window.MathJax.typesetPromise([el]).catch(err => {
-    console.warn('[MathJax]', err && err.message ? err.message : err);
-  });
-}
-
-/* One-time (bounded) readiness check — stops after ~15 s if MathJax never loads. */
-/* ============================================================
-   MathJax v3 renderer — LAZY LOADED + robust queue
+   MathJax v3 — SINGLE CLEAN IMPLEMENTATION
+   ------------------------------------------------------------
+   ONE source of truth. No duplicates. No conflicts.
+   - Loads MathJax ONCE via window.loadMathJax() (defined in index.html)
+   - Queues elements that need typesetting until MathJax is ready
+   - Drains the queue automatically after startup
    ============================================================ */
 window.__mathjaxReady   = false;
 window.__mathjaxLoading = false;
@@ -5969,61 +5935,59 @@ window.__mathjaxQueue   = window.__mathjaxQueue || [];
 function renderMathIn(el) {
   if (!el || !el.isConnected) return;
 
-  // ---- Not ready yet: queue + trigger load ----
-  if (!window.__mathjaxReady || !window.MathJax || !window.MathJax.typesetPromise) {
-    if (!window.__mathjaxQueue.includes(el)) window.__mathjaxQueue.push(el);
+  // ---- Not ready yet: queue the element + trigger loader ----
+  if (!window.__mathjaxReady ||
+      !window.MathJax ||
+      typeof window.MathJax.typesetPromise !== 'function') {
+
+    if (!window.__mathjaxQueue.includes(el)) {
+      window.__mathjaxQueue.push(el);
+    }
 
     if (typeof window.loadMathJax === 'function' && !window.__mathjaxLoading) {
       window.__mathjaxLoading = true;
       window.loadMathJax()
         .then(() => {
           window.__mathjaxReady = true;
-          // Drain queue after MathJax is fully booted
-          const wait = () => {
-            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-              window.MathJax.startup.promise.then(() => {
-                const q = window.__mathjaxQueue.splice(0);
-                q.forEach(node => {
-                  if (node && node.isConnected) renderMathIn(node);
-                });
-              });
-            } else {
-              setTimeout(wait, 80);
-            }
-          };
-          wait();
+          console.log('[MathJax] ✅ ready');
+          // Drain everything that was queued while MathJax was loading
+          const q = window.__mathjaxQueue.splice(0);
+          q.forEach(node => {
+            if (node && node.isConnected) renderMathIn(node);
+          });
         })
-        .catch(err => console.warn('[MathJax] load failed:', err));
+        .catch(err => {
+          window.__mathjaxLoading = false;   // allow retry on next call
+          console.warn('[MathJax] load failed:', err && err.message);
+        });
     }
     return;
   }
 
-  // ---- Ready: typeset (with idempotency to avoid re-runs) ----
-  if (el.dataset.mathjaxDone === '1') {
-    try { window.MathJax.typesetClear([el]); } catch (e) {}
-  }
-
-  window.MathJax.typesetPromise([el])
-    .then(() => { el.dataset.mathjaxDone = '1'; })
-    .catch(err => {
-      // A single bad formula shouldn't break the whole UI
-      console.warn('[MathJax]', err && err.message ? err.message : err);
+  // ---- Ready: typeset this element ----
+  try {
+    window.MathJax.typesetPromise([el]).catch(err => {
+      console.warn('[MathJax] typeset error:', err && err.message);
     });
+  } catch (e) {
+    console.warn('[MathJax] typeset threw:', e && e.message);
+  }
 }
 
-/* One-time readiness watcher — covers cases where MathJax
-   loads via <script> tag without our loader. */
-(function waitForMathJax(attempts = 0) {
-  if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-    window.MathJax.startup.promise.then(() => {
-      window.__mathjaxReady = true;
-      const q = window.__mathjaxQueue.splice(0);
-      q.forEach(el => { if (el && el.isConnected) renderMathIn(el); });
-    }).catch(() => {});
+/* ---- One-time preload when app.js runs ---- */
+(function preloadMathJaxOnce() {
+  if (typeof window.loadMathJax !== 'function') {
+    console.warn('[MathJax] loadMathJax() not found — check index.html');
     return;
   }
-  if (attempts >= 125) return;   // ~15 s, then give up
-  setTimeout(() => waitForMathJax(attempts + 1), 120);
+  window.loadMathJax()
+    .then(() => {
+      window.__mathjaxReady = true;
+      console.log('[MathJax] ✅ ready (preload)');
+      const q = (window.__mathjaxQueue || []).splice(0);
+      q.forEach(el => { if (el && el.isConnected) renderMathIn(el); });
+    })
+    .catch(err => console.warn('[MathJax] preload failed:', err && err.message));
 })();
 
 /* ---------- Debounced live LaTeX preview ---------- */
@@ -8358,26 +8322,8 @@ function showToast(message, type = 'info') {
    INIT
    ============================================================ */
 async function initApp() {
-  /* ⚡ PRELOAD MathJax at startup so it's ready when the
-     first AI answer arrives (no visible delay). */
-  if (typeof window.loadMathJax === 'function') {
-    window.loadMathJax()
-      .then(() => {
-        const wait = () => {
-          if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-            window.MathJax.startup.promise.then(() => {
-              window.__mathjaxReady = true;
-              const q = (window.__mathjaxQueue || []).splice(0);
-              q.forEach(el => { if (el && el.isConnected) renderMathIn(el); });
-            });
-          } else {
-            setTimeout(wait, 80);
-          }
-        };
-        wait();
-      })
-      .catch(err => console.warn('[MathJax] preload failed:', err));
-  }
+  // MathJax preload now happens once at the top of app.js
+  // (see preloadMathJaxOnce IIFE). Nothing to do here.
 
   const savedUser = loadSessionUser();
   if (savedUser) {
@@ -9866,7 +9812,7 @@ function copyAIHomeMessage(idx) {
     showToast(ok ? '✓ Copied to clipboard.' : 'Copy failed.', ok ? 'success' : 'error');
   });
 }
-initApp();
+
 /* ============================================================
    GLOBAL LATEX AUTO-RENDERER (safety net)
    ------------------------------------------------------------
@@ -9917,3 +9863,4 @@ initApp();
     });
   }
 })();
+initApp();
