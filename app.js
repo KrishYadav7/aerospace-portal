@@ -5959,6 +5959,60 @@ function renderMathIn(el) {
 }
 
 /* One-time (bounded) readiness check — stops after ~15 s if MathJax never loads. */
+/* ============================================================
+   MathJax v3 renderer — LAZY LOADED + robust queue
+   ============================================================ */
+window.__mathjaxReady   = false;
+window.__mathjaxLoading = false;
+window.__mathjaxQueue   = window.__mathjaxQueue || [];
+
+function renderMathIn(el) {
+  if (!el || !el.isConnected) return;
+
+  // ---- Not ready yet: queue + trigger load ----
+  if (!window.__mathjaxReady || !window.MathJax || !window.MathJax.typesetPromise) {
+    if (!window.__mathjaxQueue.includes(el)) window.__mathjaxQueue.push(el);
+
+    if (typeof window.loadMathJax === 'function' && !window.__mathjaxLoading) {
+      window.__mathjaxLoading = true;
+      window.loadMathJax()
+        .then(() => {
+          window.__mathjaxReady = true;
+          // Drain queue after MathJax is fully booted
+          const wait = () => {
+            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+              window.MathJax.startup.promise.then(() => {
+                const q = window.__mathjaxQueue.splice(0);
+                q.forEach(node => {
+                  if (node && node.isConnected) renderMathIn(node);
+                });
+              });
+            } else {
+              setTimeout(wait, 80);
+            }
+          };
+          wait();
+        })
+        .catch(err => console.warn('[MathJax] load failed:', err));
+    }
+    return;
+  }
+
+  // ---- Ready: typeset (with idempotency to avoid re-runs) ----
+  if (el.dataset.mathjaxDone === '1') {
+    try { window.MathJax.typesetClear([el]); } catch (e) {}
+  }
+
+  window.MathJax.typesetPromise([el])
+    .then(() => { el.dataset.mathjaxDone = '1'; })
+    .catch(err => {
+      // A single bad formula shouldn't break the whole UI
+      console.warn('[MathJax]', err && err.message ? err.message : err);
+    });
+}
+
+/* One-time readiness watcher — covers cases where MathJax
+   loads via <script> tag without our loader. */
 (function waitForMathJax(attempts = 0) {
   if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
     window.MathJax.startup.promise.then(() => {
@@ -5968,7 +6022,7 @@ function renderMathIn(el) {
     }).catch(() => {});
     return;
   }
-  if (attempts >= 125) return;   // ~15 s
+  if (attempts >= 125) return;   // ~15 s, then give up
   setTimeout(() => waitForMathJax(attempts + 1), 120);
 })();
 
@@ -8304,6 +8358,27 @@ function showToast(message, type = 'info') {
    INIT
    ============================================================ */
 async function initApp() {
+  /* ⚡ PRELOAD MathJax at startup so it's ready when the
+     first AI answer arrives (no visible delay). */
+  if (typeof window.loadMathJax === 'function') {
+    window.loadMathJax()
+      .then(() => {
+        const wait = () => {
+          if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+            window.MathJax.startup.promise.then(() => {
+              window.__mathjaxReady = true;
+              const q = (window.__mathjaxQueue || []).splice(0);
+              q.forEach(el => { if (el && el.isConnected) renderMathIn(el); });
+            });
+          } else {
+            setTimeout(wait, 80);
+          }
+        };
+        wait();
+      })
+      .catch(err => console.warn('[MathJax] preload failed:', err));
+  }
+
   const savedUser = loadSessionUser();
   if (savedUser) {
     currentUser = savedUser;
@@ -9378,8 +9453,8 @@ function renderMarkdown(text) {
   html = html.replace(/\\\[([\s\S]*?)\\\]/g, (_, body) => stashMath('\\[' + body + '\\]'));
   // Inline math: \( ... \)
   html = html.replace(/\\\(([\s\S]*?)\\\)/g, (_, body) => stashMath('\\(' + body + '\\)'));
-  // Inline math: $ ... $  (skip already-stashed $$)
-  html = html.replace(/(^|[^\\$])\$([^\$\n]+?)\$/g, (full, before, body) => {
+  // Inline math: $ ... $  — skip escaped \$ and skip $$ (display)
+  html = html.replace(/(^|[^\\$])\$([^\$\n]+?)\$(?!\$)/g, (full, before, body) => {
     return before + stashMath('$' + body + '$');
   });
 
@@ -9627,10 +9702,15 @@ function renderAIHomeChat() {
 
   messagesEl.innerHTML = html;
 
-  // Render LaTeX in all AI answers
-  if (typeof renderMathIn === 'function') {
-    messagesEl.querySelectorAll('.ai-answer-body').forEach(el => renderMathIn(el));
-  }
+  // Render LaTeX AFTER the browser actually paints the new HTML.
+  // Double rAF ensures MathJax measures correct widths.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (typeof renderMathIn === 'function') {
+        messagesEl.querySelectorAll('.ai-answer-body').forEach(el => renderMathIn(el));
+      }
+    });
+  });
 
   // Smooth scroll to bottom
   requestAnimationFrame(() => {
@@ -9787,3 +9867,53 @@ function copyAIHomeMessage(idx) {
   });
 }
 initApp();
+/* ============================================================
+   GLOBAL LATEX AUTO-RENDERER (safety net)
+   ------------------------------------------------------------
+   Watches the DOM for any new element containing LaTeX and
+   auto-typesets it. Guarantees math renders even if some
+   feature forgets to call renderMathIn() explicitly.
+   ============================================================ */
+(function installAutoLatexObserver() {
+  if (window.__autoLatexInstalled) return;
+  window.__autoLatexInstalled = true;
+
+  const SELECTOR = '.ai-answer-body, .latex-content, .quiz-play-question, ' +
+                   '.quiz-explain, .quiz-play-text, .ai-doubt-answer';
+
+  const obs = new MutationObserver(mutations => {
+    const toRender = new Set();
+
+    mutations.forEach(m => {
+      m.addedNodes.forEach(node => {
+        if (node.nodeType !== 1) return;
+        if (node.matches && node.matches(SELECTOR)) toRender.add(node);
+        if (node.querySelectorAll) {
+          node.querySelectorAll(SELECTOR).forEach(el => toRender.add(el));
+        }
+      });
+    });
+
+    if (toRender.size === 0) return;
+
+    // Defer to next frame so layout settles before MathJax measures
+    requestAnimationFrame(() => {
+      toRender.forEach(el => {
+        if (el.isConnected && typeof renderMathIn === 'function') {
+          renderMathIn(el);
+        }
+      });
+    });
+  });
+
+  // Wait until body exists (script is deferred, but be safe)
+  if (document.body) {
+    obs.observe(document.body, { childList: true, subtree: true });
+    console.log('[LaTeX] Auto-renderer installed');
+  } else {
+    document.addEventListener('DOMContentLoaded', () => {
+      obs.observe(document.body, { childList: true, subtree: true });
+      console.log('[LaTeX] Auto-renderer installed');
+    });
+  }
+})();
