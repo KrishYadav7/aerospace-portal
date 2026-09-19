@@ -646,34 +646,51 @@
 
     async _renderPage(n) {
       const page = await this.pdfDoc.getPage(n);
-      const viewport = page.getViewport({ scale: this.scale });
+
+      // ⚡ CRISP RENDER — render at devicePixelRatio so text is sharp
+      // on Retina / high-DPI screens and mobile.
+      // Cap at 3 to avoid blowing up memory on ultra-dense screens.
+      const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
+
+      // CSS-space viewport (what the user sees — used for layout & text layer)
+      const cssViewport = page.getViewport({ scale: this.scale });
+      // Render-space viewport (higher res — what gets painted on the canvas)
+      const renderViewport = page.getViewport({ scale: this.scale * dpr });
+
       const pageEl = this.pageEls.get(n);
       if (!pageEl) return;
 
       pageEl.innerHTML = '';
-      pageEl.style.width = viewport.width + 'px';
-      pageEl.style.height = viewport.height + 'px';
+      pageEl.style.width  = cssViewport.width  + 'px';
+      pageEl.style.height = cssViewport.height + 'px';
       pageEl.style.position = 'relative';
 
       const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.width = viewport.width + 'px';
-      canvas.style.height = viewport.height + 'px';
+      canvas.width  = renderViewport.width;
+      canvas.height = renderViewport.height;
+      // Keep CSS size equal to the CSS viewport — browser downsamples → sharp.
+      canvas.style.width  = cssViewport.width  + 'px';
+      canvas.style.height = cssViewport.height + 'px';
       canvas.className = 'pdfv-canvas';
       pageEl.appendChild(canvas);
 
+      const ctx = canvas.getContext('2d', { alpha: false });
+      // Improves text legibility on some browsers
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
       await page.render({
-        canvasContext: canvas.getContext('2d', { alpha: false }),
-        viewport: viewport
+        canvasContext: ctx,
+        viewport: renderViewport
       }).promise;
 
+      // Text layer uses the CSS viewport (correct CSS pixel coordinates)
       const textLayer = document.createElement('div');
       textLayer.className = 'pdfv-textlayer';
-      textLayer.style.width = viewport.width + 'px';
-      textLayer.style.height = viewport.height + 'px';
+      textLayer.style.width  = cssViewport.width  + 'px';
+      textLayer.style.height = cssViewport.height + 'px';
       textLayer.style.position = 'absolute';
-      textLayer.style.top = '0';
+      textLayer.style.top  = '0';
       textLayer.style.left = '0';
       textLayer.style.setProperty('--scale-factor', this.scale);
       pageEl.appendChild(textLayer);
@@ -685,14 +702,14 @@
           textContentSource: textContent,
           textContent: textContent,
           container: textLayer,
-          viewport: viewport,
+          viewport: cssViewport,   // ← was `viewport`, now CSS-space
           textDivs: []
         });
       } catch (e) {
         task = pdfjsLib.renderTextLayer({
           textContent: textContent,
           container: textLayer,
-          viewport: viewport,
+          viewport: cssViewport,   // ← same here
           textDivs: []
         });
       }
@@ -718,32 +735,36 @@
       if (inp && document.activeElement !== inp) inp.value = current;
     }
 
+    // Do NOT blur on tab switch — users often check notes/slides and come
+    // back, and blurring the whole PDF for that is too aggressive.
+    // Real screenshots are handled in `_onKeyDown` (PrintScreen, Cmd+Shift+3/4/5).
     _onVisibility() {
-      if (!this.active) return;
-      if (document.hidden) this._flashBlur();
+      // intentionally empty
     }
 
     _onWindowBlur() {
-      if (!this.active || !this.modal) return;
-      this._flashBlur();
+      // intentionally empty — no blur on focus loss
     }
 
     _onWindowFocus() {
-      if (!this.active || !this.modal) return;
-      // Restore after a short delay so a rapid focus flip doesn't leave it blurry
-      clearTimeout(this._blurTimer);
-      this._blurTimer = setTimeout(() => {
-        const shell = this.modal && this.modal.querySelector('.pdfv-shell');
-        if (shell) shell.style.filter = '';
-      }, 250);
+      // nothing to restore
     }
 
+    // Light, short blur ONLY for actual screenshot key presses.
+    // 18px is enough to ruin a captured frame without hiding the content
+    // from the student who is still reading it.
     _flashBlur() {
       if (!this.active || !this.modal) return;
       const shell = this.modal.querySelector('.pdfv-shell');
       if (!shell) return;
-      shell.style.transition = 'filter .1s';
-      shell.style.filter = 'blur(40px) grayscale(100%)';
+
+      clearTimeout(this._blurTimer);
+      shell.style.transition = 'filter .08s ease';
+      shell.style.filter = 'blur(18px)';
+
+      this._blurTimer = setTimeout(() => {
+        if (shell) shell.style.filter = '';
+      }, 800);
     }
 
     _changeZoom(delta) { this._setZoom(this.scale + delta); }

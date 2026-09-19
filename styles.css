@@ -6597,10 +6597,11 @@ body.hide-latex-previews .latex-preview { display: none; }
 }
 .pdfv-canvas { pointer-events: auto; }  /* keep canvas interactive for scrolling */
 
-/* Additional blur fallback if the shell loses focus for any reason */
+/* Fallback blur — only applied when JS explicitly sets body-content-hidden.
+   We no longer add this class on tab-switch, so normal reading is unaffected. */
 body.body-content-hidden .pdfv-shell,
 body.body-content-hidden .vp-shell {
-  filter: blur(40px) grayscale(100%) !important;
+  filter: blur(18px);
 }
 
 /* Give the "Back" button and controls a slightly higher stacking context */
