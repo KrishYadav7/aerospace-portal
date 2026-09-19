@@ -2362,8 +2362,11 @@ function updateAdminTabUI() {
     replies:       { icon: 'fa-envelope-open-text', text: 'Email Replies' },
     subscriptions: { icon: 'fa-repeat',         text: 'Subscriptions & Auto-Pay' },
     organization:  { icon: 'fa-building-user',  text: 'Organization & Owner' },
-        community:     { icon: 'fa-users',          text: 'Community — Alumni & Friends' },
-    security:      { icon: 'fa-shield-halved',  text: 'Admin Security' }
+    community:     { icon: 'fa-users',          text: 'Community — Alumni & Friends' },
+    security:      { icon: 'fa-shield-halved',  text: 'Admin Security' },
+    feedback:      { icon: 'fa-comment-dots',        text: 'Feedback Moderation' },
+    contributions: { icon: 'fa-hand-holding-heart',  text: 'Student Contributions' },
+    backup:        { icon: 'fa-database',            text: 'Backup & Restore' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -2390,6 +2393,14 @@ function updateAdminTabUI() {
     community: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
       <button class="btn btn-primary" onclick="renderAdminCommunity()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
+    feedback: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminFeedback()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
+    contributions: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminContributions()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
+    backup: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>`,
   };
   const meta = titleMap[adminTab] || titleMap.overview;
   if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
@@ -2407,6 +2418,9 @@ function renderAdminDashboard() {
   else if (adminTab === 'organization') renderAdminOrganizationTab();
   else if (adminTab === 'community') renderAdminCommunity();
   else if (adminTab === 'security') renderAdminSecurityTab();
+  else if (adminTab === 'feedback')      renderAdminFeedback();
+  else if (adminTab === 'contributions') renderAdminContributions();
+  else if (adminTab === 'backup')        renderAdminBackup();
 }
 
 /* ============================================================
@@ -4899,6 +4913,8 @@ function renderStudentHome() {
   renderOwnerProfile();
   renderAlumniSection();
   renderFriendsSection();
+  loadApprovedFeedback();
+  loadMyContributions();
 
   const professors = getProfessors();
   if (professors.length === 0) {
@@ -9863,4 +9879,656 @@ function copyAIHomeMessage(idx) {
     });
   }
 })();
+/* ============================================================
+   STUDENT FEEDBACK — Submit + Public wall
+   ============================================================ */
+let _feedbackRating = 5;
+
+function setFeedbackRating(v) {
+  _feedbackRating = Math.min(5, Math.max(1, v));
+  const hidden = document.getElementById('feedbackRating');
+  if (hidden) hidden.value = _feedbackRating;
+  const stars = document.getElementById('feedbackStars');
+  if (stars) {
+    stars.querySelectorAll('button').forEach(b => {
+      const val = parseInt(b.dataset.v, 10);
+      b.classList.toggle('active', val <= _feedbackRating);
+    });
+  }
+}
+
+function openFeedbackModal() {
+  if (!currentUser) return showToast('Please log in to submit feedback.', 'error');
+  const t = document.getElementById('feedbackTitle');
+  const m = document.getElementById('feedbackMessage');
+  if (t) t.value = '';
+  if (m) m.value = '';
+  setFeedbackRating(5);
+  openModal('feedbackModal');
+}
+
+async function submitStudentFeedback(e) {
+  if (e) e.preventDefault();
+  const title = (document.getElementById('feedbackTitle')?.value || '').trim();
+  const message = (document.getElementById('feedbackMessage')?.value || '').trim();
+  const rating = _feedbackRating || 5;
+
+  if (!message) return showToast('Please write your feedback.', 'error');
+
+  const btn = document.getElementById('feedbackSubmitBtn');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…'; }
+
+  try {
+    const res = await fetch(`${API_BASE}/feedback/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentName:     currentUser.fullName || currentUser.username,
+        studentUsername: currentUser.username,
+        studentEmail:    currentUser.email || '',
+        rating, title, message
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      closeModal('feedbackModal');
+      showToast('✅ ' + (data.message || 'Feedback submitted for review.'), 'success');
+    } else {
+      showToast(data.message || 'Failed to submit.', 'error');
+    }
+  } catch (err) {
+    showToast('Network error.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+  }
+}
+
+async function loadApprovedFeedback() {
+  const container = document.getElementById('studentFeedbackList');
+  if (!container) return;
+  try {
+    const res = await fetch(`${API_BASE}/feedback?_t=${Date.now()}`, { cache: 'no-store' });
+    const data = await res.json();
+    const list = (data && data.success && Array.isArray(data.feedback)) ? data.feedback : [];
+
+    if (list.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state" style="padding:30px 20px;">
+          <i class="fas fa-comment-dots"></i>
+          <p>No reviews yet — be the first to share yours!</p>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = `<div class="feedback-wall">${list.map(f => {
+      const stars = '★'.repeat(f.rating || 5) + '☆'.repeat(5 - (f.rating || 5));
+      const initials = getInitials(f.studentName || f.studentUsername || '?');
+      const dateStr = f.approvedAt
+        ? new Date(f.approvedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '';
+      return `
+        <div class="feedback-card">
+          <div class="feedback-card-head">
+            <div class="feedback-avatar">${escapeHtml(initials)}</div>
+            <div class="feedback-card-meta">
+              <strong>${escapeHtml(f.studentName || f.studentUsername || 'Student')}</strong>
+              <div class="feedback-stars-display">${stars}</div>
+            </div>
+            <span class="feedback-card-date">${dateStr}</span>
+          </div>
+          ${f.title ? `<h4 class="feedback-card-title">${escapeHtml(f.title)}</h4>` : ''}
+          <p class="feedback-card-body">${escapeHtml(f.message)}</p>
+          ${f.courseName ? `<div class="feedback-card-course"><i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}</div>` : ''}
+        </div>`;
+    }).join('')}</div>`;
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+      <p style="color:var(--rose-500);">Could not load reviews.</p>
+    </div>`;
+  }
+}
+
+
+/* ============================================================
+   STUDENT CONTRIBUTIONS — Submit + Own list
+   ============================================================ */
+function openContributionModal() {
+  if (!currentUser) return showToast('Please log in first.', 'error');
+  ['contribTitle', 'contribSubject', 'contribDescription'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const f = document.getElementById('contribFile');
+  if (f) f.value = '';
+  openModal('contributionModal');
+}
+
+async function submitContribution(e) {
+  if (e) e.preventDefault();
+  const title       = (document.getElementById('contribTitle')?.value || '').trim();
+  const subject     = (document.getElementById('contribSubject')?.value || '').trim();
+  const description = (document.getElementById('contribDescription')?.value || '').trim();
+  const fileInput   = document.getElementById('contribFile');
+  const file        = fileInput && fileInput.files ? fileInput.files[0] : null;
+
+  if (!title) return showToast('Title is required.', 'error');
+  if (!file)  return showToast('Please choose a file.', 'error');
+  if (file.size > 50 * 1024 * 1024) return showToast('File too large (max 50 MB).', 'error');
+
+  const btn = document.getElementById('contribSubmitBtn');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading…'; }
+
+  try {
+    showToast(`Uploading ${file.name}…`, 'info');
+    const upload = await uploadFileToServer(file, (pct) => {
+      if (btn) btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${pct}%`;
+    });
+
+    const res = await fetch(`${API_BASE}/contributions/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentName:     currentUser.fullName || currentUser.username,
+        studentUsername: currentUser.username,
+        studentEmail:    currentUser.email || '',
+        title, subject, description,
+        fileUrl:            upload.url,
+        fileName:           upload.fileName || file.name,
+        fileSize:           upload.fileSize || file.size,
+        fileType:           file.type || '',
+        cloudinaryPublicId: upload.publicId || ''
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      closeModal('contributionModal');
+      showToast('✅ ' + (data.message || 'Contribution submitted!'), 'success');
+      loadMyContributions();
+    } else {
+      showToast(data.message || 'Submission failed.', 'error');
+    }
+  } catch (err) {
+    console.error('[submitContribution]', err);
+    showToast('Upload failed: ' + (err.message || 'Unknown error'), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+  }
+}
+
+async function loadMyContributions() {
+  const container = document.getElementById('myContributionsList');
+  if (!container) return;
+  if (!currentUser || !currentUser.username) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/contributions/mine/${encodeURIComponent(currentUser.username)}?_t=${Date.now()}`);
+    const data = await res.json();
+    const list = (data && data.success && Array.isArray(data.contributions)) ? data.contributions : [];
+
+    if (list.length === 0) {
+      container.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+        <i class="fas fa-inbox"></i>
+        <p>You haven't contributed anything yet.</p>
+      </div>`;
+      return;
+    }
+
+    container.innerHTML = `<div class="contribution-list">${list.map(c => {
+      const size = c.fileSize
+        ? (c.fileSize < 1024 * 1024
+            ? Math.round(c.fileSize / 1024) + ' KB'
+            : (c.fileSize / 1024 / 1024).toFixed(1) + ' MB')
+        : '';
+      const date = c.submittedAt
+        ? new Date(c.submittedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '';
+      const statusClass = c.status === 'downloaded' ? 'ok' : c.status === 'deleted' ? 'bad' : 'pending';
+      const statusLabel = c.status === 'downloaded' ? 'Downloaded by admin'
+                        : c.status === 'deleted'    ? 'Removed'
+                        : 'Pending review';
+      return `
+        <div class="contribution-row">
+          <div class="contribution-icon"><i class="fas fa-file-alt"></i></div>
+          <div class="contribution-info">
+            <h4>${escapeHtml(c.title)}</h4>
+            ${c.subject ? `<div class="contribution-subject">${escapeHtml(c.subject)}</div>` : ''}
+            ${c.description ? `<p class="contribution-desc">${escapeHtml(c.description)}</p>` : ''}
+            <div class="contribution-meta">
+              <span><i class="fas fa-paperclip"></i> ${escapeHtml(c.fileName || 'file')}${size ? ' · ' + size : ''}</span>
+              <span class="contribution-status ${statusClass}"><i class="fas fa-circle"></i> ${statusLabel}</span>
+              <span><i class="far fa-clock"></i> ${date}</span>
+            </div>
+          </div>
+        </div>`;
+    }).join('')}</div>`;
+  } catch (e) {
+    console.warn('[loadMyContributions]', e);
+    container.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+      <p style="color:var(--rose-500);">Could not load contributions.</p>
+    </div>`;
+  }
+}
+
+
+/* ============================================================
+   ADMIN — FEEDBACK MODERATION TAB
+   ============================================================ */
+async function renderAdminFeedback() {
+  const container = document.getElementById('adminFeedbackContent');
+  if (!container) return;
+  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading feedback…</p></div>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/admin/feedback?t=${Date.now()}`, { cache: 'no-store' });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'Failed to load.');
+
+    const list = data.feedback || [];
+    const pend = list.filter(x => x.status === 'pending');
+    const appr = list.filter(x => x.status === 'approved');
+    const rej  = list.filter(x => x.status === 'rejected');
+
+    let html = `<div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-comment-dots"></i> Student Feedback
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${pend.length} pending · ${appr.length} approved · ${rej.length} rejected
+          </span>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="renderAdminFeedback()">
+          <i class="fas fa-rotate"></i> Refresh
+        </button>
+      </div>
+      ${renderFeedbackGroup('Pending Approval', pend, 'pending')}
+      ${renderFeedbackGroup('Approved (live on portal)', appr, 'approved')}
+      ${renderFeedbackGroup('Rejected', rej, 'rejected')}
+    </div>`;
+
+    container.innerHTML = html;
+  } catch (e) {
+    console.error('[renderAdminFeedback]', e);
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function renderFeedbackGroup(title, items, status) {
+  if (items.length === 0) {
+    return `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">0</span></div>
+            <p class="community-empty">No entries.</p>`;
+  }
+  let html = `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">${items.length}</span></div>`;
+  html += `<div class="community-list">`;
+  items.forEach(f => {
+    const initials = getInitials(f.studentName || f.studentUsername || '?');
+    const stars = '★'.repeat(f.rating || 5) + '☆'.repeat(5 - (f.rating || 5));
+    const dateStr = f.submittedAt
+      ? new Date(f.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : '';
+
+    let actions = '';
+    if (status === 'pending') {
+      actions = `
+        <button class="btn btn-success btn-sm" onclick="approveFeedback('${f._id}')"><i class="fas fa-check"></i> Approve</button>
+        <button class="btn btn-warning btn-sm" onclick="rejectFeedback('${f._id}')"><i class="fas fa-times"></i> Reject</button>`;
+    } else if (status === 'approved') {
+      actions = `
+        <button class="btn btn-warning btn-sm" onclick="rejectFeedback('${f._id}')"><i class="fas fa-eye-slash"></i> Unpublish</button>`;
+    } else if (status === 'rejected') {
+      actions = `
+        <button class="btn btn-success btn-sm" onclick="approveFeedback('${f._id}')"><i class="fas fa-check"></i> Approve</button>`;
+    }
+    actions += ` <button class="btn btn-danger btn-sm" onclick="deleteFeedback('${f._id}')"><i class="fas fa-trash"></i></button>`;
+
+    html += `
+      <div class="community-item">
+        <div class="community-avatar"><div class="community-avatar-fallback">${escapeHtml(initials)}</div></div>
+        <div class="community-info">
+          <h4>${escapeHtml(f.studentName || f.studentUsername || 'Student')}
+            <span class="feedback-stars-display" style="margin-left:8px;">${stars}</span>
+          </h4>
+          <div class="community-meta">@${escapeHtml(f.studentUsername || '')} ${f.studentEmail ? '· ' + escapeHtml(f.studentEmail) : ''}</div>
+          ${f.title ? `<div style="font-weight:700;margin-top:6px;">${escapeHtml(f.title)}</div>` : ''}
+          <div class="community-bio">${escapeHtml(f.message)}</div>
+          <div class="community-contact" style="margin-top:6px;">
+            <i class="far fa-clock"></i> ${dateStr}
+            ${f.courseName ? `· <i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}` : ''}
+          </div>
+        </div>
+        <div class="community-actions">${actions}</div>
+      </div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+async function approveFeedback(id) {
+  try {
+    const res = await fetch(`${API_BASE}/admin/feedback/${id}/approve`, { method: 'PUT' });
+    const data = await res.json();
+    if (data.success) { showToast('✅ Feedback approved & now visible.', 'success'); renderAdminFeedback(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+async function rejectFeedback(id) {
+  try {
+    const res = await fetch(`${API_BASE}/admin/feedback/${id}/reject`, { method: 'PUT' });
+    const data = await res.json();
+    if (data.success) { showToast('Feedback unpublished.', 'info'); renderAdminFeedback(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+async function deleteFeedback(id) {
+  if (!confirm('Permanently delete this feedback?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/admin/feedback/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) { showToast('Deleted.', 'info'); renderAdminFeedback(); }
+    else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+
+/* ============================================================
+   ADMIN — CONTRIBUTIONS TAB
+   ============================================================ */
+async function renderAdminContributions() {
+  const container = document.getElementById('adminContributionsContent');
+  if (!container) return;
+  container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading contributions…</p></div>`;
+
+  try {
+    const res = await fetch(`${API_BASE}/admin/contributions?t=${Date.now()}`, { cache: 'no-store' });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message || 'Failed to load.');
+
+    const list = data.contributions || [];
+
+    if (list.length === 0) {
+      container.innerHTML = `<div class="empty-state">
+        <i class="fas fa-hand-holding-heart"></i>
+        <p>No contributions submitted yet.</p>
+        <p style="margin-top:8px;font-size:13px;">Student submissions will appear here once they upload files.</p>
+      </div>`;
+      return;
+    }
+
+    let html = `<div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-hand-holding-heart"></i> Student Contributions
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${list.length} submission${list.length === 1 ? '' : 's'}
+          </span>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="renderAdminContributions()">
+          <i class="fas fa-rotate"></i> Refresh
+        </button>
+      </div>
+      <div class="community-list">`;
+
+    list.forEach(c => {
+      const initials = getInitials(c.studentName || c.studentUsername || '?');
+      const size = c.fileSize
+        ? (c.fileSize < 1024 * 1024
+            ? Math.round(c.fileSize / 1024) + ' KB'
+            : (c.fileSize / 1024 / 1024).toFixed(2) + ' MB')
+        : '—';
+      const dateStr = c.submittedAt
+        ? new Date(c.submittedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : '';
+
+      const statusBadge = c.status === 'downloaded'
+        ? '<span class="contribution-status ok"><i class="fas fa-download"></i> Downloaded</span>'
+        : c.status === 'deleted'
+          ? '<span class="contribution-status bad"><i class="fas fa-trash"></i> Deleted</span>'
+          : '<span class="contribution-status pending"><i class="fas fa-hourglass-half"></i> New</span>';
+
+      html += `
+        <div class="community-item">
+          <div class="community-avatar"><div class="community-avatar-fallback">${escapeHtml(initials)}</div></div>
+          <div class="community-info">
+            <h4>${escapeHtml(c.title)} ${statusBadge}</h4>
+            <div class="community-meta">
+              ${escapeHtml(c.studentName || c.studentUsername || 'Student')}
+              ${c.studentEmail ? '· ' + escapeHtml(c.studentEmail) : ''}
+              ${c.subject ? `· <i class="fas fa-book"></i> ${escapeHtml(c.subject)}` : ''}
+            </div>
+            ${c.description ? `<div class="community-bio">${escapeHtml(c.description)}</div>` : ''}
+            <div class="community-contact" style="margin-top:8px;">
+              <i class="fas fa-paperclip"></i> ${escapeHtml(c.fileName || 'file')} · ${size}
+              &nbsp;·&nbsp; <i class="far fa-clock"></i> ${dateStr}
+            </div>
+          </div>
+          <div class="community-actions">
+            <button class="btn btn-primary btn-sm" onclick="downloadContributionFile('${c._id}')">
+              <i class="fas fa-download"></i> Download
+            </button>
+            <button class="btn btn-danger btn-sm" onclick="deleteContributionFile('${c._id}', ${jsStr(c.title)})">
+              <i class="fas fa-trash"></i> Delete
+            </button>
+          </div>
+        </div>`;
+    });
+
+    html += `</div></div>`;
+    container.innerHTML = html;
+  } catch (e) {
+    console.error('[renderAdminContributions]', e);
+    container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+async function downloadContributionFile(id) {
+  try {
+    showToast('Preparing download…', 'info');
+    const res = await fetch(`${API_BASE}/admin/contributions/${id}/download`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return showToast(err.message || 'Download failed.', 'error');
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = m ? m[1] : 'contribution';
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast('✅ Downloaded. You can now safely delete it.', 'success');
+    renderAdminContributions();
+  } catch (e) {
+    console.error('[downloadContributionFile]', e);
+    showToast('Download failed.', 'error');
+  }
+}
+
+async function deleteContributionFile(id, title) {
+  if (!confirm(`Permanently delete "${title}"?\n\nThe file will be removed from Cloudinary and the database.`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/admin/contributions/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('🗑️ Contribution deleted.', 'info');
+      renderAdminContributions();
+    } else showToast(data.message || 'Failed.', 'error');
+  } catch { showToast('Server error.', 'error'); }
+}
+
+
+/* ============================================================
+   ADMIN — BACKUP TAB (Export / Import students)
+   ============================================================ */
+function renderAdminBackup() {
+  const container = document.getElementById('adminBackupContent');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div class="editor-section">
+      <div class="editor-section-title">
+        <i class="fas fa-database"></i> Student Data Backup & Restore
+      </div>
+      <p class="editor-hint">
+        Export a complete CSV snapshot of every student account (username, hashed password, role, full name, email, phone, join date).
+        Save it somewhere safe. In the event of a database issue, re-import the file below to restore all accounts — including their login credentials.
+      </p>
+    </div>
+
+    <div class="backup-grid">
+      <div class="backup-card">
+        <div class="backup-card-icon tone-brand"><i class="fas fa-file-export"></i></div>
+        <h3>Export Student Data</h3>
+        <p>Download a CSV file containing <strong>every</strong> student record. Works with Excel, Google Sheets, and Numbers.</p>
+        <button class="btn btn-primary btn-block" onclick="exportStudentsCSV()" id="backupExportBtn">
+          <i class="fas fa-download"></i> Export CSV
+        </button>
+        <span class="hint" style="display:block;margin-top:10px;">
+          <i class="fas fa-info-circle"></i> Only student accounts are exported — admin accounts are never included.
+        </span>
+      </div>
+
+      <div class="backup-card">
+        <div class="backup-card-icon tone-emerald"><i class="fas fa-file-import"></i></div>
+        <h3>Import / Restore</h3>
+        <p>Upload a CSV backup to restore student accounts. Existing students with the same username will be updated; new students will be created.</p>
+        <input type="file" id="backupImportInput" accept=".csv" style="display:none;" onchange="importStudentsCSV(this)">
+        <button class="btn btn-success btn-block" onclick="document.getElementById('backupImportInput').click()" id="backupImportBtn">
+          <i class="fas fa-upload"></i> Choose CSV File
+        </button>
+        <span class="hint" style="display:block;margin-top:10px;">
+          <i class="fas fa-triangle-exclamation" style="color:var(--gold-500);"></i>
+          Passwords are restored as-is (hashed). Students will log in with their previous credentials.
+        </span>
+      </div>
+    </div>
+
+    <div class="editor-section" id="backupResultBox" style="display:none;margin-top:20px;"></div>
+  `;
+}
+
+async function exportStudentsCSV() {
+  const btn = document.getElementById('backupExportBtn');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…'; }
+
+  try {
+    showToast('Preparing CSV backup…', 'info');
+    const res = await fetch(`${API_BASE}/admin/students/export-csv`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return showToast(err.message || 'Export failed.', 'error');
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get('content-disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const filename = m ? m[1] : `aero-students-backup-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`✅ Exported ${filename}`, 'success');
+  } catch (err) {
+    console.error('[exportStudentsCSV]', err);
+    showToast('Export failed.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+  }
+}
+
+async function importStudentsCSV(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  if (!confirm(
+    `Restore from "${file.name}"?\n\n` +
+    `• Existing students will be UPDATED with the CSV data\n` +
+    `• New students will be CREATED\n` +
+    `• Nothing is ever deleted\n\n` +
+    `Continue?`
+  )) {
+    input.value = '';
+    return;
+  }
+
+  const btn = document.getElementById('backupImportBtn');
+  const original = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Restoring…'; }
+
+  try {
+    const formData = new FormData();
+    formData.append('csvFile', file);
+
+    const res = await fetch(`${API_BASE}/admin/students/import-csv`, {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+
+    const box = document.getElementById('backupResultBox');
+    if (box) {
+      box.style.display = 'block';
+      const errList = (data.errors || []).slice(0, 20).map(e =>
+        `<li><code>row ${e.row}</code> · <strong>${escapeHtml(e.username || '')}</strong> — ${escapeHtml(e.error)}</li>`
+      ).join('');
+
+      box.innerHTML = `
+        <div class="editor-section-title">
+          <i class="fas fa-clipboard-check" style="color:var(--emerald-500);"></i>
+          Import Result
+        </div>
+        <div class="email-report-stats" style="grid-template-columns:repeat(3,1fr);">
+          <div class="email-report-stat">
+            <div class="num ok">${data.created || 0}</div>
+            <div class="label">Created</div>
+          </div>
+          <div class="email-report-stat">
+            <div class="num">${data.updated || 0}</div>
+            <div class="label">Updated</div>
+          </div>
+          <div class="email-report-stat">
+            <div class="num skip">${data.skipped || 0}</div>
+            <div class="label">Skipped</div>
+          </div>
+        </div>
+        ${data.errors && data.errors.length > 0 ? `
+          <div class="email-report-hint" style="margin-top:12px;">
+            <i class="fas fa-triangle-exclamation"></i>
+            <div>
+              <strong>${data.errors.length} row${data.errors.length === 1 ? '' : 's'} failed:</strong>
+              <ul style="margin:6px 0 0 18px;padding:0;font-size:12px;">${errList}</ul>
+            </div>
+          </div>
+        ` : ''}
+        <p style="margin-top:12px;color:var(--emerald-600);font-weight:600;">
+          <i class="fas fa-check-circle"></i> ${escapeHtml(data.message || 'Import complete.')}
+        </p>
+      `;
+    }
+
+    if (data.success) showToast('✅ ' + (data.message || 'Import complete.'), 'success');
+    else showToast(data.message || 'Import failed.', 'error');
+
+    if (adminTab === 'students') renderAdminStudents();
+  } catch (err) {
+    console.error('[importStudentsCSV]', err);
+    showToast('Import failed: ' + (err.message || 'Unknown'), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    input.value = '';
+  }
+}
+
 initApp();

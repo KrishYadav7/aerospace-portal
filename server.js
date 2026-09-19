@@ -43,6 +43,8 @@ const Professor = require('./models/Professor');
 const Settings = require('./models/Settings');
 const Alumni = require('./models/Alumni');
 const Friend = require('./models/Friend');
+const Feedback     = require('./models/Feedback');
+const Contribution = require('./models/Contribution');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
@@ -4474,6 +4476,396 @@ app.delete('/api/admin/friends/:id', requireAdminAuth, async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 });
+/* ============================================================
+   STUDENT FEEDBACK SYSTEM  (with admin moderation)
+   ============================================================ */
+const feedbackLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many feedback submissions. Please try again later.' }
+});
+
+/* Public: submit feedback (goes in as `pending`) */
+app.post('/api/feedback/submit', feedbackLimiter, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.message || !String(b.message).trim()) {
+      return res.status(400).json({ success: false, message: 'Feedback message is required.' });
+    }
+    const doc = new Feedback({
+      studentName:     String(b.studentName     || '').trim().slice(0, 80),
+      studentUsername: String(b.studentUsername || '').trim().slice(0, 60),
+      studentEmail:    String(b.studentEmail    || '').trim().slice(0, 200),
+      courseId:        b.courseId ? String(b.courseId) : null,
+      courseName:      String(b.courseName || '').trim().slice(0, 200),
+      rating:          Math.min(5, Math.max(1, parseInt(b.rating, 10) || 5)),
+      title:           String(b.title || '').trim().slice(0, 120),
+      message:         String(b.message).trim().slice(0, 2000),
+      status: 'pending'
+    });
+    await doc.save();
+    res.json({ success: true, message: 'Thanks! Your feedback was submitted for review.' });
+  } catch (e) {
+    console.error('[feedback/submit]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Public: list APPROVED feedback only */
+app.get('/api/feedback', async (req, res) => {
+  try {
+    const list = await Feedback.find({ status: 'approved' })
+      .select('-studentEmail -approvedBy')
+      .sort({ approvedAt: -1 })
+      .limit(60)
+      .lean();
+    res.json({ success: true, feedback: list });
+  } catch (e) {
+    console.error('[feedback/list]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: list everything */
+app.get('/api/admin/feedback', requireAdminAuth, async (req, res) => {
+  try {
+    const list = await Feedback.find().sort({ submittedAt: -1 }).limit(500).lean();
+    res.json({ success: true, feedback: list });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: approve */
+app.put('/api/admin/feedback/:id/approve', requireAdminAuth, async (req, res) => {
+  try {
+    const doc = await Feedback.findByIdAndUpdate(
+      req.params.id,
+      { status: 'approved', approvedAt: new Date(), approvedBy: String(req.adminUser._id) },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+    res.json({ success: true, message: 'Feedback approved.' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: reject */
+app.put('/api/admin/feedback/:id/reject', requireAdminAuth, async (req, res) => {
+  try {
+    const doc = await Feedback.findByIdAndUpdate(
+      req.params.id,
+      { status: 'rejected', approvedAt: null },
+      { new: true }
+    );
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+    res.json({ success: true, message: 'Feedback rejected.' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: delete */
+app.delete('/api/admin/feedback/:id', requireAdminAuth, async (req, res) => {
+  try {
+    await Feedback.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Feedback deleted.' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+
+/* ============================================================
+   STUDENT CONTRIBUTION PORTAL
+   ============================================================ */
+const contributionLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 25,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many uploads. Please try again later.' }
+});
+
+/* Student: submit a contribution (file already uploaded via /api/upload) */
+app.post('/api/contributions/submit', contributionLimiter, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.title || !String(b.title).trim()) {
+      return res.status(400).json({ success: false, message: 'Title is required.' });
+    }
+    if (!b.fileUrl) {
+      return res.status(400).json({ success: false, message: 'A file is required.' });
+    }
+    const doc = new Contribution({
+      studentName:     String(b.studentName     || '').trim().slice(0, 80),
+      studentUsername: String(b.studentUsername || '').trim().slice(0, 60),
+      studentEmail:    String(b.studentEmail    || '').trim().slice(0, 200),
+      title:           String(b.title).trim().slice(0, 160),
+      description:     String(b.description || '').trim().slice(0, 1000),
+      subject:         String(b.subject || '').trim().slice(0, 120),
+      fileUrl:         String(b.fileUrl).slice(0, 1000),
+      fileName:        String(b.fileName || '').trim().slice(0, 260),
+      fileSize:        Number(b.fileSize) || 0,
+      fileType:        String(b.fileType || '').slice(0, 120),
+      cloudinaryPublicId: String(b.cloudinaryPublicId || '').slice(0, 300),
+      status: 'pending'
+    });
+    await doc.save();
+    res.json({ success: true, message: 'Contribution submitted! The admin will review it.' });
+  } catch (e) {
+    console.error('[contributions/submit]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Student: list own contributions */
+app.get('/api/contributions/mine/:username', async (req, res) => {
+  try {
+    const username = String(req.params.username || '').toLowerCase();
+    if (!username) return res.json({ success: true, contributions: [] });
+    const list = await Contribution.find({ studentUsername: username })
+      .select('-cloudinaryPublicId')
+      .sort({ submittedAt: -1 })
+      .limit(50)
+      .lean();
+    res.json({ success: true, contributions: list });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: list all contributions */
+app.get('/api/admin/contributions', requireAdminAuth, async (req, res) => {
+  try {
+    const list = await Contribution.find().sort({ submittedAt: -1 }).limit(500).lean();
+    res.json({ success: true, contributions: list });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: download a contribution file (proxied, forces Content-Disposition) */
+app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, res) => {
+  try {
+    const doc = await Contribution.findById(req.params.id).lean();
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+
+    let url = doc.fileUrl;
+    if (/res\.cloudinary\.com/.test(url) && !/fl_attachment/.test(url)) {
+      url = url.replace('/upload/', `/upload/fl_attachment:${encodeURIComponent(doc.fileName || 'file')}/`);
+    }
+
+    await Contribution.findByIdAndUpdate(doc._id, {
+      status: 'downloaded',
+      downloadedAt: new Date()
+    });
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      return res.status(502).json({ success: false, message: 'Could not fetch file from storage.' });
+    }
+    const contentType = response.headers.get('content-type') || 'application/octet-stream';
+    const filename = (doc.fileName || 'contribution').replace(/"/g, '');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    const arrBuf = await response.arrayBuffer();
+    res.send(Buffer.from(arrBuf));
+  } catch (e) {
+    console.error('[admin/contributions/download]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: delete a contribution (from Cloudinary AND DB) */
+app.delete('/api/admin/contributions/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const doc = await Contribution.findById(req.params.id);
+    if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
+
+    if (doc.cloudinaryPublicId) {
+      try {
+        let rt = 'image';
+        if (/\/video\/upload\//.test(doc.fileUrl))     rt = 'video';
+        else if (/\/raw\/upload\//.test(doc.fileUrl))  rt = 'raw';
+        else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(doc.fileName || '')) rt = 'video';
+        else if (/\.(pdf|docx?|pptx?|xlsx?|txt|csv|zip)$/i.test(doc.fileName || '')) rt = 'raw';
+        await cloudinary.uploader.destroy(doc.cloudinaryPublicId, { resource_type: rt });
+      } catch (e) {
+        console.warn('[contribution delete] cloudinary destroy failed:', e.message);
+      }
+    }
+
+    await Contribution.findByIdAndDelete(doc._id);
+    res.json({ success: true, message: 'Contribution deleted from platform.' });
+  } catch (e) {
+    console.error('[admin/contributions/delete]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+
+/* ============================================================
+   STUDENT DATA BACKUP — CSV EXPORT / IMPORT
+   ============================================================ */
+const csvBackupUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
+
+function csvEscape(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function parseCSV(text) {
+  const rows = [];
+  let cur = [], field = '', inQuotes = false, i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQuotes = false; i++; continue;
+      }
+      field += c; i++;
+    } else {
+      if (c === '"')       { inQuotes = true; i++; continue; }
+      if (c === ',')       { cur.push(field); field = ''; i++; continue; }
+      if (c === '\r')      { i++; continue; }
+      if (c === '\n')      { cur.push(field); rows.push(cur); cur = []; field = ''; i++; continue; }
+      field += c; i++;
+    }
+  }
+  if (field.length > 0 || cur.length > 0) { cur.push(field); rows.push(cur); }
+  return rows;
+}
+
+/* Admin: export students to CSV */
+app.get('/api/admin/students/export-csv', requireAdminAuth, async (req, res) => {
+  try {
+    const students = await User.find({ role: 'student' })
+      .select('username password role fullName email phone createdAt')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    const header = ['username', 'passwordHash', 'role', 'fullName', 'email', 'phone', 'createdAt'];
+    const lines  = [header.join(',')];
+
+    students.forEach(s => {
+      lines.push([
+        csvEscape(s.username),
+        csvEscape(s.password),
+        csvEscape(s.role || 'student'),
+        csvEscape(s.fullName || ''),
+        csvEscape(s.email || ''),
+        csvEscape(s.phone || ''),
+        csvEscape(s.createdAt ? new Date(s.createdAt).toISOString() : '')
+      ].join(','));
+    });
+
+    const csv = '\uFEFF' + lines.join('\n');
+    const filename = `aero-students-backup-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (e) {
+    console.error('[admin/students/export-csv]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: import students from CSV */
+app.post('/api/admin/students/import-csv',
+  requireAdminAuth,
+  csvBackupUpload.single('csvFile'),
+  async (req, res) => {
+    try {
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ success: false, message: 'CSV file is required.' });
+      }
+      let csvText = req.file.buffer.toString('utf8');
+      if (csvText.charCodeAt(0) === 0xFEFF) csvText = csvText.slice(1);
+
+      const rows = parseCSV(csvText).filter(r => r.length > 0 && (r.length > 1 || (r[0] || '').trim()));
+      if (rows.length < 2) {
+        return res.status(400).json({ success: false, message: 'CSV must contain a header and at least one row.' });
+      }
+
+      const header = rows[0].map(h => h.trim().toLowerCase());
+      const idx = {
+        username:     header.indexOf('username'),
+        passwordHash: header.indexOf('passwordhash') >= 0 ? header.indexOf('passwordhash') : header.indexOf('password'),
+        role:         header.indexOf('role'),
+        fullName:     header.indexOf('fullname'),
+        email:        header.indexOf('email'),
+        phone:        header.indexOf('phone'),
+        createdAt:    header.indexOf('createdat')
+      };
+
+      if (idx.username === -1 || idx.passwordHash === -1) {
+        return res.status(400).json({
+          success: false,
+          message: 'CSV must include "username" and "passwordHash" columns.'
+        });
+      }
+
+      let created = 0, updated = 0, skipped = 0;
+      const errors = [];
+
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.length === 0) continue;
+
+        const username     = (r[idx.username]     || '').trim().toLowerCase();
+        const passwordHash = (r[idx.passwordHash] || '').trim();
+
+        if (!username || !passwordHash) { skipped++; continue; }
+
+        try {
+          const existing = await User.findOne({ username });
+          const update = {
+            password: passwordHash,
+            role:     (idx.role     >= 0 ? (r[idx.role] || 'student').trim().toLowerCase() : 'student') || 'student',
+            fullName: (idx.fullName >= 0 ? (r[idx.fullName] || '').trim() : ''),
+            email:    (idx.email    >= 0 ? (r[idx.email]    || '').trim() : ''),
+            phone:    (idx.phone    >= 0 ? (r[idx.phone]    || '').trim() : '')
+          };
+          if (existing) {
+            await User.updateOne({ _id: existing._id }, { $set: update });
+            updated++;
+          } else {
+            const doc = new User({ username, ...update });
+            if (idx.createdAt >= 0 && r[idx.createdAt]) {
+              const d = new Date(r[idx.createdAt]);
+              if (!isNaN(d)) doc.createdAt = d;
+            }
+            await doc.save();
+            created++;
+          }
+        } catch (e) {
+          errors.push({ row: i + 1, username, error: e.message });
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Import complete — ${created} created, ${updated} updated, ${skipped} skipped.`,
+        created, updated, skipped, errors
+      });
+    } catch (e) {
+      console.error('[admin/students/import-csv]', e);
+      res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+    }
+  }
+);
+
 /* ============================================================
    AI DOUBT SOLVER — Groq (Llama 3.3 70B)
    ------------------------------------------------------------

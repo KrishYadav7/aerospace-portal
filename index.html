@@ -300,6 +300,45 @@
             <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"From tutorials to question banks, everything is in one place. The payment process was smooth and instant access was great."</p><h4>– Sneha Patil</h4></div>
           </div>
         </section>
+
+        <!-- STUDENT FEEDBACK — public (approved-only) wall -->
+        <section class="section-card" id="studentFeedbackSection">
+          <div class="section-header-row">
+            <h2><i class="fas fa-star-half-alt"></i> Student Reviews</h2>
+            <button class="btn btn-primary btn-sm" onclick="openFeedbackModal()">
+              <i class="fas fa-pen"></i> Write Feedback
+            </button>
+          </div>
+          <p class="editor-hint" style="margin-top:-6px;margin-bottom:16px;">
+            Feedback is reviewed by the admin before being published.
+          </p>
+          <div id="studentFeedbackList">
+            <div class="empty-state" style="padding:30px 20px;">
+              <i class="fas fa-spinner fa-spin"></i>
+              <p>Loading reviews…</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- STUDENT CONTRIBUTIONS — upload & view own -->
+        <section class="section-card" id="studentContributionSection">
+          <div class="section-header-row">
+            <h2><i class="fas fa-hand-holding-heart"></i> Share Your Notes</h2>
+            <button class="btn btn-success btn-sm" onclick="openContributionModal()">
+              <i class="fas fa-upload"></i> Contribute
+            </button>
+          </div>
+          <p class="editor-hint" style="margin-top:-6px;margin-bottom:16px;">
+            Share your own study notes, summaries, or materials with your batchmates.
+            All submissions are reviewed by the admin.
+          </p>
+          <div id="myContributionsList">
+            <div class="empty-state" style="padding:30px 20px;">
+              <i class="fas fa-inbox"></i>
+              <p>You haven't contributed anything yet.</p>
+            </div>
+          </div>
+        </section>
       </section>
       <!-- ADMIN DASHBOARD -->
       <section id="adminView" class="view">
@@ -335,6 +374,15 @@
           </button>
           <button class="admin-tab" data-tab="security" onclick="switchAdminTab('security')">
             <i class="fas fa-shield-halved"></i> Security
+          </button>
+          <button class="admin-tab" data-tab="feedback" onclick="switchAdminTab('feedback')">
+            <i class="fas fa-comment-dots"></i> Feedback
+          </button>
+          <button class="admin-tab" data-tab="contributions" onclick="switchAdminTab('contributions')">
+            <i class="fas fa-hand-holding-heart"></i> Contributions
+          </button>
+          <button class="admin-tab" data-tab="backup" onclick="switchAdminTab('backup')">
+            <i class="fas fa-database"></i> Backup
           </button>
         </div>
 
@@ -462,6 +510,15 @@
         </div>
         <div id="adminTabSecurity" class="admin-tab-content">
           <div id="adminSecurityContent"></div>
+        </div>
+        <div id="adminTabFeedback" class="admin-tab-content">
+          <div id="adminFeedbackContent"></div>
+        </div>
+        <div id="adminTabContributions" class="admin-tab-content">
+          <div id="adminContributionsContent"></div>
+        </div>
+        <div id="adminTabBackup" class="admin-tab-content">
+          <div id="adminBackupContent"></div>
         </div>
       </section>
 
@@ -1112,6 +1169,102 @@
           <button type="button" class="btn btn-outline" onclick="closeModal('friendSubmitModal')">Cancel</button>
           <button type="submit" class="btn btn-primary" id="frSubmitBtn">
             <i class="fas fa-paper-plane"></i> Submit for Review
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ STUDENT FEEDBACK MODAL ============ -->
+  <div class="modal-overlay" id="feedbackModal">
+    <div class="modal-box" style="max-width:560px;">
+      <div class="modal-icon-header">
+        <div class="modal-icon-tile tone-emerald" style="background:linear-gradient(135deg,#fbbf24,#f59e0b);">
+          <i class="fas fa-star"></i>
+        </div>
+        <div>
+          <h3>Share Your Feedback</h3>
+          <p class="modal-sub" style="margin:2px 0 0;">Your review will be reviewed by the admin before publishing.</p>
+        </div>
+      </div>
+
+      <form id="feedbackForm" onsubmit="submitStudentFeedback(event)">
+        <div class="form-group">
+          <label>Rating *</label>
+          <div class="feedback-stars" id="feedbackStars">
+            <button type="button" data-v="1" onclick="setFeedbackRating(1)"><i class="fas fa-star"></i></button>
+            <button type="button" data-v="2" onclick="setFeedbackRating(2)"><i class="fas fa-star"></i></button>
+            <button type="button" data-v="3" onclick="setFeedbackRating(3)"><i class="fas fa-star"></i></button>
+            <button type="button" data-v="4" onclick="setFeedbackRating(4)"><i class="fas fa-star"></i></button>
+            <button type="button" data-v="5" onclick="setFeedbackRating(5)"><i class="fas fa-star"></i></button>
+          </div>
+          <input type="hidden" id="feedbackRating" value="5">
+        </div>
+
+        <div class="form-group">
+          <label>Title (optional)</label>
+          <input type="text" id="feedbackTitle" maxlength="120" placeholder="e.g. Great course structure!">
+        </div>
+
+        <div class="form-group">
+          <label>Your Feedback *</label>
+          <textarea id="feedbackMessage" rows="5" maxlength="2000" required placeholder="Tell us about your experience…"></textarea>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('feedbackModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="feedbackSubmitBtn">
+            <i class="fas fa-paper-plane"></i> Submit Feedback
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ STUDENT CONTRIBUTION MODAL ============ -->
+  <div class="modal-overlay" id="contributionModal">
+    <div class="modal-box" style="max-width:600px;">
+      <div class="modal-icon-header">
+        <div class="modal-icon-tile tone-emerald">
+          <i class="fas fa-hand-holding-heart"></i>
+        </div>
+        <div>
+          <h3>Contribute Study Material</h3>
+          <p class="modal-sub" style="margin:2px 0 0;">Share a file — the admin will review it before making it available.</p>
+        </div>
+      </div>
+
+      <form id="contributionForm" onsubmit="submitContribution(event)">
+        <div class="form-group">
+          <label>Title *</label>
+          <input type="text" id="contribTitle" maxlength="160" required placeholder="e.g. Unit-3 Fluid Mechanics Notes">
+        </div>
+
+        <div class="form-group">
+          <label>Subject / Topic</label>
+          <input type="text" id="contribSubject" maxlength="120" placeholder="e.g. Aerodynamics">
+        </div>
+
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <textarea id="contribDescription" rows="3" maxlength="1000" placeholder="Short description of what's inside…"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>File * (max 50 MB)</label>
+          <input type="file" id="contribFile" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.zip,.jpg,.jpeg,.png" required>
+          <span class="hint">Accepted: PDF, DOC/DOCX, PPT/PPTX, XLS/XLSX, TXT, ZIP, and images.</span>
+        </div>
+
+        <div class="email-modal-info">
+          <i class="fas fa-shield-halved"></i>
+          <span>Your contribution is uploaded securely and only visible to the admin until approved.</span>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('contributionModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="contribSubmitBtn">
+            <i class="fas fa-upload"></i> Upload Contribution
           </button>
         </div>
       </form>
