@@ -218,8 +218,34 @@ const ALLOWED_MIMES = new Set([
   'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/ogg'
 ]);
 
+/* ---------- Allowed file extensions (used as a fallback when the
+   browser sends a generic MIME type for chunked/sliced uploads) ---------- */
+const ALLOWED_EXTS = new Set([
+  '.pdf',
+  '.doc', '.docx',
+  '.ppt', '.pptx',
+  '.xls', '.xlsx',
+  '.txt',
+  '.jpg', '.jpeg', '.png', '.webp', '.gif',
+  '.mp4', '.webm', '.mov', '.avi', '.mkv',
+  '.mp3', '.wav', '.ogg',
+  '.zip'
+]);
+
 function fileFilter(req, file, cb) {
+  // 1) Standard MIME check
   if (ALLOWED_MIMES.has(file.mimetype)) return cb(null, true);
+
+  // 2) Fallback: browser didn't recognise the type (very common for
+  //    sliced blobs in chunked uploads and for mobile uploads).
+  //    Fall back to validating the file extension instead.
+  const rawName   = String(file.originalname || '').toLowerCase();
+  const cleanName = rawName.replace(/\.part\d+$/, '');   // strip ".partN"
+  const dotIdx    = cleanName.lastIndexOf('.');
+  const ext       = dotIdx >= 0 ? cleanName.slice(dotIdx) : '';
+
+  if (ext && ALLOWED_EXTS.has(ext)) return cb(null, true);
+
   cb(new Error('File type not allowed: ' + file.mimetype));
 }
 
@@ -534,6 +560,13 @@ app.use((err, req, res, next) => {
     }
     return res.status(400).json({ success: false, message: 'Upload error: ' + err.message });
   }
+
+  // ── Treat multer-side file-rejection errors as 400, not 500 ──
+  if (err && /File type not allowed|upload session|Unexpected end of form|Missing uploadId/i.test(err.message || '')) {
+    console.warn('[error-handler] upload rejected:', err.message);
+    return res.status(400).json({ success: false, message: err.message });
+  }
+
   if (err) {
     console.error('[error-handler]', err);
     return res.status(500).json({ success: false, message: err.message || 'Server error' });
