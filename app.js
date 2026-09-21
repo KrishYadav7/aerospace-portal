@@ -11,19 +11,56 @@ const API_BASE = '/api';
    This wrapper is installed ONCE and is completely transparent:
    it only adds a header, it never blocks or alters requests.
    ============================================================ */
+/* ============================================================
+   GLOBAL FETCH INTERCEPTOR — v2 (with stale-session recovery)
+   ------------------------------------------------------------
+   • Attaches the session token to every /api/* call
+   • Detects 401 on PROTECTED endpoints and forces a clean
+     re-login (prevents the "silent 401 retry loop")
+   • Whitelists auth endpoints so bad credentials don't nuke
+     a valid session
+   ============================================================ */
 (function installFetchAuthInterceptor() {
   if (window.__aeroFetchInterceptorInstalled) return;
   window.__aeroFetchInterceptorInstalled = true;
 
   const _originalFetch = window.fetch.bind(window);
 
+  const AUTH_ENDPOINTS = [
+    '/api/login',
+    '/api/register',
+    '/api/send-otp',
+    '/api/admin/login/verify-otp',
+    '/api/admin/login/resend-otp',
+    '/api/forgot-username/send-otp',
+    '/api/forgot-username/verify',
+    '/api/forgot-password/send-otp',
+    '/api/forgot-password/verify',
+    '/api/forgot-password/reset',
+    '/api/auth/logout',
+    '/api/auth/session-check'
+  ];
+
+  function isAuthEndpoint(url) {
+    for (let i = 0; i < AUTH_ENDPOINTS.length; i++) {
+      if (url.indexOf(AUTH_ENDPOINTS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
   window.fetch = function (input, init) {
+    let url = '';
     try {
-      const url = typeof input === 'string'
+      url = typeof input === 'string'
         ? input
         : (input && input.url) ? input.url : '';
+    } catch (e) { url = ''; }
 
-      if (url && url.indexOf('/api/') !== -1) {
+    const isApiCall = url && url.indexOf('/api/') !== -1;
+
+    // ── Attach Authorization header ──
+    if (isApiCall) {
+      try {
         let token = null;
         try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
         if (token) {
@@ -36,10 +73,40 @@ const API_BASE = '/api';
             });
           }
         }
-      }
-    } catch (e) { /* fail-safe: never break a request */ }
+      } catch (e) { /* fail-safe: never break a request */ }
+    }
 
-    return _originalFetch(input, init);
+    const responsePromise = _originalFetch(input, init);
+
+    // ── Detect stale session (401 on a protected endpoint) ──
+    if (isApiCall && !isAuthEndpoint(url)) {
+      responsePromise.then(function (res) {
+        if (res.status !== 401) return;
+
+        let hasUser = false;
+        try { hasUser = !!sessionStorage.getItem('aero_user'); } catch (e) {}
+        if (!hasUser) return;
+        if (window.__aeroHandlingStaleSession) return;
+
+        window.__aeroHandlingStaleSession = true;
+        console.warn('[fetch] 401 on protected endpoint — stale session:', url);
+
+        try { sessionStorage.removeItem('aero_user');  } catch (e) {}
+        try { sessionStorage.removeItem('aero_token'); } catch (e) {}
+
+        setTimeout(function () {
+          if (typeof window.__aeroHandleStaleSession === 'function') {
+            window.__aeroHandleStaleSession(
+              'Your session has expired. Please log in again.'
+            );
+          } else {
+            location.reload();
+          }
+        }, 50);
+      }).catch(function () { /* network error — ignore */ });
+    }
+
+    return responsePromise;
   };
 })();
 
@@ -503,6 +570,48 @@ async function checkSessionAlive() {
     console.warn('[session-heartbeat]', e && e.message);
   }
 }
+/* ============================================================
+   STALE SESSION HANDLER
+   Called by the fetch interceptor when a protected /api/ call
+   returns 401. Clears all app state, returns to the login screen,
+   and resets the guard so a fresh login works normally.
+   ============================================================ */
+window.__aeroHandleStaleSession = function (message) {
+  try { stopSessionHeartbeat(); } catch (e) {}
+  _sessionKilled = false;
+
+  currentUser = null;
+  currentCourseId = null;
+  editingCourseId = null;
+  window.currentSelectedCourseId = null;
+  currentMaterialFilter = 'all';
+  studentNav = 'home';
+  adminTab = 'overview';
+
+  clearSession();
+  try { _emailSelectedIds.clear(); } catch (e) {}
+  _analyticsCache = null;
+  _analyticsCacheAt = 0;
+  try { destroyAnalyticsCharts(); } catch (e) {}
+
+  try { setLoginRole('student'); } catch (e) {}
+  try { quizEditingCourseId = null; } catch (e) {}
+  try { quizEditingMaterialId = null; } catch (e) {}
+  try { quizDraft = []; } catch (e) {}
+  try { quizPlayerState = null; } catch (e) {}
+  try { stopQuizAutosave(); } catch (e) {}
+  try { stopQuizTimer(); } catch (e) {}
+  try { exitFullscreenNow(); } catch (e) {}
+
+  pushHash('#/home');
+  renderApp();
+
+  if (typeof showToast === 'function') {
+    showToast(message || 'Session expired. Please log in again.', 'error');
+  }
+
+  window.__aeroHandlingStaleSession = false;
+};
 
 function forceLogoutDueToNewLogin(message) {
   // Wipe ALL local state (mirrors logout() but doesn't call server logout)
@@ -2721,17 +2830,16 @@ function renderAdminProfessors() {
 }
 
 async function renderAdminStudents() {
-  
   const container = $('adminStudentList');
   if (!container) return;
   container.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading students...</p></div>`;
 
   try {
-    const response = await fetch('/api/students');
-    const data = await response.json();
+    // fetchJSON → interceptor attaches token + surfaces clean errors
+    const data = await fetchJSON(`${API_BASE}/students?_t=${Date.now()}`);
     const countEl = $('studentCountLabel');
 
-    if (!data.success) throw new Error('Failed to load students');
+    if (!data.success) throw new Error(data.message || 'Failed to load students');
 
     if (countEl) countEl.textContent = `${data.students.length} student${data.students.length === 1 ? '' : 's'}`;
 
@@ -8385,11 +8493,24 @@ async function initApp() {
 
   const savedUser = loadSessionUser();
   if (savedUser) {
-    currentUser = savedUser;
-    if (currentUser.role === 'admin') adminTab = 'overview';
-    // Restart heartbeat immediately if we already have a live session
-    _sessionKilled = false;
-    startSessionHeartbeat();
+    // ── Guard: a valid session needs BOTH a user AND a token ──
+    // If a previous session left the user behind but the token is
+    // gone, every /api/ call would silently 401. Catch it here and
+    // clear the partial session so the login view shows cleanly.
+    let token = null;
+    try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
+
+    if (!token) {
+      console.warn('[initApp] User present but no auth token — clearing partial session.');
+      clearSession();
+      currentUser = null;
+      try { sessionStorage.removeItem('aero_user'); } catch (e) {}
+    } else {
+      currentUser = savedUser;
+      if (currentUser.role === 'admin') adminTab = 'overview';
+      _sessionKilled = false;
+      startSessionHeartbeat();
+    }
   }
   updateThemeIcon();
   syncHashToState();

@@ -11,10 +11,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 
-  <!-- Kick off the courses API while HTML is still parsing.
-       Cuts ~150–300 ms off first meaningful paint. -->
-  <link rel="preload" as="fetch" href="/api/courses?limit=80&page=1"
-        crossorigin="anonymous">
 
   <!-- Google Fonts — non-blocking -->
   <link rel="preload" as="style"
@@ -1430,14 +1426,14 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
-  <script src="media-viewer.js?v=42" defer></script>
-  <script src="app.js?v=42" defer></script>
+  <script src="media-viewer.js?v=43" defer></script>
+  <script src="app.js?v=43" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       // Force SW to bypass HTTP cache and always check for a new version
-      navigator.serviceWorker.register('/sw.js?v=42', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=43', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
           // Actively check for updates on every page load
