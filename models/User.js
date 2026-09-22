@@ -34,6 +34,16 @@ const userSchema = new mongoose.Schema({
   }],
 
   quizResults: { type: Map, of: Object, default: {} },
+  // ↑ Each value now may contain:
+  //   {
+  //     score, total, percent, marksEarned, marksPossible, attempts, lastAttemptAt,
+  //     subjectiveAnswers: { "<questionIndex>": [{ url, fileName }, ...] },
+  //     subjectiveEvaluations: {
+  //       "<questionIndex>": { awardedMarks, feedback, evaluatedAt, evaluatedBy }
+  //     },
+  //     pendingEvaluation: Boolean,
+  //     manuallyEvaluated: Boolean
+  //   }
 
   /* ============================================================
      SUBSCRIPTION / AUTO-PAY  (multi-tier aware)

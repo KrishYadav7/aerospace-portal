@@ -6374,6 +6374,8 @@ function normalizeQuestion(q) {
   let correctIndexes = Array.isArray(q.correctIndexes) ? [...q.correctIndexes]
     : (typeof q.correctIndex === 'number' ? [q.correctIndex] : []);
 
+  const numOrNull = (v) => (v === null || v === undefined || v === '') ? null : Number(v);
+
   return {
     type,
     question:    q.question    || '',
@@ -6382,8 +6384,16 @@ function normalizeQuestion(q) {
     options:        (q.options && q.options.length) ? [...q.options] : ['', '', '', ''],
     correctIndexes,
 
-    integerAnswer:    (q.integerAnswer === null || q.integerAnswer === undefined) ? null : Number(q.integerAnswer),
+    integerAnswer:    numOrNull(q.integerAnswer),
     integerTolerance: Number(q.integerTolerance) || 0,
+
+    /* ⭐ NEW: Numerical Range */
+    rangeMin: numOrNull(q.rangeMin),
+    rangeMax: numOrNull(q.rangeMax),
+
+    /* ⭐ NEW: Subjective */
+    subjectiveMaxMarks:     Number(q.subjectiveMaxMarks) || 10,
+    subjectiveInstructions: q.subjectiveInstructions || '',
 
     matrixLeftItems:  (q.matrixLeftItems && q.matrixLeftItems.length) ? [...q.matrixLeftItems] : ['', '', '', ''],
     matrixRightItems: (q.matrixRightItems && q.matrixRightItems.length) ? [...q.matrixRightItems] : ['', '', '', ''],
@@ -6511,7 +6521,9 @@ async function renderQuizEditor() {
           <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('single')"><i class="fas fa-plus"></i> Single Correct</button>
           <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('multiple')"><i class="fas fa-plus"></i> Multiple Correct</button>
           <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('integer')"><i class="fas fa-plus"></i> Integer</button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('numerical')"><i class="fas fa-plus"></i> Numerical Range</button>
           <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('matrix')"><i class="fas fa-plus"></i> Matrix Match</button>
+          <button class="btn btn-outline btn-sm" onclick="addQuizQuestion('subjective')"><i class="fas fa-plus"></i> Subjective</button>
         </div>
       </div>
 
@@ -6575,10 +6587,12 @@ function renderQuizDraft() {
         <div class="form-group">
           <label>Question Type</label>
           <select onchange="updateQuizType(${qi}, this.value)">
-            <option value="single"   ${q.type === 'single'   ? 'selected' : ''}>Single Correct (MCQ)</option>
-            <option value="multiple" ${q.type === 'multiple' ? 'selected' : ''}>Multiple Correct (MSQ)</option>
-            <option value="integer"  ${q.type === 'integer'  ? 'selected' : ''}>Integer / Numerical</option>
-            <option value="matrix"   ${q.type === 'matrix'   ? 'selected' : ''}>Matrix Match</option>
+            <option value="single"     ${q.type === 'single'     ? 'selected' : ''}>Single Correct (MCQ)</option>
+            <option value="multiple"   ${q.type === 'multiple'   ? 'selected' : ''}>Multiple Correct (MSQ)</option>
+            <option value="integer"    ${q.type === 'integer'    ? 'selected' : ''}>Integer (exact match)</option>
+            <option value="numerical"  ${q.type === 'numerical'  ? 'selected' : ''}>⭐ Numerical Range (min–max)</option>
+            <option value="matrix"     ${q.type === 'matrix'     ? 'selected' : ''}>Matrix Match</option>
+            <option value="subjective" ${q.type === 'subjective' ? 'selected' : ''}>⭐ Subjective (admin evaluates)</option>
           </select>
         </div>
         <div class="form-group">
@@ -6619,7 +6633,14 @@ function renderQuizDraft() {
 }
 
 function questionTypeLabel(t) {
-  return ({ single: 'SINGLE', multiple: 'MULTIPLE', integer: 'INTEGER', matrix: 'MATRIX' })[t] || 'SINGLE';
+  return ({
+    single: 'SINGLE',
+    multiple: 'MULTIPLE',
+    integer: 'INTEGER',
+    numerical: 'NUMERICAL RANGE',
+    matrix: 'MATRIX',
+    subjective: 'SUBJECTIVE'
+  })[t] || 'SINGLE';
 }
 
 function renderAnswerArea(q, qi) {
@@ -6769,9 +6790,67 @@ function renderAnswerArea(q, qi) {
         </div>
       </div>`;
   }
+    if (q.type === 'numerical') {
+    return `
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label><i class="fas fa-arrow-down"></i> Minimum Accepted Value</label>
+          <input type="number" step="any"
+                 value="${q.rangeMin === null || q.rangeMin === undefined ? '' : q.rangeMin}"
+                 placeholder="e.g. 9.7"
+                 oninput="updateQuizField(${qi}, 'rangeMin', this.value === '' ? null : parseFloat(this.value))">
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-arrow-up"></i> Maximum Accepted Value</label>
+          <input type="number" step="any"
+                 value="${q.rangeMax === null || q.rangeMax === undefined ? '' : q.rangeMax}"
+                 placeholder="e.g. 10.3"
+                 oninput="updateQuizField(${qi}, 'rangeMax', this.value === '' ? null : parseFloat(this.value))">
+        </div>
+      </div>
+      <div class="numerical-range-preview">
+        <i class="fas fa-bullseye"></i>
+        <span>
+          Any answer between
+          <strong>${q.rangeMin ?? '?'}</strong> and <strong>${q.rangeMax ?? '?'}</strong>
+          (inclusive) will be marked as <span class="ok-text">CORRECT</span>.
+        </span>
+      </div>`;
+  }
+
+  if (q.type === 'subjective') {
+    return `
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label><i class="fas fa-star"></i> Maximum Marks</label>
+          <input type="number" min="1" max="1000" step="0.5"
+                 value="${q.subjectiveMaxMarks || 10}"
+                 oninput="updateQuizField(${qi}, 'subjectiveMaxMarks', parseFloat(this.value) || 10); updateQuizField(${qi}, 'marks', parseFloat(this.value) || 10);">
+          <span class="hint">Admin can award marks from 0 up to this maximum.</span>
+        </div>
+        <div class="form-group">
+          <label><i class="fas fa-info-circle"></i> Instructions for Students (optional)</label>
+          <textarea rows="2" maxlength="500"
+                    placeholder="e.g. Show all steps clearly. Upload clear, well-lit photos of your handwritten solution."
+                    oninput="updateQuizField(${qi}, 'subjectiveInstructions', this.value)">${escapeHtml(q.subjectiveInstructions || '')}</textarea>
+        </div>
+      </div>
+      <div class="subjective-info-box">
+        <i class="fas fa-camera"></i>
+        <div>
+          <strong>How this works:</strong>
+          <ul>
+            <li>Students upload <strong>photos of their handwritten solution</strong> (JPG / PNG).</li>
+            <li>Subjective answers are <strong>not auto-graded</strong> — they are marked as <em>Pending Evaluation</em>.</li>
+            <li>Admin reviews submissions in the admin panel and awards marks out of <strong>${q.subjectiveMaxMarks || 10}</strong>.</li>
+          </ul>
+        </div>
+      </div>`;
+  }
 
   return '';
 }
+
 
 /* ============================================================
    QUIZ EDITOR — Question mutators
@@ -6790,10 +6869,19 @@ function addQuizQuestion(type = 'single') {
   } else if (type === 'integer') {
     base.integerAnswer = null;
     base.integerTolerance = 0;
+  } else if (type === 'numerical') {          // ⭐ NEW
+    base.rangeMin = null;
+    base.rangeMax = null;
+    base.negativeMarks = 0;                   // no negative for range typically
   } else if (type === 'matrix') {
     base.matrixLeftItems  = ['', '', '', ''];
     base.matrixRightItems = ['', '', '', ''];
     base.matrixRows = [0, 1, 2, 3].map(i => ({ text: '', correctIndex: i }));
+  } else if (type === 'subjective') {         // ⭐ NEW
+    base.subjectiveMaxMarks = 10;
+    base.subjectiveInstructions = '';
+    base.marks = 10;                          // mirror subjectiveMaxMarks
+    base.negativeMarks = 0;                   // no negative for subjective
   }
   quizDraft.push(base);
   renderQuizDraft();
@@ -6826,39 +6914,43 @@ function updateQuizType(qi, newType) {
   const oldType = q.type;
   q.type = newType;
 
-  // ⚠️ FIX: Clean up fields that don't belong to the new type.
-  // Otherwise a "single" → "integer" → "single" round-trip restores
-  // stale correctIndexes that can point past the current options array.
-
-  if (newType === 'integer' && oldType !== 'integer') {
-    // Moving TO integer — drop MCQ / matrix state
+  // Cleanup fields that don't belong to the new type
+  const resetCommon = () => {
     q.options = [];
     q.correctIndexes = [];
     q.matrixLeftItems = [];
     q.matrixRightItems = [];
     q.matrixRows = [];
-    if (q.integerAnswer === undefined) q.integerAnswer = null;
-    if (q.integerTolerance === undefined) q.integerTolerance = 0;
-  } else if (newType === 'matrix' && oldType !== 'matrix') {
-    // Moving TO matrix — drop MCQ / integer state
-    q.options = [];
-    q.correctIndexes = [];
     q.integerAnswer = null;
+    q.integerTolerance = 0;
+    q.rangeMin = null;
+    q.rangeMax = null;
+    q.subjectiveMaxMarks = q.subjectiveMaxMarks || 10;
+    q.subjectiveInstructions = q.subjectiveInstructions || '';
+  };
+
+  if (newType === 'integer' && oldType !== 'integer') {
+    resetCommon();
+  } else if (newType === 'numerical' && oldType !== 'numerical') {   // ⭐ NEW
+    resetCommon();
+    q.negativeMarks = 0;
+  } else if (newType === 'matrix' && oldType !== 'matrix') {
+    resetCommon();
     q.matrixLeftItems  = ['', '', '', ''];
     q.matrixRightItems = ['', '', '', ''];
     q.matrixRows = [0, 1, 2, 3].map(i => ({ text: '', correctIndex: i }));
+  } else if (newType === 'subjective' && oldType !== 'subjective') { // ⭐ NEW
+    resetCommon();
+    if (!q.subjectiveMaxMarks || q.subjectiveMaxMarks < 1) q.subjectiveMaxMarks = 10;
+    q.marks = q.subjectiveMaxMarks;
+    q.negativeMarks = 0;
   } else if ((newType === 'single' || newType === 'multiple') &&
              oldType !== 'single' && oldType !== 'multiple') {
-    // Moving TO MCQ — drop integer / matrix state
-    q.integerAnswer = null;
-    q.matrixLeftItems = [];
-    q.matrixRightItems = [];
-    q.matrixRows = [];
+    resetCommon();
     if (!q.options || q.options.length === 0) q.options = ['', '', '', ''];
     if (!Array.isArray(q.correctIndexes)) q.correctIndexes = [];
   }
 
-  // If still in MCQ family, keep only ONE correct index for 'single'
   if (newType === 'single' && Array.isArray(q.correctIndexes) && q.correctIndexes.length > 1) {
     q.correctIndexes = [q.correctIndexes[0]];
   }
@@ -7007,6 +7099,23 @@ async function saveQuizPaper() {
     if (q.type === 'integer') {
       if (q.integerAnswer === null || q.integerAnswer === undefined || isNaN(q.integerAnswer)) {
         return showToast(`Question ${i + 1}: integer answer required.`, 'error');
+      }
+    }
+    if (q.type === 'numerical') {                                    // ⭐ NEW
+      if (q.rangeMin === null || q.rangeMin === undefined || isNaN(Number(q.rangeMin))) {
+        return showToast(`Question ${i + 1}: minimum value required.`, 'error');
+      }
+      if (q.rangeMax === null || q.rangeMax === undefined || isNaN(Number(q.rangeMax))) {
+        return showToast(`Question ${i + 1}: maximum value required.`, 'error');
+      }
+      if (Number(q.rangeMin) > Number(q.rangeMax)) {
+        return showToast(`Question ${i + 1}: minimum value cannot be greater than maximum.`, 'error');
+      }
+    }
+    if (q.type === 'subjective') {                                   // ⭐ NEW
+      const maxM = Number(q.subjectiveMaxMarks);
+      if (!Number.isFinite(maxM) || maxM < 1) {
+        return showToast(`Question ${i + 1}: maximum marks must be at least 1.`, 'error');
       }
     }
     if (q.type === 'matrix') {
@@ -7357,6 +7466,7 @@ function _onExamVisibilityChange() {
 function _onExamWindowBlur() {
   if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
   if (document.querySelector('.modal-overlay.active')) return;
+  if (window.__examAllowBlur) return;   // ⭐ ADD: file picker grace period
   _handleExamViolation('The exam window lost focus.');
 }
 
@@ -7530,9 +7640,19 @@ async function submitQuiz(opts = {}) {
     for (let i = 0; i < st.quiz.length; i++) {
       const q = st.quiz[i];
       const a = st.answers[i];
-      if (q.type === 'integer') {
+      if (q.type === 'integer' || q.type === 'numerical') {
         if (a === '' || a === null || a === undefined || isNaN(Number(a))) {
           return showToast(`Please answer Q${i + 1}.`, 'error');
+        }
+      } else if (q.type === 'subjective') {
+        if (!Array.isArray(a) || a.length === 0) {
+          return showToast(`Please upload at least one photo for Q${i + 1}.`, 'error');
+        }
+        if (a.some(u => u && u.uploading)) {
+          return showToast(`Please wait for Q${i + 1} uploads to finish.`, 'error');
+        }
+        if (a.some(u => !u || !u.url)) {
+          return showToast(`Q${i + 1}: some photos failed to upload. Remove and retry.`, 'error');
         }
       } else if (q.type === 'matrix') {
         const rows = q.matrixRows || [];
@@ -7649,8 +7769,13 @@ function retakeQuiz() {
    ============================================================ */
 function _isQuestionAnswered(q, a) {
   const qType = q.type || 'single';
-  if (qType === 'integer') {
+  if (qType === 'integer' || qType === 'numerical') {
     return a !== '' && a !== null && a !== undefined && !isNaN(Number(a));
+  }
+  if (qType === 'subjective') {
+    // Answered if at least one photo uploaded AND no upload still in progress
+    if (!Array.isArray(a) || a.length === 0) return false;
+    return a.every(u => u && u.url && !u.uploading);
   }
   if (qType === 'matrix') {
     const rows = q.matrixRows || [];
@@ -7750,6 +7875,38 @@ function renderStudentAnswerArea(q, qi) {
     </div>`;
   }
 
+  if (qType === 'numerical') {                                       // ⭐ NEW
+    return `<div class="form-group" style="margin-top:8px;">
+      <label>Your Answer <span class="hint" style="display:inline;">(any value inside the accepted range counts as correct)</span></label>
+      <input type="number" step="any" placeholder="Enter a numeric value"
+             value="${ans === '' ? '' : (ans ?? '')}"
+             oninput="selectQuizAnswerInteger(${qi}, this.value)">
+    </div>`;
+  }
+
+  if (qType === 'subjective') {                                      // ⭐ NEW
+    const uploads = Array.isArray(ans) ? ans : [];
+    const maxM = q.subjectiveMaxMarks || 10;
+    const instr = q.subjectiveInstructions || '';
+    return `
+      <div class="subjective-answer-block">
+        ${instr ? `<div class="subjective-instructions"><i class="fas fa-info-circle"></i> ${escapeHtml(instr)}</div>` : ''}
+        <div class="subjective-meta-row">
+          <span class="subjective-max-badge"><i class="fas fa-star"></i> ${maxM} marks · Admin evaluated</span>
+        </div>
+        <label class="subjective-upload-btn">
+          <input type="file" accept="image/*" multiple style="display:none;"
+                 onmousedown="window.__examAllowBlur = true;"
+                 onfocus="window.__examAllowBlur = true;"
+                 onchange="handleSubjectiveUpload(${qi}, this);">
+          <i class="fas fa-camera"></i> Choose Photos of Your Solution
+        </label>
+        <div class="subjective-uploads" id="subjectiveUploads-${qi}">
+          ${uploads.map((u, idx) => renderSubjectiveUpload(u, qi, idx)).join('')}
+        </div>
+      </div>`;
+  }
+
   if (qType === 'matrix') {
     const left  = q.matrixLeftItems  || [];
     const right = q.matrixRightItems || [];
@@ -7802,6 +7959,45 @@ function renderResultDetail(q, r) {
       </div>
       ${!r.correct ? `<div class="quiz-answer-row"><span class="quiz-answer-label">Correct:</span>
         <span class="ok-text">${r.integerAnswer}${tolStr}</span></div>` : ''}
+    `;
+  }
+
+  if (qType === 'numerical') {                                       // ⭐ NEW
+    const min = r.rangeMin;
+    const max = r.rangeMax;
+    const chosen = r.chosen;
+    const hasAns = chosen !== '' && chosen !== null && chosen !== undefined && !isNaN(Number(chosen));
+    return `
+      <div class="quiz-answer-row"><span class="quiz-answer-label">Your answer:</span>
+        <span class="${r.correct ? 'ok-text' : (hasAns ? 'bad-text' : '')}">
+          ${hasAns ? chosen : '—'}
+        </span>
+      </div>
+      <div class="quiz-answer-row"><span class="quiz-answer-label">Accepted range:</span>
+        <span class="ok-text">${min} – ${max}</span>
+      </div>
+    `;
+  }
+
+  if (qType === 'subjective') {                                      // ⭐ NEW
+    const uploads = Array.isArray(r.chosen) ? r.chosen : [];
+    const evals   = quizPlayerState?.response?.subjectiveEvaluations || {};
+    const ev      = evals[String(quizPlayerState ? quizPlayerState.quiz.indexOf(q) : -1)] || null;
+    return `
+      <div class="quiz-answer-row">
+        <span class="quiz-answer-label">Your uploaded solution(s):</span>
+        <span>${uploads.length} photo${uploads.length === 1 ? '' : 's'}</span>
+      </div>
+      ${uploads.length > 0 ? `
+        <div class="subjective-result-thumbs">
+          ${uploads.map(u => `<a href="${escapeHtml(u.url)}" target="_blank" rel="noopener">
+            <img src="${escapeHtml(u.url)}" alt="answer" loading="lazy">
+          </a>`).join('')}
+        </div>` : '<div class="quiz-answer-row"><em>No photos uploaded.</em></div>'}
+      <div class="quiz-answer-row subjective-pending-note">
+        <i class="fas fa-hourglass-half"></i>
+        <span>${ev ? `Marks awarded: <strong>${ev.awardedMarks} / ${r.maxMarks}</strong>${ev.feedback ? ' — ' + escapeHtml(ev.feedback) : ''}` : 'Pending admin evaluation'}</span>
+      </div>
     `;
   }
   if (qType === 'matrix') {
@@ -12081,4 +12277,124 @@ function showMyPlanModal() {
   document.body.appendChild(modal);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 }
+/* ============================================================
+   SUBJECTIVE ANSWER UPLOAD HELPERS
+   ------------------------------------------------------------
+   Students upload photos of their handwritten solutions during
+   the proctored exam. We suppress the window-blur violation
+   while the file picker is open (otherwise the OS dialog would
+   trigger an auto-submit).
+   ============================================================ */
+async function handleSubjectiveUpload(qi, input) {
+  const st = quizPlayerState;
+  if (!st || st.submitted) return;
+
+  const files = Array.from(input.files || []);
+  if (files.length === 0) {
+    window.__examAllowBlur = false;
+    return;
+  }
+
+  if (!Array.isArray(st.answers[qi])) st.answers[qi] = [];
+
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) {
+      showToast(`"${file.name}" is not an image. Only JPG/PNG allowed.`, 'error');
+      continue;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      showToast(`"${file.name}" is too large (max 10 MB).`, 'error');
+      continue;
+    }
+
+    // Insert placeholder so the student sees progress
+    const placeholder = { url: '', fileName: file.name, uploading: true, progress: 0 };
+    st.answers[qi].push(placeholder);
+    renderSubjectiveUploads(qi);
+    updateQuizQuestionCard(qi);
+    updateQuizProgressUI();
+
+    try {
+      const result = await uploadFileToServer(file, pct => {
+        placeholder.progress = pct;
+        updateSubjectiveUploadProgress(qi, placeholder);
+      });
+      placeholder.url = result.url;
+      placeholder.uploading = false;
+      delete placeholder.progress;
+      persistQuizAnswers();
+      renderSubjectiveUploads(qi);
+      updateQuizQuestionCard(qi);
+      updateQuizProgressUI();
+    } catch (err) {
+      console.error('[subjective upload]', err);
+      showToast('Upload failed: ' + err.message, 'error');
+      const idx = st.answers[qi].indexOf(placeholder);
+      if (idx >= 0) st.answers[qi].splice(idx, 1);
+      renderSubjectiveUploads(qi);
+    }
+  }
+
+  input.value = '';
+  // Release the blur-grace flag after a short delay so any leftover
+  // OS window transitions don't accidentally trigger a violation.
+  setTimeout(() => { window.__examAllowBlur = false; }, 1500);
+}
+
+function renderSubjectiveUpload(u, qi, idx) {
+  if (u.uploading) {
+    return `
+      <div class="subjective-upload-tile uploading" data-upload-idx="${idx}">
+        <div class="subjective-upload-spinner"><i class="fas fa-spinner fa-spin"></i></div>
+        <div class="subjective-upload-progress">
+          <div class="subjective-upload-bar" style="width:${u.progress || 0}%"></div>
+        </div>
+        <div class="subjective-upload-name">${escapeHtml(u.fileName || 'Uploading…')}</div>
+      </div>`;
+  }
+  return `
+    <div class="subjective-upload-tile">
+      <img src="${escapeHtml(u.url)}" alt="Solution" loading="lazy">
+      <div class="subjective-upload-name">${escapeHtml(u.fileName || '')}</div>
+      <button type="button" class="subjective-upload-remove" onclick="removeSubjectiveUpload(${qi}, ${idx})" title="Remove">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>`;
+}
+
+function renderSubjectiveUploads(qi) {
+  const st = quizPlayerState;
+  if (!st) return;
+  const box = document.getElementById('subjectiveUploads-' + qi);
+  if (!box) return;
+  const list = Array.isArray(st.answers[qi]) ? st.answers[qi] : [];
+  box.innerHTML = list.map((u, i) => renderSubjectiveUpload(u, qi, i)).join('');
+}
+
+function updateSubjectiveUploadProgress(qi, placeholder) {
+  const st = quizPlayerState;
+  if (!st) return;
+  const box = document.getElementById('subjectiveUploads-' + qi);
+  if (!box) return;
+  const list = Array.isArray(st.answers[qi]) ? st.answers[qi] : [];
+  const idx = list.indexOf(placeholder);
+  if (idx < 0) return;
+  const tile = box.querySelector(`.subjective-upload-tile[data-upload-idx="${idx}"]`);
+  if (!tile) return;
+  const bar = tile.querySelector('.subjective-upload-bar');
+  if (bar) bar.style.width = (placeholder.progress || 0) + '%';
+}
+
+function removeSubjectiveUpload(qi, idx) {
+  const st = quizPlayerState;
+  if (!st || st.submitted) return;
+  if (!Array.isArray(st.answers[qi])) return;
+  if (!confirm('Remove this uploaded photo?')) return;
+  st.answers[qi].splice(idx, 1);
+  persistQuizAnswers();
+  renderSubjectiveUploads(qi);
+  updateQuizQuestionCard(qi);
+  updateQuizProgressUI();
+}
+
 initApp();

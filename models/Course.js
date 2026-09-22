@@ -6,9 +6,10 @@ const matrixRowSchema = new mongoose.Schema({
   correctIndex: { type: Number, default: 0 }
 }, { _id: false });
 
-/* ---------- Quiz Question (supports 4 types) ---------- */
+/* ---------- Quiz Question (supports 6 types) ---------- */
 const quizQuestionSchema = new mongoose.Schema({
   type: { type: String, default: 'single' },
+  // single | multiple | integer | numerical | matrix | subjective
 
   question:    { type: String, default: '' },
   explanation: { type: String, default: '' },
@@ -16,8 +17,17 @@ const quizQuestionSchema = new mongoose.Schema({
   options:        { type: [String], default: [] },
   correctIndexes: { type: [Number], default: [] },
 
+  /* Integer — exact match with optional ±tolerance */
   integerAnswer:    { type: Number, default: null },
   integerTolerance: { type: Number, default: 0 },
+
+  /* Numerical Range — answer accepted if rangeMin ≤ answer ≤ rangeMax */
+  rangeMin: { type: Number, default: null },
+  rangeMax: { type: Number, default: null },
+
+  /* Subjective — file uploads, admin manually evaluates */
+  subjectiveMaxMarks: { type: Number, default: 10 },
+  subjectiveInstructions: { type: String, default: '' },
 
   matrixLeftItems:  { type: [String], default: [] },
   matrixRightItems: { type: [String], default: [] },

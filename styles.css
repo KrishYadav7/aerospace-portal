@@ -7637,3 +7637,273 @@ body.body-content-hidden .vp-shell {
     grid-template-columns: 1fr !important;
   }
 }
+/* ============================================================
+   63. SUBJECTIVE + NUMERICAL RANGE QUESTION TYPES
+   ============================================================ */
+
+/* ---- Numerical range preview (editor) ---- */
+.numerical-range-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-top: 10px;
+  background: linear-gradient(135deg, rgba(99,102,241,.08), rgba(6,182,212,.03));
+  border: 1px solid rgba(99,102,241,.25);
+  border-left: 3px solid var(--brand-500);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.numerical-range-preview i {
+  color: var(--brand-500);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.numerical-range-preview strong {
+  color: var(--text-primary);
+  font-weight: 800;
+  padding: 1px 6px;
+  background: var(--bg-surface-3);
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Subjective editor info box ---- */
+.subjective-info-box {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  margin-top: 10px;
+  background: linear-gradient(135deg, rgba(245,158,11,.08), rgba(251,191,36,.03));
+  border: 1px solid rgba(245,158,11,.30);
+  border-left: 3px solid var(--gold-500);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.subjective-info-box > i {
+  color: var(--gold-500);
+  font-size: 16px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.subjective-info-box strong {
+  color: var(--text-primary);
+  font-weight: 700;
+  display: block;
+  margin-bottom: 4px;
+}
+.subjective-info-box ul {
+  margin: 4px 0 0 18px;
+  padding: 0;
+  list-style: disc;
+}
+.subjective-info-box li {
+  margin-bottom: 3px;
+}
+
+/* ---- Student subjective answer block ---- */
+.subjective-answer-block {
+  margin-top: 10px;
+}
+.subjective-instructions {
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  background: rgba(99,102,241,.06);
+  border: 1px solid rgba(99,102,241,.20);
+  border-left: 3px solid var(--brand-500);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.subjective-instructions i {
+  color: var(--brand-500);
+  margin-right: 6px;
+}
+.subjective-meta-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.subjective-max-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(245,158,11,.15);
+  color: var(--gold-600);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .3px;
+}
+[data-theme="dark"] .subjective-max-badge,
+[data-theme="dim"]   .subjective-max-badge { color: var(--gold-400); }
+
+.subjective-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px 22px;
+  border: 2px dashed var(--brand-500);
+  border-radius: var(--radius-md);
+  background: rgba(99,102,241,.06);
+  color: var(--brand-600);
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: .2s var(--ease);
+  width: 100%;
+  max-width: 420px;
+}
+.subjective-upload-btn:hover {
+  background: rgba(99,102,241,.14);
+  border-color: var(--brand-600);
+  transform: translateY(-1px);
+}
+[data-theme="dark"] .subjective-upload-btn,
+[data-theme="dim"]   .subjective-upload-btn { color: var(--brand-300); }
+.subjective-upload-btn i { font-size: 16px; }
+
+.subjective-uploads {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.subjective-upload-tile {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-2);
+  display: flex;
+  flex-direction: column;
+  aspect-ratio: 1 / 1;
+  box-shadow: var(--shadow-xs);
+}
+.subjective-upload-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.subjective-upload-tile.uploading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.subjective-upload-spinner {
+  font-size: 24px;
+  color: var(--brand-500);
+}
+.subjective-upload-progress {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-surface-3);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.subjective-upload-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--brand-500), var(--accent-500));
+  border-radius: 999px;
+  transition: width .2s var(--ease);
+}
+.subjective-upload-name {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  padding: 4px 8px;
+  background: var(--bg-surface);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  text-align: center;
+}
+.subjective-upload-tile.uploading .subjective-upload-name {
+  background: transparent;
+}
+.subjective-upload-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(239,68,68,.92);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  opacity: .85;
+  transition: .2s var(--ease);
+}
+.subjective-upload-remove:hover {
+  opacity: 1;
+  transform: scale(1.1);
+  background: var(--rose-500);
+}
+
+/* ---- Subjective result thumbs (student result view) ---- */
+.subjective-result-thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+.subjective-result-thumbs a {
+  display: block;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  transition: .2s var(--ease);
+}
+.subjective-result-thumbs a:hover {
+  transform: scale(1.04);
+  box-shadow: var(--shadow-md);
+}
+.subjective-result-thumbs img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.subjective-pending-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(245,158,11,.08);
+  border: 1px solid rgba(245,158,11,.28);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--gold-600);
+  font-weight: 600;
+}
+[data-theme="dark"] .subjective-pending-note,
+[data-theme="dim"]   .subjective-pending-note { color: var(--gold-400); }
+.subjective-pending-note i { color: var(--gold-500); }
+
+/* ---- Mobile tweaks ---- */
+@media (max-width: 640px) {
+  .subjective-uploads { grid-template-columns: repeat(2, 1fr); }
+  .subjective-upload-btn { font-size: 13px; padding: 11px 16px; }
+  .subjective-result-thumbs { grid-template-columns: repeat(3, 1fr); }
+}

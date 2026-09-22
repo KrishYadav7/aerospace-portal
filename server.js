@@ -3209,15 +3209,47 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
     const quiz = mat.quiz || [];
     if (quiz.length === 0) return res.status(400).json({ success: false, message: 'This material has no questions' });
 
-    let score = 0;
-    let totalMarksPossible = 0;
-    let marksEarned = 0;
+    let score = 0;                    // auto-graded correct count (excludes subjective)
+    let totalMarksPossible = 0;       // marks from AUTO-GRADED questions only
+    let marksEarned = 0;              // auto-graded marks
+    let autoGradedCount = 0;          // number of questions that CAN be auto-graded
+    let subjectiveMaxTotal = 0;       // max marks from subjective questions
+    let subjectiveCount = 0;          // number of subjective questions
+    const subjectiveAnswers = {};     // { "<qi>": [{ url, fileName }] }
+    const subjectiveQuestionMeta = {};// { "<qi>": { maxMarks, instructions } }
 
     const results = quiz.map((q, i) => {
       const ans = answers[i];
       const qType = q.type || 'single';
       const qMarks = typeof q.marks === 'number' ? q.marks : 4;
       const qNeg   = typeof q.negativeMarks === 'number' ? q.negativeMarks : -1;
+
+      // ─── SUBJECTIVE: never auto-graded ───
+      if (qType === 'subjective') {
+        const subMax = Number(q.subjectiveMaxMarks) || qMarks || 10;
+        subjectiveMaxTotal += subMax;
+        subjectiveCount++;
+        subjectiveAnswers[i] = Array.isArray(ans) ? ans.filter(x => x && x.url) : [];
+        subjectiveQuestionMeta[i] = {
+          maxMarks: subMax,
+          instructions: q.subjectiveInstructions || ''
+        };
+
+        return {
+          type: 'subjective',
+          correct: false,
+          manualReview: true,
+          chosen: subjectiveAnswers[i],
+          maxMarks: subMax,
+          instructions: q.subjectiveInstructions || '',
+          explanation: q.explanation || '',
+          marks: qMarks,
+          negativeMarks: 0
+        };
+      }
+
+      // ─── All other types can be auto-graded ───
+      autoGradedCount++;
       totalMarksPossible += qMarks;
 
       let correct = false;
@@ -3241,6 +3273,14 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
         const tol = Number(q.integerTolerance) || 0;
         correct = !isNaN(chosen) && !isNaN(expected) && Math.abs(chosen - expected) <= tol;
       }
+      else if (qType === 'numerical') {
+        // ⭐ NEW: answer accepted if rangeMin ≤ answer ≤ rangeMax
+        const chosen = Number(ans);
+        const min = Number(q.rangeMin);
+        const max = Number(q.rangeMax);
+        correct = !isNaN(chosen) && !isNaN(min) && !isNaN(max) &&
+                  chosen >= min && chosen <= max;
+      }
       else if (qType === 'matrix') {
         const chosen = Array.isArray(ans) ? ans : [];
         const rows = q.matrixRows || [];
@@ -3258,10 +3298,11 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
         score++;
         marksEarned += qMarks;
       } else {
-        const attempted = qType === 'integer'
-          ? (ans !== null && ans !== undefined && ans !== '' && !isNaN(Number(ans)))
-          : (Array.isArray(ans) ? ans.filter(x => x !== undefined && x !== null && x !== '').length > 0
-                               : (ans !== null && ans !== undefined && ans !== -1));
+        const attempted =
+          (qType === 'integer' || qType === 'numerical')
+            ? (ans !== null && ans !== undefined && ans !== '' && !isNaN(Number(ans)))
+            : (Array.isArray(ans) ? ans.filter(x => x !== undefined && x !== null && x !== '').length > 0
+                                 : (ans !== null && ans !== undefined && ans !== -1));
         if (attempted && qNeg < 0) marksEarned += qNeg;
       }
 
@@ -3272,6 +3313,8 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
         correctIndexes: q.correctIndexes || (typeof q.correctIndex === 'number' ? [q.correctIndex] : []),
         integerAnswer: q.integerAnswer,
         integerTolerance: q.integerTolerance || 0,
+        rangeMin: q.rangeMin,
+        rangeMax: q.rangeMax,
         matrixRows: q.matrixRows || [],
         explanation: q.explanation || '',
         marks: qMarks,
@@ -3279,8 +3322,10 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       };
     });
 
-    const total = quiz.length;
-    const pct = Math.round((score / total) * 100);
+    // Auto-graded score is out of autoGradedCount.
+    // If there are subjective questions, they will be added later by admin.
+    const total = autoGradedCount;                    // legacy field name
+    const pct = autoGradedCount > 0 ? Math.round((score / autoGradedCount) * 100) : 0;
     const normalizedMarks = totalMarksPossible > 0
       ? Math.max(0, Math.round(marksEarned * 100) / 100)
       : 0;
@@ -3289,35 +3334,193 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (!user.quizResults) user.quizResults = new Map();
     const prev = user.quizResults.get(req.params.materialId) || { attempts: 0 };
+
     user.quizResults.set(req.params.materialId, {
-      score, total, percent: pct,
-      marksEarned: normalizedMarks,
-      marksPossible: totalMarksPossible,
+      score,                                  // auto-graded correct count
+      total: autoGradedCount,                 // auto-graded total
+      percent: pct,
+      marksEarned: normalizedMarks,           // auto-graded marks
+      marksPossible: totalMarksPossible,      // auto-graded max marks
       attempts: (prev.attempts || 0) + 1,
-      lastAttemptAt: new Date()
+      lastAttemptAt: new Date(),
+
+      // ⭐ NEW: subjective tracking
+      subjectiveAnswers,
+      subjectiveQuestionMeta,
+      subjectiveMaxTotal,
+      subjectiveCount,
+      subjectiveEvaluations: prev.subjectiveEvaluations || {},
+      pendingEvaluation: subjectiveCount > 0,
+      manuallyEvaluated: false
     });
 
     logActivity(user, {
       type: 'quiz',
       courseId: req.params.courseId,
       materialId: req.params.materialId,
-      score, total
+      score, total: autoGradedCount
     });
 
     await user.save();
     res.json({
       success: true,
-      score, total, percent: pct,
+      score,
+      total: autoGradedCount,
+      percent: pct,
       marksEarned: normalizedMarks,
       marksPossible: totalMarksPossible,
       results,
-      attempts: (prev.attempts || 0) + 1
+      attempts: (prev.attempts || 0) + 1,
+
+      // ⭐ NEW: signals to frontend that admin review is pending
+      subjectiveCount,
+      subjectiveMaxTotal,
+      pendingEvaluation: subjectiveCount > 0
     });
   } catch (e) {
     console.error('[quiz/grade]', e);
     res.status(500).json({ success: false, message: 'Error grading quiz: ' + e.message });
   }
 });
+/* ============================================================
+   ADMIN — Evaluate a Subjective Answer
+   ------------------------------------------------------------
+   Admin awards marks for one subjective question of one student.
+   Recomputes total marks and marks the submission as evaluated
+   when all subjective questions have been graded.
+   ============================================================ */
+app.post('/api/admin/quiz/evaluate-subjective', requireAdminAuth, async (req, res) => {
+  try {
+    const { userId, materialId, questionIndex, awardedMarks, feedback } = req.body || {};
+
+    if (!userId || materialId === undefined || questionIndex === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: 'userId, materialId and questionIndex are required.'
+      });
+    }
+
+    const marks = Number(awardedMarks);
+    if (isNaN(marks) || marks < 0) {
+      return res.status(400).json({ success: false, message: 'Invalid marks value.' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    if (!user.quizResults) user.quizResults = new Map();
+    const result = user.quizResults.get(String(materialId));
+    if (!result) {
+      return res.status(404).json({ success: false, message: 'No quiz result found for this material.' });
+    }
+
+    const meta = (result.subjectiveQuestionMeta || {})[questionIndex];
+    const maxAllowed = meta ? Number(meta.maxMarks) : 100;
+    if (marks > maxAllowed) {
+      return res.status(400).json({
+        success: false,
+        message: `Marks cannot exceed ${maxAllowed} for this question.`
+      });
+    }
+
+    if (!result.subjectiveEvaluations) result.subjectiveEvaluations = {};
+    result.subjectiveEvaluations[questionIndex] = {
+      awardedMarks: marks,
+      feedback: String(feedback || '').slice(0, 500),
+      evaluatedAt: new Date(),
+      evaluatedBy: String(req.adminUser._id)
+    };
+
+    // Recompute total subjective marks awarded
+    let subjectiveMarksAwarded = 0;
+    Object.values(result.subjectiveEvaluations).forEach(ev => {
+      subjectiveMarksAwarded += Number(ev.awardedMarks) || 0;
+    });
+    result.subjectiveMarksAwarded = subjectiveMarksAwarded;
+
+    // If all subjective questions have been graded → mark as fully evaluated
+    const totalSubjective = Object.keys(result.subjectiveQuestionMeta || {}).length;
+    const gradedSubjective = Object.keys(result.subjectiveEvaluations).length;
+    result.pendingEvaluation = gradedSubjective < totalSubjective;
+    result.manuallyEvaluated = gradedSubjective >= totalSubjective;
+    result.evaluatedAt = new Date();
+
+    // Final marks = auto-graded marks + subjective marks awarded
+    result.finalMarksEarned = (Number(result.marksEarned) || 0) + subjectiveMarksAwarded;
+    result.finalMarksPossible = (Number(result.marksPossible) || 0) +
+                                (Number(result.subjectiveMaxTotal) || 0);
+
+    user.quizResults.set(String(materialId), result);
+    await user.save();
+
+    console.log(`[admin/quiz/evaluate] ✅ user=${user.username} material=${materialId} Q${questionIndex} → ${marks} marks`);
+
+    res.json({
+      success: true,
+      message: 'Marks awarded successfully.',
+      result
+    });
+  } catch (e) {
+    console.error('[admin/quiz/evaluate-subjective]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
+   ADMIN — List Pending Subjective Evaluations
+   ------------------------------------------------------------
+   Returns a list of every quiz submission that has ungraded
+   subjective answers, so the admin can work through them.
+   ============================================================ */
+app.get('/api/admin/quiz/pending-subjective', requireAdminAuth, async (req, res) => {
+  try {
+    const users = await User.find({
+      $or: [
+        { 'quizResults.pendingEvaluation': true },
+        { 'quizResults.subjectiveAnswers': { $exists: true, $ne: {} } }
+      ]
+    })
+    .select('username fullName email quizResults')
+    .lean();
+
+    const rows = [];
+    users.forEach(u => {
+      const results = u.quizResults || {};
+      Object.entries(results).forEach(([materialId, r]) => {
+        if (!r || !r.subjectiveAnswers) return;
+        const totalSubj = Object.keys(r.subjectiveQuestionMeta || {}).length;
+        const gradedSubj = Object.keys(r.subjectiveEvaluations || {}).length;
+        if (totalSubj === 0) return;             // nothing to grade
+        if (gradedSubj >= totalSubj) return;     // already done
+
+        rows.push({
+          userId: u._id,
+          username: u.username,
+          fullName: u.fullName || '',
+          email: u.email || '',
+          materialId,
+          attempts: r.attempts || 1,
+          lastAttemptAt: r.lastAttemptAt,
+          subjectiveMaxTotal: r.subjectiveMaxTotal || 0,
+          subjectiveMarksAwarded: r.subjectiveMarksAwarded || 0,
+          pendingCount: totalSubj - gradedSubj,
+          totalSubjective: totalSubj,
+          subjectiveAnswers: r.subjectiveAnswers,
+          subjectiveQuestionMeta: r.subjectiveQuestionMeta,
+          subjectiveEvaluations: r.subjectiveEvaluations || {}
+        });
+      });
+    });
+
+    rows.sort((a, b) => new Date(b.lastAttemptAt || 0) - new Date(a.lastAttemptAt || 0));
+
+    res.json({ success: true, pending: rows });
+  } catch (e) {
+    console.error('[admin/quiz/pending-subjective]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
 
 app.get('/api/user/quiz-results/:userId', async (req, res) => {
   try {
