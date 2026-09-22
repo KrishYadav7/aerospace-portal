@@ -1,19 +1,20 @@
 /* ============================================================
-   SERVICE WORKER — v43
+   SERVICE WORKER — v45
    ------------------------------------------------------------
    KEY RULE: NEVER cache app code (app.js, styles.css, media-viewer.js,
-   sw.js, index.html). Those files carry a version query (?v=43) that
+   sw.js, index.html). Those files carry a version query (?v=45) that
    changes on every deploy, and they MUST always come from the network.
    Only truly static assets (manifest, images) go in the cache.
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v43';
+const CACHE_NAME = 'aero-shell-v45';
 
 /* ONLY these go into the offline cache — they never change silently */
 const SHELL_ASSETS = [
-  './index.html',      // ← ADD (for offline shell)
+  './index.html',
   './manifest.json',
   './passport.jpg'
 ];
+
 /* Files that must ALWAYS be fetched fresh from the network */
 const NEVER_CACHE_PATTERNS = [
   /\/$/,
@@ -54,31 +55,19 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
-
-  // Only handle same-origin requests
   if (url.origin !== self.location.origin) return;
-
-  // Never touch API, uploads, or chunks
   if (url.pathname.startsWith('/api/')) return;
   if (url.pathname.startsWith('/uploads/')) return;
 
-  // ─── APP CODE: network first, RESPECTING the browser HTTP cache ───
-  // The URL carries ?v=NN, so a new deploy ships a new URL → cache miss
-  // → fresh fetch. Within the same version, the browser serves from
-  // its own HTTP cache (instant). This is the fastest safe strategy.
   const isAppCode = NEVER_CACHE_PATTERNS.some((re) => re.test(url.pathname));
   if (isAppCode) {
     event.respondWith(
-      fetch(req)   // ← respects Cache-Control: immutable set by server
-        .catch(() => {
-          // Offline only: fall back to cached index.html if we have it
-          return caches.match('./index.html').then((c) => c || Response.error());
-        })
+      fetch(req)
+        .catch(() => caches.match('./index.html').then((c) => c || Response.error()))
     );
     return;
   }
 
-  // ─── STATIC SHELL ASSETS: cache-first (manifest, images) ───
   const isShellAsset = SHELL_ASSETS.some((a) => {
     const p = (a === './' || a === './index.html') ? '/' : a.replace(/^\.\//, '/');
     return url.pathname === p;
@@ -99,6 +88,4 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
-
-  // Everything else: let the browser handle it normally
 });
