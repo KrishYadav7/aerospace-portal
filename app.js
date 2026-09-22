@@ -1368,8 +1368,17 @@ async function handleLogin(e) {
         showToast(data.message || 'Login successful!', 'success');
         _sessionKilled = false;
         startSessionHeartbeat();
+
+        // ① Kick off the fetch FIRST. Its very first synchronous lines set
+        //    _coursesLoading = true and paint the skeleton, so the very
+        //    next renderApp() will show "Loading courses…" instead of
+        //    the empty state.
+        fetchCoursesFromDB(true).catch(err => {
+          console.warn('[login] course fetch failed:', err);
+        });
+
+        // ② Immediate first paint (dashboard / home / skeleton).
         renderApp();
-        setTimeout(() => renderApp(), 40);
         return;
       }
 
@@ -1661,15 +1670,18 @@ async function _handleAdminLoginOtp(otp) {
   // ⭐ Force-fresh course list on admin login
   _courseCacheAt = 0;
   liveCourses = [];
+  try { _coursePagination = { page: 1, hasMore: false, total: 0 }; } catch (e) {}
 
   showToast('🎉 Admin login successful.', 'success');
   _sessionKilled = false;
   startSessionHeartbeat();
-  renderApp();
 
-  // One extra paint to be absolutely certain — defends against any
-  // rAF-batched render that might have been scheduled with stale state.
-  setTimeout(() => renderApp(), 40);
+  // Kick off the fetch — this internally calls renderApp() when done.
+  fetchCoursesFromDB(true).catch(err => {
+    console.warn('[admin login] course fetch failed:', err);
+  });
+
+  renderApp();
 }
 
 /* ============================================================
@@ -5395,8 +5407,10 @@ function clearCourseFilters() {
 }
 
 function renderStudentCourses() {
-  // ⚡ Loading guard — show skeleton until first fetch completes
-  if (_coursesLoading && liveCourses.length === 0) {
+  // ⚡ Loading guard — show skeleton until first fetch completes,
+  //    OR whenever we have no data at all (defends against a failed/
+  //    hung fetch leaving the user staring at an empty grid).
+  if ((_coursesLoading || _courseCacheAt === 0) && liveCourses.length === 0) {
     const el = $('studentCourseList');
     if (el) el.innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
     return;
