@@ -4,6 +4,32 @@
 const API_BASE = '/api';
 
 /* ============================================================
+   ONE-TIME CACHE WIPE (v2)
+   ------------------------------------------------------------
+   Nukes the Service Worker cache and forces an SW update ONCE
+   per bundle version. This clears any PDF the student had cached
+   from when the file was still free — so the very next request
+   goes back to the server and hits the premium gate.
+   ============================================================ */
+(function bustStalePdfCache() {
+  try {
+    const KEY = 'aero_cache_bust_v2';
+    if (localStorage.getItem(KEY)) return;
+    localStorage.setItem(KEY, '1');
+
+    if (window.caches && caches.keys) {
+      caches.keys().then(keys => keys.forEach(k => caches.delete(k))).catch(() => {});
+    }
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then(regs =>
+        regs.forEach(r => r.update().catch(() => {}))
+      ).catch(() => {});
+    }
+    console.log('[cache] One-time cache wipe complete.');
+  } catch (e) {}
+})();
+
+/* ============================================================
    withAuthToken — append ?auth=<jwt> to same-origin protected URLs
    ------------------------------------------------------------
    PDF.js and <video> elements make RAW fetches that do NOT pass
@@ -1334,6 +1360,11 @@ async function handleLogin(e) {
           catch (e) { location.hash = '#/home'; }
         }
 
+        // ⭐ Force-fresh course list on every login — kills stale premium flags
+        _courseCacheAt = 0;
+        liveCourses = [];
+        try { _coursePagination = { page: 1, hasMore: false, total: 0 }; } catch (e) {}
+
         showToast(data.message || 'Login successful!', 'success');
         _sessionKilled = false;
         startSessionHeartbeat();
@@ -1391,6 +1422,9 @@ function logout() {
 
   stopSessionHeartbeat();
   _sessionKilled = false;
+
+  _courseCacheAt = 0;
+  liveCourses = [];
 
   currentUser = null; currentCourseId = null; editingCourseId = null;
   window.currentSelectedCourseId = null;
@@ -1623,6 +1657,10 @@ async function _handleAdminLoginOtp(otp) {
   } catch (e) {
     location.hash = '#/admin/overview';
   }
+
+  // ⭐ Force-fresh course list on admin login
+  _courseCacheAt = 0;
+  liveCourses = [];
 
   showToast('🎉 Admin login successful.', 'success');
   _sessionKilled = false;
@@ -5710,10 +5748,8 @@ function renderMaterialCard(course, m, isPurchased) {
 
   /* ⭐ CORRECT LOCK LOGIC
      A material is locked if EITHER:
-       • the COURSE is premium AND the student hasn't bought/subscribed, OR
-       • the MATERIAL is premium AND the student hasn't bought/subscribed.
-     (The old code only looked at the material flag, so every material
-      inside a premium course opened for free.) */
+       • the COURSE is premium AND student hasn't bought/subscribed, OR
+       • the MATERIAL is premium AND student hasn't bought/subscribed. */
   const courseLocked   = isCoursePremium && !isPurchased    && !isSubscribed;
   const materialLocked = isMatPremium    && !isMatPurchased && !isSubscribed;
   const isLocked       = !isAdminUser && (courseLocked || materialLocked);
@@ -5727,11 +5763,11 @@ function renderMaterialCard(course, m, isPurchased) {
     const priceToShow = isMatPremium ? matPrice : coursePrice;
     const itemArg     = isMatPremium ? `'${m.id}'` : 'null';
     fileActionHtml = `<button class="btn btn-warning btn-sm"
-                        onclick="showPaymentModal('${course.id}', ${itemArg})">
+                        onclick="event.stopPropagation();showPaymentModal('${course.id}', ${itemArg})">
                         <i class="fas fa-lock"></i> Unlock ₹${priceToShow}
                      </button>`;
   } else {
-    // 1. Video handling
+    // Video
     if (m.type === 'video' && hasUrl && !hasFile) {
       fileActionHtml += `<button class="btn btn-primary btn-sm"
                           onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')">
@@ -5739,13 +5775,12 @@ function renderMaterialCard(course, m, isPurchased) {
                         </button>`;
     }
 
-    // 2. Detect PDF (strip query string before checking extension)
+    // PDF detection (strip query string first)
     const cleanUrl = (m.url || '').toLowerCase().split('?')[0].split('#')[0];
     const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
                   cleanUrl.endsWith('.pdf') ||
                   (m.fileData || '').startsWith('data:application/pdf');
 
-    // 3. Render Read button
     if (hasFile && isPdf) {
       fileActionHtml += ` <button class="btn btn-primary btn-sm"
                           onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')">
@@ -8157,39 +8192,115 @@ function previewQuizPaper() {
 }
 
 /* ============================================================
-   FILE VIEWER / VIDEO / BOOKMARK / PROGRESS
+   Shared guard — throws if this material is premium and locked.
+   Called FIRST in every open-* function. No network calls are
+   made until this returns true.
+   ============================================================ */
+function assertMaterialUnlocked(courseId, materialId, opts) {
+  opts = opts || {};
+  if (!currentUser) {
+    if (!opts.silent) showToast('Please log in to open this material.', 'error');
+    return false;
+  }
+  if (isAdmin(currentUser)) return true;
+
+  const course = findCourse(courseId);
+  if (!course) { if (!opts.silent) showToast('Course not found.', 'error'); return false; }
+
+  const mat = (course.materials || []).find(m => m.id === materialId);
+  if (!mat) { if (!opts.silent) showToast('Material not found.', 'error'); return false; }
+
+  const isCoursePremium = course.isPremium === true || course.isPremium === 'true';
+  const isMatPremium    = mat.isPremium    === true || mat.isPremium    === 'true';
+
+  const purchases    = Array.isArray(currentUser.purchases) ? currentUser.purchases : [];
+  const ownsCourse   = purchases.includes(String(course.id));
+  const ownsMaterial = purchases.includes(String(mat.id));
+  const subscribed   = !!currentUser.isSubscribed;
+
+  if (subscribed || ownsCourse || ownsMaterial) return true;
+
+  if (isCoursePremium || isMatPremium) {
+    if (!opts.silent) {
+      showToast('This content is locked. Purchase it or subscribe to unlock.', 'error');
+    }
+    return false;
+  }
+  return true;
+}
+
+/* ============================================================
+   viewFileOnline — PREMIUM GATED + AUTH-TOKEN-AWARE
    ============================================================ */
 async function viewFileOnline(courseId, materialId) {
+  /* ① HARD GATE — before ANY network call or viewer open */
+  if (!assertMaterialUnlocked(courseId, materialId)) return;
+
   const course = findCourse(courseId); if (!course) return;
-  const mat = course.materials.find(m => m.id === materialId);
+  const mat = (course.materials || []).find(m => m.id === materialId);
   if (!mat) return showToast('Material not found.', 'info');
 
-  // Lazy-load PDF.js before opening viewer
   try { await window.loadPDFJS(); }
   catch { return showToast('Could not load PDF viewer.', 'error'); }
 
-  let fileUrl = null;
-  let fileData = mat.fileData;
-  if (mat.url && (mat.url.startsWith('http://') || mat.url.startsWith('https://') || mat.url.startsWith('/uploads/'))) {
-    fileUrl = mat.url;
-  } else if (fileData && (fileData.startsWith('http://') || fileData.startsWith('https://') || fileData.startsWith('/uploads/'))) {
-    fileUrl = fileData;
+  /* ② Server re-verify — defends against stale client-side state */
+  try {
+    const check = await fetchJSON(
+      `${API_BASE}/courses/${courseId}/materials/${materialId}/file?_t=${Date.now()}`
+    );
+    if (check && check.success === false &&
+        (check.code === 'course-premium' || check.code === 'material-premium')) {
+      return showToast(check.message || 'This content is locked.', 'error');
+    }
+    if (check && check.success && check.fileData) {
+      const fd = check.fileData;
+      const isPdfInline =
+        String(fd).startsWith('data:application/pdf') ||
+        (mat.fileName || '').toLowerCase().endsWith('.pdf');
+
+      if (isPdfInline) {
+        if (fd.startsWith('data:')) {
+          window.PDFViewer.open({
+            data: fd,
+            materialId: mat.id, courseId: course.id,
+            fileName: mat.fileName, title: mat.title,
+            username: currentUser.fullName || currentUser.username || 'Student'
+          });
+        } else {
+          window.PDFViewer.open({
+            url: withAuthToken(fd),
+            materialId: mat.id, courseId: course.id,
+            fileName: mat.fileName, title: mat.title,
+            username: currentUser.fullName || currentUser.username || 'Student'
+          });
+        }
+        return;
+      }
+    }
+  } catch (e) {
+    if (/locked|premium|subscription|purchase/i.test(e.message || '')) {
+      return showToast(e.message, 'error');
+    }
+    console.warn('[viewFileOnline] file-check failed:', e.message);
   }
-  
+
+  /* ③ Legacy URL path */
+  let fileUrl = null;
+  if (mat.url && (mat.url.startsWith('/uploads/') || /^https?:/i.test(mat.url))) {
+    fileUrl = mat.url;
+  }
 
   if (fileUrl) {
-    // Strip query string before checking extension (Cloudinary / CDN safe)
     const cleanUrl = fileUrl.toLowerCase().split('?')[0].split('#')[0];
-    const isPdfUrl =
-      cleanUrl.endsWith('.pdf') ||
-      (mat.fileName || '').toLowerCase().endsWith('.pdf');
+    const isPdfUrl = cleanUrl.endsWith('.pdf')
+                  || (mat.fileName || '').toLowerCase().endsWith('.pdf');
+
     if (isPdfUrl) {
+      const pdfUrl = fileUrl.startsWith('/uploads/') ? withAuthToken(fileUrl) : fileUrl;
       window.PDFViewer.open({
-        url: fileUrl,
-        materialId: mat.id,
-        courseId: course.id,
-        fileName: mat.fileName,
-        title: mat.title,
+        url: pdfUrl,
+        materialId: mat.id, courseId: course.id,
+        fileName: mat.fileName, title: mat.title,
         username: currentUser.fullName || currentUser.username || 'Student'
       });
     } else {
@@ -8198,55 +8309,19 @@ async function viewFileOnline(courseId, materialId) {
     return;
   }
 
-  if (!fileData && mat.fileName) {
-    try {
-      const res = await fetch(`${API_BASE}/courses/${courseId}/materials/${materialId}/file`);
-      const data = await res.json();
-      if (data.success && data.fileData) {
-        fileData = data.fileData;
-        if (fileData.startsWith('/uploads/') || (fileData.startsWith('http') && fileData.includes('/uploads/'))) {
-          const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || fileData.toLowerCase().endsWith('.pdf');
-          if (isPdf) {
-            window.PDFViewer.open({
-              url: fileData,
-              materialId: mat.id,
-              courseId: course.id,
-              fileName: mat.fileName,
-              title: mat.title,
-              username: currentUser.fullName || currentUser.username || 'Student'
-            });
-          } else {
-            showToast('Preview is only available for PDFs. Download is disabled.', 'error');
-          }
-          return;
-        }
-        mat.fileData = fileData;
-      }
-    } catch (e) { /* silent */ }
-  }
-
-  if (!fileData) return showToast('No file attached.', 'info');
-
-  const isPdf = (mat.fileName || '').toLowerCase().endsWith('.pdf') || String(fileData).startsWith('data:application/pdf');
-  if (isPdf) {
-    window.PDFViewer.open({
-      data: fileData,
-      materialId: mat.id,
-      courseId: course.id,
-      fileName: mat.fileName,
-      title: mat.title,
-      username: currentUser.fullName || currentUser.username || 'Student'
-    });
-  } else {
-    showToast('Preview is only available for PDFs. Download is disabled.', 'error');
-  }
+  showToast('No file attached.', 'info');
 }
 
+/* ============================================================
+   openMaterialVideo — PREMIUM GATED
+   ============================================================ */
 async function openMaterialVideo(courseId, materialId) {
-  if (!currentUser) return showToast('Please log in first.', 'error');
+  /* ① HARD GATE — before any network call */
+  if (!assertMaterialUnlocked(courseId, materialId)) return;
+
   const course = findCourse(courseId);
   if (!course) return;
-  const mat = course.materials.find(m => m.id === materialId);
+  const mat = (course.materials || []).find(m => m.id === materialId);
   if (!mat || !mat.url) return showToast('No video URL set for this material.', 'error');
 
   try {
@@ -8259,7 +8334,11 @@ async function openMaterialVideo(courseId, materialId) {
       }
     );
     const data = await res.json();
-    if (!data.success) return showToast(data.message || 'Could not load video.', 'error');
+
+    /* ② Server refused → stop right here, do NOT fall through */
+    if (!data.success) {
+      return showToast(data.message || 'Could not load video.', 'error');
+    }
 
     const baseOpts = {
       materialId: mat.id,
@@ -8271,12 +8350,11 @@ async function openMaterialVideo(courseId, materialId) {
     if (data.kind === 'youtube' && data.videoId) {
       window.VideoPlayer.open({ ...baseOpts, videoId: data.videoId });
     } else if (data.kind === 'direct' && data.directUrl) {
-  window.VideoPlayer.open({ ...baseOpts, src: withAuthToken(data.directUrl) });
-}
-      else {
+      window.VideoPlayer.open({ ...baseOpts, src: withAuthToken(data.directUrl) });
+    } else {
       showToast('Unsupported video response from server.', 'error');
     }
-  } catch {
+  } catch (e) {
     showToast('Server error loading video.', 'error');
   }
 }

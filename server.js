@@ -265,13 +265,23 @@ const upload = multer({
    On a real VPS, Nginx serves step 1 directly (see nginx config)
    and only forwards MISSES to this Node handler.
    ============================================================ */
+/* ============================================================
+   HYBRID STATIC FILE SERVING — PREMIUM GATED + NO-CACHE
+   ------------------------------------------------------------
+   1. Premium check FIRST (403 if locked)
+   2. Disk fast path (if exists)
+   3. Cloudinary restore on miss
+   Cache is disabled on ALL responses so a file that was free
+   yesterday cannot stay in the browser cache after the admin
+   flips it to Premium.
+   ============================================================ */
 app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
   const filename = path.basename(req.params.filename);   // sanitize
   if (!filename || filename.includes('..')) {
     return res.status(400).send('Invalid filename');
   }
 
-  // ⭐ PREMIUM ACCESS CHECK — reject before serving any bytes
+  /* ---- ⭐ PREMIUM ACCESS CHECK — reject before serving any bytes ---- */
   try {
     const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const owner = await Course.findOne({
@@ -285,6 +295,9 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
       if (mat) {
         const access = checkMaterialAccess(req.authUser, owner, mat);
         if (!access.allowed) {
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
           return res.status(403).json({
             success: false,
             code: access.reason,
@@ -293,22 +306,28 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
         }
       }
     }
-    // If no Course references this URL → legacy / orphan file → allow.
   } catch (e) {
     console.warn('[uploads] premium check failed:', e.message);
-    // Fail-open on DB error to avoid breaking the whole site;
-    // the material-level checks in other routes still apply.
+    // ⚠️ Fail-CLOSED — never serve premium content on a DB hiccup
+    return res.status(503).send('Access check temporarily unavailable. Please retry.');
   }
+
+  /* ---- NO-CACHE headers for every successful response ---- */
+  const noStore = {
+    'Cache-Control': 'private, no-store, no-cache, must-revalidate',
+    'Pragma': 'no-cache',
+    'Expires': '0'
+  };
 
   const diskPath = path.join(UPLOAD_DIR, filename);
 
-  // ---- Fast path: file exists on disk ----
+  /* ---- Fast path: file exists on disk ---- */
   if (fs.existsSync(diskPath)) {
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set(noStore);
     return res.sendFile(diskPath);
   }
 
-  // ---- Slow path: try to restore from Cloudinary ----
+  /* ---- Slow path: try to restore from Cloudinary ---- */
   console.log('[uploads] 💾 Disk miss for', filename, '— attempting Cloudinary restore…');
 
   let cloudUrl = readCloudSidecar(filename);
@@ -332,7 +351,6 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
         if (mat) {
           cloudUrl = mat.cloudUrl;
           if (!cloudUrl && mat.cloudinaryPublicId) {
-            // Reconstruct — will redirect instead of download
             cloudUrl = cloudinary.url(mat.cloudinaryPublicId, { secure: true, resource_type: 'auto' });
           }
         }
@@ -347,7 +365,7 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
     return res.status(404).send('File not found and no cloud backup available.');
   }
 
-  // ---- Download from Cloudinary, cache to disk, then serve ----
+  /* ---- Download from Cloudinary, cache to disk, then serve ---- */
   try {
     const response = await fetch(cloudUrl, { redirect: 'follow' });
     if (!response.ok) throw new Error('Cloudinary HTTP ' + response.status);
@@ -358,7 +376,7 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
     console.log('[uploads] ✅ Restored from Cloudinary:', filename,
                 '(' + Math.round(buffer.length / 1024 / 1024) + ' MB)');
 
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.set(noStore);
     res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
     res.send(buffer);
   } catch (e) {
