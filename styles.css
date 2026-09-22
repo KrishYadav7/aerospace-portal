@@ -1137,6 +1137,23 @@ input, textarea, select { font-family: inherit; }
 .mat-type.other    { background: linear-gradient(135deg, #6b7280, #9ca3af); }
 .mat-badge { font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: var(--radius-pill); letter-spacing: .3px; }
 .mat-badge.premium { background: var(--gold-500); color: #422006; }
+/* ⭐ NEW: Course-locked badge (course premium, material itself not premium) */
+.mat-badge.course-locked {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(99,102,241,.35);
+}
+
+/* ⭐ NEW: Unlocked badge (student already owns access) */
+.mat-badge.unlocked {
+  background: linear-gradient(135deg, #10b981, #34d399);
+  color: #062a1e;
+  box-shadow: 0 2px 8px rgba(16,185,129,.35);
+}
+[data-theme="dark"] .mat-badge.unlocked,
+[data-theme="dim"]   .mat-badge.unlocked {
+  color: #042019;
+}
 .mat-badge.free { background: rgba(16,185,129,.15); color: var(--emerald-600); }
 [data-theme="dark"] .mat-badge.free,
 [data-theme="dim"] .mat-badge.free { background: rgba(16,185,129,.2); color: var(--emerald-400); }

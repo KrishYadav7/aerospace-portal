@@ -5821,9 +5821,36 @@ function renderMaterialCard(course, m, isPurchased) {
     }
   }
 
-  const badgeHtml = isMatPremium
-    ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`
-    : `<span class="mat-badge free">FREE</span>`;
+  /* ============================================================
+     Badge reflects ACTUAL access state, not just the material flag.
+     3 cases:
+       ① Material khud premium hai           → PRO badge
+       ② Course premium, material normal     → COURSE PREMIUM badge
+       ③ Sab free (course + material)        → FREE badge
+     Plus: agar student ne already unlock kar liya to "UNLOCKED" badge
+     ============================================================ */
+  let badgeHtml;
+  if (isAdminUser) {
+    badgeHtml = isMatPremium
+      ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`
+      : `<span class="mat-badge free">FREE</span>`;
+  } else if (isSubscribed || isPurchased || isMatPurchased) {
+    // Student ke paas already access hai
+    if (isMatPremium || isCoursePremium) {
+      badgeHtml = `<span class="mat-badge unlocked"><i class="fas fa-unlock"></i> UNLOCKED</span>`;
+    } else {
+      badgeHtml = `<span class="mat-badge free">FREE</span>`;
+    }
+  } else if (isMatPremium) {
+    // Case ① — individual material is premium
+    badgeHtml = `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`;
+  } else if (isCoursePremium) {
+    // Case ② — the COURSE is premium (this is what your screenshot shows)
+    badgeHtml = `<span class="mat-badge course-locked"><i class="fas fa-lock"></i> COURSE PREMIUM</span>`;
+  } else {
+    // Case ③ — truly free
+    badgeHtml = `<span class="mat-badge free">FREE</span>`;
+  }
 
   const quizBadge = quizCount > 0
     ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>`
