@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background gradient: indigo → cyan (matches brand) -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#4f46e5"/>
+      <stop offset="55%"  stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+
+    <!-- Rocket body gradient -->
+    <linearGradient id="rocketGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"  stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#e0e7ff"/>
+    </linearGradient>
+
+    <!-- Flame gradient -->
+    <linearGradient id="flameGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#fbbf24"/>
+      <stop offset="50%"  stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+
+    <!-- Soft glow behind rocket -->
+    <radialGradient id="glow" cx="50%" cy="50%" r="55%">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded-square background -->
+  <rect x="0" y="0" width="512" height="512" rx="112" ry="112" fill="url(#bgGrad)"/>
+
+  <!-- Subtle glow -->
+  <circle cx="256" cy="256" r="200" fill="url(#glow)"/>
+
+  <!-- Decorative stars -->
+  <circle cx="118" cy="132" r="6" fill="#ffffff" opacity="0.55"/>
+  <circle cx="402" cy="118" r="4" fill="#ffffff" opacity="0.45"/>
+  <circle cx="410" cy="380" r="5" fill="#ffffff" opacity="0.55"/>
+  <circle cx="108" cy="390" r="3.5" fill="#ffffff" opacity="0.5"/>
+  <circle cx="86" cy="248" r="3" fill="#ffffff" opacity="0.4"/>
+  <circle cx="430" cy="240" r="3.5" fill="#ffffff" opacity="0.4"/>
+
+  <!-- ============================================
+       ROCKET (center) — tilted slightly for dynamism
+       ============================================ -->
+  <g transform="translate(256 250) rotate(-42) translate(-256 -250)">
+
+    <!-- Flame / exhaust -->
+    <path d="M 256 372
+             C 236 372, 228 400, 228 420
+             C 228 440, 244 456, 256 456
+             C 268 456, 284 440, 284 420
+             C 284 400, 276 372, 256 372 Z"
+          fill="url(#flameGrad)" opacity="0.9"/>
+    <path d="M 256 380
+             C 246 380, 242 400, 242 415
+             C 242 428, 250 440, 256 440
+             C 262 440, 270 428, 270 415
+             C 270 400, 266 380, 256 380 Z"
+          fill="#fde68a" opacity="0.95"/>
+
+    <!-- Left fin -->
+    <path d="M 200 340 L 172 372 L 172 392 L 204 376 Z"
+          fill="#c7d2fe"/>
+
+    <!-- Right fin -->
+    <path d="M 312 340 L 340 372 L 340 392 L 308 376 Z"
+          fill="#c7d2fe"/>
+
+    <!-- Rocket body -->
+    <path d="M 256 90
+             C 218 130, 200 210, 200 320
+             L 200 372
+             L 312 372
+             L 312 320
+             C 312 210, 294 130, 256 90 Z"
+          fill="url(#rocketGrad)"/>
+
+    <!-- Body outline highlight (left side) -->
+    <path d="M 256 90
+             C 218 130, 200 210, 200 320
+             L 200 372
+             L 226 372
+             L 226 320
+             C 226 220, 240 145, 256 110 Z"
+          fill="#ffffff" opacity="0.6"/>
+
+    <!-- Nose cone accent -->
+    <path d="M 256 90
+             C 238 112, 224 148, 216 190
+             L 296 190
+             C 288 148, 274 112, 256 90 Z"
+          fill="#fbbf24"/>
+
+    <!-- Window / porthole -->
+    <circle cx="256" cy="240" r="34" fill="#0b1226" opacity="0.9"/>
+    <circle cx="256" cy="240" r="26" fill="#06b6d4"/>
+    <circle cx="256" cy="240" r="26" fill="#22d3ee" opacity="0.6"/>
+    <circle cx="246" cy="230" r="8" fill="#ffffff" opacity="0.75"/>
+
+    <!-- Bottom stripe detail -->
+    <rect x="200" y="356" width="112" height="6" fill="#0b1226" opacity="0.15"/>
+  </g>
+</svg>

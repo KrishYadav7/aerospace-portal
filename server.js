@@ -655,6 +655,17 @@ app.get('/media-viewer.js', (req, res) => {
   res.sendFile(path.join(__dirname, 'media-viewer.js'));
 });
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
+/* ---- Logo / PWA icons ---- */
+app.get('/favicon-16.png',       (req, res) => sendCached(res, 'favicon-16.png', 604800));
+app.get('/favicon-32.png',       (req, res) => sendCached(res, 'favicon-32.png', 604800));
+app.get('/favicon-48.png',       (req, res) => sendCached(res, 'favicon-48.png', 604800));
+app.get('/favicon-96.png',       (req, res) => sendCached(res, 'favicon-96.png', 604800));
+app.get('/apple-touch-icon.png', (req, res) => sendCached(res, 'apple-touch-icon.png', 604800));
+app.get('/icon-192.png',         (req, res) => sendCached(res, 'icon-192.png', 604800));
+app.get('/icon-256.png',         (req, res) => sendCached(res, 'icon-256.png', 604800));
+app.get('/icon-384.png',         (req, res) => sendCached(res, 'icon-384.png', 604800));
+app.get('/icon-512.png',         (req, res) => sendCached(res, 'icon-512.png', 604800));
+app.get('/logo.svg',             (req, res) => sendCached(res, 'logo.svg', 604800));
 app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json', 86400));
 app.get('/sw.js',           (req, res) => {
   res.setHeader('Cache-Control', 'no-cache'); // SW को हमेशा fresh चाहिए

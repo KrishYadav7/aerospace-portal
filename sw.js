@@ -6,13 +6,16 @@
    changes on every deploy, and they MUST always come from the network.
    Only truly static assets (manifest, images) go in the cache.
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v45';
+const CACHE_NAME = 'aero-shell-v47';
 
 /* ONLY these go into the offline cache — they never change silently */
 const SHELL_ASSETS = [
   './index.html',
   './manifest.json',
-  './passport.jpg'
+  './favicon-32.png',
+  './apple-touch-icon.png',
+  './icon-192.png',
+  './icon-512.png'
 ];
 
 /* Files that must ALWAYS be fetched fresh from the network */

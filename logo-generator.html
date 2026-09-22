@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>AeroGyan Logo Generator</title>
+  <style>
+    body { font-family: Inter, -apple-system, sans-serif; background: #0b1226; color: #fff; padding: 40px 20px; max-width: 900px; margin: 0 auto; }
+    h1 { font-size: 26px; margin-bottom: 8px; }
+    p { color: #b8bdd1; margin-bottom: 30px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 20px; margin-bottom: 30px; }
+    .card { background: #131832; border: 1px solid #262f5a; border-radius: 14px; padding: 20px; text-align: center; }
+    .card h3 { font-size: 13px; margin-bottom: 12px; color: #a5b4fc; }
+    .card canvas { background: #05060e; border-radius: 12px; display: block; margin: 0 auto 14px; }
+    .card .name { font-size: 11px; color: #7b82a3; font-family: monospace; margin-bottom: 10px; }
+    button { background: linear-gradient(135deg, #4f46e5, #6366f1); color: #fff; border: none; padding: 9px 18px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; width: 100%; }
+    button:hover { background: linear-gradient(135deg, #4338ca, #4f46e5); }
+    .bulk { background: linear-gradient(135deg, #10b981, #34d399); color: #062a1e; padding: 16px 28px; font-size: 15px; max-width: 320px; margin: 0 auto; display: block; }
+    .preview-lg { background: #131832; border: 1px solid #262f5a; border-radius: 14px; padding: 30px; text-align: center; margin-bottom: 30px; }
+    .preview-lg canvas { border-radius: 20px; box-shadow: 0 20px 60px rgba(79, 70, 229, .3); }
+  </style>
+</head>
+<body>
+  <h1>🎨 AeroGyan Logo Generator</h1>
+  <p>Saari PNG sizes automatically generate hongi. "Download All" click karo.</p>
+  <div class="preview-lg"><canvas id="preview" width="220" height="220"></canvas></div>
+  <div class="grid" id="grid"></div>
+  <button class="bulk" onclick="downloadAll()">📦 Download All Sizes</button>
+
+  <script>
+    const SVG_SOURCE = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512"><defs><linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4f46e5"/><stop offset="55%" stop-color="#6366f1"/><stop offset="100%" stop-color="#06b6d4"/></linearGradient><linearGradient id="rocketGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#e0e7ff"/></linearGradient><linearGradient id="flameGrad" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#fbbf24"/><stop offset="50%" stop-color="#f59e0b"/><stop offset="100%" stop-color="#ef4444"/></linearGradient><radialGradient id="glow" cx="50%" cy="50%" r="55%"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.22"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient></defs><rect x="0" y="0" width="512" height="512" rx="112" ry="112" fill="url(#bgGrad)"/><circle cx="256" cy="256" r="200" fill="url(#glow)"/><circle cx="118" cy="132" r="6" fill="#ffffff" opacity="0.55"/><circle cx="402" cy="118" r="4" fill="#ffffff" opacity="0.45"/><circle cx="410" cy="380" r="5" fill="#ffffff" opacity="0.55"/><circle cx="108" cy="390" r="3.5" fill="#ffffff" opacity="0.5"/><circle cx="86" cy="248" r="3" fill="#ffffff" opacity="0.4"/><circle cx="430" cy="240" r="3.5" fill="#ffffff" opacity="0.4"/><g transform="translate(256 250) rotate(-42) translate(-256 -250)"><path d="M 256 372 C 236 372, 228 400, 228 420 C 228 440, 244 456, 256 456 C 268 456, 284 440, 284 420 C 284 400, 276 372, 256 372 Z" fill="url(#flameGrad)" opacity="0.9"/><path d="M 256 380 C 246 380, 242 400, 242 415 C 242 428, 250 440, 256 440 C 262 440, 270 428, 270 415 C 270 400, 266 380, 256 380 Z" fill="#fde68a" opacity="0.95"/><path d="M 200 340 L 172 372 L 172 392 L 204 376 Z" fill="#c7d2fe"/><path d="M 312 340 L 340 372 L 340 392 L 308 376 Z" fill="#c7d2fe"/><path d="M 256 90 C 218 130, 200 210, 200 320 L 200 372 L 312 372 L 312 320 C 312 210, 294 130, 256 90 Z" fill="url(#rocketGrad)"/><path d="M 256 90 C 218 130, 200 210, 200 320 L 200 372 L 226 372 L 226 320 C 226 220, 240 145, 256 110 Z" fill="#ffffff" opacity="0.6"/><path d="M 256 90 C 238 112, 224 148, 216 190 L 296 190 C 288 148, 274 112, 256 90 Z" fill="#fbbf24"/><circle cx="256" cy="240" r="34" fill="#0b1226" opacity="0.9"/><circle cx="256" cy="240" r="26" fill="#06b6d4"/><circle cx="256" cy="240" r="26" fill="#22d3ee" opacity="0.6"/><circle cx="246" cy="230" r="8" fill="#ffffff" opacity="0.75"/><rect x="200" y="356" width="112" height="6" fill="#0b1226" opacity="0.15"/></g></svg>`;
+
+    const SIZES = [
+      { size: 16,  name: 'favicon-16.png' },
+      { size: 32,  name: 'favicon-32.png' },
+      { size: 48,  name: 'favicon-48.png' },
+      { size: 96,  name: 'favicon-96.png' },
+      { size: 180, name: 'apple-touch-icon.png' },
+      { size: 192, name: 'icon-192.png' },
+      { size: 256, name: 'icon-256.png' },
+      { size: 384, name: 'icon-384.png' },
+      { size: 512, name: 'icon-512.png' }
+    ];
+
+    const grid = document.getElementById('grid');
+    const previewCanvas = document.getElementById('preview');
+    const svgBlob = new Blob([SVG_SOURCE], { type: 'image/svg+xml;charset=utf-8' });
+    const svgUrl = URL.createObjectURL(svgBlob);
+    const img = new Image();
+
+    img.onload = () => {
+      drawTo(previewCanvas, 220);
+      SIZES.forEach(s => createCard(s));
+    };
+    img.src = svgUrl;
+
+    function drawTo(canvas, size) {
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.clearRect(0, 0, size, size);
+      ctx.drawImage(img, 0, 0, size, size);
+    }
+
+    function createCard(s) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `<h3>${s.size} × ${s.size}</h3><canvas id="c-${s.size}" width="${Math.min(s.size, 140)}" height="${Math.min(s.size, 140)}"></canvas><div class="name">${s.name}</div><button onclick="download(${s.size}, '${s.name}')">⬇ Download</button>`;
+      grid.appendChild(card);
+      const previewSize = Math.min(s.size, 140);
+      const c = document.getElementById('c-' + s.size);
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, previewSize, previewSize);
+    }
+
+    function download(size, filename) {
+      const c = document.createElement('canvas');
+      drawTo(c, size);
+      c.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+      }, 'image/png');
+    }
+
+    async function downloadAll() {
+      for (const s of SIZES) {
+        download(s.size, s.name);
+        await new Promise(r => setTimeout(r, 350));
+      }
+    }
+  </script>
+</body>
+</html>
