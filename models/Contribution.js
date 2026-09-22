@@ -9,10 +9,9 @@ const contributionSchema = new mongoose.Schema({
   description:     { type: String, default: '', trim: true },
   subject:         { type: String, default: '' },
 
-  fileUrl:             { type: String, required: true },   // '/uploads/xxx.pdf' (disk — fast)
-  cloudUrl:            { type: String, default: '' },       // Cloudinary URL — backup
-  diskName:            { type: String, default: '' },       // actual filename on disk
-  fileName:            { type: String, default: '' },       // original uploaded filename
+  fileUrl:             { type: String, required: true },
+  cloudUrl:            { type: String, default: '' },
+  fileName:            { type: String, default: '' },
   fileSize:            { type: Number, default: 0 },
   fileType:            { type: String, default: '' },
   cloudinaryPublicId:  { type: String, default: '' },

@@ -10468,10 +10468,12 @@ async function renderAdminContributions() {
             </div>
           </div>
           <div class="community-actions">
-            <button class="btn btn-primary btn-sm" onclick="downloadContribution('${c._id}', ${jsStr(c.fileName || c.title || 'contribution')})">
+            <button type="button" class="btn btn-primary btn-sm"
+                    onclick="downloadContribution('${c._id}', ${jsStr(c.fileName || c.title || 'contribution')})">
               <i class="fas fa-download"></i> Download
             </button>
-            <button class="btn btn-danger btn-sm" onclick="deleteContribution('${c._id}', ${jsStr(c.title)})">
+            <button type="button" class="btn btn-danger btn-sm"
+                    onclick="deleteContribution('${c._id}', ${jsStr(c.title)})">
               <i class="fas fa-trash"></i>
             </button>
           </div>
@@ -10500,92 +10502,86 @@ async function renderAdminContributions() {
     </div>`;
 }
 
-async function deleteContribution(id, title) {
-  if (!confirm(`Delete contribution "${title}" from Cloudinary AND the database? This cannot be undone.`)) return;
+async function renderAdminContributions() {
+  const el = document.getElementById('adminContributionsContent');
+  if (!el) return;
+  el.classList.add('active');
+  el.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading contributions…</p></div>`;
+
+  let list = [];
   try {
-    const data = await fetchJSON(`${API_BASE}/admin/contributions/${id}`, { method: 'DELETE' });
-    if (data.success) { showToast('Deleted.', 'info'); renderAdminContributions(); }
-    else showToast(data.message || 'Failed.', 'error');
-  } catch (e) { showToast(e.message, 'error'); }
-}
-/* ============================================================
-   ADMIN — Download a contribution (auth-aware, blob-based)
-   ------------------------------------------------------------
-   The previous implementation used a plain <a href>, which the
-   browser navigates to WITHOUT the Authorization header. The
-   server's requireAdminAuth then returned 401 JSON — the file
-   never actually downloaded. We now fetch() (which passes
-   through the global auth interceptor), receive the file as a
-   Blob, and trigger a synthetic download.
-   ============================================================ */
-async function downloadAdminContribution(contributionId, suggestedName) {
-  if (!contributionId) return showToast('Missing contribution ID.', 'error');
-
-  let token = null;
-  try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
-
-  try {
-    const res = await fetch(`${API_BASE}/admin/contributions/${contributionId}/download`, {
-      method: 'GET',
-      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
-      cache: 'no-store'
-    });
-
-    if (!res.ok) {
-      // The server sends JSON on error — try to read the message
-      let msg = `Download failed (HTTP ${res.status})`;
-      try {
-        const txt = await res.text();
-        try {
-          const j = JSON.parse(txt);
-          if (j && j.message) msg = j.message;
-        } catch (_) {
-          if (txt && txt.length < 300) msg = txt;
-        }
-      } catch (_) {}
-      return showToast(msg, 'error');
-    }
-
-    // Prefer the server-provided filename (from Content-Disposition)
-    let filename = suggestedName || 'contribution';
-    const cd = res.headers.get('Content-Disposition') || '';
-    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-    if (m && m[1]) {
-      try { filename = decodeURIComponent(m[1]); } catch (_) { filename = m[1]; }
-    }
-    // If the caller passed a bare title (no extension), keep server's name
-    if (suggestedName && /\.[a-z0-9]{2,5}$/i.test(suggestedName)) {
-      filename = suggestedName;
-    }
-
-    const blob = await res.blob();
-    if (!blob || blob.size === 0) {
-      return showToast('Server returned an empty file.', 'error');
-    }
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-
-    setTimeout(() => {
-      URL.revokeObjectURL(url);
-      a.remove();
-    }, 800);
-
-    showToast('✅ Download started.', 'success');
-
-    // Refresh the list so the "Downloaded" status flips
-    setTimeout(() => {
-      try { renderAdminContributions(); } catch (_) {}
-    }, 1200);
-  } catch (err) {
-    console.error('[downloadAdminContribution]', err);
-    showToast('Download failed: ' + (err.message || 'network error'), 'error');
+    const data = await fetchJSON(`${API_BASE}/admin/contributions?t=${Date.now()}`);
+    if (data.success) list = data.contributions || [];
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message)}</p></div>`;
+    return;
   }
+
+  const pend = list.filter(c => c.status === 'pending');
+  const done = list.filter(c => c.status === 'downloaded');
+
+  const renderGroup = (title, items) => {
+    if (items.length === 0) {
+      return `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">0</span></div>
+              <p class="community-empty">No entries.</p>`;
+    }
+    let h = `<div class="community-group-head">${escapeHtml(title)} <span class="community-count">${items.length}</span></div>`;
+    h += '<div class="community-list">';
+    items.forEach(c => {
+      const when = c.submittedAt
+        ? new Date(c.submittedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : '';
+      const sizeMB = c.fileSize ? (c.fileSize / (1024 * 1024)).toFixed(2) + ' MB' : '';
+      const dlToken = (function () {
+        try { return sessionStorage.getItem('aero_token') || ''; } catch (e) { return ''; }
+      })();
+      const dlHref = `${API_BASE}/admin/contributions/${c._id}/download?token=${encodeURIComponent(dlToken)}`;
+
+      h += `
+        <div class="community-item">
+          <div class="community-avatar"><div class="community-avatar-fallback"><i class="fas fa-file-alt"></i></div></div>
+          <div class="community-info">
+            <h4>${escapeHtml(c.title)}</h4>
+            ${c.subject ? `<div class="community-meta">${escapeHtml(c.subject)}</div>` : ''}
+            ${c.description ? `<div class="community-bio">${escapeHtml(c.description.slice(0, 200))}</div>` : ''}
+            <div class="community-contact">
+              <i class="fas fa-user"></i> ${escapeHtml(c.studentName || c.studentUsername)}
+              ${c.studentEmail ? ` · <i class="fas fa-envelope"></i> ${escapeHtml(c.studentEmail)}` : ''}
+              ${when ? ` · <i class="fas fa-calendar"></i> ${when}` : ''}
+              ${sizeMB ? ` · <i class="fas fa-hdd"></i> ${sizeMB}` : ''}
+            </div>
+          </div>
+          <div class="community-actions">
+            <a class="btn btn-primary btn-sm" href="${dlHref}" target="_blank" rel="noopener">
+              <i class="fas fa-download"></i> Download
+            </a>
+            <button class="btn btn-danger btn-sm" onclick="deleteContribution('${c._id}', ${jsStr(c.title)})">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>`;
+    });
+    h += '</div>';
+    return h;
+  };
+
+  el.innerHTML = `
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-hand-holding-heart"></i> Student Contributions
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${pend.length} pending · ${done.length} downloaded
+          </span>
+        </div>
+      </div>
+      <p class="editor-hint">
+        Click <strong>Download</strong> to save a contribution to your machine. Marked as "downloaded"
+        once you've grabbed it — you can then upload it to a course yourself.
+      </p>
+      ${renderGroup('Pending Download', pend)}
+      ${renderGroup('Already Downloaded', done)}
+    </div>`;
 }
 
 /* ============================================================

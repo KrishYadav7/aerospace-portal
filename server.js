@@ -713,10 +713,23 @@ if (!process.env.JWT_SECRET) {
 async function requireAdminAuth(req, res, next) {
   try {
     const auth = req.headers.authorization || '';
-    if (!auth.startsWith('Bearer ')) {
+    let token = null;
+
+    // Preferred: Authorization: Bearer <token>
+    if (auth.startsWith('Bearer ')) {
+      token = auth.slice(7);
+    }
+    // Fallback: ?token=<jwt>  (needed for plain <a href> downloads that
+    // cannot send an Authorization header)
+    else if (req.query && typeof req.query.token === 'string' && req.query.token) {
+      token = req.query.token;
+    }
+
+    if (!token) {
       return res.status(401).json({ success: false, message: 'Authentication required.' });
     }
-    const decoded = jwt.verify(auth.slice(7), JWT_SECRET);
+
+    const decoded = jwt.verify(token, JWT_SECRET);
     const u = await User.findById(decoded.id).select('role').lean();
     if (!u || u.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin access only.' });
@@ -6447,17 +6460,15 @@ app.get('/api/admin/contributions', requireAdminAuth, async (req, res) => {
   }
 });
 
-/* Admin: download a contribution file (proxied via Cloudinary signed URL) */
 /* ============================================================
    ADMIN — Download a contribution
    ------------------------------------------------------------
-   Strategy (in order, stop at first hit):
-     1. Local disk (UPLOAD_DIR/diskName)         ← fastest, always tried
-     2. Local disk (filename extracted from fileUrl)
-     3. Local disk (heuristic match by extension + submission time)
-     4. Cloudinary signed private_download_url
-     5. Cloudinary stored cloudUrl / fileUrl (absolute only)
-   On success, the file is cached to disk for the next request.
+   Source order (first hit wins):
+     1. Local disk  (UPLOAD_DIR/<filename from fileUrl>)
+     2. Cloudinary signed private_download_url
+     3. Any absolute URL stored on the doc (cloudUrl / fileUrl)
+   On a successful Cloudinary fetch, the file is cached to disk
+   so the next request is instant.
    ============================================================ */
 app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, res) => {
   try {
@@ -6466,18 +6477,12 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
       return res.status(404).json({ success: false, message: 'Contribution not found.' });
     }
 
-    console.log('[contribution/download] ─────────────────────────────');
-    console.log('[contribution/download] id       :', doc._id);
-    console.log('[contribution/download] fileName :', doc.fileName);
-    console.log('[contribution/download] diskName :', doc.diskName);
-    console.log('[contribution/download] publicId :', doc.cloudinaryPublicId);
-    console.log('[contribution/download] fileUrl  :', doc.fileUrl);
-    console.log('[contribution/download] cloudUrl :', doc.cloudUrl);
-
-    const safeAttachmentName = String(doc.fileName || 'contribution')
+    // ---- Safe attachment filename ----
+    const safeName = String(doc.fileName || 'contribution')
       .replace(/["\\\r\n]/g, '')
       .slice(0, 200) || 'contribution';
 
+    // ---- Content-Type from extension ----
     const ext = (path.extname(doc.fileName || doc.fileUrl || '') || '').toLowerCase();
     const MIME_MAP = {
       '.pdf':  'application/pdf',
@@ -6505,94 +6510,41 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
       }).catch(e => console.warn('[contribution/download] status update failed:', e.message));
     };
 
-    const sendFromDisk = (diskPath) => {
-      const stat = fs.statSync(diskPath);
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Disposition', `attachment; filename="${safeAttachmentName}"`);
-      res.setHeader('Content-Length', stat.size);
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-
-      markDownloaded();
-
-      const stream = fs.createReadStream(diskPath);
-      stream.on('error', (err) => {
-        console.error('[contribution/download] stream error:', err);
-        if (!res.headersSent) {
-          res.status(500).json({ success: false, message: 'Could not read file from disk.' });
-        } else {
-          try { res.end(); } catch (_) {}
-        }
-      });
-      stream.pipe(res);
-    };
-
-    /* ---------- Step 1: explicit diskName ---------- */
-    if (doc.diskName) {
-      const safe = path.basename(String(doc.diskName));
-      const diskPath = path.join(UPLOAD_DIR, safe);
-      if (safe && fs.existsSync(diskPath)) {
-        console.log('[contribution/download] ✅ disk hit (diskName):', safe);
-        return sendFromDisk(diskPath);
-      }
+    // ─── Step 1: local disk ───────────────────────────────────
+    // The stored fileUrl is '/uploads/<actual-filename>' — extract it.
+    let diskFilename = null;
+    const urlMatch = String(doc.fileUrl || '').match(/\/uploads\/([^/?#]+)$/);
+    if (urlMatch && urlMatch[1]) {
+      diskFilename = path.basename(urlMatch[1]);   // sanitize against traversal
     }
 
-    /* ---------- Step 2: extract filename from fileUrl ---------- */
-    if (doc.fileUrl) {
-      const m = String(doc.fileUrl).match(/\/uploads\/([^/?#]+)$/);
-      if (m && m[1]) {
-        const safe = path.basename(m[1]);
-        const diskPath = path.join(UPLOAD_DIR, safe);
-        if (fs.existsSync(diskPath)) {
-          console.log('[contribution/download] ✅ disk hit (fileUrl):', safe);
-          return sendFromDisk(diskPath);
-        }
+    if (diskFilename) {
+      const diskPath = path.join(UPLOAD_DIR, diskFilename);
+      if (fs.existsSync(diskPath)) {
+        console.log('[contribution/download] ✅ disk hit:', diskFilename);
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        markDownloaded();
+        return fs.createReadStream(diskPath).pipe(res);
       }
+      console.log('[contribution/download] 💾 disk miss:', diskFilename);
     }
 
-    /* ---------- Step 3: heuristic — recent file with matching extension ---------- */
-    if (!ext) {
-      // nothing to match on
-    } else {
-      try {
-        const submittedAt = doc.submittedAt ? new Date(doc.submittedAt).getTime() : 0;
-        const entries = fs.readdirSync(UPLOAD_DIR)
-          .filter(f => f.toLowerCase().endsWith(ext))
-          .map(f => {
-            let mtime = 0;
-            try { mtime = fs.statSync(path.join(UPLOAD_DIR, f)).mtimeMs; } catch (_) {}
-            const diff = submittedAt ? Math.abs(mtime - submittedAt) : Infinity;
-            return { f, diff };
-          })
-          .filter(c => c.diff < 10 * 60 * 1000)   // within 10 min of submission
-          .sort((a, b) => a.diff - b.diff);
-
-        if (entries.length > 0) {
-          const diskPath = path.join(UPLOAD_DIR, entries[0].f);
-          console.log('[contribution/download] ✅ disk hit (heuristic):', entries[0].f);
-          return sendFromDisk(diskPath);
-        }
-      } catch (e) {
-        console.warn('[contribution/download] heuristic scan failed:', e.message);
-      }
-    }
-
-    /* ---------- Step 4 & 5: Cloudinary ---------- */
-    console.log('[contribution/download] disk miss — trying Cloudinary…');
-
+    // ─── Step 2/3: Cloudinary ─────────────────────────────────
     const candidates = [];
 
     if (doc.cloudinaryPublicId) {
       try {
-        let rt = 'image';   // Cloudinary stores PDFs as 'image'
-        const url = String(doc.fileUrl || '');
+        // Cloudinary stores PDFs as resource_type "image" by default.
+        let rt = 'image';
+        const url   = String(doc.fileUrl || '');
         const fname = String(doc.fileName || '').toLowerCase();
+
         if (/\/video\/upload\//.test(url) || /\.(mp4|webm|mov|avi|mkv|mp3|wav|ogg)$/.test(fname)) rt = 'video';
-        else if (/\/raw\/upload\//.test(url)) rt = 'raw';
-        else if (/\/image\/upload\//.test(url)) rt = 'image';
-        else if (/\.(docx?|pptx?|xlsx?|txt|csv|zip|ppt|doc|xls)$/.test(fname)) rt = 'raw';
-        else if (/\.pdf$/.test(fname)) rt = 'image';
+        else if (/\/raw\/upload\//.test(url) || /\.(docx?|pptx?|xlsx?|txt|csv|zip|ppt|doc|xls)$/.test(fname)) rt = 'raw';
+        else if (/\.pdf$/i.test(fname)) rt = 'image';
 
         const format = (doc.fileName || '').split('.').pop() || '';
         const signedUrl = cloudinary.utils.private_download_url(
@@ -6604,23 +6556,22 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
             expires_at: Math.floor(Date.now() / 1000) + 300
           }
         );
-        candidates.push({ name: 'cloudinary-signed', url: signedUrl });
-      } catch (signErr) {
-        console.warn('[contribution/download] signed URL build failed:', signErr.message);
+        candidates.push({ name: 'cloudinary-signed(' + rt + ')', url: signedUrl });
+      } catch (e) {
+        console.warn('[contribution/download] signed URL build failed:', e.message);
       }
     }
 
-    // Stored URLs — but only absolute ones (Node fetch needs a valid URL)
+    // Node fetch needs an absolute URL — only push https:// values.
     for (const u of [doc.cloudUrl, doc.fileUrl]) {
       if (u && /^https?:\/\//i.test(u)) {
-        candidates.push({ name: 'cloudinary-stored', url: u });
+        candidates.push({ name: 'stored-url', url: u });
         break;
       }
     }
 
     let response = null;
     let usedName = '';
-    let lastErrMsg = '';
 
     for (const c of candidates) {
       try {
@@ -6632,54 +6583,43 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
           console.log(`[contribution/download] ✅ ${c.name} → HTTP ${r.status}`);
           break;
         }
-        lastErrMsg = `HTTP ${r.status}`;
         console.warn(`[contribution/download] ❌ ${c.name} → HTTP ${r.status}`);
       } catch (e) {
-        lastErrMsg = e.message;
         console.warn(`[contribution/download] ❌ ${c.name} → ${e.message}`);
       }
     }
 
     if (!response) {
-      console.error('[contribution/download] all candidates failed:', lastErrMsg);
+      console.error('[contribution/download] no source returned a file');
       return res.status(404).json({
         success: false,
-        message: 'Could not locate this file. It may have been removed from both disk and Cloudinary.' +
-                 (lastErrMsg ? ` (${lastErrMsg})` : '')
+        message: 'Could not locate this file. It may have been removed from both disk and backup storage.'
       });
     }
 
-    // Buffer it so we can both cache-to-disk and send
-    const arrBuf = await response.arrayBuffer();
-    const buffer = Buffer.from(arrBuf);
+    const buf = Buffer.from(await response.arrayBuffer());
 
-    // Cache to disk for next time (best-effort)
+    // Cache to disk for future requests (best-effort)
     try {
-      const cacheName = (doc.diskName && path.basename(doc.diskName))
-        || (doc.fileName && ('restored-' + Date.now() + '-' + path.basename(doc.fileName)))
-        || ('restored-' + Date.now() + (ext || ''));
+      const cacheName = diskFilename || ('restored-' + Date.now() + (ext || ''));
       const cachePath = path.join(UPLOAD_DIR, cacheName);
       if (!fs.existsSync(cachePath)) {
-        fs.writeFileSync(cachePath, buffer);
-        Contribution.findByIdAndUpdate(doc._id, { $set: { diskName: cacheName } })
-          .catch(() => {});
+        fs.writeFileSync(cachePath, buf);
         console.log('[contribution/download] cached to disk as:', cacheName);
       }
-    } catch (cacheErr) {
-      console.warn('[contribution/download] cache-to-disk failed:', cacheErr.message);
+    } catch (e) {
+      console.warn('[contribution/download] cache write failed:', e.message);
     }
 
     res.setHeader('Content-Type', response.headers.get('content-type') || contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${safeAttachmentName}"`);
-    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.setHeader('Content-Length', buf.length);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
 
     markDownloaded();
-
-    res.send(buffer);
-    console.log(`[contribution/download] ✅ sent ${buffer.length} bytes (via ${usedName})`);
+    res.send(buf);
+    console.log(`[contribution/download] ✅ sent ${buf.length} bytes (via ${usedName})`);
   } catch (e) {
     console.error('[admin/contributions/download] fatal:', e);
     if (!res.headersSent) {
