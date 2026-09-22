@@ -1082,6 +1082,75 @@ const emailReplySchema = new mongoose.Schema({
   isRead: { type: Boolean, default: false }
 });
 const EmailReply = mongoose.model('EmailReply', emailReplySchema);
+
+/* ============================================================
+   PERSISTENT OTP STORE
+   ------------------------------------------------------------
+   Replaces in-memory Maps that lose all pending OTPs when the
+   Render free tier spins down after 15 min inactivity.
+   MongoDB TTL index auto-deletes expired docs.
+   ============================================================ */
+const otpTokenSchema = new mongoose.Schema({
+  key:       { type: String, required: true, unique: true }, // email|phone|userId
+  otp:       { type: String, required: true },
+  payload:   { type: mongoose.Schema.Types.Mixed, default: {} },
+  expiresAt: { type: Date, required: true },
+  attempts:  { type: Number, default: 0 }
+}, { timestamps: true });
+
+otpTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+const OtpToken = mongoose.model('OtpToken', otpTokenSchema);
+
+/* ---------- Drop-in replacements for the old Maps ---------- */
+
+/* Set / overwrite an OTP entry */
+async function otpSet(key, data, ttlMs) {
+  try {
+    await OtpToken.findOneAndUpdate(
+      { key },
+      {
+        key,
+        otp: data.otp,
+        payload: data,
+        expiresAt: new Date(Date.now() + ttlMs),
+        attempts: data.attempts || 0
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    return true;
+  } catch (e) {
+    console.warn('[otp] set failed:', e.message);
+    return false;
+  }
+}
+
+/* Get an OTP entry (returns null if missing or expired) */
+async function otpGet(key) {
+  try {
+    const doc = await OtpToken.findOne({ key }).lean();
+    if (!doc) return null;
+    if (Date.now() > new Date(doc.expiresAt).getTime()) {
+      await OtpToken.deleteOne({ key });
+      return null;
+    }
+    return doc;
+  } catch (e) {
+    console.warn('[otp] get failed:', e.message);
+    return null;
+  }
+}
+
+/* Delete an OTP entry */
+async function otpDel(key) {
+  try { await OtpToken.deleteOne({ key }); } catch (e) {}
+}
+
+/* Increment the wrong-attempt counter */
+async function otpBumpAttempts(key) {
+  try {
+    await OtpToken.updateOne({ key }, { $inc: { attempts: 1 } });
+  } catch (e) {}
+}
 /* ============================================================
    HELPERS
    ============================================================ */
@@ -1247,6 +1316,25 @@ function escapeHtml(s) {
 }
 function nl2br(s) {
   return escapeHtml(s).replace(/\r?\n/g, '<br/>');
+}
+
+/* ============================================================
+   Timing-safe hex comparison for HMAC signatures
+   ------------------------------------------------------------
+   Regular `===` short-circuits on first byte mismatch → tiny
+   timing side-channel. crypto.timingSafeEqual fixes it.
+   Returns false on any error (missing/mismatched length).
+   ============================================================ */
+function safeEqualHex(a, b) {
+  try {
+    if (!a || !b) return false;
+    const ba = Buffer.from(String(a), 'hex');
+    const bb = Buffer.from(String(b), 'hex');
+    if (ba.length !== bb.length) return false;
+    return crypto.timingSafeEqual(ba, bb);
+  } catch (e) {
+    return false;
+  }
 }
 
 /* ============================================================
@@ -1941,8 +2029,10 @@ app.put('/api/admin/update-credentials', requireAdminAuth, async (req, res) => {
 
 /* ============================================================
    REGISTRATION (OTP) — same transporter as bulk email
+   ------------------------------------------------------------
+   FIX: Uses MongoDB-backed otpSet/otpGet/otpDel helpers so OTPs
+   survive server restarts on Render free tier.
    ============================================================ */
-const otpStore = {};
 
 app.post('/api/send-otp', async (req, res) => {
   try {
@@ -1969,12 +2059,12 @@ app.post('/api/send-otp', async (req, res) => {
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore[cleanEmail] = {
+    await otpSet(cleanEmail, {
       otp,
       phone: cleanPhone,
       expiresAt: Date.now() + 10 * 60 * 1000,
       attempts: 0
-    };
+    }, 10 * 60 * 1000);
 
     // ---- Email OTP (blocking, must succeed) ----
     await withTimeout(
@@ -2012,20 +2102,16 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
     }
 
-    const record = otpStore[cleanEmail];
+    const record = await otpGet(cleanEmail);
     if (!record) {
-      return res.status(400).json({ success: false, message: 'No OTP was requested for this email.' });
-    }
-    if (Date.now() > record.expiresAt) {
-      delete otpStore[cleanEmail];
-      return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
+      return res.status(400).json({ success: false, message: 'No OTP was requested for this email (or it expired).' });
     }
     if (record.attempts >= 5) {
-      delete otpStore[cleanEmail];
+      await otpDel(cleanEmail);
       return res.status(400).json({ success: false, message: 'Too many incorrect attempts. Request a new OTP.' });
     }
     if (String(otp || '').trim() !== record.otp) {
-      record.attempts = (record.attempts || 0) + 1;
+      await otpBumpAttempts(cleanEmail);
       return res.status(400).json({ success: false, message: 'Invalid OTP. Please try again.' });
     }
 
@@ -2101,7 +2187,7 @@ app.post('/api/register', async (req, res) => {
       }
     }
 
-    delete otpStore[cleanEmail];
+    await otpDel(cleanEmail);
     res.json({ success: true, message: 'Registration successful! You can now log in.' });
   } catch (e) {
     console.error('[register] Error:', e);
@@ -2771,6 +2857,11 @@ app.get('/api/courses', async (req, res) => {
 /* ---- On-demand full material fetch (quiz questions) ---- */
 app.get('/api/courses/:courseId/materials/:materialId/full-quiz', async (req, res) => {
   try {
+    // ⚠️ FIX: Guard against invalid ObjectId → CastError → 500 response.
+    if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
+      return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+    }
+
     const course = await Course.findById(req.params.courseId)
       .select('materials')
       .lean();
@@ -2794,6 +2885,11 @@ app.get('/api/courses/:courseId/materials/:materialId/full-quiz', async (req, re
 /* ---- On-demand file fetch (PDF base64) ---- */
 app.get('/api/courses/:courseId/materials/:materialId/file', async (req, res) => {
   try {
+    // ⚠️ FIX: Guard against invalid ObjectId.
+    if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
+      return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+    }
+
     const course = await Course.findById(req.params.courseId)
       .select('materials._id materials.fileData materials.fileName')
       .lean();
@@ -4231,7 +4327,7 @@ app.post('/api/subscribe/verify', async (req, res) => {
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_payment_id + '|' + razorpay_subscription_id)
       .digest('hex');
-    if (razorpay_signature !== expected) {
+    if (!safeEqualHex(razorpay_signature, expected)) {
       return res.status(400).json({ success:false, message:'Invalid subscription signature.' });
     }
 
@@ -4306,7 +4402,7 @@ app.post('/api/subscribe/verify-order', async (req, res) => {
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
-    if (razorpay_signature !== expected) {
+    if (!safeEqualHex(razorpay_signature, expected)) {
       return res.status(400).json({ success:false, message:'Invalid payment signature.' });
     }
 
@@ -4922,7 +5018,7 @@ app.post('/api/verify-payment', async (req, res) => {
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
 
-    if (razorpay_signature !== expectedSign) {
+    if (!safeEqualHex(razorpay_signature, expectedSign)) {
       console.warn('[verify-payment] ❌ Signature mismatch', { razorpay_order_id, userId });
       return res.status(400).json({ success: false, message: 'Invalid payment signature.' });
     }
@@ -4993,7 +5089,7 @@ app.post('/api/razorpay-webhook', async (req, res) => {
       .update(rawBody)
       .digest('hex');
 
-    if (signature !== expectedSignature) {
+    if (!safeEqualHex(signature, expectedSignature)) {
       console.error('[Webhook] ❌ Invalid signature');
       return res.status(400).send('Invalid signature');
     }
@@ -6067,17 +6163,23 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
     }).catch(e => console.warn('[contribution/download] status update failed:', e.message));
 
     const contentType = response.headers.get('content-type') || 'application/octet-stream';
-    const contentLength = response.headers.get('content-length');
     const filename = (doc.fileName || 'contribution').replace(/"/g, '');
+
+    // ⚠️ FIX: Read body FIRST, then compute Content-Length from the
+    // ACTUAL decompressed buffer. Copying the upstream content-length
+    // header is WRONG because fetch() auto-decompresses gzip responses
+    // — the header shows the compressed size, but arrayBuffer() returns
+    // the decompressed size. Mismatch = truncated / hung downloads.
+    const arrBuf = await response.arrayBuffer();
+    const buffer = Buffer.from(arrBuf);
 
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    if (contentLength) res.setHeader('Content-Length', contentLength);
+    res.setHeader('Content-Length', buffer.length);   // ← real length
 
-    const arrBuf = await response.arrayBuffer();
-    res.send(Buffer.from(arrBuf));
-    console.log(`[contribution/download] ✅ sent ${arrBuf.byteLength} bytes to client (via ${usedName})`);
+    res.send(buffer);
+    console.log(`[contribution/download] ✅ sent ${buffer.length} bytes to client (via ${usedName})`);
   } catch (e) {
     console.error('[admin/contributions/download] fatal:', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });

@@ -1308,6 +1308,7 @@ async function handleLogin(e) {
         } else {
           studentNav = 'home';
           adminTab = 'overview';
+          try { ensureStudentAIHomeView(); } catch (e) {}   // ✅ ensure DOM
           try { history.replaceState(null, '', '#/home'); }
           catch (e) { location.hash = '#/home'; }
         }
@@ -1576,6 +1577,7 @@ async function _handleAdminLoginOtp(otp) {
   saveSession(data.user, data.token);
   _adminPendingToken = null;
   _otpContext = null;
+  try { ensureStudentAIHomeView(); } catch (e) {}   // ✅ ensure DOM
 
   // Reset ALL routing / editor state — nothing from a previous
   // session must be able to leak into this fresh admin session.
@@ -3794,7 +3796,11 @@ function previewOwnerPhoto(input) {
 }
 
 function removeOwnerPhoto() {
-  window.__pendingOwnerPhoto = '';
+  // ⚠️ FIX: Clear the queued File object too, not just the preview.
+  // Without this, saveOwnerProfile() will re-upload the deleted photo.
+  window.__pendingOwnerPhoto     = '';
+  window.__pendingOwnerPhotoFile = null;
+
   const prev = document.getElementById('ownerPhotoPreview');
   if (prev) {
     const fallback = document.createElement('div');
@@ -6817,21 +6823,46 @@ function moveQuizQuestion(qi, delta) {
 function updateQuizType(qi, newType) {
   const q = quizDraft[qi];
   if (!q) return;
+  const oldType = q.type;
   q.type = newType;
 
-  if ((newType === 'single' || newType === 'multiple') && (!q.options || q.options.length === 0)) {
-    q.options = ['', '', '', ''];
+  // ⚠️ FIX: Clean up fields that don't belong to the new type.
+  // Otherwise a "single" → "integer" → "single" round-trip restores
+  // stale correctIndexes that can point past the current options array.
+
+  if (newType === 'integer' && oldType !== 'integer') {
+    // Moving TO integer — drop MCQ / matrix state
+    q.options = [];
     q.correctIndexes = [];
-  }
-  if (newType === 'single' && Array.isArray(q.correctIndexes) && q.correctIndexes.length > 1) {
-    q.correctIndexes = [q.correctIndexes[0]];
-  }
-  if (newType === 'integer' && (q.integerAnswer === undefined)) q.integerAnswer = null;
-  if (newType === 'matrix' && (!q.matrixLeftItems || q.matrixLeftItems.length === 0)) {
+    q.matrixLeftItems = [];
+    q.matrixRightItems = [];
+    q.matrixRows = [];
+    if (q.integerAnswer === undefined) q.integerAnswer = null;
+    if (q.integerTolerance === undefined) q.integerTolerance = 0;
+  } else if (newType === 'matrix' && oldType !== 'matrix') {
+    // Moving TO matrix — drop MCQ / integer state
+    q.options = [];
+    q.correctIndexes = [];
+    q.integerAnswer = null;
     q.matrixLeftItems  = ['', '', '', ''];
     q.matrixRightItems = ['', '', '', ''];
     q.matrixRows = [0, 1, 2, 3].map(i => ({ text: '', correctIndex: i }));
+  } else if ((newType === 'single' || newType === 'multiple') &&
+             oldType !== 'single' && oldType !== 'multiple') {
+    // Moving TO MCQ — drop integer / matrix state
+    q.integerAnswer = null;
+    q.matrixLeftItems = [];
+    q.matrixRightItems = [];
+    q.matrixRows = [];
+    if (!q.options || q.options.length === 0) q.options = ['', '', '', ''];
+    if (!Array.isArray(q.correctIndexes)) q.correctIndexes = [];
   }
+
+  // If still in MCQ family, keep only ONE correct index for 'single'
+  if (newType === 'single' && Array.isArray(q.correctIndexes) && q.correctIndexes.length > 1) {
+    q.correctIndexes = [q.correctIndexes[0]];
+  }
+
   renderQuizDraft();
 }
 
@@ -10320,6 +10351,10 @@ function ensureStudentAIHomeView() {
   console.log('[nav] ✅ studentAIHomeView injected dynamically');
 }
 function renderStudentAIHome() {
+  // ⚠️ FIX: Self-heal — if the section is missing (e.g. stale deployed
+  // index.html, or fresh login without initApp running), inject it now.
+  ensureStudentAIHomeView();
+
   const messagesEl = document.getElementById('aiChatMessages');
   if (!messagesEl) return;
 

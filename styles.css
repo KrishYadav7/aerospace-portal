@@ -7304,7 +7304,10 @@ body.body-content-hidden .vp-shell {
 
 @media (max-width: 720px) {
   .data-table thead { display: none; }
-  .data-table, .data-table tbody, .data-table tr, .data-table td { display: block; width: 100%; }
+  .data-table, .data-table tbody, .data-table tr, .data-table td {
+    display: block;
+    width: 100%;
+  }
   .data-table tr {
     border-bottom: 1px solid var(--border-subtle);
     padding: 8px 12px;
@@ -7316,7 +7319,15 @@ body.body-content-hidden .vp-shell {
     justify-content: space-between;
     gap: 10px;
   }
-  .actions-cell { justify-content: flex-start; }
+  /* ⚠️ FIX: The generic `td` rule (0,1,1) was overriding `.actions-cell`
+     (0,1,0). Bump specificity with `td.actions-cell` so buttons stay
+     horizontal and wrap nicely instead of stacking vertically. */
+  .data-table td.actions-cell {
+    display: flex;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
 }
 
 /* ============================================================
