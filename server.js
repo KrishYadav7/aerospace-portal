@@ -5086,12 +5086,34 @@ app.post('/api/razorpay-webhook', async (req, res) => {
         const user = await User.findById(userId);
         if (user) {
           const now = new Date();
-          const expiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+          /* ── FIX: resolve the REAL plan duration instead of hardcoding 30 days.
+             Bug: 6-month and 12-month plans were being treated as 30 days
+             whenever the payment arrived via the webhook (e.g. user closed
+             the browser before the client-side verify ran).               */
+          let durationDays = 30;
+          try {
+            const planIdFromNotes = (notes && notes.planId) || null;
+            const s = await getGlobalSettings();
+            const matchedPlan = (s.subscriptionPlans || [])
+              .find(p => p.id === planIdFromNotes);
+            if (matchedPlan && matchedPlan.durationDays) {
+              durationDays = matchedPlan.durationDays;
+            } else if (user.subscription && user.subscription.planDurationDays) {
+              durationDays = user.subscription.planDurationDays;
+            }
+          } catch (planErr) {
+            console.warn('[Webhook] Could not resolve plan duration, using 30d:', planErr.message);
+          }
+
+          const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
           if (!user.subscription) user.subscription = {};
           user.subscription.active = true;
           user.subscription.status = 'active';
           user.subscription.subscriptionId = subEntity.id || user.subscription.subscriptionId;
           user.subscription.planId = subEntity.plan_id || user.subscription.planId;
+          user.subscription.planDurationDays = durationDays;
           user.subscription.startedAt = user.subscription.startedAt || now;
           user.subscription.expiresAt = expiresAt;
           user.subscription.autoRenew = true;
@@ -5102,10 +5124,11 @@ app.post('/api/razorpay-webhook', async (req, res) => {
             amount: payEntity.amount ? (payEntity.amount / 100) : 0,
             status: 'charged',
             note: event,
+            planDurationDays: durationDays,
             date: now
           });
           await user.save();
-          console.log(`[Webhook] Subscription ${event} → user ${userId} active until ${expiresAt.toISOString()}`);
+          console.log(`[Webhook] Subscription ${event} → user ${userId} active for ${durationDays}d, until ${expiresAt.toISOString()}`);
         }
       }
     }

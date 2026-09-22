@@ -1334,14 +1334,30 @@
   <script>
     /* Razorpay — loads when user clicks Buy/Subscribe */
     window.loadRazorpay = function () {
-      return new Promise((resolve, reject) => {
-        if (window.Razorpay) return resolve();
+      if (window.Razorpay) return Promise.resolve();
+      if (window.__razorpayLoaderPromise) return window.__razorpayLoaderPromise;
+
+      window.__razorpayLoaderPromise = new Promise((resolve, reject) => {
         const s = document.createElement('script');
         s.src = 'https://checkout.razorpay.com/v1/checkout.js';
-        s.onload = resolve;
-        s.onerror = reject;
+        s.async = true;
+        s.onload = () => {
+          setTimeout(() => {
+            if (window.Razorpay) resolve();
+            else {
+              window.__razorpayLoaderPromise = null;
+              reject(new Error('Razorpay SDK loaded but failed to initialise.'));
+            }
+          }, 50);
+        };
+        s.onerror = () => {
+          window.__razorpayLoaderPromise = null;
+          reject(new Error('Could not load Razorpay checkout. Check your internet connection.'));
+        };
         document.head.appendChild(s);
       });
+
+      return window.__razorpayLoaderPromise;
     };
 
     /* Chart.js — loads when Analytics tab opens */
