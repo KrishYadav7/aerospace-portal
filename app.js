@@ -5746,10 +5746,10 @@ function renderMaterialCard(course, m, isPurchased) {
   const isSubscribed   = !!currentUser?.isSubscribed;
   const isAdminUser    = isAdmin(currentUser);
 
-  /* ⭐ CORRECT LOCK LOGIC
-     A material is locked if EITHER:
-       • the COURSE is premium AND student hasn't bought/subscribed, OR
-       • the MATERIAL is premium AND student hasn't bought/subscribed. */
+  /* ⭐ LOCK LOGIC:
+       • Course premium + student hasn't bought → ALL materials locked
+       • Material premium + student hasn't bought → ONLY that material locked
+       • Subscription = unlock everything */
   const courseLocked   = isCoursePremium && !isPurchased    && !isSubscribed;
   const materialLocked = isMatPremium    && !isMatPurchased && !isSubscribed;
   const isLocked       = !isAdminUser && (courseLocked || materialLocked);
@@ -5758,22 +5758,22 @@ function renderMaterialCard(course, m, isPurchased) {
   const viewed    = isMaterialViewed(course.id, m.id);
   const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
 
+  /* ============================================================
+     BUTTON LOGIC
+     ============================================================ */
   let fileActionHtml = '';
   if (isLocked) {
-    const isMatPremiumLocal = m.isPremium === true || m.isPremium === 'true';
-    const itemArg = isMatPremiumLocal ? `'${m.id}'` : 'null';
-
-    if (isMatPremiumLocal) {
-      // Individual premium material (₹X sirf is file ke liye)
-      fileActionHtml = `<button class="btn btn-warning btn-sm"
-                          onclick="event.stopPropagation();showPaymentModal('${course.id}', ${itemArg})">
-                          <i class="fas fa-lock"></i> Unlock this file ₹${matPrice}
-                       </button>`;
-    } else {
-      // Course is premium — one-time purchase unlocks EVERYTHING
+    if (isCoursePremium) {
+      // COURSE-level lock → single payment unlocks EVERYTHING
       fileActionHtml = `<button class="btn btn-warning btn-sm"
                           onclick="event.stopPropagation();showPaymentModal('${course.id}', null)">
                           <i class="fas fa-crown"></i> Unlock whole course ₹${coursePrice}
+                       </button>`;
+    } else {
+      // MATERIAL-level lock → only this file needs payment
+      fileActionHtml = `<button class="btn btn-warning btn-sm"
+                          onclick="event.stopPropagation();showPaymentModal('${course.id}', '${m.id}')">
+                          <i class="fas fa-lock"></i> Unlock this file ₹${matPrice}
                        </button>`;
     }
   } else {
@@ -5785,7 +5785,7 @@ function renderMaterialCard(course, m, isPurchased) {
                         </button>`;
     }
 
-    // PDF detection (strip query string first)
+    // PDF detection
     const cleanUrl = (m.url || '').toLowerCase().split('?')[0].split('#')[0];
     const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
                   cleanUrl.endsWith('.pdf') ||
@@ -5822,33 +5822,30 @@ function renderMaterialCard(course, m, isPurchased) {
   }
 
   /* ============================================================
-     Badge reflects ACTUAL access state, not just the material flag.
-     3 cases:
-       ① Material khud premium hai           → PRO badge
-       ② Course premium, material normal     → COURSE PREMIUM badge
-       ③ Sab free (course + material)        → FREE badge
-     Plus: agar student ne already unlock kar liya to "UNLOCKED" badge
+     ⭐ BADGE LOGIC — 3 RULES
+       ① Course premium       → NO badge on material (badge lives on course header)
+       ② Material-only premium → PRO badge on that material
+       ③ Truly free            → FREE badge
+       Admin & unlocked students see UNLOCKED instead of PRO.
      ============================================================ */
-  let badgeHtml;
-  if (isAdminUser) {
-    badgeHtml = isMatPremium
-      ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`
-      : `<span class="mat-badge free">FREE</span>`;
-  } else if (isSubscribed || isPurchased || isMatPurchased) {
-    // Student ke paas already access hai
-    if (isMatPremium || isCoursePremium) {
+  let badgeHtml = '';
+
+  if (isCoursePremium) {
+    // Course-level premium → don't repeat the badge on every file
+    if (!isAdminUser && (isPurchased || isSubscribed)) {
+      // Optional: show subtle UNLOCKED confirmation
+      badgeHtml = `<span class="mat-badge unlocked"><i class="fas fa-unlock"></i> UNLOCKED</span>`;
+    }
+    // else: no badge at all — keeps the material card clean
+  } else if (isMatPremium) {
+    // Material-only premium
+    if (isAdminUser || isSubscribed || isMatPurchased) {
       badgeHtml = `<span class="mat-badge unlocked"><i class="fas fa-unlock"></i> UNLOCKED</span>`;
     } else {
-      badgeHtml = `<span class="mat-badge free">FREE</span>`;
+      badgeHtml = `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`;
     }
-  } else if (isMatPremium) {
-    // Case ① — individual material is premium
-    badgeHtml = `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`;
-  } else if (isCoursePremium) {
-    // Case ② — the COURSE is premium (this is what your screenshot shows)
-    badgeHtml = `<span class="mat-badge course-locked"><i class="fas fa-lock"></i> COURSE PREMIUM</span>`;
   } else {
-    // Case ③ — truly free
+    // Both free
     badgeHtml = `<span class="mat-badge free">FREE</span>`;
   }
 
