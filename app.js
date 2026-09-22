@@ -10466,9 +10466,9 @@ async function renderAdminContributions() {
             </div>
           </div>
           <div class="community-actions">
-            <a class="btn btn-primary btn-sm" href="${API_BASE}/admin/contributions/${c._id}/download" target="_blank" rel="noopener">
+            <button class="btn btn-primary btn-sm" onclick="downloadContribution('${c._id}', ${jsStr(c.fileName || c.title || 'contribution')})">
               <i class="fas fa-download"></i> Download
-            </a>
+            </button>
             <button class="btn btn-danger btn-sm" onclick="deleteContribution('${c._id}', ${jsStr(c.title)})">
               <i class="fas fa-trash"></i>
             </button>
@@ -12568,6 +12568,40 @@ function removeSubjectiveUpload(qi, idx) {
   renderSubjectiveUploads(qi);
   updateQuizQuestionCard(qi);
   updateQuizProgressUI();
+}
+
+async function downloadContribution(contributionId, fileName) {
+  try {
+    showToast('Preparing download…', 'info');
+    
+    // The global fetch interceptor in app.js automatically attaches the Bearer token
+    const res = await fetch(`${API_BASE}/admin/contributions/${contributionId}/download`);
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || 'Download failed.');
+    }
+
+    // Convert the response to a Blob and trigger native download
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName || 'contribution';
+    document.body.appendChild(a);
+    a.click();
+    
+    // Cleanup
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 500);
+    
+    showToast('✅ Download started.', 'success');
+  } catch (err) {
+    console.error('[downloadContribution]', err);
+    showToast(err.message || 'Network error while downloading.', 'error');
+  }
 }
 
 initApp();
