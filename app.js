@@ -2365,11 +2365,23 @@ async function loadNotifications() {
    NAVIGATION
    ============================================================ */
 function navigateStudent(dest) {
-  currentCourseId = null; window.currentSelectedCourseId = null; editingCourseId = null;
+  currentCourseId = null;
+  window.currentSelectedCourseId = null;
+  editingCourseId = null;
   currentMaterialFilter = 'all';
   const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home', ai: '#/ai' };
   pushHash(pathMap[dest] || '#/home');
   studentNav = dest;
+
+  // ⚡ FIX: If the user navigates to a view that needs course data
+  //    and we have none, auto-fetch now. Covers every timing edge case.
+  const needsCourses = (dest === 'courses' || dest === 'saved' || dest === 'home');
+  if (needsCourses && liveCourses.length === 0 && !_coursesLoading) {
+    fetchCoursesFromDB(true).catch(function (err) {
+      console.warn('[navigateStudent] auto-fetch failed:', err);
+    });
+  }
+
   renderApp();
 }
 function viewCourseDetail(courseId, filter = 'all') {
@@ -5407,12 +5419,26 @@ function clearCourseFilters() {
 }
 
 function renderStudentCourses() {
-  // ⚡ Loading guard — show skeleton until first fetch completes,
-  //    OR whenever we have no data at all (defends against a failed/
-  //    hung fetch leaving the user staring at an empty grid).
-  if ((_coursesLoading || _courseCacheAt === 0) && liveCourses.length === 0) {
+  // ⚡ Safety Net 1: Loading in progress → show skeleton
+  if (_coursesLoading && liveCourses.length === 0) {
     const el = $('studentCourseList');
     if (el) el.innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
+    return;
+  }
+
+  // ⚡ Safety Net 2 (STRONGER): We have NO course data and we're not
+  //    loading. This is exactly the "cache stale, response empty" case.
+  //    Reset the cache marker, fire the fetch, show the skeleton.
+  if (liveCourses.length === 0 && !_coursesLoading) {
+    const el = $('studentCourseList');
+    if (el) el.innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
+
+    // Reset cache so subsequent renders don't loop
+    _courseCacheAt = 0;
+
+    fetchCoursesFromDB(true).catch(function (err) {
+      console.warn('[renderStudentCourses] auto-fetch failed:', err);
+    });
     return;
   }
 
@@ -5533,9 +5559,17 @@ function renderSavedCourses() {
   const container = $('studentSavedList');
   if (!container) return;
 
-  // ⚡ Loading guard — show skeleton until first fetch completes
+  // ⚡ Same stronger safety net as renderStudentCourses
   if (_coursesLoading && liveCourses.length === 0) {
     container.innerHTML = renderCoursesLoadingSkeleton('Loading your saved courses…');
+    return;
+  }
+  if (liveCourses.length === 0 && !_coursesLoading) {
+    container.innerHTML = renderCoursesLoadingSkeleton('Loading your saved courses…');
+    _courseCacheAt = 0;
+    fetchCoursesFromDB(true).catch(function (err) {
+      console.warn('[renderSavedCourses] auto-fetch failed:', err);
+    });
     return;
   }
 
@@ -5559,7 +5593,6 @@ function renderSavedCourses() {
   html += `</div>`;
   container.innerHTML = html;
 }
-
 /* ============================================================
    COURSE DETAIL
    ============================================================ */
