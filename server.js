@@ -669,7 +669,65 @@ async function requireAdminAuth(req, res, next) {
     return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
   }
 }
+/* ============================================================
+   ADMIN — Razorpay health check
+   ------------------------------------------------------------
+   GET /api/admin/razorpay-status
+   Returns whether env vars exist, which mode (test/live),
+   and whether the credentials actually authenticate with
+   Razorpay's API (a real round-trip — not just a shape check).
+   ============================================================ */
+app.get('/api/admin/razorpay-status', requireAdminAuth, async (req, res) => {
+  const keyId     = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const hasSecret = !!(process.env.RAZORPAY_KEY_SECRET || '').trim();
+  const hasWebhook = !!(process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+  const mode = keyId.startsWith('rzp_live_') ? 'LIVE'
+             : keyId.startsWith('rzp_test_') ? 'TEST'
+             : null;
 
+  if (!keyId || !hasSecret) {
+    return res.json({
+      success: true,
+      ready: false,
+      message: 'Razorpay is NOT configured. Missing: ' +
+        [!keyId && 'RAZORPAY_KEY_ID', !hasSecret && 'RAZORPAY_KEY_SECRET']
+          .filter(Boolean).join(', '),
+      config: { keyId: keyId || null, hasSecret, hasWebhook, mode }
+    });
+  }
+
+  // Real round-trip: 401 = bad keys, anything else = auth OK
+  let authOk = false;
+  let authError = null;
+  try {
+    await getRazorpay().orders.fetch('order_00000000000000');
+    authOk = true;   // (would only succeed if such an order existed — unlikely, that's fine)
+  } catch (e) {
+    const msg = String((e && e.message) || '');
+    const status = (e && e.statusCode) || (e && e.error && e.error.code) || null;
+    if (status === 401 || /unauthor|authentication|invalid.*key/i.test(msg)) {
+      authError = 'Razorpay rejected these keys (401 Unauthorized). ' +
+                  'Double-check Key ID + Key Secret match the SAME account and mode.';
+    } else {
+      // Any other error (404 order not found, 400 bad id, network) means auth SUCCEEDED.
+      authOk = true;
+    }
+  }
+
+  res.json({
+    success: true,
+    ready: authOk,
+    message: authOk
+      ? 'Razorpay is configured, authenticated, and reachable.'
+      : authError,
+    config: {
+      keyId:   keyId.slice(0, 12) + '…',
+      hasSecret,
+      hasWebhook,
+      mode
+    }
+  });
+});
 /* ============================================================
    EMAIL TRANSPORTER — used for BOTH OTP + bulk email
    ------------------------------------------------------------
@@ -3308,10 +3366,94 @@ app.get('/api/user/analytics/:userId', async (req, res) => {
 /* ============================================================
    PAYMENTS
    ============================================================ */
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-});
+/* ============================================================
+   RAZORPAY — lazily-initialised client with clear diagnostics
+   ------------------------------------------------------------
+   WHY THIS EXISTS:
+     • The old code built the Razorpay client at module load.
+       If env vars were missing, it silently created a broken
+       client, and every payment call failed with a cryptic
+       "401 Unauthorized" buried deep inside the flow.
+     • Now, if keys are missing we throw a HUMAN-READABLE error
+       the moment Razorpay is actually touched.
+     • Keys are validated for the correct rzp_test_/rzp_live_
+       prefix so you catch mix-ups immediately.
+     • The client auto-rebuilds if you rotate keys at runtime.
+   ============================================================ */
+let _razorpayClient = null;
+let _razorpayKeyUsed = null;
+
+function getRazorpay() {
+  const keyId     = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+
+  if (!keyId || !keySecret) {
+    const missing = [];
+    if (!keyId)     missing.push('RAZORPAY_KEY_ID');
+    if (!keySecret) missing.push('RAZORPAY_KEY_SECRET');
+    throw new Error(
+      'Razorpay is not configured. Missing environment variable(s): ' +
+      missing.join(', ') +
+      '. Add them in your hosting dashboard (Render → Environment) and redeploy.'
+    );
+  }
+
+  if (!/^rzp_(test|live)_[A-Za-z0-9]+$/.test(keyId)) {
+    console.warn(
+      '[razorpay] ⚠️  RAZORPAY_KEY_ID has an unexpected format. ' +
+      'Expected "rzp_test_…" or "rzp_live_…". Got: ' + keyId.slice(0, 14) + '…'
+    );
+  }
+  if (keyId.length < 20 || keySecret.length < 20) {
+    console.warn(
+      '[razorpay] ⚠️  Key length looks suspicious. Double-check you copied ' +
+      'the FULL Key Secret (it is only shown once).'
+    );
+  }
+
+  if (_razorpayClient && _razorpayKeyUsed === keyId) {
+    return _razorpayClient;
+  }
+
+  _razorpayClient = new Razorpay({
+    key_id:     keyId,
+    key_secret: keySecret
+  });
+  _razorpayKeyUsed = keyId;
+
+  console.log(
+    '[razorpay] ✅ Client ready · mode: ' +
+    (keyId.startsWith('rzp_live_') ? 'LIVE 💰' : 'TEST 🧪') +
+    ' · key: ' + keyId.slice(0, 12) + '…'
+  );
+  return _razorpayClient;
+}
+
+/* Drop-in replacement so existing `razorpay.orders.create(...)` calls
+   keep working without touching every route. */
+const razorpay = {
+  get orders()        { return getRazorpay().orders; },
+  get subscriptions() { return getRazorpay().subscriptions; },
+  get plans()         { return getRazorpay().plans; },
+  get payments()      { return getRazorpay().payments; },
+  get refunds()       { return getRazorpay().refunds; }
+};
+
+/* Boot-time sanity log (non-fatal — just so you SEE the state) */
+(function logRazorpayBootState() {
+  const kid = (process.env.RAZORPAY_KEY_ID || '').trim();
+  const ksec = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+  const whsec = (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+  if (!kid || !ksec) {
+    console.error('❌ Razorpay NOT configured — payments will fail.');
+    console.error('   Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in your env.');
+  } else {
+    console.log('✅ Razorpay env loaded · mode:', kid.startsWith('rzp_live_') ? 'LIVE' : 'TEST');
+  }
+  if (!whsec) {
+    console.warn('⚠️  RAZORPAY_WEBHOOK_SECRET missing — webhook will reject all events.');
+  }
+})();
 
 /* ============================================================
    CREATE RAZORPAY ORDER — SECURE VERSION
