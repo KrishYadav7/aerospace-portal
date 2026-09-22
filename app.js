@@ -4,6 +4,27 @@
 const API_BASE = '/api';
 
 /* ============================================================
+   withAuthToken — append ?auth=<jwt> to same-origin protected URLs
+   ------------------------------------------------------------
+   PDF.js and <video> elements make RAW fetches that do NOT pass
+   through the global fetch interceptor. Without the token, the
+   server treats every /uploads/* request as a guest — which made
+   the premium gate fall through and serve paid files for free.
+   ============================================================ */
+function withAuthToken(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (!url.startsWith('/uploads/') && !url.startsWith('/api/')) return url;
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    if (!token) return url;
+    if (/[?&]auth=/.test(url)) return url;          // already has it
+    const sep = url.includes('?') ? '&' : '?';
+    return url + sep + 'auth=' + encodeURIComponent(token);
+  } catch (e) {
+    return url;
+  }
+}
+/* ============================================================
    GLOBAL FETCH INTERCEPTOR — auto-attach Authorization header
    ------------------------------------------------------------
    Every /api/* call gets the session token (if available) so
@@ -5675,46 +5696,83 @@ function renderCourseDetail(courseId) {
 
 function renderMaterialCard(course, m, isPurchased) {
   const hasFile = (m.fileData && m.fileData.length > 0) || (m.fileName && m.fileName.length > 0);
-  const hasUrl = m.url && m.url.length > 0;
-  const isMatPremium = m.isPremium === true || m.isPremium === 'true';
-  const matPrice = parseFloat(m.price) || 0;
+  const hasUrl  = m.url && m.url.length > 0;
+
+  const isMatPremium    = m.isPremium    === true || m.isPremium    === 'true';
+  const isCoursePremium = course.isPremium === true || course.isPremium === 'true';
+
+  const matPrice    = parseFloat(m.price)    || 0;
+  const coursePrice = parseFloat(course.price) || 0;
+
   const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
-  const isSubscribed = !!currentUser?.isSubscribed;
-  const canAccess = isAdmin(currentUser) || isPurchased || isMatPurchased || isSubscribed || !isMatPremium;
-  const viewed = isMaterialViewed(course.id, m.id);
+  const isSubscribed   = !!currentUser?.isSubscribed;
+  const isAdminUser    = isAdmin(currentUser);
+
+  /* ⭐ CORRECT LOCK LOGIC
+     A material is locked if EITHER:
+       • the COURSE is premium AND the student hasn't bought/subscribed, OR
+       • the MATERIAL is premium AND the student hasn't bought/subscribed.
+     (The old code only looked at the material flag, so every material
+      inside a premium course opened for free.) */
+  const courseLocked   = isCoursePremium && !isPurchased    && !isSubscribed;
+  const materialLocked = isMatPremium    && !isMatPurchased && !isSubscribed;
+  const isLocked       = !isAdminUser && (courseLocked || materialLocked);
+  const canAccess      = !isLocked;
+
+  const viewed    = isMaterialViewed(course.id, m.id);
   const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
-  
+
   let fileActionHtml = '';
-  if (!canAccess) {
-    fileActionHtml = `<button class="btn btn-warning btn-sm" onclick="showPaymentModal('${course.id}', '${m.id}')"><i class="fas fa-lock"></i> Unlock ₹${matPrice}</button>`;
+  if (isLocked) {
+    const priceToShow = isMatPremium ? matPrice : coursePrice;
+    const itemArg     = isMatPremium ? `'${m.id}'` : 'null';
+    fileActionHtml = `<button class="btn btn-warning btn-sm"
+                        onclick="showPaymentModal('${course.id}', ${itemArg})">
+                        <i class="fas fa-lock"></i> Unlock ₹${priceToShow}
+                     </button>`;
   } else {
     // 1. Video handling
     if (m.type === 'video' && hasUrl && !hasFile) {
-      fileActionHtml += `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')"><i class="fas fa-play"></i> Watch</button>`;
+      fileActionHtml += `<button class="btn btn-primary btn-sm"
+                          onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')">
+                          <i class="fas fa-play"></i> Watch
+                        </button>`;
     }
-    
-    // 2. Check if the file is a PDF
+
+    // 2. Detect PDF (strip query string before checking extension)
+    const cleanUrl = (m.url || '').toLowerCase().split('?')[0].split('#')[0];
     const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
-                  (m.url || '').toLowerCase().endsWith('.pdf') ||
+                  cleanUrl.endsWith('.pdf') ||
                   (m.fileData || '').startsWith('data:application/pdf');
 
-    // 3. Handle PDFs (Files or Links) - ALWAYS use Read button
+    // 3. Render Read button
     if (hasFile && isPdf) {
-      fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
+      fileActionHtml += ` <button class="btn btn-primary btn-sm"
+                          onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')">
+                          <i class="fas fa-book-open"></i> Read
+                        </button>`;
     } else if (hasUrl && !hasFile && m.type !== 'video') {
-      fileActionHtml += ` <button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')"><i class="fas fa-book-open"></i> Read</button>`;
+      fileActionHtml += ` <button class="btn btn-primary btn-sm"
+                          onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')">
+                          <i class="fas fa-book-open"></i> Read
+                        </button>`;
     }
   }
 
   let progressBtnHtml = '';
   if (currentUser.role === 'student' && canAccess) {
-    progressBtnHtml = `<button class="btn ${viewed ? 'btn-success' : 'btn-outline'} btn-sm" onclick="event.stopPropagation();toggleMaterialViewed(event, '${course.id}', '${m.id}')">
-      <i class="fas ${viewed ? 'fa-check-circle' : 'fa-circle'}"></i> ${viewed ? 'Completed' : 'Mark done'}
-    </button>`;
+    progressBtnHtml = `<button class="btn ${viewed ? 'btn-success' : 'btn-outline'} btn-sm"
+                        onclick="event.stopPropagation();toggleMaterialViewed(event, '${course.id}', '${m.id}')">
+                        <i class="fas ${viewed ? 'fa-check-circle' : 'fa-circle'}"></i>
+                        ${viewed ? 'Completed' : 'Mark done'}
+                      </button>`;
     if (quizCount > 0) {
       const qr = (currentUser.quizResults || {})[m.id];
       const label = qr ? `Retake (${qr.score}/${qr.total})` : `Take Quiz (${quizCount})`;
-      progressBtnHtml += ` <button class="btn btn-accent btn-sm" onclick="event.stopPropagation();openQuizPlayer('${course.id}', '${m.id}')"><i class="fas fa-question-circle"></i> ${label}</button>`;
+      progressBtnHtml += ` <button class="btn btn-accent btn-sm"
+                            onclick="event.stopPropagation();openQuizPlayer('${course.id}', '${m.id}')">
+                            <i class="fas fa-question-circle"></i> ${label}
+                          </button>`;
     }
   }
 
@@ -5722,10 +5780,12 @@ function renderMaterialCard(course, m, isPurchased) {
     ? `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`
     : `<span class="mat-badge free">FREE</span>`;
 
-  const quizBadge = quizCount > 0 ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>` : '';
+  const quizBadge = quizCount > 0
+    ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>`
+    : '';
 
   return `
-    <div class="material-item ${!canAccess ? 'locked-mat' : ''}">
+    <div class="material-item ${isLocked ? 'locked-mat' : ''}">
       <div class="mat-head">
         <div class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</div>
         ${badgeHtml}
@@ -8211,8 +8271,9 @@ async function openMaterialVideo(courseId, materialId) {
     if (data.kind === 'youtube' && data.videoId) {
       window.VideoPlayer.open({ ...baseOpts, videoId: data.videoId });
     } else if (data.kind === 'direct' && data.directUrl) {
-      window.VideoPlayer.open({ ...baseOpts, src: data.directUrl });
-    } else {
+  window.VideoPlayer.open({ ...baseOpts, src: withAuthToken(data.directUrl) });
+}
+      else {
       showToast('Unsupported video response from server.', 'error');
     }
   } catch {

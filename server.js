@@ -265,10 +265,39 @@ const upload = multer({
    On a real VPS, Nginx serves step 1 directly (see nginx config)
    and only forwards MISSES to this Node handler.
    ============================================================ */
-app.get('/uploads/:filename', async (req, res, next) => {
+app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
   const filename = path.basename(req.params.filename);   // sanitize
   if (!filename || filename.includes('..')) {
     return res.status(400).send('Invalid filename');
+  }
+
+  // ⭐ PREMIUM ACCESS CHECK — reject before serving any bytes
+  try {
+    const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const owner = await Course.findOne({
+      'materials.url': { $regex: '/uploads/' + escaped + '$' }
+    }).select('isPremium price materials').lean();
+
+    if (owner) {
+      const mat = (owner.materials || []).find(m =>
+        m.url && m.url.endsWith('/' + filename)
+      );
+      if (mat) {
+        const access = checkMaterialAccess(req.authUser, owner, mat);
+        if (!access.allowed) {
+          return res.status(403).json({
+            success: false,
+            code: access.reason,
+            message: 'This file is part of premium content. Purchase it or subscribe to unlock.'
+          });
+        }
+      }
+    }
+    // If no Course references this URL → legacy / orphan file → allow.
+  } catch (e) {
+    console.warn('[uploads] premium check failed:', e.message);
+    // Fail-open on DB error to avoid breaking the whole site;
+    // the material-level checks in other routes still apply.
   }
 
   const diskPath = path.join(UPLOAD_DIR, filename);
@@ -668,6 +697,71 @@ async function requireAdminAuth(req, res, next) {
   } catch (e) {
     return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
   }
+}
+/* ============================================================
+   AUTH — optional token attach
+   ------------------------------------------------------------
+   Attaches req.authUser if a valid Bearer token OR ?auth= query
+   token is present. Used by read endpoints (uploads, file fetch,
+   video session, quiz submit) that must enforce premium access.
+   Never blocks; guests proceed with req.authUser === undefined.
+   ============================================================ */
+async function attachUserFromToken(req, res, next) {
+  try {
+    let token = null;
+    const auth = req.headers.authorization || '';
+    if (auth.startsWith('Bearer ')) token = auth.slice(7);
+    else if (req.query && req.query.auth) token = String(req.query.auth);
+
+    if (token) {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const u = await User.findById(decoded.id)
+        .select('role purchases subscription')
+        .lean();
+      if (u) req.authUser = u;
+    }
+  } catch (e) { /* invalid / expired token → proceed as guest */ }
+  next();
+}
+
+/* ============================================================
+   PREMIUM ACCESS — single source of truth
+   ------------------------------------------------------------
+   Returns { allowed: bool, reason: string }.
+
+   Rules for a STUDENT:
+     • Active subscription                    → allowed
+     • Owns the course (purchases has course) → allowed
+     • Owns the material (purchases has mat)  → allowed
+     • Course is premium (and not owned/sub)  → BLOCKED
+     • Material is premium (and not owned/sub)→ BLOCKED
+     • Otherwise                              → allowed
+
+   Admins are ALWAYS allowed.
+   ============================================================ */
+function checkMaterialAccess(user, course, material) {
+  if (!user) {
+    const cp = course    && (course.isPremium   === true || course.isPremium   === 'true');
+    const mp = material  && (material.isPremium === true || material.isPremium === 'true');
+    if (cp || mp) return { allowed: false, reason: 'login-required' };
+    return { allowed: true };
+  }
+  if (user.role === 'admin') return { allowed: true };
+
+  const purchases = Array.isArray(user.purchases) ? user.purchases : [];
+  const ownsCourse   = course   && purchases.includes(String(course._id));
+  const ownsMaterial = material && purchases.includes(String(material._id));
+  const subscribed   = userHasActiveSubscription(user);
+
+  if (subscribed || ownsCourse) return { allowed: true };
+
+  const cp = course   && (course.isPremium   === true || course.isPremium   === 'true');
+  if (cp && !ownsCourse) return { allowed: false, reason: 'course-premium' };
+
+  const mp = material && (material.isPremium === true || material.isPremium === 'true');
+  if (mp && !ownsMaterial) return { allowed: false, reason: 'material-premium' };
+
+  return { allowed: true };
 }
 /* ============================================================
    ADMIN — Razorpay health check
@@ -2855,55 +2949,81 @@ app.get('/api/courses', async (req, res) => {
 });
 
 /* ---- On-demand full material fetch (quiz questions) ---- */
-app.get('/api/courses/:courseId/materials/:materialId/full-quiz', async (req, res) => {
-  try {
-    // ⚠️ FIX: Guard against invalid ObjectId → CastError → 500 response.
-    if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
-      return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+/* ---- On-demand file fetch (PDF base64) — PREMIUM PROTECTED ---- */
+app.get('/api/courses/:courseId/materials/:materialId/file',
+  attachUserFromToken,
+  async (req, res) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
+        return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+      }
+
+      const course = await Course.findById(req.params.courseId)
+        .select('isPremium price materials')
+        .lean();
+      if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+      const mat = (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
+      if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+      if (!mat.fileData) return res.status(404).json({ success: false, message: 'No file attached.' });
+
+      // ⭐ PREMIUM ACCESS CHECK
+      const access = checkMaterialAccess(req.authUser, course, mat);
+      if (!access.allowed) {
+        return res.status(403).json({
+          success: false,
+          code: access.reason,
+          message: 'This file is part of premium content. Purchase it or subscribe to unlock.'
+        });
+      }
+
+      res.json({ success: true, fileData: mat.fileData, fileName: mat.fileName || '' });
+    } catch (e) {
+      res.status(500).json({ success: false, message: 'Server error: ' + e.message });
     }
-
-    const course = await Course.findById(req.params.courseId)
-      .select('materials')
-      .lean();
-    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
-
-    const mat = (course.materials || []).find(
-      m => String(m._id) === String(req.params.materialId)
-    );
-    if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
-
-    res.json({
-      success: true,
-      quiz: mat.quiz || [],
-      examConfig: mat.examConfig || {}
-    });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
-});
+);
 
 /* ---- On-demand file fetch (PDF base64) ---- */
-app.get('/api/courses/:courseId/materials/:materialId/file', async (req, res) => {
-  try {
-    // ⚠️ FIX: Guard against invalid ObjectId.
-    if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
-      return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+/* ---- On-demand full material fetch (quiz questions) — PREMIUM PROTECTED ---- */
+app.get('/api/courses/:courseId/materials/:materialId/full-quiz',
+  attachUserFromToken,
+  async (req, res) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
+        return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+      }
+
+      const course = await Course.findById(req.params.courseId)
+        .select('isPremium price materials')
+        .lean();
+      if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
+      const mat = (course.materials || []).find(
+        m => String(m._id) === String(req.params.materialId)
+      );
+      if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+
+      // ⭐ PREMIUM ACCESS CHECK
+      const access = checkMaterialAccess(req.authUser, course, mat);
+      if (!access.allowed) {
+        return res.status(403).json({
+          success: false,
+          code: access.reason,
+          message: 'This quiz is part of premium content. Purchase it or subscribe to unlock.'
+        });
+      }
+
+      res.json({
+        success: true,
+        quiz: mat.quiz || [],
+        examConfig: mat.examConfig || {}
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: 'Server error: ' + e.message });
     }
-
-    const course = await Course.findById(req.params.courseId)
-      .select('materials._id materials.fileData materials.fileName')
-      .lean();
-    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
-
-    const mat = (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
-    if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
-    if (!mat.fileData) return res.status(404).json({ success: false, message: 'No file attached.' });
-
-    res.json({ success: true, fileData: mat.fileData, fileName: mat.fileName || '' });
-  } catch (e) {
-    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
-});
+);
 
 app.get('/api/courses/:id', async (req, res) => {
   try {
@@ -5561,13 +5681,17 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
     res.json({ success: true, students });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
-
 /* ============================================================
-   VIDEO SESSION
+   VIDEO SESSION — PREMIUM PROTECTED (checks COURSE + MATERIAL)
    ============================================================ */
 app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) => {
   try {
     const { userId } = req.body || {};
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
+      return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+    }
+
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
 
@@ -5575,16 +5699,29 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
     if (!mat.url) return res.status(400).json({ success: false, message: 'No video URL on this material.' });
 
-    const isPremiumMat = mat.isPremium === true || mat.isPremium === 'true';
-    if (isPremiumMat && userId) {
-      const user = await User.findById(userId);
+    /* ---- Premium gate: EITHER course or material may be premium ---- */
+    const isPremiumMat    = mat.isPremium    === true || mat.isPremium    === 'true';
+    const isPremiumCourse = course.isPremium === true || course.isPremium === 'true';
+
+    if (isPremiumMat || isPremiumCourse) {
+      if (!userId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Purchase or subscription required to watch this video.'
+        });
+      }
+      const user = await User.findById(userId).select('role purchases subscription').lean();
       if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-      const owns =
-        (user.purchases || []).includes(course._id.toString()) ||
-        (user.purchases || []).includes(mat._id.toString());
-      const subscribed = userHasActiveSubscription(user);
-      if (!owns && !subscribed && user.role !== 'admin') {
-        return res.status(403).json({ success: false, message: 'Purchase or subscription required.' });
+
+      const ownsCourse   = (user.purchases || []).includes(String(course._id));
+      const ownsMaterial = (user.purchases || []).includes(String(mat._id));
+      const subscribed   = userHasActiveSubscription(user);
+
+      if (!ownsCourse && !ownsMaterial && !subscribed && user.role !== 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Purchase or subscription required to watch this video.'
+        });
       }
     }
 
@@ -5599,10 +5736,13 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
     }
 
     if (/youtube\.com|youtu\.be/i.test(url)) {
-      return res.status(400).json({ success: false, message: 'Invalid YouTube link. Please provide a direct video URL, not a playlist or channel link.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid YouTube link. Please provide a direct video URL, not a playlist or channel link.'
+      });
     }
 
-    if (!/^https?:\/\//i.test(url) && !/^blob:/i.test(url)) {
+    if (!/^https?:\/\//i.test(url) && !/^blob:/i.test(url) && !url.startsWith('/uploads/')) {
       return res.status(400).json({ success: false, message: 'Unsupported video URL.' });
     }
 
@@ -5614,6 +5754,7 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+
 
 /* ============================================================
    PLAYLISTS
