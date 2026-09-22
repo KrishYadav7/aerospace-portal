@@ -10230,10 +10230,12 @@ async function submitContribution(e) {
         title,
         subject:         (document.getElementById('contribSubject')?.value || '').trim(),
         description:     (document.getElementById('contribDescription')?.value || '').trim(),
-        fileUrl:         up.url,
-        fileName:        up.fileName || file.name,
-        fileSize:        file.size,
-        fileType:        file.type,
+        fileUrl:            up.url,
+        cloudUrl:           up.cloudUrl || '',
+        diskName:           up.diskName || '',
+        fileName:           up.fileName || file.name,
+        fileSize:           file.size,
+        fileType:           file.type,
         cloudinaryPublicId: up.publicId || ''
       })
     });
@@ -10505,6 +10507,85 @@ async function deleteContribution(id, title) {
     if (data.success) { showToast('Deleted.', 'info'); renderAdminContributions(); }
     else showToast(data.message || 'Failed.', 'error');
   } catch (e) { showToast(e.message, 'error'); }
+}
+/* ============================================================
+   ADMIN — Download a contribution (auth-aware, blob-based)
+   ------------------------------------------------------------
+   The previous implementation used a plain <a href>, which the
+   browser navigates to WITHOUT the Authorization header. The
+   server's requireAdminAuth then returned 401 JSON — the file
+   never actually downloaded. We now fetch() (which passes
+   through the global auth interceptor), receive the file as a
+   Blob, and trigger a synthetic download.
+   ============================================================ */
+async function downloadAdminContribution(contributionId, suggestedName) {
+  if (!contributionId) return showToast('Missing contribution ID.', 'error');
+
+  let token = null;
+  try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
+
+  try {
+    const res = await fetch(`${API_BASE}/admin/contributions/${contributionId}/download`, {
+      method: 'GET',
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      cache: 'no-store'
+    });
+
+    if (!res.ok) {
+      // The server sends JSON on error — try to read the message
+      let msg = `Download failed (HTTP ${res.status})`;
+      try {
+        const txt = await res.text();
+        try {
+          const j = JSON.parse(txt);
+          if (j && j.message) msg = j.message;
+        } catch (_) {
+          if (txt && txt.length < 300) msg = txt;
+        }
+      } catch (_) {}
+      return showToast(msg, 'error');
+    }
+
+    // Prefer the server-provided filename (from Content-Disposition)
+    let filename = suggestedName || 'contribution';
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+    if (m && m[1]) {
+      try { filename = decodeURIComponent(m[1]); } catch (_) { filename = m[1]; }
+    }
+    // If the caller passed a bare title (no extension), keep server's name
+    if (suggestedName && /\.[a-z0-9]{2,5}$/i.test(suggestedName)) {
+      filename = suggestedName;
+    }
+
+    const blob = await res.blob();
+    if (!blob || blob.size === 0) {
+      return showToast('Server returned an empty file.', 'error');
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      a.remove();
+    }, 800);
+
+    showToast('✅ Download started.', 'success');
+
+    // Refresh the list so the "Downloaded" status flips
+    setTimeout(() => {
+      try { renderAdminContributions(); } catch (_) {}
+    }, 1200);
+  } catch (err) {
+    console.error('[downloadAdminContribution]', err);
+    showToast('Download failed: ' + (err.message || 'network error'), 'error');
+  }
 }
 
 /* ============================================================
