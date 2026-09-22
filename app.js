@@ -5760,12 +5760,22 @@ function renderMaterialCard(course, m, isPurchased) {
 
   let fileActionHtml = '';
   if (isLocked) {
-    const priceToShow = isMatPremium ? matPrice : coursePrice;
-    const itemArg     = isMatPremium ? `'${m.id}'` : 'null';
-    fileActionHtml = `<button class="btn btn-warning btn-sm"
-                        onclick="event.stopPropagation();showPaymentModal('${course.id}', ${itemArg})">
-                        <i class="fas fa-lock"></i> Unlock ₹${priceToShow}
-                     </button>`;
+    const isMatPremiumLocal = m.isPremium === true || m.isPremium === 'true';
+    const itemArg = isMatPremiumLocal ? `'${m.id}'` : 'null';
+
+    if (isMatPremiumLocal) {
+      // Individual premium material (₹X sirf is file ke liye)
+      fileActionHtml = `<button class="btn btn-warning btn-sm"
+                          onclick="event.stopPropagation();showPaymentModal('${course.id}', ${itemArg})">
+                          <i class="fas fa-lock"></i> Unlock this file ₹${matPrice}
+                       </button>`;
+    } else {
+      // Course is premium — one-time purchase unlocks EVERYTHING
+      fileActionHtml = `<button class="btn btn-warning btn-sm"
+                          onclick="event.stopPropagation();showPaymentModal('${course.id}', null)">
+                          <i class="fas fa-crown"></i> Unlock whole course ₹${coursePrice}
+                       </button>`;
+    }
   } else {
     // Video
     if (m.type === 'video' && hasUrl && !hasFile) {
