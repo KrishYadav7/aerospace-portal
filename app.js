@@ -478,7 +478,10 @@ async function fetchCoursesFromDB(force = false, page = 1) {
       `[courses] page ${page}: fetched ${list.length}, total ${pagination.total}, hasMore=${pagination.hasMore}`
     );
 
-    // Recurse for next page, but WITHOUT leaking _coursesLoading
+    // Recurse for next page.
+    // ⭐ FIX: keep _coursesLoading = true across the whole page chain.
+    //    Previously the finally{} on page 1 cleared the flag, so any
+    //    UI rendered during the page-2 fetch thought loading finished.
     if (pagination.hasMore && page < 20) {
       return await fetchCoursesFromDB(force, page + 1);
     }
@@ -505,7 +508,10 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     }
     // For page > 1, silently fall through — partial data is better than nothing
   } finally {
-    _coursesLoading = false;
+    // ⭐ FIX: only clear the flag on the LAST page of the fetch chain.
+    if (!_coursePagination.hasMore || page >= 20) {
+      _coursesLoading = false;
+    }
   }
 
   renderApp();
@@ -1363,22 +1369,36 @@ async function handleLogin(e) {
         // ⭐ Force-fresh course list on every login — kills stale premium flags
         _courseCacheAt = 0;
         liveCourses = [];
+        _coursesLoading = false;                 // ⭐ reset so skeleton logic works
         try { _coursePagination = { page: 1, hasMore: false, total: 0 }; } catch (e) {}
 
         showToast(data.message || 'Login successful!', 'success');
         _sessionKilled = false;
         startSessionHeartbeat();
 
-        // ① Kick off the fetch FIRST. Its very first synchronous lines set
-        //    _coursesLoading = true and paint the skeleton, so the very
-        //    next renderApp() will show "Loading courses…" instead of
-        //    the empty state.
-        fetchCoursesFromDB(true).catch(err => {
-          console.warn('[login] course fetch failed:', err);
+        // ⭐ FIX: fetch ALL critical data in parallel — same set initApp uses.
+        //    Previously only courses were fetched, so professors, owner
+        //    profile and subscription settings were missing until refresh.
+        const _initialDataPromise = Promise.allSettled([
+          fetchCoursesFromDB(true),
+          fetchProfessorsFromDB(),
+          fetchSubscriptionSettings(),
+          fetchOwnerProfile()
+        ]);
+
+        // Immediate first paint (skeleton / dashboard).
+        renderApp();
+
+        // ⭐ FIX: guaranteed second render AFTER all data has settled.
+        //    This is the render that finally shows the real course list.
+        _initialDataPromise.then(() => {
+          console.log('[login] ✅ initial data loaded — final render');
+          renderApp();
+        }).catch(err => {
+          console.warn('[login] initial data fetch issue:', err);
+          renderApp();
         });
 
-        // ② Immediate first paint (dashboard / home / skeleton).
-        renderApp();
         return;
       }
 
@@ -1670,18 +1690,30 @@ async function _handleAdminLoginOtp(otp) {
   // ⭐ Force-fresh course list on admin login
   _courseCacheAt = 0;
   liveCourses = [];
+  _coursesLoading = false;                 // ⭐ reset for skeleton logic
   try { _coursePagination = { page: 1, hasMore: false, total: 0 }; } catch (e) {}
 
   showToast('🎉 Admin login successful.', 'success');
   _sessionKilled = false;
   startSessionHeartbeat();
 
-  // Kick off the fetch — this internally calls renderApp() when done.
-  fetchCoursesFromDB(true).catch(err => {
-    console.warn('[admin login] course fetch failed:', err);
-  });
+  // ⭐ FIX: fetch ALL critical data (was courses-only before)
+  const _initialDataPromise = Promise.allSettled([
+    fetchCoursesFromDB(true),
+    fetchProfessorsFromDB(),
+    fetchSubscriptionSettings(),
+    fetchOwnerProfile()
+  ]);
 
   renderApp();
+
+  _initialDataPromise.then(() => {
+    console.log('[admin login] ✅ initial data loaded — final render');
+    renderApp();
+  }).catch(err => {
+    console.warn('[admin login] initial fetch issue:', err);
+    renderApp();
+  });
 }
 
 /* ============================================================
@@ -2408,16 +2440,40 @@ function setMaterialFilter(type) {
    Multiple synchronous calls (e.g. from initApp + hashchange)
    collapse into ONE paint per animation frame.
    ============================================================ */
+/* ============================================================
+   RENDER APP — rAF-batched, debounced to prevent thrash
+   ------------------------------------------------------------
+   Multiple synchronous calls collapse into ONE paint per frame.
+
+   ⭐ FIX: added a watchdog timer. requestAnimationFrame is
+   throttled (sometimes indefinitely) when the tab is hidden or
+   blurred — which is exactly the state right after a login /
+   OTP-modal submit. Without the watchdog, the post-fetch render
+   could be silently dropped, forcing a manual page refresh.
+   ============================================================ */
 let _renderScheduled = false;
+let _renderWatchdog = null;
+
 function renderApp() {
   if (_renderScheduled) return;
   _renderScheduled = true;
+
   const run = () => {
+    if (_renderWatchdog) {
+      clearTimeout(_renderWatchdog);
+      _renderWatchdog = null;
+    }
     _renderScheduled = false;
     _renderAppNow();
   };
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
-  else setTimeout(run, 16);
+
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(run);
+    // Watchdog: if RAF never fires (hidden/blurred tab), force it.
+    _renderWatchdog = setTimeout(run, 100);
+  } else {
+    _renderWatchdog = setTimeout(run, 16);
+  }
 }
 
 function _renderAppNow() {
@@ -2801,6 +2857,23 @@ async function renderAdminOverview() {
 
 async function renderAdminCourses() {  
   const courses = getCourses();
+
+  // ⭐ FIX: show loading skeleton while courses are still being fetched
+  //    (previously it flashed "No courses found" during load).
+  if (_coursesLoading && courses.length === 0) {
+    $('adminCourseList').innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
+    return;
+  }
+  // ⭐ Safety net: no data, not loading → refetch once and show skeleton.
+  if (courses.length === 0 && !_coursesLoading) {
+    $('adminCourseList').innerHTML = renderCoursesLoadingSkeleton('Loading courses…');
+    _courseCacheAt = 0;
+    fetchCoursesFromDB(true).catch(function (err) {
+      console.warn('[renderAdminCourses] auto-fetch failed:', err);
+    });
+    return;
+  }
+
   const searchTerm = ($('adminCourseSearch')?.value || '').toLowerCase().trim();
   const filtered = courses.filter(c =>
     c.name.toLowerCase().includes(searchTerm) ||
