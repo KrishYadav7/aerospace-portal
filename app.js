@@ -5226,24 +5226,28 @@ function getInitials(name) {
 }
 
 // LOCATE AND REPLACE THE renderOwnerProfile FUNCTION IN app.js
+// LOCATE AND REPLACE THE renderOwnerProfile FUNCTION IN app.js
 function renderOwnerProfile() {
-  const section = document.getElementById('aboutOwnerSection');
   const container = document.getElementById('ownerProfileContainer');
-  if (!section || !container) return;
+  if (!container) return;
 
-  // ⭐ HIDE COMPLETELY until data is fetched and valid
-  // This prevents any pre-written text or skeleton from flashing on screen
-  if (!_ownerProfileLoaded || !liveOwnerProfile.name) {
-    section.style.display = 'none';
+  // 1. Agar data abhi load nahi hua hai, toh container ko khaali rakho.
+  // Isse koi bhi static ya fake text flash nahi hoga.
+  if (!_ownerProfileLoaded) {
+    container.innerHTML = '';
     return;
   }
 
-  // Show the section and render the real content
-  section.style.display = 'block';
+  // 2. Agar data load ho gaya hai lekin database mein founder set nahi hai,
+  // toh bhi container ko khaali rakho.
+  if (!liveOwnerProfile.name) {
+    container.innerHTML = '';
+    return;
+  }
 
+  // 3. Data mil gaya, ab real content render karo
   const o = liveOwnerProfile;
 
-  // All sizing/cropping handled by .owner-avatar-img in styles.css
   const avatarHtml = o.photo
     ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy">`
     : `<div class="owner-avatar-fallback">${escapeHtml(getInitials(o.name))}</div>`;
