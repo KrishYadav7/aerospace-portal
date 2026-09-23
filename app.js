@@ -810,15 +810,21 @@ function closeSessionKilledModal() {
 let liveSubscriptionSettings = { enabled: false, amount: 0, title: '', description: '' };
 
 // ---- Organization owner profile (global, fetched on boot) ----
+// IMPORTANT: starts EMPTY. The pre-written bio that used to live here
+// was being rendered on first paint (before the real fetch completed),
+// then swapped out a moment later — causing a visible "flash" of stale
+// hard-coded content. Now we start blank and only render once
+// fetchOwnerProfile() has confirmed real values (or failed).
 let liveOwnerProfile = {
-  name:  'Krish Yadav',
-  title: 'Founder & Course Director',
-  role:  'Founder',
-  bio:   'Academic achiever and experienced educator currently pursuing Aerospace Engineering at IIT Kharagpur. Passionate about translating complex mathematical and engineering principles into accessible concepts. Proven track record in mentoring 2,000+ students and producing structured academic content across core engineering subjects and competitive mathematics.',
+  name:  '',
+  title: '',
+  role:  '',
+  bio:   '',
   email: '',
   phone: '',
   photo: ''
 };
+let _ownerProfileLoaded = false;
 
 async function fetchOwnerProfile() {
   try {
@@ -828,6 +834,10 @@ async function fetchOwnerProfile() {
       liveOwnerProfile = data.owner;
     }
   } catch (e) { /* silent */ }
+
+  // ⭐ Flip the flag so renderOwnerProfile() can stop showing the
+  // skeleton and paint the real content (or the empty state).
+  _ownerProfileLoaded = true;
 }
 
 async function fetchSubscriptionSettings() {
@@ -5218,6 +5228,28 @@ function getInitials(name) {
 function renderOwnerProfile() {
   const container = document.getElementById('ownerProfileContainer');
   if (!container) return;
+
+  // ⭐ FIX: Until fetchOwnerProfile() completes (or fails), render a
+  // neutral skeleton instead of the hard-coded fallback. This kills
+  // the "wrong intro appears first" flicker entirely.
+  if (!_ownerProfileLoaded || !liveOwnerProfile.name) {
+    container.innerHTML = `
+      <div class="owner-container owner-skeleton">
+        <div class="owner-image owner-avatar">
+          <div class="avatar-skeleton"><i class="fas fa-user-tie"></i></div>
+        </div>
+        <div class="owner-details">
+          <div class="skel-line chip" style="width:90px;"></div>
+          <div class="skel-line tall w-40" style="margin:12px 0 8px;"></div>
+          <div class="skel-line w-60" style="margin-bottom:14px;"></div>
+          <div class="skel-line w-100"></div>
+          <div class="skel-line w-100" style="margin-top:6px;"></div>
+          <div class="skel-line w-80"  style="margin-top:6px;"></div>
+        </div>
+      </div>`;
+    return;
+  }
+
   const o = liveOwnerProfile;
 
   // All sizing/cropping handled by .owner-avatar-img in styles.css §62

@@ -7934,3 +7934,54 @@ body.body-content-hidden .vp-shell {
   .subjective-upload-btn { font-size: 13px; padding: 11px 16px; }
   .subjective-result-thumbs { grid-template-columns: repeat(3, 1fr); }
 }
+/* ============================================================
+   64. OWNER PROFILE — loading skeleton
+   ------------------------------------------------------------
+   Shown between first paint and fetchOwnerProfile() completing,
+   so the founder bio never flashes hard-coded fallback text.
+   ============================================================ */
+.owner-skeleton .owner-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.owner-skeleton .skel-line {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--bg-surface-3);
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+}
+.owner-skeleton .skel-line::after {
+  content: "";
+  position: absolute;
+  top: 0; left: -100%;
+  width: 100%; height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(99,102,241,.08) 50%,
+    transparent 100%
+  );
+  animation: skeletonShimmer 1.6s ease-in-out infinite;
+}
+.owner-skeleton .skel-line.chip { height: 22px; border-radius: 999px; width: 90px; }
+.owner-skeleton .skel-line.tall { height: 20px; }
+.owner-skeleton .skel-line.w-40  { width: 40%; }
+.owner-skeleton .skel-line.w-60  { width: 60%; }
+.owner-skeleton .skel-line.w-80  { width: 80%; }
+.owner-skeleton .skel-line.w-100 { width: 100%; }
+
+.owner-skeleton .avatar-skeleton {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 42px;
+  color: var(--brand-300);
+  background: var(--bg-surface-3);
+}
