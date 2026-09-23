@@ -387,8 +387,47 @@ function clearSession() {
 let liveCourses = [];
 /* ============================================================
    COURSE LOADING STATE
+   ------------------------------------------------------------
+   Two extra guards added to fix the "blank courses until refresh"
+   bug that survived the earlier _coursesLoading fix:
+
+     1. _coursesFetchGeneration — a monotonic counter. Only the
+        LATEST fetch chain is allowed to write to liveCourses or
+        clear _coursesLoading. Stale responses from an older
+        chain (e.g. login's fetch vs. the navigate fetch that
+        raced against it) are dropped on the floor.
+
+     2. _coursesLoadingWatchdog — a hard 15s timeout. If any
+        chain ever leaves _coursesLoading stuck `true` (network
+        hang, unhandled throw, page-2+ failure), the watchdog
+        force-resets the flag and re-renders. This makes the
+        "stuck on skeleton forever" state physically impossible.
    ============================================================ */
 let _coursesLoading = false;
+let _coursesFetchGeneration = 0;
+let _coursesLoadingWatchdog = null;
+const COURSES_LOADING_MAX_MS = 15000;
+
+function _startCoursesLoading() {
+  _coursesLoading = true;
+  if (_coursesLoadingWatchdog) clearTimeout(_coursesLoadingWatchdog);
+  _coursesLoadingWatchdog = setTimeout(() => {
+    if (_coursesLoading) {
+      console.warn('[courses] ⚠️ Loading watchdog fired — force-resetting flag');
+      _coursesLoading = false;
+      _coursesLoadingWatchdog = null;
+      try { renderApp(); } catch (e) {}
+    }
+  }, COURSES_LOADING_MAX_MS);
+}
+
+function _stopCoursesLoading() {
+  _coursesLoading = false;
+  if (_coursesLoadingWatchdog) {
+    clearTimeout(_coursesLoadingWatchdog);
+    _coursesLoadingWatchdog = null;
+  }
+}
 
 function renderCoursesLoadingSkeleton(message) {
   const skelCards = Array.from({ length: 6 }).map(() => `
@@ -434,8 +473,14 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     return;
   }
 
+  // ⭐ Generation guard — bumped ONLY on the first page of a fresh
+  //    chain. Any page-1 call racing against an existing chain will
+  //    invalidate that older chain so it stops writing state.
+  let myGeneration = _coursesFetchGeneration;
   if (page === 1) {
-    _coursesLoading = true;
+    myGeneration = ++_coursesFetchGeneration;
+    _startCoursesLoading();
+
     if (currentUser) {
       const isAdminUser = String(currentUser.role || '').toLowerCase() === 'admin';
       if (isAdminUser && adminTab === 'courses') {
@@ -448,12 +493,23 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     }
   }
 
+  let pageFailed = false;
+
   try {
-    const PER_PAGE = 80;   // 80 is enough for most portals to be 1 request;
-                           // large catalogs fall back to multi-page streaming
+    const PER_PAGE = 80;
     const data = await fetchJSON(
       `${API_BASE}/courses?limit=${PER_PAGE}&page=${page}&_t=${Date.now()}`
     );
+
+    // ⭐ Stale-response bail-out. If a newer chain started while we
+    //    were awaiting the network, drop this response completely —
+    //    do NOT overwrite liveCourses, do NOT touch pagination.
+    if (myGeneration !== _coursesFetchGeneration) {
+      console.log(
+        `[courses] stale response (gen ${myGeneration} ≠ ${_coursesFetchGeneration}) — dropped`
+      );
+      return;
+    }
 
     const list = Array.isArray(data) ? data : (data.courses || []);
     const pagination = data.pagination || { page, hasMore: false, total: list.length };
@@ -478,14 +534,11 @@ async function fetchCoursesFromDB(force = false, page = 1) {
       `[courses] page ${page}: fetched ${list.length}, total ${pagination.total}, hasMore=${pagination.hasMore}`
     );
 
-    // Recurse for next page.
-    // ⭐ FIX: keep _coursesLoading = true across the whole page chain.
-    //    Previously the finally{} on page 1 cleared the flag, so any
-    //    UI rendered during the page-2 fetch thought loading finished.
     if (pagination.hasMore && page < 20) {
       return await fetchCoursesFromDB(force, page + 1);
     }
   } catch (error) {
+    pageFailed = true;
     console.error('Error fetching courses:', error);
     if (page === 1) {
       const errHtml = `
@@ -506,15 +559,19 @@ async function fetchCoursesFromDB(force = false, page = 1) {
         const el = $('studentCourseList'); if (el) el.innerHTML = errHtml;
       }
     }
-    // For page > 1, silently fall through — partial data is better than nothing
   } finally {
-    // ⭐ FIX: only clear the flag on the LAST page of the fetch chain.
-    if (!_coursePagination.hasMore || page >= 20) {
-      _coursesLoading = false;
+    // Clear the loading flag whenever the chain terminates — but ONLY
+    // if this chain is still the latest generation. The watchdog set
+    // by _startCoursesLoading is our ultimate safety net.
+    if (pageFailed || !_coursePagination.hasMore || page >= 20) {
+      if (myGeneration === _coursesFetchGeneration) {
+        _stopCoursesLoading();
+      }
     }
+    // Always repaint after any fetch terminal — even a stale one,
+    // because the UI might be sitting on a skeleton right now.
+    try { renderApp(); } catch (e) {}
   }
-
-  renderApp();
 }
 
 // Naya helper — on-demand full course (with all data)
@@ -2604,6 +2661,17 @@ function switchAdminTab(tab) {
   window.currentSelectedCourseId = null;
   
   pushHash(`#/admin/${tab}`);
+
+  // ⚡ Auto-load courses when switching to the Courses tab with an empty
+  //    list. Mirrors the fetch trigger in navigateStudent(), and pairs with
+  //    the _coursesLoading fix in fetchCoursesFromDB() so the flag can
+  //    never stay stuck after a failed chain.
+  if (tab === 'courses' && liveCourses.length === 0) {
+    fetchCoursesFromDB(true).catch(function (err) {
+      console.warn('[switchAdminTab] auto-fetch failed:', err);
+    });
+  }
+
   renderApp(); // Use renderApp instead of renderAdminDashboard for a clean slate
 }
 function updateAdminTabUI() {
