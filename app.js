@@ -2464,16 +2464,20 @@ function navigateStudent(dest) {
 
   // ⚡ Auto-load course data when navigating to a view that needs it.
   //
-  // FIX: We deliberately do NOT gate this on `!_coursesLoading`. That flag
-  // can get stuck `true` when a paginated fetch fails partway through its
-  // chain (fetchCoursesFromDB only clears it once the LAST page settles),
-  // which used to block the auto-load and left "Explore Courses" empty
-  // until a manual page refresh reset the in-memory state. Re-firing
-  // fetchCoursesFromDB() here always recovers — at worst it duplicates
-  // one in-flight request, and both calls resolve to identical data.
+  // FIX (auto-load race): The old code only fired a fetch when
+  // `liveCourses.length === 0`. If the initApp()/login fetch was still
+  // in-flight, this started a SECOND fetch. The generation guard in
+  // fetchCoursesFromDB() then dropped the first response and skipped
+  // its `_stopCoursesLoading()` call — leaving the UI stuck on a
+  // skeleton until a manual refresh reset all in-memory state.
+  //
+  // Now we respect an in-flight fetch: if one is already running, its
+  // own finally-block will call renderApp() and paint the courses.
+  // Only fire a new fetch when nothing is running. Force-fresh when
+  // we have no data; respect the cache when we do.
   const needsCourses = (dest === 'courses' || dest === 'saved' || dest === 'home');
-  if (needsCourses && liveCourses.length === 0) {
-    fetchCoursesFromDB(true).catch(function (err) {
+  if (needsCourses && !_coursesLoading) {
+    fetchCoursesFromDB(liveCourses.length === 0).catch(function (err) {
       console.warn('[navigateStudent] auto-fetch failed:', err);
     });
   }
@@ -2662,12 +2666,12 @@ function switchAdminTab(tab) {
   
   pushHash(`#/admin/${tab}`);
 
-  // ⚡ Auto-load courses when switching to the Courses tab with an empty
-  //    list. Mirrors the fetch trigger in navigateStudent(), and pairs with
-  //    the _coursesLoading fix in fetchCoursesFromDB() so the flag can
-  //    never stay stuck after a failed chain.
-  if (tab === 'courses' && liveCourses.length === 0) {
-    fetchCoursesFromDB(true).catch(function (err) {
+  // ⚡ Auto-load courses when switching to the Courses tab.
+  // Same fix as navigateStudent(): don't compete with an in-flight
+  // fetch (its finally-block will re-render), only fire a fresh one
+  // when nothing is running. Force-fresh if no data, else cache-aware.
+  if (tab === 'courses' && !_coursesLoading) {
+    fetchCoursesFromDB(liveCourses.length === 0).catch(function (err) {
       console.warn('[switchAdminTab] auto-fetch failed:', err);
     });
   }
