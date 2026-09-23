@@ -5225,34 +5225,25 @@ function getInitials(name) {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+// LOCATE AND REPLACE THE renderOwnerProfile FUNCTION IN app.js
 function renderOwnerProfile() {
+  const section = document.getElementById('aboutOwnerSection');
   const container = document.getElementById('ownerProfileContainer');
-  if (!container) return;
+  if (!section || !container) return;
 
-  // ⭐ FIX: Until fetchOwnerProfile() completes (or fails), render a
-  // neutral skeleton instead of the hard-coded fallback. This kills
-  // the "wrong intro appears first" flicker entirely.
+  // ⭐ HIDE COMPLETELY until data is fetched and valid
+  // This prevents any pre-written text or skeleton from flashing on screen
   if (!_ownerProfileLoaded || !liveOwnerProfile.name) {
-    container.innerHTML = `
-      <div class="owner-container owner-skeleton">
-        <div class="owner-image owner-avatar">
-          <div class="avatar-skeleton"><i class="fas fa-user-tie"></i></div>
-        </div>
-        <div class="owner-details">
-          <div class="skel-line chip" style="width:90px;"></div>
-          <div class="skel-line tall w-40" style="margin:12px 0 8px;"></div>
-          <div class="skel-line w-60" style="margin-bottom:14px;"></div>
-          <div class="skel-line w-100"></div>
-          <div class="skel-line w-100" style="margin-top:6px;"></div>
-          <div class="skel-line w-80"  style="margin-top:6px;"></div>
-        </div>
-      </div>`;
+    section.style.display = 'none';
     return;
   }
 
+  // Show the section and render the real content
+  section.style.display = 'block';
+
   const o = liveOwnerProfile;
 
-  // All sizing/cropping handled by .owner-avatar-img in styles.css §62
+  // All sizing/cropping handled by .owner-avatar-img in styles.css
   const avatarHtml = o.photo
     ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy">`
     : `<div class="owner-avatar-fallback">${escapeHtml(getInitials(o.name))}</div>`;
