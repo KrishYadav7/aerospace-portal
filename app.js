@@ -2405,10 +2405,17 @@ function navigateStudent(dest) {
   pushHash(pathMap[dest] || '#/home');
   studentNav = dest;
 
-  // ⚡ FIX: If the user navigates to a view that needs course data
-  //    and we have none, auto-fetch now. Covers every timing edge case.
+  // ⚡ Auto-load course data when navigating to a view that needs it.
+  //
+  // FIX: We deliberately do NOT gate this on `!_coursesLoading`. That flag
+  // can get stuck `true` when a paginated fetch fails partway through its
+  // chain (fetchCoursesFromDB only clears it once the LAST page settles),
+  // which used to block the auto-load and left "Explore Courses" empty
+  // until a manual page refresh reset the in-memory state. Re-firing
+  // fetchCoursesFromDB() here always recovers — at worst it duplicates
+  // one in-flight request, and both calls resolve to identical data.
   const needsCourses = (dest === 'courses' || dest === 'saved' || dest === 'home');
-  if (needsCourses && liveCourses.length === 0 && !_coursesLoading) {
+  if (needsCourses && liveCourses.length === 0) {
     fetchCoursesFromDB(true).catch(function (err) {
       console.warn('[navigateStudent] auto-fetch failed:', err);
     });
