@@ -7008,3 +7008,14 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+
+/* ============================================================
+   LISTEN — start the HTTP server
+   ------------------------------------------------------------
+   Without this call, `app` never binds to a port and the
+   process exits silently. Nginx then returns 502 to clients.
+   ============================================================ */
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`✅ Server is running on port ${PORT}`);
+});
