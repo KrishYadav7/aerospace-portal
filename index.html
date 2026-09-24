@@ -32,7 +32,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=48">
+  <link rel="stylesheet" href="styles.css?v=49">
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
   <style>
@@ -390,9 +390,9 @@
           </button>
         </div>
 
-        <!-- ADMIN TAB CONTENTS -->
-        <div id="adminTabLive" class="admin-tab-content"></div>
-
+        <!-- ============================================================
+             ADMIN TAB CONTENTS
+             ============================================================ -->
         <div id="adminTabOverview" class="admin-tab-content">
           <div class="stats-grid">
             <div class="stat-card">
@@ -453,79 +453,8 @@
           </div>
         </div>
 
-        <!-- FIXED: Removed the duplicate <div id="adminTabLive" class="admin-tab-content"></div> that was here -->
-
-        <div id="adminTabCourses" class="admin-tab-content">
-          <div class="tab-toolbar">
-            <div class="search-bar" style="margin:0; flex:1; max-width:440px;">
-              <i class="fas fa-search"></i>
-              <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="debouncedRenderAdminCourses()">
-            </div>
-          </div>
-          <div id="adminCourseList"></div>
-        </div>
         <div id="adminTabLive" class="admin-tab-content"></div>
 
-        <div id="adminTabOverview" class="admin-tab-content">
-          <div class="stats-grid">
-            <div class="stat-card">
-              <div class="stat-icon tone-brand"><i class="fas fa-graduation-cap"></i></div>
-              <div class="stat-info">
-                <div class="num" id="statCourses">0</div>
-                <div class="label">Total Courses</div>
-              </div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon tone-cyan"><i class="fas fa-layer-group"></i></div>
-              <div class="stat-info">
-                <div class="num" id="statMaterials">0</div>
-                <div class="label">Total Materials</div>
-              </div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon tone-emerald"><i class="fas fa-user-graduate"></i></div>
-              <div class="stat-info">
-                <div class="num" id="statStudents">0</div>
-                <div class="label">Students</div>
-              </div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-icon tone-gold"><i class="fas fa-user-tie"></i></div>
-              <div class="stat-info">
-                <div class="num" id="statProfessors">0</div>
-                <div class="label">Professors</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="section-card" style="margin-top:24px;">
-            <h2><i class="fas fa-bolt"></i> Quick Actions</h2>
-            <div class="quick-actions-grid">
-              <button class="quick-action-card" onclick="openAddCourseModal()">
-                <div class="qa-icon tone-brand"><i class="fas fa-plus-circle"></i></div>
-                <div class="qa-info">
-                  <strong>Create Course</strong>
-                  <span>Add a new course to the catalog</span>
-                </div>
-              </button>
-              <button class="quick-action-card" onclick="openAddProfessorModal()">
-                <div class="qa-icon tone-gold"><i class="fas fa-user-plus"></i></div>
-                <div class="qa-info">
-                  <strong>Add Professor</strong>
-                  <span>Introduce a new team member</span>
-                </div>
-              </button>
-              <button class="quick-action-card" onclick="openStudentRegModal()">
-                <div class="qa-icon tone-emerald"><i class="fas fa-user-graduate"></i></div>
-                <div class="qa-info">
-                  <strong>Register Student</strong>
-                  <span>Create credentials manually</span>
-                </div>
-              </button>
-            </div>
-          </div>
-        </div>
-<div id="adminTabLive" class="admin-tab-content"></div>
         <div id="adminTabCourses" class="admin-tab-content">
           <div class="tab-toolbar">
             <div class="search-bar" style="margin:0; flex:1; max-width:440px;">
@@ -535,6 +464,7 @@
           </div>
           <div id="adminCourseList"></div>
         </div>
+
 
         <div id="adminTabProfessors" class="admin-tab-content">
           <div class="tab-toolbar">
@@ -1521,15 +1451,15 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- <script src="media-viewer.js?v=48" defer></script>
-  <script src="app.js?v=48" defer></script>
+ 	<script src="media-viewer.js?v=49" defer></script>
+  <script src="app.js?v=49" defer></script>
 
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       // Force SW to bypass HTTP cache and always check for a new version
-      navigator.serviceWorker.register('/sw.js?v=48', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=49', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
           // Actively check for updates on every page load

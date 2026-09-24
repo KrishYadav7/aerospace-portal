@@ -1,12 +1,12 @@
 /* ============================================================
-   SERVICE WORKER — v49
+   SERVICE WORKER — v50
    ------------------------------------------------------------
    KEY RULE: NEVER cache app code (app.js, styles.css, media-viewer.js,
    sw.js, index.html, landing.html, /app). Those files must always
    come from the network. Only truly static assets (manifest, images)
    go in the cache.
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v49';
+const CACHE_NAME = 'aero-shell-v50';
 
 /* ONLY these go into the offline cache — they never change silently */
 const SHELL_ASSETS = [
