@@ -6923,12 +6923,46 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
       ? `${contextBlock}\nStudent's doubt: ${question}`
       : `Student's doubt: ${question}`;
 
-    /* ---------- 5. Model fallback chain ---------- */
-    const MODELS = [
-      'gemini-2.5-pro',     // ⭐ PRIMARY — best reasoning
-      'gemini-2.5-flash',   // fast fallback
-      'gemini-2.0-flash'    // last-resort fallback
-    ];
+    /* ---------- 5. Model fallback chain (auto-discovered) ---------- */
+    // Ask Google what models your key can actually use.
+    // Cache the result for 10 minutes so we don't hit the API every request.
+    let MODELS = [];
+    try {
+      const now = Date.now();
+      if (!global.__aeroAiModelCache || (now - global.__aeroAiModelCache.at) > 10 * 60 * 1000) {
+        const listResp = await getGeminiClient().models.list();
+        const discovered = [];
+        for await (const m of listResp) {
+          const raw = String(m.name || '');           // e.g. "models/gemini-2.5-flash"
+          const id  = raw.replace(/^models\//, '');
+          if (!id) continue;
+          // Only keep generateContent-capable gemini models
+          const methods = m.supportedActions || m.supportedGenerationMethods || [];
+          const canGenerate = Array.isArray(methods)
+            ? methods.some(x => /generateContent/i.test(x))
+            : true;
+          if (canGenerate && /^gemini/i.test(id)) discovered.push(id);
+        }
+        // Prefer pro > flash > any
+        discovered.sort((a, b) => {
+          const rank = s => /pro/.test(s) ? 3 : /flash/.test(s) ? 2 : 1;
+          return rank(b) - rank(a);
+        });
+        global.__aeroAiModelCache = { at: now, models: discovered };
+        console.log('[ai] Discovered models:', discovered.join(', '));
+      }
+      MODELS = global.__aeroAiModelCache.models || [];
+    } catch (e) {
+      console.warn('[ai] Model discovery failed, using static fallback:', e.message);
+      MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    }
+
+    if (MODELS.length === 0) {
+      return res.status(503).json({
+        success: false,
+        message: 'AI is not configured — no usable Gemini models were found for this API key.'
+      });
+    }
 
     let answer = null;
     let usedModel = null;
