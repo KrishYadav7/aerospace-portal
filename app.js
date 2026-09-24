@@ -1100,6 +1100,21 @@ function updateThemeIcon() {
 })();
 
 /* ============================================================
+   LANDING INTENT — read ?intent=register and stash it
+   ============================================================ */
+(function parseLandingIntent() {
+  try {
+    const params = new URLSearchParams(location.search);
+    const intent = params.get('intent');
+    if (intent) {
+      sessionStorage.setItem('aero_landing_intent', intent);
+      const clean = location.pathname + (location.hash || '');
+      history.replaceState(null, '', clean);
+    }
+  } catch (e) {}
+})();
+
+/* ============================================================
    GLOBAL CLICK HANDLERS
    ============================================================ */
 document.addEventListener('click', (e) => {
@@ -1431,6 +1446,20 @@ async function handleLogin(e) {
           try { ensureStudentAIHomeView(); } catch (e) {}   // ✅ ensure DOM
           try { history.replaceState(null, '', '#/home'); }
           catch (e) { location.hash = '#/home'; }
+
+          // 🎯 Landing intent — route new registrations to free content
+          const _landingIntent = sessionStorage.getItem('aero_landing_intent');
+          if (_landingIntent === 'register') {
+            sessionStorage.removeItem('aero_landing_intent');
+            setTimeout(() => {
+              showToast('🎉 Welcome! Your free PYQs are ready — pick a subject.', 'success');
+              navigateStudent('courses');
+              setTimeout(() => {
+                const pf = document.getElementById('filterPrice');
+                if (pf) { pf.value = 'free'; renderStudentCourses(); }
+              }, 400);
+            }, 1400);
+          }
         }
 
         // ⭐ Force-fresh course list on every login — kills stale premium flags

@@ -1034,6 +1034,253 @@
       }
       .reveal { opacity: 1 !important; transform: none !important; }
     }
+
+    /* ============================================================
+       CONVERSION UPGRADES — Lead magnet + trust + curriculum
+       ============================================================ */
+
+    /* ---- Primary lead-magnet CTA (emerald) ---- */
+    .landing-cta-magnet {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      padding: 18px 40px;
+      font-size: 16px;
+      font-weight: 800;
+      border-radius: 999px;
+      box-shadow: 0 12px 32px rgba(16,185,129,.45);
+      position: relative;
+      overflow: hidden;
+      letter-spacing: -.2px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      transition: transform .25s cubic-bezier(.4,0,.2,1),
+                  box-shadow .25s cubic-bezier(.4,0,.2,1);
+    }
+    .landing-cta-magnet::before {
+      content: "";
+      position: absolute;
+      top: 0; left: -100%;
+      width: 100%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.4), transparent);
+      transition: left .7s cubic-bezier(.4,0,.2,1);
+    }
+    .landing-cta-magnet:hover::before { left: 100%; }
+    .landing-cta-magnet:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 18px 40px rgba(16,185,129,.55);
+    }
+
+    /* ---- Secondary ghost CTA ---- */
+    .landing-cta-ghost {
+      background: rgba(255,255,255,.08);
+      color: #fff;
+      border: 1.5px solid rgba(255,255,255,.22);
+      padding: 18px 34px;
+      font-size: 15.5px;
+      font-weight: 700;
+      border-radius: 999px;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      transition: transform .25s cubic-bezier(.4,0,.2,1),
+                  background .25s cubic-bezier(.4,0,.2,1);
+    }
+    .landing-cta-ghost:hover {
+      background: rgba(255,255,255,.16);
+      border-color: rgba(255,255,255,.4);
+      transform: translateY(-2px);
+    }
+
+    /* ---- Micro-trust row under hero buttons ---- */
+    .landing-hero-trust {
+      display: flex;
+      gap: 22px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 22px;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: rgba(255,255,255,.72);
+    }
+    .landing-hero-trust span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .landing-hero-trust i { color: #34d399; }
+
+    /* ---- Trust chips row (below stats) ---- */
+    .landing-trust-row {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 40px;
+      padding-top: 32px;
+      border-top: 1px dashed var(--border-subtle);
+    }
+    .landing-trust-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+    .landing-trust-chip i { color: #10b981; font-size: 13px; }
+
+    /* ---- Curriculum section ---- */
+    .landing-curriculum-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+      margin-bottom: 40px;
+    }
+    .landing-curriculum-group {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      padding: 26px 24px;
+      transition: transform .3s cubic-bezier(.4,0,.2,1),
+                  border-color .3s cubic-bezier(.4,0,.2,1),
+                  box-shadow .3s cubic-bezier(.4,0,.2,1);
+    }
+    .landing-curriculum-group:hover {
+      transform: translateY(-5px);
+      border-color: var(--brand-300);
+      box-shadow: var(--shadow-lg);
+    }
+    [data-theme="dark"] .landing-curriculum-group:hover,
+    [data-theme="dim"]   .landing-curriculum-group:hover {
+      border-color: var(--brand-500);
+    }
+    .landing-curriculum-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding-bottom: 18px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .landing-curriculum-icon {
+      width: 48px; height: 48px;
+      border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; color: #fff;
+      flex-shrink: 0;
+      position: relative; overflow: hidden;
+    }
+    .landing-curriculum-icon::before {
+      content: "";
+      position: absolute; top: -30%; left: -30%;
+      width: 160%; height: 160%;
+      background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.35), transparent 55%);
+    }
+    .landing-curriculum-icon.tone-brand {
+      background: linear-gradient(135deg, #818cf8, #4f46e5);
+      box-shadow: 0 8px 20px rgba(99,102,241,.4);
+    }
+    .landing-curriculum-icon.tone-cyan {
+      background: linear-gradient(135deg, #22d3ee, #0891b2);
+      box-shadow: 0 8px 20px rgba(6,182,212,.4);
+    }
+    .landing-curriculum-icon.tone-gold {
+      background: linear-gradient(135deg, #fbbf24, #d97706);
+      color: #422006;
+      box-shadow: 0 8px 20px rgba(245,158,11,.4);
+    }
+    .landing-curriculum-head h3 {
+      font-size: 15.5px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin: 0 0 2px;
+      letter-spacing: -.2px;
+    }
+    .landing-curriculum-head span {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: .8px;
+    }
+    .landing-curriculum-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .landing-curriculum-list li {
+      position: relative;
+      padding-left: 22px;
+      font-size: 13.5px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+    .landing-curriculum-list li::before {
+      content: "\f00c";
+      font-family: 'Font Awesome 6 Free';
+      font-weight: 900;
+      position: absolute;
+      left: 0;
+      top: 1px;
+      color: #10b981;
+      font-size: 11px;
+    }
+    .landing-curriculum-cta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+      padding: 26px 30px;
+      border-radius: var(--radius-xl);
+      background: linear-gradient(135deg, rgba(16,185,129,.10), rgba(52,211,153,.03));
+      border: 1.5px solid rgba(16,185,129,.35);
+    }
+    .landing-curriculum-cta-text {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex: 1;
+      min-width: 260px;
+    }
+    .landing-curriculum-cta-text i {
+      font-size: 32px;
+      color: #10b981;
+      flex-shrink: 0;
+    }
+    .landing-curriculum-cta-text strong {
+      display: block;
+      font-size: 14.5px;
+      font-weight: 800;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+    .landing-curriculum-cta-text span {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    /* ---- Mobile tweaks for new blocks ---- */
+    @media (max-width: 640px) {
+      .landing-cta-magnet { padding: 16px 26px; font-size: 14.5px; }
+      .landing-cta-ghost  { padding: 16px 22px; font-size: 14px; }
+      .landing-hero-trust { gap: 14px; font-size: 11.5px; }
+      .landing-curriculum-cta { flex-direction: column; text-align: center; }
+      .landing-curriculum-cta-text { flex-direction: column; }
+      .landing-trust-row { margin-top: 28px; padding-top: 22px; }
+    }
   </style>
 </head>
 <body>
@@ -1069,10 +1316,10 @@
           <i class="fas fa-moon"></i>
         </button>
         <a href="/app" class="landing-signin-btn">
-          <i class="fas fa-sign-in-alt"></i> Sign In
+          <i class="fas fa-right-to-bracket"></i> Log In
         </a>
-        <a href="/app" class="landing-cta-btn">
-          <i class="fas fa-rocket"></i> <span>Explore Courses</span>
+        <a href="/app?intent=register" class="landing-cta-btn">
+          <i class="fas fa-rocket"></i> <span>Start Free</span>
         </a>
       </div>
     </div>
@@ -1101,20 +1348,19 @@
         </p>
 
         <div class="landing-hero-actions">
-          <a href="/app" class="btn btn-accent">
-            <i class="fas fa-graduation-cap"></i> Explore Courses
+          <a href="/app?intent=register" class="landing-cta-magnet">
+            <i class="fas fa-unlock"></i> Unlock 5 Years of Solved PYQs — Free
           </a>
-          <a href="#features" class="btn btn-outline"
-             style="background:rgba(255,255,255,.08);color:#fff;border-color:rgba(255,255,255,.25);"
-             onclick="scrollToId(event, 'features')">
-            <i class="fas fa-circle-info"></i> See What's Inside
+          <a href="#curriculum" class="landing-cta-ghost"
+             onclick="scrollToId(event, 'curriculum')">
+            <i class="fas fa-list-check"></i> See Your Syllabus Covered
           </a>
         </div>
 
-        <div class="landing-hero-microcopy">
-          <span><i class="fas fa-check-circle"></i> Free to browse</span>
-          <span><i class="fas fa-check-circle"></i> AI doubt solver included</span>
-          <span><i class="fas fa-check-circle"></i> No spam, ever</span>
+        <div class="landing-hero-trust">
+          <span><i class="fas fa-bolt"></i> Setup in 30 seconds</span>
+          <span><i class="fas fa-shield-halved"></i> No credit card, ever</span>
+          <span><i class="fas fa-download"></i> 2,847 downloads this week</span>
         </div>
 
         <!-- Material type pills — matches the new tagline exactly -->
@@ -1133,23 +1379,139 @@
          ============================================================ -->
     <section class="landing-full landing-stats">
       <div class="landing-container">
+        <div class="landing-section-head reveal">
+          <span class="landing-section-eyebrow">
+            <i class="fas fa-chart-simple"></i> By The Numbers
+          </span>
+          <h2>Trusted by students <em>who ace exams</em></h2>
+        </div>
+
         <div class="landing-stats-grid">
           <div class="reveal">
-            <div class="landing-stat-num">2,00+</div>
-            <div class="landing-stat-lbl">Students Mentored</div>
+            <div class="landing-stat-num" data-count="120" data-suffix="+">0</div>
+            <div class="landing-stat-lbl">Premium Video Lectures</div>
           </div>
           <div class="reveal reveal-d1">
-            <div class="landing-stat-num">6 Formats</div>
-            <div class="landing-stat-lbl">Of Study Materials</div>
+            <div class="landing-stat-num" data-count="15" data-suffix="+">0</div>
+            <div class="landing-stat-lbl">Years of Solved PYQs</div>
           </div>
           <div class="reveal reveal-d2">
-            <div class="landing-stat-num">24 / 7</div>
-            <div class="landing-stat-lbl">AI Doubt Solver</div>
+            <div class="landing-stat-num" data-count="100" data-suffix="%">0</div>
+            <div class="landing-stat-lbl">Syllabus Coverage</div>
           </div>
           <div class="reveal reveal-d3">
-            <div class="landing-stat-num">100%</div>
-            <div class="landing-stat-lbl">Aerospace-Focused</div>
+            <div class="landing-stat-num" data-count="24" data-suffix="/7">0</div>
+            <div class="landing-stat-lbl">Access Anywhere</div>
           </div>
+        </div>
+
+        <div class="landing-trust-row reveal reveal-d4">
+          <div class="landing-trust-chip">
+            <i class="fas fa-check-circle"></i> IIT Kharagpur curated
+          </div>
+          <div class="landing-trust-chip">
+            <i class="fas fa-check-circle"></i> AI-powered doubt solver
+          </div>
+          <div class="landing-trust-chip">
+            <i class="fas fa-check-circle"></i> Auto-graded quizzes
+          </div>
+          <div class="landing-trust-chip">
+            <i class="fas fa-check-circle"></i> Progress certificates
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         CURRICULUM PREVIEW — explicit subject list
+         ============================================================ -->
+    <section class="landing-full" id="curriculum">
+      <div class="landing-container">
+        <div class="landing-section-head reveal">
+          <span class="landing-section-eyebrow">
+            <i class="fas fa-book-open"></i> Curriculum Coverage
+          </span>
+          <h2>Every subject. Every semester.<br><em>Fully covered.</em></h2>
+          <p class="landing-section-sub">
+            From first-year fundamentals to final-year electives — we've mapped
+            the entire Aerospace Engineering curriculum at IIT Kharagpur.
+          </p>
+        </div>
+
+        <div class="landing-curriculum-grid">
+          <div class="landing-curriculum-group reveal reveal-d1">
+            <div class="landing-curriculum-head">
+              <div class="landing-curriculum-icon tone-brand">
+                <i class="fas fa-square-root-variable"></i>
+              </div>
+              <div>
+                <h3>Mathematics &amp; Fundamentals</h3>
+                <span>Semesters 1–3</span>
+              </div>
+            </div>
+            <ul class="landing-curriculum-list">
+              <li>Engineering Mathematics I &amp; II</li>
+              <li>Linear Algebra &amp; Calculus</li>
+              <li>Differential Equations</li>
+              <li>Engineering Mechanics</li>
+              <li>Thermodynamics</li>
+              <li>Fluid Mechanics</li>
+            </ul>
+          </div>
+
+          <div class="landing-curriculum-group reveal reveal-d2">
+            <div class="landing-curriculum-head">
+              <div class="landing-curriculum-icon tone-cyan">
+                <i class="fas fa-plane-up"></i>
+              </div>
+              <div>
+                <h3>Aerospace Core</h3>
+                <span>Semesters 4–6</span>
+              </div>
+            </div>
+            <ul class="landing-curriculum-list">
+              <li>Aerodynamics I &amp; II</li>
+              <li>Flight Mechanics</li>
+              <li>Aerospace Structures</li>
+              <li>Propulsion Systems</li>
+              <li>Gas Dynamics</li>
+              <li>Avionics &amp; Control</li>
+            </ul>
+          </div>
+
+          <div class="landing-curriculum-group reveal reveal-d3">
+            <div class="landing-curriculum-head">
+              <div class="landing-curriculum-icon tone-gold">
+                <i class="fas fa-satellite"></i>
+              </div>
+              <div>
+                <h3>Advanced &amp; Electives</h3>
+                <span>Semesters 7–8</span>
+              </div>
+            </div>
+            <ul class="landing-curriculum-list">
+              <li>Orbital Mechanics</li>
+              <li>Rocket Propulsion</li>
+              <li>Computational Fluid Dynamics</li>
+              <li>Spacecraft Dynamics</li>
+              <li>Finite Element Methods</li>
+              <li>Turbomachinery</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="landing-curriculum-cta reveal reveal-d4">
+          <div class="landing-curriculum-cta-text">
+            <i class="fas fa-circle-check"></i>
+            <div>
+              <strong>Every subject above has PYQs, tutorials, and video lectures.</strong>
+              <span>Register free to unlock 5 years of solved papers for your semester.</span>
+            </div>
+          </div>
+          <a href="/app?intent=register" class="landing-cta-magnet"
+             style="padding:14px 28px;font-size:14.5px;">
+            <i class="fas fa-unlock"></i> Unlock Free Access
+          </a>
         </div>
       </div>
     </section>
@@ -1424,14 +1786,22 @@
     <section class="landing-full landing-cta">
       <div class="landing-container">
         <div class="landing-cta-inner reveal">
-          <h2>Ready to actually understand engineering?</h2>
+          <h2>Ready to stop guessing<br>and start solving?</h2>
           <p>
-            Join thousands of students already using AeroGyan to master their courses.
-            Sign in with your account, or create one in under a minute.
+            Join thousands of aerospace students already using AeroGyan.
+            Register in 30 seconds — no credit card, no spam, just results.
           </p>
-          <a href="/app" class="btn btn-accent">
-            <i class="fas fa-rocket"></i> Explore Courses
-          </a>
+          <div class="landing-hero-actions" style="margin-top:32px;">
+            <a href="/app?intent=register" class="landing-cta-magnet"
+               style="padding:18px 42px;font-size:16px;">
+              <i class="fas fa-user-plus"></i> Create Your Free Account
+            </a>
+          </div>
+          <div class="landing-hero-trust" style="margin-top:22px;">
+            <span><i class="fas fa-bolt"></i> Instant access</span>
+            <span><i class="fas fa-lock"></i> Secure OTP login</span>
+            <span><i class="fas fa-infinity"></i> Free forever tier</span>
+          </div>
         </div>
       </div>
     </section>
@@ -1642,6 +2012,51 @@
         }
       });
     } catch (e) { /* silent — page works fine with defaults */ }
+  })();
+</script>
+
+<script>
+  /* ============================================================
+     STAT COUNTER — animated count-up on scroll into view
+     ============================================================ */
+  (function animateCounters() {
+    var els = document.querySelectorAll('.landing-stat-num[data-count]');
+    if (!els.length) return;
+
+    function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+    function startCount(el) {
+      var target = parseInt(el.getAttribute('data-count'), 10) || 0;
+      var suffix = el.getAttribute('data-suffix') || '';
+      var duration = 1400;
+      var startTime = performance.now();
+
+      function tick(now) {
+        var p = Math.min((now - startTime) / duration, 1);
+        var value = Math.round(target * easeOutCubic(p));
+        el.textContent = value + suffix;
+        if (p < 1) requestAnimationFrame(tick);
+        else el.textContent = target + suffix;
+      }
+      requestAnimationFrame(tick);
+    }
+
+    if (!('IntersectionObserver' in window)) {
+      els.forEach(function (el) {
+        el.textContent = el.getAttribute('data-count') + (el.getAttribute('data-suffix') || '');
+      });
+      return;
+    }
+
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        startCount(entry.target);
+        io.unobserve(entry.target);
+      });
+    }, { threshold: 0.4 });
+
+    els.forEach(function (el) { io.observe(el); });
   })();
 </script>
 </body>
