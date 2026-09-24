@@ -2730,6 +2730,7 @@ function updateAdminTabUI() {
   const actionsEl = $('adminHeaderActions');
   const titleMap = {
     overview:      { icon: 'fa-tachometer-alt', text: 'Admin Dashboard' },
+    live:          { icon: 'fa-bolt',           text: 'Live Activity' },
     courses:       { icon: 'fa-graduation-cap', text: 'Manage Courses' },
     professors:    { icon: 'fa-user-tie',       text: 'Manage Professors' },
     students:      { icon: 'fa-user-graduate',  text: 'Manage Students' },
@@ -2744,6 +2745,7 @@ function updateAdminTabUI() {
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
+    live: `<button class="btn btn-primary" onclick="renderAdminLive()"><i class="fas fa-rotate"></i> Refresh</button>`,
     courses: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
       <button class="btn btn-success" onclick="openAddCourseModal()"><i class="fas fa-plus-circle"></i> <span class="btn-text">New Course</span></button>`,
@@ -2784,6 +2786,7 @@ function updateAdminTabUI() {
 function renderAdminDashboard() {
   updateAdminTabUI();
   if (adminTab === 'overview') renderAdminOverview();
+  else if (adminTab === 'live')          renderAdminLive();
   else if (adminTab === 'courses') renderAdminCourses();
   else if (adminTab === 'professors') renderAdminProfessors();
   else if (adminTab === 'students') renderAdminStudents();
@@ -2971,6 +2974,160 @@ async function renderAdminOverview() {
     const data = await res.json();
     if (data.success) $('statStudents').textContent = data.students.length;
   } catch { $('statStudents').textContent = '—'; }
+}
+
+/* ============================================================
+   ADMIN — LIVE ACTIVITY DASHBOARD
+   ============================================================ */
+async function renderAdminLive() {
+  const el = document.getElementById('adminTabLive');
+  if (!el) return;
+  el.classList.add('active');
+  el.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading live activity…</p></div>`;
+
+  let data;
+  try {
+    data = await fetchJSON(`${API_BASE}/admin/live-activity?t=${Date.now()}`);
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  if (!data.success) {
+    el.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(data.message || 'Failed to load.')}</p></div>`;
+    return;
+  }
+
+  const fmtTime = (t) => {
+    if (!t) return '—';
+    return new Date(t).toLocaleString('en-IN', {
+      day: 'numeric', month: 'short',
+      hour: '2-digit', minute: '2-digit'
+    });
+  };
+
+  const activityIcon = (type) => ({
+    view:  'fa-eye',
+    quiz:  'fa-file-pen',
+    login: 'fa-right-to-bracket'
+  }[type] || 'fa-circle-dot');
+
+  const activityLabel = (a) => {
+    if (a.type === 'quiz') {
+      return `Took a quiz${a.score != null ? ` — scored ${a.score}/${a.total}` : ''}`;
+    }
+    if (a.type === 'view') {
+      return 'Viewed a material';
+    }
+    return a.type;
+  };
+
+  el.innerHTML = `
+    <div class="stats-grid" style="margin-bottom:22px;">
+      <div class="stat-card">
+        <div class="stat-icon tone-emerald"><i class="fas fa-users"></i></div>
+        <div class="stat-info">
+          <div class="num">${data.stats.activeNow}</div>
+          <div class="label">Active Now (5 min)</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon tone-brand"><i class="fas fa-right-to-bracket"></i></div>
+        <div class="stat-info">
+          <div class="num">${data.stats.loginsLastHour}</div>
+          <div class="label">Logins (Last Hour)</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon tone-cyan"><i class="fas fa-user-graduate"></i></div>
+        <div class="stat-info">
+          <div class="num">${data.stats.totalStudents}</div>
+          <div class="label">Total Students</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon tone-gold"><i class="fas fa-bolt"></i></div>
+        <div class="stat-info">
+          <div class="num">${data.recentActivity.length}</div>
+          <div class="label">Actions (Last Hour)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-header">
+        <div class="editor-section-title">
+          <i class="fas fa-circle" style="color:var(--emerald-500);"></i>
+          Active Right Now
+          <span style="font-size:12px;color:var(--text-tertiary);font-weight:500;margin-left:8px;">
+            ${data.stats.activeNow} user${data.stats.activeNow === 1 ? '' : 's'} seen in the last 5 minutes
+          </span>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="renderAdminLive()">
+          <i class="fas fa-rotate"></i> Refresh
+        </button>
+      </div>
+      ${data.activeSessions.length === 0
+        ? `<div class="empty-state" style="padding:30px;"><i class="fas fa-user-slash"></i><p>No one is online right now.</p></div>`
+        : `<div class="subscriber-list">
+            ${data.activeSessions.map(u => `
+              <div class="subscriber-row active">
+                <div class="subscriber-avatar">${escapeHtml(getInitials(u.fullName || u.username))}</div>
+                <div class="subscriber-info">
+                  <h4>${escapeHtml(u.fullName || u.username)}</h4>
+                  <p>@${escapeHtml(u.username)}${u.email ? ' · ' + escapeHtml(u.email) : ''}</p>
+                </div>
+                <span class="subscriber-meta">Last seen: ${fmtTime(u.activeSession && u.activeSession.lastSeenAt)}</span>
+              </div>
+            `).join('')}
+          </div>`}
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-title">
+        <i class="fas fa-right-to-bracket"></i> Recent Logins (Last Hour)
+      </div>
+      ${data.recentLogins.length === 0
+        ? `<div class="empty-state" style="padding:30px;"><i class="fas fa-clock"></i><p>No logins in the last hour.</p></div>`
+        : `<div class="coupons-table"><table class="data-table">
+            <thead><tr><th>Student</th><th>Username</th><th>Logged in</th></tr></thead>
+            <tbody>
+              ${data.recentLogins.map(u => `
+                <tr>
+                  <td><strong>${escapeHtml(u.fullName || u.username)}</strong></td>
+                  <td><code class="coupon-code">@${escapeHtml(u.username)}</code></td>
+                  <td>${fmtTime(u.activeSession && u.activeSession.loginAt)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>`}
+    </div>
+
+    <div class="editor-section">
+      <div class="editor-section-title">
+        <i class="fas fa-bolt"></i> Recent Activity (Last Hour)
+      </div>
+      ${data.recentActivity.length === 0
+        ? `<div class="empty-state" style="padding:30px;"><i class="fas fa-inbox"></i><p>No activity recorded yet.</p></div>`
+        : `<div class="coupons-table"><table class="data-table">
+            <thead><tr><th>Student</th><th>Action</th><th>Time</th></tr></thead>
+            <tbody>
+              ${data.recentActivity.map(a => `
+                <tr>
+                  <td>
+                    <strong>${escapeHtml(a.fullName || a.username)}</strong>
+                    <div style="font-size:11.5px;color:var(--text-tertiary);">@${escapeHtml(a.username)}</div>
+                  </td>
+                  <td>
+                    <i class="fas ${activityIcon(a.type)}" style="color:var(--brand-500);margin-right:6px;"></i>
+                    ${escapeHtml(activityLabel(a))}
+                  </td>
+                  <td>${fmtTime(a.timestamp)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table></div>`}
+    </div>
+  `;
 }
 
 async function renderAdminCourses() {  

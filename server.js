@@ -6828,6 +6828,76 @@ app.post('/api/admin/students/import-csv',
     }
   }
 );
+
+/* ============================================================
+   ADMIN — LIVE ACTIVITY DASHBOARD
+   ------------------------------------------------------------
+   Shows who's online now, recent logins, and recent actions.
+   ============================================================ */
+app.get('/api/admin/live-activity', requireAdminAuth, async (req, res) => {
+  try {
+    const now = new Date();
+    const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+
+    const [totalStudents, activeSessions, recentLogins] = await Promise.all([
+      User.countDocuments({ role: 'student' }),
+
+      User.find({ role: 'student', 'activeSession.lastSeenAt': { $gte: fiveMinAgo } })
+        .select('username fullName email activeSession lastActivity')
+        .sort({ 'activeSession.lastSeenAt': -1 })
+        .limit(50)
+        .lean(),
+
+      User.find({ role: 'student', 'activeSession.loginAt': { $gte: oneHourAgo } })
+        .select('username fullName email activeSession')
+        .sort({ 'activeSession.loginAt': -1 })
+        .limit(50)
+        .lean()
+    ]);
+
+    const users = await User.find({ role: 'student' })
+      .select('username fullName activityLog')
+      .lean();
+
+    const recentActivity = [];
+    users.forEach(u => {
+      (u.activityLog || []).forEach(a => {
+        const ts = new Date(a.timestamp);
+        if (ts >= oneHourAgo) {
+          recentActivity.push({
+            username: u.username,
+            fullName: u.fullName || '',
+            type: a.type,
+            courseId: a.courseId,
+            materialId: a.materialId,
+            score: a.score,
+            total: a.total,
+            timestamp: a.timestamp
+          });
+        }
+      });
+    });
+    recentActivity.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    recentActivity.length = Math.min(recentActivity.length, 60);
+
+    res.json({
+      success: true,
+      stats: {
+        totalStudents,
+        activeNow: activeSessions.length,
+        loginsLastHour: recentLogins.length
+      },
+      activeSessions,
+      recentLogins,
+      recentActivity
+    });
+  } catch (e) {
+    console.error('[admin/live-activity]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 /* ============================================================
    AI DOUBT SOLVER — Google Gemini API
    ------------------------------------------------------------
