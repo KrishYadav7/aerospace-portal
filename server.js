@@ -7114,49 +7114,135 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
 });
 /* ============================================================
    ════════════════════════════════════════════════════════════
-   LIVE ACTIVITY TRACKING — In-Memory Online Users Map
+   LIVE ACTIVITY TRACKING — Real-Time Edition (SSE)
    ════════════════════════════════════════════════════════════
-   ------------------------------------------------------------
-   DESIGN PRINCIPLES (why this cannot slow down the server):
-     • ZERO database writes. Pure in-memory Map.
-     • O(1) per heartbeat. No indexes, no queries, no I/O.
-     • Auto-cleanup sweep every 30s (also O(n) over a tiny map).
-     • Every operation is wrapped in try/catch — a bad heartbeat
-       can NEVER crash the process or return 500.
-     • Map size naturally bounded: entries expire after 90s
-       of silence. Even 10,000 simultaneous users = ~2 MB RAM.
-     • Heartbeat route explicitly returns 200 on every path
-       so the global fetch interceptor never sees a 401.
-   ------------------------------------------------------------
-   ENTRY SHAPE (per online user):
-     {
-       userId, username, fullName, role,
-       currentPage,   // 'home' | 'courses' | 'analytics' | ...
-       courseId,      // optional — resolved to name on read
-       materialId,    // optional — resolved to title on read
-       lastSeen: Number (ms epoch)
-     }
+   • In-memory Map for online users (unchanged concept).
+   • SSE push stream so admins see updates instantly.
+   • Zero polling from the client while SSE is healthy.
+   • Broadcast is throttled to ~1 query per 800ms, and
+     short-circuits completely when no admin is listening.
+   • Client heartbeat fires on: interval, visibility change,
+     navigation, unload-beacon. All bounded and try/caught.
    ============================================================ */
-const ONLINE_WINDOW_MS  = 90 * 1000;   // silent > 90s → considered offline
-const ONLINE_CLEANUP_MS = 30 * 1000;   // sweep every 30s
-const onlineUsers = new Map();         // userId (string) → entry
+const ONLINE_WINDOW_MS     = 90 * 1000;   // silent > 90s → offline
+const ONLINE_CLEANUP_MS    = 20 * 1000;   // sweep every 20s
+const BROADCAST_MIN_MS     = 800;         // burst coalescing window
+const MAX_SSE_CLIENTS      = 8;           // hard cap on concurrent streams
 
-/* ---- Auto-cleanup loop — no DB, cannot block the event loop ---- */
+const onlineUsers = new Map();            // userId → entry
+const sseClients  = new Set();            // Set<res> — connected admins
+
+/* ---- Broadcast throttling state ---- */
+let _broadcastLocked = false;
+let _broadcastAgain  = false;
+
+/* ---- Build the full snapshot (one DB query for name resolution) ---- */
+async function buildOnlineSnapshot() {
+  const now = Date.now();
+  const fresh = [];
+  for (const entry of onlineUsers.values()) {
+    if (now - entry.lastSeen <= ONLINE_WINDOW_MS) fresh.push(entry);
+  }
+  fresh.sort((a, b) => b.lastSeen - a.lastSeen);
+
+  const courseIds   = [...new Set(fresh.map(u => u.courseId).filter(Boolean))];
+  const materialIds = [...new Set(fresh.map(u => u.materialId).filter(Boolean))];
+  const courseMap   = {};
+  const materialMap = {};
+
+  if (courseIds.length > 0 || materialIds.length > 0) {
+    const or = [];
+    if (courseIds.length)   or.push({ _id: { $in: courseIds } });
+    if (materialIds.length) or.push({ 'materials._id': { $in: materialIds } });
+    const courses = await Course.find({ $or: or })
+      .select('name code materials._id materials.title')
+      .lean();
+    courses.forEach(c => {
+      courseMap[String(c._id)] = { name: c.name, code: c.code };
+      (c.materials || []).forEach(m => {
+        materialMap[String(m._id)] = m.title;
+      });
+    });
+  }
+
+  const users = fresh.map(u => ({
+    userId:        u.userId,
+    username:      u.username,
+    fullName:      u.fullName,
+    role:          u.role,
+    currentPage:   u.currentPage,
+    lastSeen:      u.lastSeen,
+    courseId:      u.courseId,
+    materialId:    u.materialId,
+    courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
+    courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
+    materialTitle: u.materialId && materialMap[u.materialId] ? materialMap[u.materialId]    : null
+  }));
+
+  const students = users.filter(u => u.role === 'student');
+
+  return {
+    success: true,
+    counts: {
+      total:     users.length,
+      students:  students.length,
+      admins:    users.length - students.length,
+      studying:  students.filter(u => u.courseId).length
+    },
+    users,
+    fetchedAt: now
+  };
+}
+
+/* ---- Push a snapshot to every connected admin ---- */
+async function broadcastOnlineNow() {
+  if (sseClients.size === 0) return;   // nobody listening → zero work
+  try {
+    const snapshot = await buildOnlineSnapshot();
+    const payload  = 'data: ' + JSON.stringify(snapshot) + '\n\n';
+    for (const res of sseClients) {
+      try { res.write(payload); }
+      catch (e) { sseClients.delete(res); }
+    }
+  } catch (e) {
+    /* swallow — a broken broadcast must never crash the request */
+  }
+}
+
+function scheduleBroadcast() {
+  if (sseClients.size === 0) return;
+  if (_broadcastLocked) { _broadcastAgain = true; return; }
+  _broadcastLocked = true;
+  broadcastOnlineNow().finally(() => {
+    setTimeout(() => {
+      _broadcastLocked = false;
+      if (_broadcastAgain) {
+        _broadcastAgain = false;
+        scheduleBroadcast();
+      }
+    }, BROADCAST_MIN_MS);
+  });
+}
+
+/* ---- Background sweep — catches silent disappearances ---- */
 setInterval(() => {
   try {
     const now = Date.now();
+    let removed = 0;
     for (const [id, entry] of onlineUsers.entries()) {
-      if (now - entry.lastSeen > ONLINE_WINDOW_MS) onlineUsers.delete(id);
+      if (now - entry.lastSeen > ONLINE_WINDOW_MS) {
+        onlineUsers.delete(id);
+        removed++;
+      }
     }
-  } catch (e) {
-    /* silent — cleanup must never throw */
-  }
-}, ONLINE_CLEANUP_MS).unref?.();       // .unref() so it never blocks process exit
+    if (removed > 0) scheduleBroadcast();
+  } catch (e) { /* silent */ }
+}, ONLINE_CLEANUP_MS).unref?.();
 
-/* ---- Optional per-user limiter (soft-fails if hit) ---- */
+/* ---- Per-user soft rate limit ---- */
 const heartbeatLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 60,
+  max: 90,
   standardHeaders: false,
   legacyHeaders: false,
   keyGenerator: (req) => {
@@ -7171,10 +7257,8 @@ const heartbeatLimiter = rateLimit({
 /* ============================================================
    POST /api/heartbeat
    ------------------------------------------------------------
-   Called by the client every ~45s. NEVER returns 5xx.
-   NEVER requires auth (the userId is used as a key, not a
-   credential — spoofing it only pollutes the admin's view,
-   which is a UX-level concern, not a security one).
+   Called by the client every ~20s + on navigation + on
+   visibility change. Never returns 5xx.
    ============================================================ */
 app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
   try {
@@ -7192,83 +7276,103 @@ app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
       lastSeen:    Date.now()
     };
     onlineUsers.set(entry.userId, entry);
+    scheduleBroadcast();
 
     return res.json({ success: true, tracked: true, count: onlineUsers.size });
   } catch (e) {
-    /* absolutely never 500 — the client must not be disrupted */
     return res.json({ success: false, tracked: false });
   }
 });
 
 /* ============================================================
+   POST /api/heartbeat/offline
+   ------------------------------------------------------------
+   Fired by the client on beforeunload via fetch(keepalive:true)
+   so tab closures show up instantly in the admin view.
+   ============================================================ */
+app.post('/api/heartbeat/offline', (req, res) => {
+  try {
+    const b = req.body || {};
+    if (b.userId) {
+      onlineUsers.delete(String(b.userId));
+      scheduleBroadcast();
+    }
+  } catch (e) { /* silent */ }
+  res.json({ success: true });
+});
+
+/* ============================================================
    GET /api/admin/online-users
    ------------------------------------------------------------
-   Admin-only. Reads the Map, resolves course + material names
-   with ONE bulk query, returns sorted list.
+   One-shot snapshot. Kept as a fallback for clients whose SSE
+   connection could not be established.
    ============================================================ */
 app.get('/api/admin/online-users', requireAdminAuth, async (req, res) => {
   try {
-    const now = Date.now();
-    const fresh = [];
-    for (const entry of onlineUsers.values()) {
-      if (now - entry.lastSeen <= ONLINE_WINDOW_MS) fresh.push(entry);
-    }
-    fresh.sort((a, b) => b.lastSeen - a.lastSeen);
-
-    /* ---- Resolve names in a single query ---- */
-    const courseIds   = [...new Set(fresh.map(u => u.courseId).filter(Boolean))];
-    const materialIds = [...new Set(fresh.map(u => u.materialId).filter(Boolean))];
-    const courseMap   = {};
-    const materialMap = {};
-
-    if (courseIds.length > 0 || materialIds.length > 0) {
-      const or = [];
-      if (courseIds.length)   or.push({ _id: { $in: courseIds } });
-      if (materialIds.length) or.push({ 'materials._id': { $in: materialIds } });
-
-      const courses = await Course.find({ $or: or })
-        .select('name code materials._id materials.title')
-        .lean();
-
-      courses.forEach(c => {
-        courseMap[String(c._id)] = { name: c.name, code: c.code };
-        (c.materials || []).forEach(m => {
-          materialMap[String(m._id)] = m.title;
-        });
-      });
-    }
-
-    const users = fresh.map(u => ({
-      userId:        u.userId,
-      username:      u.username,
-      fullName:      u.fullName,
-      role:          u.role,
-      currentPage:   u.currentPage,
-      lastSeen:      u.lastSeen,
-      courseId:      u.courseId,
-      materialId:    u.materialId,
-      courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
-      courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
-      materialTitle: u.materialId && materialMap[u.materialId] ? materialMap[u.materialId]    : null
-    }));
-
-    const students = users.filter(u => u.role === 'student');
-
-    res.json({
-      success: true,
-      counts: {
-        total:     users.length,
-        students:  students.length,
-        admins:    users.length - students.length,
-        studying:  students.filter(u => u.courseId).length
-      },
-      users,
-      fetchedAt: now
-    });
+    const snapshot = await buildOnlineSnapshot();
+    res.json(snapshot);
   } catch (e) {
     console.error('[admin/online-users]', e);
     res.status(500).json({ success: false, message: 'Server error.' });
   }
+});
+
+/* ============================================================
+   GET /api/admin/online-users/stream
+   ------------------------------------------------------------
+   SSE endpoint. EventSource can't send an Authorization header,
+   so the JWT is verified manually from ?auth= here.
+   ============================================================ */
+app.get('/api/admin/online-users/stream', async (req, res) => {
+  /* ---- Manual admin auth via query param ---- */
+  try {
+    const token = String(req.query.auth || '');
+    if (!token) return res.status(401).end();
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const u = await User.findById(decoded.id).select('role').lean();
+    if (!u || u.role !== 'admin') return res.status(403).end();
+  } catch (e) {
+    return res.status(401).end();
+  }
+
+  /* ---- SSE headers ---- */
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');   // disable nginx buffering
+  res.flushHeaders?.();
+
+  /* ---- Enforce client cap: close the oldest if we're over ---- */
+  if (sseClients.size >= MAX_SSE_CLIENTS) {
+    const oldest = sseClients.values().next().value;
+    if (oldest && oldest !== res) {
+      try { oldest.end(); } catch (e) {}
+      sseClients.delete(oldest);
+    }
+  }
+
+  sseClients.add(res);
+
+  /* ---- Send an initial snapshot so the tab paints immediately ---- */
+  try {
+    const snapshot = await buildOnlineSnapshot();
+    res.write('data: ' + JSON.stringify(snapshot) + '\n\n');
+  } catch (e) {
+    res.write('event: error\ndata: {"message":"snapshot failed"}\n\n');
+  }
+
+  /* ---- Keep-alive comment every 25s so proxies don't kill idle pipes ---- */
+  const keepAlive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch (e) {}
+  }, 25000);
+
+  /* ---- Cleanup on disconnect ---- */
+  const cleanup = () => {
+    clearInterval(keepAlive);
+    sseClients.delete(res);
+  };
+  req.on('close',  cleanup);
+  req.on('aborted', cleanup);
 });
 /* ============================================================
    LISTEN — start the HTTP server

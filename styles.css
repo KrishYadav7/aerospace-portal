@@ -8254,3 +8254,50 @@ body.body-content-hidden .vp-shell {
 @media (max-width: 420px) {
   .live-stats-row { grid-template-columns: 1fr; }
 }
+/* ============================================================
+   66. LIVE ACTIVITY — SSE status pill
+   ============================================================ */
+.live-activity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  color: var(--text-tertiary);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  transition: color .2s var(--ease), background .2s var(--ease), border-color .2s var(--ease);
+  white-space: nowrap;
+}
+.live-activity-pill.is-live {
+  color: #059669;
+  background: rgba(16,185,129,.10);
+  border-color: rgba(16,185,129,.35);
+}
+[data-theme="dark"] .live-activity-pill.is-live,
+[data-theme="dim"]   .live-activity-pill.is-live {
+  color: #34d399;
+  background: rgba(16,185,129,.18);
+  border-color: rgba(16,185,129,.45);
+}
+.live-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  flex-shrink: 0;
+  transition: background .2s var(--ease);
+}
+.live-activity-pill.is-live .live-pulse-dot {
+  background: #10b981;
+  box-shadow: 0 0 0 0 rgba(16,185,129,.6);
+  animation: livePulse 1.6s ease-in-out infinite;
+}
+@keyframes livePulse {
+  0%   { box-shadow: 0 0 0 0 rgba(16,185,129,.6); }
+  70%  { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
+  100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+}

@@ -13012,21 +13012,15 @@ async function downloadContribution(contributionId, fileName) {
 }
 /* ============================================================
    ════════════════════════════════════════════════════════════
-   LIVE ACTIVITY HEARTBEAT — Client Side  (v2 — routing fixed)
+   LIVE ACTIVITY HEARTBEAT — Real-Time Edition (client side)
    ════════════════════════════════════════════════════════════
-   ------------------------------------------------------------
-   • Pings /api/heartbeat every 45s while the user is logged in.
-   • Pauses when tab is hidden; resumes on visibility.
-   • Fires on navigation so the admin sees fresh context.
-   • Hooks the existing session-heartbeat lifecycle (start /
-     stop) so the two never drift out of sync.
-   • Admin panel is driven by a MutationObserver watching
-     #adminTabLive.active — this is the ONLY reliable way to
-     detect activation because internal calls to
-     renderAdminDashboard() bypass any window.* override.
+   • Heartbeat every 20s + on navigation + on visibility change.
+   • sendBeacon / fetch-keepalive on beforeunload → instant offline.
+   • Admin panel subscribes to SSE — no polling while connected.
+   • Auto-fallback to slow polling if SSE fails 3 times.
    ============================================================ */
 let _activityHeartbeatTimer = null;
-const ACTIVITY_HEARTBEAT_MS = 45000;
+const ACTIVITY_HEARTBEAT_MS = 20000;   // was 45s — now faster for real-time
 
 /* ---- Compute what the user is currently looking at ---- */
 function computeActivityContext() {
@@ -13035,20 +13029,20 @@ function computeActivityContext() {
   let materialId = null;
 
   try {
-    if (quizEditingCourseId) {
+    if (typeof quizEditingCourseId !== 'undefined' && quizEditingCourseId) {
       currentPage = 'admin-quiz-editor';
-    } else if (editingCourseId) {
+    } else if (typeof editingCourseId !== 'undefined' && editingCourseId) {
       currentPage = 'admin-editor';
-    } else if (addingCourse) {
+    } else if (typeof addingCourse !== 'undefined' && addingCourse) {
       currentPage = 'admin-add-course';
-    } else if (addingProfessor) {
+    } else if (typeof addingProfessor !== 'undefined' && addingProfessor) {
       currentPage = 'admin-add-professor';
-    } else if (addingMaterialCourseId) {
+    } else if (typeof addingMaterialCourseId !== 'undefined' && addingMaterialCourseId) {
       currentPage = 'admin-add-material';
       courseId = addingMaterialCourseId;
-    } else if (addingStudent) {
+    } else if (typeof addingStudent !== 'undefined' && addingStudent) {
       currentPage = 'admin-add-student';
-    } else if (currentCourseId) {
+    } else if (typeof currentCourseId !== 'undefined' && currentCourseId) {
       currentPage = 'course-detail';
       courseId = currentCourseId;
     } else if (typeof isAdmin === 'function' && isAdmin(currentUser)) {
@@ -13084,14 +13078,12 @@ async function sendActivityHeartbeat() {
         materialId:  ctx.materialId
       })
     });
-  } catch (e) {
-    /* silent — heartbeat must never break the UI */
-  }
+  } catch (e) { /* silent */ }
 }
 
 function startActivityHeartbeat() {
   stopActivityHeartbeat();
-  setTimeout(sendActivityHeartbeat, 900);
+  setTimeout(sendActivityHeartbeat, 700);
   _activityHeartbeatTimer = setInterval(sendActivityHeartbeat, ACTIVITY_HEARTBEAT_MS);
 }
 
@@ -13102,27 +13094,19 @@ function stopActivityHeartbeat() {
   }
 }
 
-/* ---- Hook into the session-heartbeat lifecycle ---- */
-(function hookActivityLifecycle() {
+/* ---- Self-supervising start/stop every 5s ---- */
+setInterval(() => {
   try {
-    const _origStart = window.startSessionHeartbeat;
-    if (typeof _origStart === 'function') {
-      window.startSessionHeartbeat = function () {
-        _origStart.apply(this, arguments);
-        startActivityHeartbeat();
-      };
+    const hasSession = !!(currentUser && currentUser._id);
+    if (hasSession && !_activityHeartbeatTimer && !_sessionKilled) {
+      startActivityHeartbeat();
+    } else if (!hasSession && _activityHeartbeatTimer) {
+      stopActivityHeartbeat();
     }
-    const _origStop = window.stopSessionHeartbeat;
-    if (typeof _origStop === 'function') {
-      window.stopSessionHeartbeat = function () {
-        _origStop.apply(this, arguments);
-        stopActivityHeartbeat();
-      };
-    }
-  } catch (e) { /* never fatal */ }
-})();
+  } catch (e) { /* silent */ }
+}, 5000);
 
-/* ---- Extra pings on visibility + navigation ---- */
+/* ---- Immediate heartbeat on visibility + navigation ---- */
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && currentUser && currentUser._id) sendActivityHeartbeat();
 });
@@ -13130,18 +13114,33 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('hashchange', () => {
   if (!currentUser || !currentUser._id) return;
   clearTimeout(window.__activityNavDebounce);
-  window.__activityNavDebounce = setTimeout(sendActivityHeartbeat, 2000);
+  window.__activityNavDebounce = setTimeout(sendActivityHeartbeat, 300);
+});
+
+/* ---- Instant offline signal on tab close / navigate away ---- */
+window.addEventListener('beforeunload', () => {
+  try {
+    if (!currentUser || !currentUser._id) return;
+    const body = JSON.stringify({ userId: currentUser._id });
+    fetch(`${API_BASE}/heartbeat/offline`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: true
+    }).catch(() => {});
+  } catch (e) {}
 });
 
 /* ============================================================
-   ADMIN — Live Activity renderer
+   ADMIN — Live Activity (SSE-driven, polling fallback)
    ============================================================ */
-let _liveActivityTimer = null;
-let _liveActivityData = null;
-let _liveActivityFetchGuard = 0;
+let _liveActivityES       = null;
+let _liveActivityESFails  = 0;
+let _liveActivityTimer    = null;   // polling fallback only
+let _liveActivityData     = null;
 
 async function renderAdminLiveActivity() {
-  /* Ensure the container exists (in case the HTML insert was skipped) */
+  /* ---- Ensure the container exists ---- */
   let container = document.getElementById('adminTabLive');
   if (!container) {
     const adminView = document.getElementById('adminView');
@@ -13152,25 +13151,28 @@ async function renderAdminLiveActivity() {
     adminView.appendChild(container);
   }
 
-  /* Ensure the container is marked active (safety net) */
+  /* ---- Ensure it's the active tab content ---- */
   if (!container.classList.contains('active')) {
     document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
     container.classList.add('active');
   }
 
-  /* Header: title + refresh button */
+  /* ---- Header ---- */
   const titleEl = document.getElementById('adminPageTitle');
   if (titleEl) titleEl.innerHTML = '<i class="fas fa-signal"></i> Live Activity';
 
   const actionsEl = document.getElementById('adminHeaderActions');
   if (actionsEl) {
     actionsEl.innerHTML =
+      '<span class="live-activity-pill" id="liveActivityPill">' +
+        '<span class="live-pulse-dot"></span> <span id="liveActivityStatus">Connecting…</span>' +
+      '</span>' +
       '<button class="btn btn-outline" onclick="fetchAndRenderLiveActivity()">' +
         '<i class="fas fa-rotate"></i> <span class="btn-text">Refresh Now</span>' +
       '</button>';
   }
 
-  /* Skeleton on first mount */
+  /* ---- Skeleton on first mount ---- */
   if (!container.querySelector('.live-activity-wrap')) {
     container.innerHTML = `
       <div class="live-activity-wrap">
@@ -13186,23 +13188,71 @@ async function renderAdminLiveActivity() {
         <div class="live-list" id="liveList">
           <div class="live-empty">
             <i class="fas fa-spinner fa-spin"></i>
-            <p>Fetching live activity…</p>
+            <p>Connecting to live stream…</p>
           </div>
         </div>
       </div>`;
   }
 
-  /* Throttle: reuse cached data if we fetched <3s ago */
-  const now = Date.now();
-  if (_liveActivityData && (now - _liveActivityFetchGuard) < 3000) {
-    renderLiveActivityData(_liveActivityData);
-  } else {
-    _liveActivityFetchGuard = now;
-    await fetchAndRenderLiveActivity();
-  }
+  /* ---- Open SSE stream (server sends snapshot immediately) ---- */
+  openLiveActivityStream();
 
-  /* Auto-refresh every 15s while the tab is open and visible */
-  if (_liveActivityTimer) clearInterval(_liveActivityTimer);
+  /* ---- Safety net: if no data in 3s, do a one-shot fetch ---- */
+  setTimeout(() => {
+    if (!_liveActivityData) fetchAndRenderLiveActivity();
+  }, 3000);
+}
+
+/* ---- SSE connection ---- */
+function openLiveActivityStream() {
+  closeLiveActivityStream();
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    if (!token) { startLiveActivityPolling(); return; }
+
+    const url = `${API_BASE}/admin/online-users/stream?auth=${encodeURIComponent(token)}`;
+    const es = new EventSource(url);
+    _liveActivityES = es;
+
+    es.onopen = () => {
+      _liveActivityESFails = 0;
+      setLiveStatus('Live', true);
+    };
+
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data && data.success) {
+          _liveActivityData = data;
+          renderLiveActivityData(data);
+        }
+      } catch (e) { /* silent */ }
+    };
+
+    es.onerror = () => {
+      _liveActivityESFails++;
+      setLiveStatus('Reconnecting…', false);
+      if (_liveActivityESFails >= 3) {
+        closeLiveActivityStream();
+        startLiveActivityPolling();
+      }
+      /* EventSource auto-reconnects on transient errors — no action needed */
+    };
+  } catch (e) {
+    startLiveActivityPolling();
+  }
+}
+
+function closeLiveActivityStream() {
+  if (_liveActivityES) {
+    try { _liveActivityES.close(); } catch (e) {}
+    _liveActivityES = null;
+  }
+}
+
+function startLiveActivityPolling() {
+  if (_liveActivityTimer) return;
+  setLiveStatus('Polling', false);
   _liveActivityTimer = setInterval(() => {
     const c = document.getElementById('adminTabLive');
     if (!c || !c.classList.contains('active')) {
@@ -13212,9 +13262,18 @@ async function renderAdminLiveActivity() {
     }
     if (document.hidden) return;
     fetchAndRenderLiveActivity();
-  }, 15000);
+  }, 5000);
+  fetchAndRenderLiveActivity();
 }
 
+function setLiveStatus(label, isLive) {
+  const el = document.getElementById('liveActivityStatus');
+  const pill = document.getElementById('liveActivityPill');
+  if (el) el.textContent = label;
+  if (pill) pill.classList.toggle('is-live', !!isLive);
+}
+
+/* ---- One-shot fetch (used by Refresh button + fallback) ---- */
 async function fetchAndRenderLiveActivity() {
   try {
     const data = await fetchJSON(`${API_BASE}/admin/online-users?_t=${Date.now()}`);
@@ -13237,6 +13296,7 @@ async function fetchAndRenderLiveActivity() {
   }
 }
 
+/* ---- Render (identical to before, plus a live "age" re-tick) ---- */
 function renderLiveActivityData(data) {
   const statsRow = document.getElementById('liveStatsRow');
   const list     = document.getElementById('liveList');
@@ -13287,7 +13347,7 @@ function renderLiveActivityData(data) {
         <i class="fas fa-user-slash"></i>
         <p>No students online right now.</p>
         <p style="margin-top: 6px; font-size: 12.5px; color: var(--text-tertiary);">
-          This panel refreshes automatically every 15 seconds.
+          Updates are pushed live — no refresh needed.
         </p>
       </div>`;
     return;
@@ -13347,33 +13407,34 @@ function renderLiveActivityData(data) {
           </div>
           <div class="live-user-activity">${activityHtml}</div>
         </div>
-        <div class="live-user-seen">${sinceText}</div>
+        <div class="live-user-seen" data-last-seen="${u.lastSeen}">${sinceText}</div>
       </div>`;
   });
   list.innerHTML = html;
 }
 
+/* ---- Re-tick the "Xs ago" labels every 5s so they stay fresh ---- */
+setInterval(() => {
+  const container = document.getElementById('adminTabLive');
+  if (!container || !container.classList.contains('active')) return;
+  const now = Date.now();
+  container.querySelectorAll('.live-user-seen[data-last-seen]').forEach(el => {
+    const lastSeen = parseInt(el.dataset.lastSeen, 10);
+    if (!lastSeen) return;
+    const s = Math.max(0, Math.round((now - lastSeen) / 1000));
+    el.textContent =
+      s < 15 ? 'just now' :
+      s < 60 ? s + 's ago' :
+      Math.round(s / 60) + 'm ago';
+  });
+}, 5000);
+
 /* ============================================================
    ROUTING WATCHER — MutationObserver on #adminTabLive
-   ------------------------------------------------------------
-   WHY A MUTATION OBSERVER AND NOT A FUNCTION HOOK:
-     app.js declares `renderAdminDashboard` as a top-level
-     function declaration. All internal callers (including
-     `_renderAppNow`) resolve to the module-scope binding, NOT
-     to `window.renderAdminDashboard`. Overriding the window
-     property therefore has zero effect on the internal calls.
-
-     Instead we watch the DOM: the existing `updateAdminTabUI`
-     already toggles `.active` on the correct container every
-     time an admin tab is switched. Whenever `#adminTabLive`
-     gains `.active`, we render; when it loses `.active`, we
-     stop the polling timer.
    ============================================================ */
 (function installLiveActivityWatcher() {
   const boot = () => {
     let el = document.getElementById('adminTabLive');
-
-    /* If the HTML insert was skipped, create the container lazily */
     if (!el) {
       const adminView = document.getElementById('adminView');
       if (adminView) {
@@ -13388,7 +13449,6 @@ function renderLiveActivityData(data) {
     let wasActive = false;
 
     const activate = () => {
-      /* Defer one tick so updateAdminTabUI finishes its other work */
       setTimeout(() => {
         if (typeof renderAdminLiveActivity === 'function') {
           renderAdminLiveActivity().catch(err =>
@@ -13399,6 +13459,7 @@ function renderLiveActivityData(data) {
     };
 
     const deactivate = () => {
+      closeLiveActivityStream();
       if (_liveActivityTimer) {
         clearInterval(_liveActivityTimer);
         _liveActivityTimer = null;
@@ -13412,14 +13473,11 @@ function renderLiveActivityData(data) {
     });
     obs.observe(el, { attributes: true, attributeFilter: ['class'] });
 
-    /* Handle the case where the live tab is ALREADY active on load */
     if (el.classList.contains('active')) {
       wasActive = true;
       setTimeout(activate, 200);
     }
 
-    /* Also catch a cold-loaded hash like #/admin/live — poll briefly
-       for up to 6 seconds in case `initApp()` settles after us. */
     let coldChecks = 0;
     const coldTimer = setInterval(() => {
       coldChecks++;
@@ -13440,33 +13498,7 @@ function renderLiveActivityData(data) {
     boot();
   }
 })();
-/* ---- Independent activity-heartbeat lifecycle ----
-   Started here, not via a session-heartbeat hook, because those
-   are internal module-scope calls that can't be intercepted.
-   We simply poll for a live session and start/stop ourselves. */
-setInterval(() => {
-  const hasSession = !!(currentUser && currentUser._id);
-  if (hasSession && !_activityHeartbeatTimer && !_sessionKilled) {
-    startActivityHeartbeat();
-  } else if (!hasSession && _activityHeartbeatTimer) {
-    stopActivityHeartbeat();
-  }
-}, 5000);
-/* ---- Self-supervising activity heartbeat lifecycle ----
-   The session-heartbeat start/stop functions are module-scope
-   bindings in app.js and cannot be intercepted by the window
-   override above. So instead we check every 5s: is there a live
-   session? If yes → ensure our timer is running. If no → stop it. */
-setInterval(() => {
-  try {
-    const hasSession = !!(currentUser && currentUser._id);
-    if (hasSession && !_activityHeartbeatTimer && !_sessionKilled) {
-      startActivityHeartbeat();
-    } else if (!hasSession && _activityHeartbeatTimer) {
-      stopActivityHeartbeat();
-    }
-  } catch (e) { /* never fatal */ }
-}, 5000);
+
 /* ============================================================
    END Live Activity block
    ============================================================ */
