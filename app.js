@@ -13162,7 +13162,7 @@ async function renderAdminLiveActivity() {
       </div>`;
   }
 
-  /* Throttle: if we fetched <3s ago, reuse cached data */
+  // Throttle: if we fetched <3s ago, reuse cached data
   const now = Date.now();
   if (_liveActivityData && (now - _liveActivityFetchGuard) < 3000) {
     renderLiveActivityData(_liveActivityData);
@@ -13171,7 +13171,7 @@ async function renderAdminLiveActivity() {
     await fetchAndRenderLiveActivity();
   }
 
-  /* Auto-refresh every 15s while this tab is active and visible */
+  // Auto-refresh every 15s while this tab is active and visible
   if (_liveActivityTimer) clearInterval(_liveActivityTimer);
   _liveActivityTimer = setInterval(() => {
     if (adminTab !== 'live') {
@@ -13183,7 +13183,6 @@ async function renderAdminLiveActivity() {
     fetchAndRenderLiveActivity();
   }, 15000);
 }
-
 async function fetchAndRenderLiveActivity() {
   try {
     const data = await fetchJSON(`${API_BASE}/admin/online-users?_t=${Date.now()}`);
