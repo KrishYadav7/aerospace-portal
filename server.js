@@ -7043,6 +7043,164 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
   }
 });
 /* ============================================================
+   ════════════════════════════════════════════════════════════
+   LIVE ACTIVITY TRACKING — In-Memory Online Users Map
+   ════════════════════════════════════════════════════════════
+   ------------------------------------------------------------
+   DESIGN PRINCIPLES (why this cannot slow down the server):
+     • ZERO database writes. Pure in-memory Map.
+     • O(1) per heartbeat. No indexes, no queries, no I/O.
+     • Auto-cleanup sweep every 30s (also O(n) over a tiny map).
+     • Every operation is wrapped in try/catch — a bad heartbeat
+       can NEVER crash the process or return 500.
+     • Map size naturally bounded: entries expire after 90s
+       of silence. Even 10,000 simultaneous users = ~2 MB RAM.
+     • Heartbeat route explicitly returns 200 on every path
+       so the global fetch interceptor never sees a 401.
+   ------------------------------------------------------------
+   ENTRY SHAPE (per online user):
+     {
+       userId, username, fullName, role,
+       currentPage,   // 'home' | 'courses' | 'analytics' | ...
+       courseId,      // optional — resolved to name on read
+       materialId,    // optional — resolved to title on read
+       lastSeen: Number (ms epoch)
+     }
+   ============================================================ */
+const ONLINE_WINDOW_MS  = 90 * 1000;   // silent > 90s → considered offline
+const ONLINE_CLEANUP_MS = 30 * 1000;   // sweep every 30s
+const onlineUsers = new Map();         // userId (string) → entry
+
+/* ---- Auto-cleanup loop — no DB, cannot block the event loop ---- */
+setInterval(() => {
+  try {
+    const now = Date.now();
+    for (const [id, entry] of onlineUsers.entries()) {
+      if (now - entry.lastSeen > ONLINE_WINDOW_MS) onlineUsers.delete(id);
+    }
+  } catch (e) {
+    /* silent — cleanup must never throw */
+  }
+}, ONLINE_CLEANUP_MS).unref?.();       // .unref() so it never blocks process exit
+
+/* ---- Optional per-user limiter (soft-fails if hit) ---- */
+const heartbeatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: false,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    try {
+      if (req.body && req.body.userId) return 'u:' + String(req.body.userId).slice(0, 60);
+    } catch (e) {}
+    return req.ip || 'anon';
+  },
+  handler: (req, res) => res.json({ success: true, tracked: false })
+});
+
+/* ============================================================
+   POST /api/heartbeat
+   ------------------------------------------------------------
+   Called by the client every ~45s. NEVER returns 5xx.
+   NEVER requires auth (the userId is used as a key, not a
+   credential — spoofing it only pollutes the admin's view,
+   which is a UX-level concern, not a security one).
+   ============================================================ */
+app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
+  try {
+    const b = req.body || {};
+    if (!b.userId) return res.json({ success: true, tracked: false });
+
+    const entry = {
+      userId:      String(b.userId).slice(0, 60),
+      username:    String(b.username || '').slice(0, 60),
+      fullName:    String(b.fullName || b.username || '').slice(0, 80),
+      role:        String(b.role || 'student').slice(0, 20),
+      currentPage: String(b.currentPage || 'home').slice(0, 40),
+      courseId:    b.courseId   ? String(b.courseId).slice(0, 40)   : null,
+      materialId:  b.materialId ? String(b.materialId).slice(0, 40) : null,
+      lastSeen:    Date.now()
+    };
+    onlineUsers.set(entry.userId, entry);
+
+    return res.json({ success: true, tracked: true, count: onlineUsers.size });
+  } catch (e) {
+    /* absolutely never 500 — the client must not be disrupted */
+    return res.json({ success: false, tracked: false });
+  }
+});
+
+/* ============================================================
+   GET /api/admin/online-users
+   ------------------------------------------------------------
+   Admin-only. Reads the Map, resolves course + material names
+   with ONE bulk query, returns sorted list.
+   ============================================================ */
+app.get('/api/admin/online-users', requireAdminAuth, async (req, res) => {
+  try {
+    const now = Date.now();
+    const fresh = [];
+    for (const entry of onlineUsers.values()) {
+      if (now - entry.lastSeen <= ONLINE_WINDOW_MS) fresh.push(entry);
+    }
+    fresh.sort((a, b) => b.lastSeen - a.lastSeen);
+
+    /* ---- Resolve names in a single query ---- */
+    const courseIds   = [...new Set(fresh.map(u => u.courseId).filter(Boolean))];
+    const materialIds = [...new Set(fresh.map(u => u.materialId).filter(Boolean))];
+    const courseMap   = {};
+    const materialMap = {};
+
+    if (courseIds.length > 0 || materialIds.length > 0) {
+      const or = [];
+      if (courseIds.length)   or.push({ _id: { $in: courseIds } });
+      if (materialIds.length) or.push({ 'materials._id': { $in: materialIds } });
+
+      const courses = await Course.find({ $or: or })
+        .select('name code materials._id materials.title')
+        .lean();
+
+      courses.forEach(c => {
+        courseMap[String(c._id)] = { name: c.name, code: c.code };
+        (c.materials || []).forEach(m => {
+          materialMap[String(m._id)] = m.title;
+        });
+      });
+    }
+
+    const users = fresh.map(u => ({
+      userId:        u.userId,
+      username:      u.username,
+      fullName:      u.fullName,
+      role:          u.role,
+      currentPage:   u.currentPage,
+      lastSeen:      u.lastSeen,
+      courseId:      u.courseId,
+      materialId:    u.materialId,
+      courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
+      courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
+      materialTitle: u.materialId && materialMap[u.materialId] ? materialMap[u.materialId]    : null
+    }));
+
+    const students = users.filter(u => u.role === 'student');
+
+    res.json({
+      success: true,
+      counts: {
+        total:     users.length,
+        students:  students.length,
+        admins:    users.length - students.length,
+        studying:  students.filter(u => u.courseId).length
+      },
+      users,
+      fetchedAt: now
+    });
+  } catch (e) {
+    console.error('[admin/online-users]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+/* ============================================================
    LISTEN — start the HTTP server
    ------------------------------------------------------------
    Without this call, `app` never binds to a port and the

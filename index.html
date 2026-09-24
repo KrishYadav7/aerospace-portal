@@ -351,6 +351,9 @@
           <button class="admin-tab" data-tab="overview" onclick="switchAdminTab('overview')">
             <i class="fas fa-chart-pie"></i> Overview
           </button>
+          <button class="admin-tab" data-tab="live" onclick="switchAdminTab('live')">
+  <i class="fas fa-signal"></i> Live Activity
+</button>
           <button class="admin-tab" data-tab="courses" onclick="switchAdminTab('courses')">
             <i class="fas fa-graduation-cap"></i> Courses
           </button>
@@ -445,7 +448,7 @@
             </div>
           </div>
         </div>
-
+<div id="adminTabLive" class="admin-tab-content"></div>
         <div id="adminTabCourses" class="admin-tab-content">
           <div class="tab-toolbar">
             <div class="search-bar" style="margin:0; flex:1; max-width:440px;">

@@ -12853,5 +12853,370 @@ async function downloadContribution(contributionId, fileName) {
     showToast(err.message || 'Network error while downloading.', 'error');
   }
 }
+/* ============================================================
+   ════════════════════════════════════════════════════════════
+   LIVE ACTIVITY HEARTBEAT — Client Side
+   ════════════════════════════════════════════════════════════
+   ------------------------------------------------------------
+   Pings /api/heartbeat every 45s while the user is logged in.
+   • Pauses when tab is hidden (battery + server friendly).
+   • Immediately re-pings when tab regains visibility.
+   • Fires on navigation so the admin sees instant context.
+   • Monkey-patches startSessionHeartbeat / stopSessionHeartbeat
+     so the lifecycle stays in sync with the existing auth
+     heartbeat — no duplicate timers, no orphaned intervals.
+   ============================================================ */
+let _activityHeartbeatTimer = null;
+const ACTIVITY_HEARTBEAT_MS = 45000;
 
+/* ---- Compute what the user is currently looking at ---- */
+function computeActivityContext() {
+  let currentPage = 'home';
+  let courseId = null;
+  let materialId = null;
+
+  try {
+    if (quizEditingCourseId) {
+      currentPage = 'admin-quiz-editor';
+    } else if (editingCourseId) {
+      currentPage = 'admin-editor';
+    } else if (addingCourse) {
+      currentPage = 'admin-add-course';
+    } else if (addingProfessor) {
+      currentPage = 'admin-add-professor';
+    } else if (addingMaterialCourseId) {
+      currentPage = 'admin-add-material';
+      courseId = addingMaterialCourseId;
+    } else if (addingStudent) {
+      currentPage = 'admin-add-student';
+    } else if (currentCourseId) {
+      currentPage = 'course-detail';
+      courseId = currentCourseId;
+    } else if (isAdmin(currentUser)) {
+      currentPage = 'admin-' + (adminTab || 'overview');
+    } else {
+      currentPage = 'student-' + (studentNav || 'home');
+    }
+  } catch (e) { /* never break the client */ }
+
+  return { currentPage, courseId, materialId };
+}
+
+/* ---- Fire one heartbeat ---- */
+async function sendActivityHeartbeat() {
+  try {
+    if (!currentUser || !currentUser._id) return;
+    let token = null;
+    try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
+    if (!token) return;
+
+    const ctx = computeActivityContext();
+
+    await fetch(`${API_BASE}/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId:      currentUser._id,
+        username:    currentUser.username,
+        fullName:    currentUser.fullName || currentUser.username,
+        role:        currentUser.role,
+        currentPage: ctx.currentPage,
+        courseId:    ctx.courseId,
+        materialId:  ctx.materialId
+      })
+    });
+  } catch (e) {
+    /* silent — heartbeat must never break the UI */
+  }
+}
+
+function startActivityHeartbeat() {
+  stopActivityHeartbeat();
+  setTimeout(sendActivityHeartbeat, 900);                          // quick first ping
+  _activityHeartbeatTimer = setInterval(sendActivityHeartbeat, ACTIVITY_HEARTBEAT_MS);
+}
+
+function stopActivityHeartbeat() {
+  if (_activityHeartbeatTimer) {
+    clearInterval(_activityHeartbeatTimer);
+    _activityHeartbeatTimer = null;
+  }
+}
+
+/* ---- Hook into the session-heartbeat lifecycle ---- */
+(function hookActivityLifecycle() {
+  const _origStart = window.startSessionHeartbeat;
+  if (typeof _origStart === 'function') {
+    window.startSessionHeartbeat = function () {
+      _origStart.apply(this, arguments);
+      startActivityHeartbeat();
+    };
+  }
+  const _origStop = window.stopSessionHeartbeat;
+  if (typeof _origStop === 'function') {
+    window.stopSessionHeartbeat = function () {
+      _origStop.apply(this, arguments);
+      stopActivityHeartbeat();
+    };
+  }
+})();
+
+/* ---- Extra pings on visibility + navigation ---- */
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && currentUser && currentUser._id) sendActivityHeartbeat();
+});
+
+window.addEventListener('hashchange', () => {
+  if (!currentUser || !currentUser._id) return;
+  clearTimeout(window.__activityNavDebounce);
+  window.__activityNavDebounce = setTimeout(sendActivityHeartbeat, 2000);
+});
+
+/* ============================================================
+   ADMIN — Live Activity tab renderer
+   ============================================================ */
+let _liveActivityTimer = null;
+let _liveActivityData = null;
+let _liveActivityFetchGuard = 0;
+
+async function renderAdminLiveActivity() {
+  const container = document.getElementById('adminTabLive');
+  if (!container) return;
+
+  /* Skeleton (only on first mount) */
+  if (!container.querySelector('.live-activity-wrap')) {
+    container.innerHTML = `
+      <div class="live-activity-wrap">
+        <div class="live-stats-row" id="liveStatsRow">
+          <div class="live-stat-card">
+            <div class="live-stat-icon tone-emerald"><i class="fas fa-signal"></i></div>
+            <div class="live-stat-body">
+              <div class="live-stat-num">—</div>
+              <div class="live-stat-lbl">Loading…</div>
+            </div>
+          </div>
+        </div>
+        <div class="live-list" id="liveList">
+          <div class="live-empty">
+            <i class="fas fa-spinner fa-spin"></i>
+            <p>Fetching live activity…</p>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  /* Throttle: if we fetched <3s ago, reuse cached data */
+  const now = Date.now();
+  if (_liveActivityData && (now - _liveActivityFetchGuard) < 3000) {
+    renderLiveActivityData(_liveActivityData);
+  } else {
+    _liveActivityFetchGuard = now;
+    await fetchAndRenderLiveActivity();
+  }
+
+  /* Auto-refresh every 15s while this tab is active and visible */
+  if (_liveActivityTimer) clearInterval(_liveActivityTimer);
+  _liveActivityTimer = setInterval(() => {
+    if (adminTab !== 'live') {
+      clearInterval(_liveActivityTimer);
+      _liveActivityTimer = null;
+      return;
+    }
+    if (document.hidden) return;
+    fetchAndRenderLiveActivity();
+  }, 15000);
+}
+
+async function fetchAndRenderLiveActivity() {
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/online-users?_t=${Date.now()}`);
+    if (!data.success) throw new Error(data.message || 'Could not load.');
+    _liveActivityData = data;
+    renderLiveActivityData(data);
+  } catch (err) {
+    const list = document.getElementById('liveList');
+    if (list) {
+      list.innerHTML = `
+        <div class="live-empty" style="border-color: var(--rose-500);">
+          <i class="fas fa-triangle-exclamation" style="color: var(--rose-500);"></i>
+          <p style="color: var(--rose-500); font-weight: 600;">Could not load live activity</p>
+          <p style="margin-top: 6px; font-size: 12.5px; color: var(--text-tertiary);">${escapeHtml(err.message || 'Unknown error')}</p>
+          <button class="btn btn-outline btn-sm" style="margin-top: 12px;" onclick="fetchAndRenderLiveActivity()">
+            <i class="fas fa-rotate"></i> Retry
+          </button>
+        </div>`;
+    }
+  }
+}
+
+function renderLiveActivityData(data) {
+  const statsRow = document.getElementById('liveStatsRow');
+  const list     = document.getElementById('liveList');
+  if (!statsRow || !list) return;
+
+  const c        = data.counts || {};
+  const users    = data.users  || [];
+  const students = users.filter(u => u.role === 'student');
+
+  /* ---- Stat cards ---- */
+  const clock = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  statsRow.innerHTML = `
+    <div class="live-stat-card">
+      <div class="live-stat-icon tone-emerald"><i class="fas fa-signal"></i></div>
+      <div class="live-stat-body">
+        <div class="live-stat-num">${c.students || 0}</div>
+        <div class="live-stat-lbl">Students Online</div>
+      </div>
+    </div>
+    <div class="live-stat-card">
+      <div class="live-stat-icon tone-brand"><i class="fas fa-users"></i></div>
+      <div class="live-stat-body">
+        <div class="live-stat-num">${c.total || 0}</div>
+        <div class="live-stat-lbl">Total Sessions</div>
+      </div>
+    </div>
+    <div class="live-stat-card">
+      <div class="live-stat-icon tone-gold"><i class="fas fa-book-open-reader"></i></div>
+      <div class="live-stat-body">
+        <div class="live-stat-num">${c.studying || 0}</div>
+        <div class="live-stat-lbl">Actively Studying</div>
+      </div>
+    </div>
+    <div class="live-stat-card">
+      <div class="live-stat-icon tone-cyan"><i class="fas fa-clock"></i></div>
+      <div class="live-stat-body">
+        <div class="live-stat-num" style="font-size:18px;letter-spacing:0;">${clock}</div>
+        <div class="live-stat-lbl">Last Updated</div>
+      </div>
+    </div>
+  `;
+
+  /* ---- User list ---- */
+  if (students.length === 0) {
+    list.innerHTML = `
+      <div class="live-empty">
+        <i class="fas fa-user-slash"></i>
+        <p>No students online right now.</p>
+        <p style="margin-top: 6px; font-size: 12.5px; color: var(--text-tertiary);">
+          This panel refreshes automatically every 15 seconds.
+        </p>
+      </div>`;
+    return;
+  }
+
+  const PAGE_LABELS = {
+    'home':                'Home',
+    'courses':             'Browsing courses',
+    'analytics':           'Analytics dashboard',
+    'saved':               'Saved courses',
+    'ai':                  'AI Doubt Solver',
+    'course-detail':       'Studying',
+    'student-home':        'Home',
+    'student-courses':     'Browsing courses',
+    'student-analytics':   'Analytics dashboard',
+    'student-saved':       'Saved courses',
+    'student-ai':          'AI Doubt Solver',
+    'admin-overview':      'Admin · Overview',
+    'admin-courses':       'Admin · Courses',
+    'admin-editor':        'Admin · Editing a course',
+    'admin-students':      'Admin · Students',
+    'admin-live':          'Admin · Live Activity'
+  };
+
+  let html = '';
+  students.forEach(u => {
+    const initials = String(u.fullName || u.username || '?')
+      .split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
+
+    const secondsAgo = Math.max(0, Math.round((Date.now() - u.lastSeen) / 1000));
+    const sinceText =
+      secondsAgo < 15 ? 'just now' :
+      secondsAgo < 60 ? secondsAgo + 's ago' :
+      Math.round(secondsAgo / 60) + 'm ago';
+
+    const isStudying = !!u.courseId;
+
+    let activityHtml = `<span class="live-activity-label">${escapeHtml(PAGE_LABELS[u.currentPage] || u.currentPage)}</span>`;
+    if (u.courseName) {
+      activityHtml = `<strong>${escapeHtml(u.courseName)}</strong>`;
+      if (u.courseCode) {
+        activityHtml += ` <span class="live-activity-code">· ${escapeHtml(u.courseCode)}</span>`;
+      }
+      if (u.materialTitle) {
+        activityHtml += `<span class="live-activity-material"><i class="fas fa-book-open"></i> ${escapeHtml(u.materialTitle)}</span>`;
+      }
+    }
+
+    html += `
+      <div class="live-user-row${isStudying ? ' studying' : ''}">
+        <div class="live-user-avatar">${escapeHtml(initials)}</div>
+        <div class="live-user-info">
+          <div class="live-user-name">
+            ${escapeHtml(u.fullName || u.username)}
+            <span class="live-user-handle">@${escapeHtml(u.username)}</span>
+            ${isStudying ? '<span class="live-user-badge"><i class="fas fa-fire"></i> Studying</span>' : ''}
+          </div>
+          <div class="live-user-activity">${activityHtml}</div>
+        </div>
+        <div class="live-user-seen">${sinceText}</div>
+      </div>`;
+  });
+  list.innerHTML = html;
+}
+
+/* ============================================================
+   ADMIN tab lifecycle hooks (monkey-patches — non-invasive)
+   ============================================================ */
+
+/* 1. Stop polling when the admin leaves the Live tab */
+(function hookAdminTabSwitch() {
+  const _orig = window.switchAdminTab;
+  if (typeof _orig !== 'function') return;
+  window.switchAdminTab = function (tab) {
+    if (tab !== 'live' && _liveActivityTimer) {
+      clearInterval(_liveActivityTimer);
+      _liveActivityTimer = null;
+    }
+    return _orig.apply(this, arguments);
+  };
+})();
+
+/* 2. Route the 'live' tab to our renderer */
+(function hookRenderAdminDashboard() {
+  const _orig = window.renderAdminDashboard;
+  if (typeof _orig !== 'function') return;
+  window.renderAdminDashboard = function () {
+    if (adminTab === 'live') {
+      try { updateAdminTabUI(); } catch (e) {}
+      renderAdminLiveActivity();
+      return;
+    }
+    return _orig.apply(this, arguments);
+  };
+})();
+
+/* 3. Give the tab a proper title + refresh button */
+(function hookUpdateAdminTabUI() {
+  const _orig = window.updateAdminTabUI;
+  if (typeof _orig !== 'function') return;
+  window.updateAdminTabUI = function () {
+    _orig.apply(this, arguments);
+    if (adminTab !== 'live') return;
+
+    const titleEl = document.getElementById('adminPageTitle');
+    if (titleEl) titleEl.innerHTML = '<i class="fas fa-signal"></i> Live Activity';
+
+    const actionsEl = document.getElementById('adminHeaderActions');
+    if (actionsEl) {
+      actionsEl.innerHTML =
+        '<button class="btn btn-outline" onclick="fetchAndRenderLiveActivity()">' +
+          '<i class="fas fa-rotate"></i> <span class="btn-text">Refresh Now</span>' +
+        '</button>';
+    }
+  };
+})();
+
+/* ============================================================
+   END Live Activity block
+   ============================================================ */
 initApp();
