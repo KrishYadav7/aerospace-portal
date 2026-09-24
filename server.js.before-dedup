@@ -105,11 +105,6 @@ const Coupon       = require('./models/Coupon');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
-
-/* ============================================================
-   Google Gemini SDK — used by the AI Doubt Solver
-   ============================================================ */
-const { GoogleGenAI } = require('@google/genai');
 const app = express();
 app.set('trust proxy', 1);
 
@@ -6828,16 +6823,18 @@ app.post('/api/admin/students/import-csv',
     }
   }
 );
+
 /* ============================================================
-   AI DOUBT SOLVER — Google Gemini Pro
+   AI DOUBT SOLVER — Groq (Llama 3.3 70B)
    ------------------------------------------------------------
-   • Primary model:  gemini-2.5-pro    (best reasoning quality)
-   • Fallback chain: gemini-2.5-flash → gemini-2.0-flash
-   • SDK:            @google/genai v2.x
-   • Requires:       GEMINI_API_KEY in .env
+   Student doubt → AI answer in ~2 seconds
+   FREE tier: 14,400 requests/day
    ============================================================ */
 
-/* ---- Rate limiter — 10 requests / minute / IP ---- */
+/* ============================================================
+   AI DOUBT SOLVER — Groq
+   Rate limiter — 10 requests per minute per IP (spam protection)
+   ============================================================ */
 const aiDoubtLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -6846,35 +6843,34 @@ const aiDoubtLimiter = rateLimit({
   message: { success: false, message: 'Too many AI requests. Please wait a minute.' }
 });
 
-/* ---- Lazy singleton Gemini client ---- */
+/* ============================================================
+   AI DOUBT SOLVER — Google Gemini Pro
+   ------------------------------------------------------------
+   Uses the official @google/genai SDK.
+   Model fallback: gemini-2.5-flash → gemini-2.0-flash → gemini-1.5-flash
+   ============================================================ */
+
 let _geminiClient = null;
 function getGeminiClient() {
   if (_geminiClient) return _geminiClient;
-
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
     throw new Error('Gemini is not configured. Missing GEMINI_API_KEY.');
   }
-
   _geminiClient = new GoogleGenAI({ apiKey });
-  console.log('[ai] ✅ Gemini client ready · key:', apiKey.slice(0, 8) + '…');
+  console.log('[ai] ✅ Gemini client ready');
   return _geminiClient;
 }
 
-/* ============================================================
-   POST /api/ai/solve-doubt
-   Body:    { question: string, courseId?: string }
-   Returns: { success: true, answer: string, model: string }
-   ============================================================ */
 app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
   try {
     const { question, courseId } = req.body || {};
 
     /* ---------- 1. Validation ---------- */
-    if (!question || !String(question).trim()) {
+    if (!question || !question.trim()) {
       return res.status(400).json({ success: false, message: 'Question is required.' });
     }
-    if (String(question).length > 2000) {
+    if (question.length > 2000) {
       return res.status(400).json({ success: false, message: 'Question too long (max 2000 chars).' });
     }
     if (!process.env.GEMINI_API_KEY) {
@@ -6907,27 +6903,25 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
       }
     }
 
-    /* ---------- 3. System instruction ---------- */
+    /* ---------- 3. Build the prompt ---------- */
     const systemInstruction =
-      'You are an expert teaching assistant for the Aerospace Department at IIT Kharagpur. ' +
-      'Answer questions in a clear, student-friendly way. Use simple language and real-world analogies. ' +
-      'For math/physics, show the derivation step-by-step. ' +
-      'If you do not know something, say so honestly. ' +
-      'Keep answers focused (under 400 words unless a derivation needs more). ' +
-      'Use Markdown (bold, bullet lists, tables, code blocks). ' +
-      'Use LaTeX with $...$ for inline math and $$...$$ for display math. ' +
-      'Format your response in clean, readable Markdown.';
+      `You are an expert teaching assistant for the Aerospace Department at IIT Kharagpur. ` +
+      `Answer questions in a clear, student-friendly way. Use simple language and real-world analogies. ` +
+      `For math/physics, show the derivation step-by-step. ` +
+      `If you don't know something, say so honestly. ` +
+      `Keep answers focused (under 400 words unless a derivation needs more). ` +
+      `Use markdown (bold, bullet lists, code blocks) and LaTeX with $...$ for inline math and $$...$$ for display math. ` +
+      `Format your response in clean, readable Markdown.`;
 
-    /* ---------- 4. User prompt ---------- */
     const userPrompt = contextBlock
       ? `${contextBlock}\nStudent's doubt: ${question}`
       : `Student's doubt: ${question}`;
 
-    /* ---------- 5. Model fallback chain (Pro first) ---------- */
+    /* ---------- 4. Try models in fallback order ---------- */
     const MODELS = [
-      'gemini-2.5-pro',      // ⭐ PRIMARY — best reasoning
-      'gemini-2.5-flash',    // fast fallback
-      'gemini-2.0-flash'     // legacy fallback
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash'
     ];
 
     let answer = null;
@@ -6939,7 +6933,6 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
     for (const model of MODELS) {
       try {
         console.log(`[ai] Trying model: ${model}`);
-        const t0 = Date.now();
 
         const response = await ai.models.generateContent({
           model,
@@ -6947,33 +6940,26 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
           config: {
             systemInstruction,
             temperature: 0.5,
-            maxOutputTokens: 2048
+            maxOutputTokens: 1200
           }
         });
 
-        // @google/genai v2.x — `response.text` is a getter, not a function.
-        const text = typeof response.text === 'function'
-          ? response.text()
-          : response.text;
-
-        if (text && String(text).trim()) {
-          answer = String(text).trim();
+        const text = response.text;
+        if (text && text.trim()) {
+          answer = text.trim();
           usedModel = model;
-          console.log(`[ai] ✅ ${model} succeeded (${answer.length} chars in ${Date.now() - t0}ms)`);
+          console.log(`[ai] ✅ Model "${model}" succeeded (${answer.length} chars)`);
           break;
         }
-
         console.warn(`[ai] Model "${model}" returned empty text`);
         lastError = { model, message: 'Empty response' };
       } catch (err) {
-        const msg = err && err.message ? err.message : String(err);
-        const status = err && (err.status || err.statusCode || (err.error && err.error.code));
-        console.error(`[ai] ❌ Model "${model}" failed:`, msg);
-        lastError = { model, message: msg, status };
+        console.error(`[ai] ❌ Model "${model}" failed:`, err.message);
+        lastError = { model, message: err.message, status: err.status || err.statusCode };
       }
     }
 
-    /* ---------- 6. Friendly failure ---------- */
+    /* ---------- 5. Friendly failure ---------- */
     if (!answer) {
       let friendly = 'AI is temporarily unavailable. Please try again in a moment.';
       if (lastError) {
@@ -6987,24 +6973,28 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
           friendly = 'AI could not process that request. Try rephrasing your question.';
         } else if (status === 404) {
           friendly = 'AI model unavailable. Please contact admin to update the model name.';
-        } else if (/network|fetch|ENOTFOUND|ETIMEDOUT|ECONNREFUSED/i.test(msg)) {
+        } else if (/network|fetch|ENOTFOUND|ETIMEDOUT/i.test(msg)) {
           friendly = 'Network error reaching the AI service. Check the server internet connection.';
-        } else if (/api key|API_KEY_INVALID|invalid.*key/i.test(msg)) {
-          friendly = 'AI API key is invalid. Please ask the admin to check GEMINI_API_KEY.';
         }
       }
       return res.status(503).json({ success: false, message: friendly });
     }
 
-    /* ---------- 7. Success ---------- */
-    return res.json({
+    /* ---------- 6. Success ---------- */
+    res.json({
       success: true,
       answer,
       model: usedModel
     });
 
   } catch (e) {
-    console.error('[ai/solve-doubt] Fatal:', e);
+    console.error('[ai/solve-doubt] Error:', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+
+/* ============================================================
+   LISTEN
+   ============================================================ */
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`✅ Server is running on port ${PORT}`));
