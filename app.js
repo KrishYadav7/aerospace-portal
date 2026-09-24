@@ -13012,16 +13012,18 @@ async function downloadContribution(contributionId, fileName) {
 }
 /* ============================================================
    ════════════════════════════════════════════════════════════
-   LIVE ACTIVITY HEARTBEAT — Client Side
+   LIVE ACTIVITY HEARTBEAT — Client Side  (v2 — routing fixed)
    ════════════════════════════════════════════════════════════
    ------------------------------------------------------------
-   Pings /api/heartbeat every 45s while the user is logged in.
-   • Pauses when tab is hidden (battery + server friendly).
-   • Immediately re-pings when tab regains visibility.
-   • Fires on navigation so the admin sees instant context.
-   • Monkey-patches startSessionHeartbeat / stopSessionHeartbeat
-     so the lifecycle stays in sync with the existing auth
-     heartbeat — no duplicate timers, no orphaned intervals.
+   • Pings /api/heartbeat every 45s while the user is logged in.
+   • Pauses when tab is hidden; resumes on visibility.
+   • Fires on navigation so the admin sees fresh context.
+   • Hooks the existing session-heartbeat lifecycle (start /
+     stop) so the two never drift out of sync.
+   • Admin panel is driven by a MutationObserver watching
+     #adminTabLive.active — this is the ONLY reliable way to
+     detect activation because internal calls to
+     renderAdminDashboard() bypass any window.* override.
    ============================================================ */
 let _activityHeartbeatTimer = null;
 const ACTIVITY_HEARTBEAT_MS = 45000;
@@ -13049,7 +13051,7 @@ function computeActivityContext() {
     } else if (currentCourseId) {
       currentPage = 'course-detail';
       courseId = currentCourseId;
-    } else if (isAdmin(currentUser)) {
+    } else if (typeof isAdmin === 'function' && isAdmin(currentUser)) {
       currentPage = 'admin-' + (adminTab || 'overview');
     } else {
       currentPage = 'student-' + (studentNav || 'home');
@@ -13089,7 +13091,7 @@ async function sendActivityHeartbeat() {
 
 function startActivityHeartbeat() {
   stopActivityHeartbeat();
-  setTimeout(sendActivityHeartbeat, 900);                          // quick first ping
+  setTimeout(sendActivityHeartbeat, 900);
   _activityHeartbeatTimer = setInterval(sendActivityHeartbeat, ACTIVITY_HEARTBEAT_MS);
 }
 
@@ -13102,20 +13104,22 @@ function stopActivityHeartbeat() {
 
 /* ---- Hook into the session-heartbeat lifecycle ---- */
 (function hookActivityLifecycle() {
-  const _origStart = window.startSessionHeartbeat;
-  if (typeof _origStart === 'function') {
-    window.startSessionHeartbeat = function () {
-      _origStart.apply(this, arguments);
-      startActivityHeartbeat();
-    };
-  }
-  const _origStop = window.stopSessionHeartbeat;
-  if (typeof _origStop === 'function') {
-    window.stopSessionHeartbeat = function () {
-      _origStop.apply(this, arguments);
-      stopActivityHeartbeat();
-    };
-  }
+  try {
+    const _origStart = window.startSessionHeartbeat;
+    if (typeof _origStart === 'function') {
+      window.startSessionHeartbeat = function () {
+        _origStart.apply(this, arguments);
+        startActivityHeartbeat();
+      };
+    }
+    const _origStop = window.stopSessionHeartbeat;
+    if (typeof _origStop === 'function') {
+      window.stopSessionHeartbeat = function () {
+        _origStop.apply(this, arguments);
+        stopActivityHeartbeat();
+      };
+    }
+  } catch (e) { /* never fatal */ }
 })();
 
 /* ---- Extra pings on visibility + navigation ---- */
@@ -13130,17 +13134,43 @@ window.addEventListener('hashchange', () => {
 });
 
 /* ============================================================
-   ADMIN — Live Activity tab renderer
+   ADMIN — Live Activity renderer
    ============================================================ */
 let _liveActivityTimer = null;
 let _liveActivityData = null;
 let _liveActivityFetchGuard = 0;
 
 async function renderAdminLiveActivity() {
-  const container = document.getElementById('adminTabLive');
-  if (!container) return;
+  /* Ensure the container exists (in case the HTML insert was skipped) */
+  let container = document.getElementById('adminTabLive');
+  if (!container) {
+    const adminView = document.getElementById('adminView');
+    if (!adminView) return;
+    container = document.createElement('div');
+    container.id = 'adminTabLive';
+    container.className = 'admin-tab-content';
+    adminView.appendChild(container);
+  }
 
-  /* Skeleton (only on first mount) */
+  /* Ensure the container is marked active (safety net) */
+  if (!container.classList.contains('active')) {
+    document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
+    container.classList.add('active');
+  }
+
+  /* Header: title + refresh button */
+  const titleEl = document.getElementById('adminPageTitle');
+  if (titleEl) titleEl.innerHTML = '<i class="fas fa-signal"></i> Live Activity';
+
+  const actionsEl = document.getElementById('adminHeaderActions');
+  if (actionsEl) {
+    actionsEl.innerHTML =
+      '<button class="btn btn-outline" onclick="fetchAndRenderLiveActivity()">' +
+        '<i class="fas fa-rotate"></i> <span class="btn-text">Refresh Now</span>' +
+      '</button>';
+  }
+
+  /* Skeleton on first mount */
   if (!container.querySelector('.live-activity-wrap')) {
     container.innerHTML = `
       <div class="live-activity-wrap">
@@ -13162,7 +13192,7 @@ async function renderAdminLiveActivity() {
       </div>`;
   }
 
-  // Throttle: if we fetched <3s ago, reuse cached data
+  /* Throttle: reuse cached data if we fetched <3s ago */
   const now = Date.now();
   if (_liveActivityData && (now - _liveActivityFetchGuard) < 3000) {
     renderLiveActivityData(_liveActivityData);
@@ -13171,10 +13201,11 @@ async function renderAdminLiveActivity() {
     await fetchAndRenderLiveActivity();
   }
 
-  // Auto-refresh every 15s while this tab is active and visible
+  /* Auto-refresh every 15s while the tab is open and visible */
   if (_liveActivityTimer) clearInterval(_liveActivityTimer);
   _liveActivityTimer = setInterval(() => {
-    if (adminTab !== 'live') {
+    const c = document.getElementById('adminTabLive');
+    if (!c || !c.classList.contains('active')) {
       clearInterval(_liveActivityTimer);
       _liveActivityTimer = null;
       return;
@@ -13183,6 +13214,7 @@ async function renderAdminLiveActivity() {
     fetchAndRenderLiveActivity();
   }, 15000);
 }
+
 async function fetchAndRenderLiveActivity() {
   try {
     const data = await fetchJSON(`${API_BASE}/admin/online-users?_t=${Date.now()}`);
@@ -13214,8 +13246,10 @@ function renderLiveActivityData(data) {
   const users    = data.users  || [];
   const students = users.filter(u => u.role === 'student');
 
-  /* ---- Stat cards ---- */
-  const clock = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const clock = new Date().toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+
   statsRow.innerHTML = `
     <div class="live-stat-card">
       <div class="live-stat-icon tone-emerald"><i class="fas fa-signal"></i></div>
@@ -13247,7 +13281,6 @@ function renderLiveActivityData(data) {
     </div>
   `;
 
-  /* ---- User list ---- */
   if (students.length === 0) {
     list.innerHTML = `
       <div class="live-empty">
@@ -13321,57 +13354,119 @@ function renderLiveActivityData(data) {
 }
 
 /* ============================================================
-   ADMIN tab lifecycle hooks (monkey-patches — non-invasive)
+   ROUTING WATCHER — MutationObserver on #adminTabLive
+   ------------------------------------------------------------
+   WHY A MUTATION OBSERVER AND NOT A FUNCTION HOOK:
+     app.js declares `renderAdminDashboard` as a top-level
+     function declaration. All internal callers (including
+     `_renderAppNow`) resolve to the module-scope binding, NOT
+     to `window.renderAdminDashboard`. Overriding the window
+     property therefore has zero effect on the internal calls.
+
+     Instead we watch the DOM: the existing `updateAdminTabUI`
+     already toggles `.active` on the correct container every
+     time an admin tab is switched. Whenever `#adminTabLive`
+     gains `.active`, we render; when it loses `.active`, we
+     stop the polling timer.
    ============================================================ */
+(function installLiveActivityWatcher() {
+  const boot = () => {
+    let el = document.getElementById('adminTabLive');
 
-/* 1. Stop polling when the admin leaves the Live tab */
-(function hookAdminTabSwitch() {
-  const _orig = window.switchAdminTab;
-  if (typeof _orig !== 'function') return;
-  window.switchAdminTab = function (tab) {
-    if (tab !== 'live' && _liveActivityTimer) {
-      clearInterval(_liveActivityTimer);
-      _liveActivityTimer = null;
+    /* If the HTML insert was skipped, create the container lazily */
+    if (!el) {
+      const adminView = document.getElementById('adminView');
+      if (adminView) {
+        el = document.createElement('div');
+        el.id = 'adminTabLive';
+        el.className = 'admin-tab-content';
+        adminView.appendChild(el);
+      }
     }
-    return _orig.apply(this, arguments);
-  };
-})();
+    if (!el) return;
 
-/* 2. Route the 'live' tab to our renderer */
-(function hookRenderAdminDashboard() {
-  const _orig = window.renderAdminDashboard;
-  if (typeof _orig !== 'function') return;
-  window.renderAdminDashboard = function () {
-    if (adminTab === 'live') {
-      try { updateAdminTabUI(); } catch (e) {}
-      renderAdminLiveActivity();
-      return;
+    let wasActive = false;
+
+    const activate = () => {
+      /* Defer one tick so updateAdminTabUI finishes its other work */
+      setTimeout(() => {
+        if (typeof renderAdminLiveActivity === 'function') {
+          renderAdminLiveActivity().catch(err =>
+            console.warn('[Live Activity] render failed:', err)
+          );
+        }
+      }, 30);
+    };
+
+    const deactivate = () => {
+      if (_liveActivityTimer) {
+        clearInterval(_liveActivityTimer);
+        _liveActivityTimer = null;
+      }
+    };
+
+    const obs = new MutationObserver(() => {
+      const isActive = el.classList.contains('active');
+      if (isActive && !wasActive) { wasActive = true;  activate(); }
+      else if (!isActive && wasActive) { wasActive = false; deactivate(); }
+    });
+    obs.observe(el, { attributes: true, attributeFilter: ['class'] });
+
+    /* Handle the case where the live tab is ALREADY active on load */
+    if (el.classList.contains('active')) {
+      wasActive = true;
+      setTimeout(activate, 200);
     }
-    return _orig.apply(this, arguments);
+
+    /* Also catch a cold-loaded hash like #/admin/live — poll briefly
+       for up to 6 seconds in case `initApp()` settles after us. */
+    let coldChecks = 0;
+    const coldTimer = setInterval(() => {
+      coldChecks++;
+      const active = el.classList.contains('active');
+      if (active && !wasActive) {
+        wasActive = true;
+        activate();
+        clearInterval(coldTimer);
+      } else if (coldChecks > 30) {
+        clearInterval(coldTimer);
+      }
+    }, 200);
   };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
 })();
-
-/* 3. Give the tab a proper title + refresh button */
-(function hookUpdateAdminTabUI() {
-  const _orig = window.updateAdminTabUI;
-  if (typeof _orig !== 'function') return;
-  window.updateAdminTabUI = function () {
-    _orig.apply(this, arguments);
-    if (adminTab !== 'live') return;
-
-    const titleEl = document.getElementById('adminPageTitle');
-    if (titleEl) titleEl.innerHTML = '<i class="fas fa-signal"></i> Live Activity';
-
-    const actionsEl = document.getElementById('adminHeaderActions');
-    if (actionsEl) {
-      actionsEl.innerHTML =
-        '<button class="btn btn-outline" onclick="fetchAndRenderLiveActivity()">' +
-          '<i class="fas fa-rotate"></i> <span class="btn-text">Refresh Now</span>' +
-        '</button>';
+/* ---- Independent activity-heartbeat lifecycle ----
+   Started here, not via a session-heartbeat hook, because those
+   are internal module-scope calls that can't be intercepted.
+   We simply poll for a live session and start/stop ourselves. */
+setInterval(() => {
+  const hasSession = !!(currentUser && currentUser._id);
+  if (hasSession && !_activityHeartbeatTimer && !_sessionKilled) {
+    startActivityHeartbeat();
+  } else if (!hasSession && _activityHeartbeatTimer) {
+    stopActivityHeartbeat();
+  }
+}, 5000);
+/* ---- Self-supervising activity heartbeat lifecycle ----
+   The session-heartbeat start/stop functions are module-scope
+   bindings in app.js and cannot be intercepted by the window
+   override above. So instead we check every 5s: is there a live
+   session? If yes → ensure our timer is running. If no → stop it. */
+setInterval(() => {
+  try {
+    const hasSession = !!(currentUser && currentUser._id);
+    if (hasSession && !_activityHeartbeatTimer && !_sessionKilled) {
+      startActivityHeartbeat();
+    } else if (!hasSession && _activityHeartbeatTimer) {
+      stopActivityHeartbeat();
     }
-  };
-})();
-
+  } catch (e) { /* never fatal */ }
+}, 5000);
 /* ============================================================
    END Live Activity block
    ============================================================ */
