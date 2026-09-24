@@ -21,7 +21,9 @@ const SHELL_ASSETS = [
 /* Files that must ALWAYS be fetched fresh from the network */
 const NEVER_CACHE_PATTERNS = [
   /\/$/,
+  /\/app$/,
   /\/index\.html$/,
+  /\/landing\.html$/,
   /\/app\.js$/,
   /\/styles\.css$/,
   /\/media-viewer\.js$/,

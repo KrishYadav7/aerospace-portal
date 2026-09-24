@@ -623,11 +623,22 @@ app.use((err, req, res, next) => {
 
 /* ⚠️ SECURITY: Do NOT use express.static(__dirname) — it exposes .env, server.js, package.json, etc.
    Serve ONLY specific frontend files. Uploads are served from /uploads below. */
-/* ---- HTML: no cache (so updates deploy instantly) ---- */
+/* ---- Public landing page — the new front door ---- */
 app.get('/', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'landing.html'));
+});
+app.get('/landing.html', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, 'landing.html'));
+});
+
+/* ---- Main app (login + dashboard) — now served at /app ---- */
+app.get('/app', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, 'index.html'));
 });
+/* ---- Legacy alias — existing bookmarks to /index.html keep working ---- */
 app.get('/index.html', (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(path.join(__dirname, 'index.html'));

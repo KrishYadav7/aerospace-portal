@@ -2,7 +2,7 @@
   "name": "AeroGyan Education – Course Portal",
   "short_name": "AeroGyan",
   "description": "Aerospace Engineering course materials, lectures, and quizzes.",
-  "start_url": "/",
+  "start_url": "/app",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
