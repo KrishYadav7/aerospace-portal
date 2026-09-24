@@ -6924,10 +6924,13 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
       : `Student's doubt: ${question}`;
 
     /* ---------- 5. Model fallback chain (Pro first) ---------- */
+        /* ---------- 5. Model fallback chain ----------
+       NOTE (Sept 2026): Google has deprecated all 2.x models for new
+       API keys. The current line is the Gemini 3.x family. */
     const MODELS = [
-      'gemini-2.5-pro',      // ⭐ PRIMARY — best reasoning
-      'gemini-2.5-flash',    // fast fallback
-      'gemini-2.0-flash'     // legacy fallback
+      'gemini-3.1-pro-preview',  // ⭐ PRIMARY — best reasoning
+      'gemini-3.6-flash',        // fast fallback
+      'gemini-3.0-flash'         // last-resort fallback (if available)
     ];
 
     let answer = null;
