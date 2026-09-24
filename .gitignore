@@ -6,3 +6,6 @@ uploads/
 *.log
 *.bak
 migrate-to-disk.js
+.env
+node_modules/
+uploads/
