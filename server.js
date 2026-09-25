@@ -2,6 +2,17 @@
    BOOT ORDER — .env MUST load before anything touches process.env
    ============================================================ */
 const dns = require('dns');
+/* ============================================================
+   GLOBAL ERROR HANDLERS — prevent silent crashes
+   ============================================================ */
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Unhandled Rejection] at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Uncaught Exception]', err);
+  // Keep the process alive so Nginx doesn't get a 502
+});
 dns.setDefaultResultOrder('ipv4first');   // Render free tier has NO IPv6 egress
 
 // ⚡ CRITICAL: dotenv must be the FIRST thing that runs.
@@ -319,15 +330,12 @@ const upload = multer({
    and only forwards MISSES to this Node handler.
    ============================================================ */
 /* ============================================================
+/* ============================================================
    HYBRID STATIC FILE SERVING — PREMIUM GATED + NO-CACHE
-   ------------------------------------------------------------
-   1. Premium check FIRST (403 if locked)
-   2. Disk fast path (if exists)
-   3. Cloudinary restore on miss
-   Cache is disabled on ALL responses so a file that was free
-   yesterday cannot stay in the browser cache after the admin
-   flips it to Premium.
    ============================================================ */
+app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
+  const filename = req.params.filename;
+
   /* ---- ⭐ PREMIUM ACCESS CHECK — now preview-aware ---- */
   try {
     const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -346,7 +354,6 @@ const upload = multer({
         if (!access.allowed && access.canPreview) {
           res.setHeader('X-Aero-Preview-Percent', String(access.previewPercent));
           res.setHeader('X-Aero-Preview-Mode', '1');
-          // fall through to file-serving code below
         }
         // Hard block (no preview available)
         else if (!access.allowed) {
@@ -365,6 +372,21 @@ const upload = multer({
     console.warn('[uploads] premium check failed:', e.message);
     return res.status(503).send('Access check temporarily unavailable. Please retry.');
   }
+
+  // Serve the file from disk
+  const diskPath = path.join(UPLOAD_DIR, filename);
+  if (fs.existsSync(diskPath)) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    return res.sendFile(diskPath);
+  }
+
+  // Fallback: Cloudinary restore (if you have this implemented)
+  // ... Add your Cloudinary fallback logic here if needed
+
+  return res.status(404).send('File not found');
+});
 
 /* ============================================================
    HYBRID UPLOAD — Disk (fast) + Cloudinary (durable backup)
@@ -1198,16 +1220,16 @@ function normalizePhone(p) {
    DB
    ============================================================ */
 mongoose.connect(process.env.MONGO_URI, {
-  maxPoolSize: 50,
-  minPoolSize: 5,
+  maxPoolSize: 10,               // Reduced from 50 to prevent overwhelming the DB
+  minPoolSize: 2,                // Reduced from 5
   maxIdleTimeMS: 30000,
-  serverSelectionTimeoutMS: 5000,
+  serverSelectionTimeoutMS: 30000, // Increased from 5s to 30s to allow slower networks
   socketTimeoutMS: 45000,
   connectTimeoutMS: 10000,
   family: 4,
-  compressors: ['zlib'],
   retryWrites: true,
-  retryReads: true
+  retryReads: true,
+  bufferCommands: false          // ⭐ CRITICAL: Fail fast instead of hanging
 })
   .then(() => console.log('🚀 MongoDB Connected — pool ready'))
   .catch((err) => console.error('❌ MongoDB Error:', err.message));
