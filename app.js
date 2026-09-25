@@ -330,19 +330,32 @@ async function uploadFileChunked(file, onProgress) {
    PROFESSORS (MongoDB — centralized database)
    ============================================================ */
 let liveProfessors = [];
+let _professorsCacheAt = 0;
+const PROFESSORS_CACHE_MS = 30 * 1000;   // 30s — short enough for live hide/show
+
 function getProfessors() { return liveProfessors; }
 function generateId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
-async function fetchProfessorsFromDB() {
+async function fetchProfessorsFromDB(force = false) {
+  // Reuse the in-memory list if it's still fresh (unless force=true)
+  if (!force && liveProfessors.length > 0 &&
+      (Date.now() - _professorsCacheAt) < PROFESSORS_CACHE_MS) {
+    return;
+  }
+
   try {
-    const response = await fetch(`${API_BASE}/professors`);
+    // ?_t= cache-buster + cache:'no-store' → guaranteed fresh network read
+    const response = await fetch(
+      `${API_BASE}/professors?_t=${Date.now()}`,
+      { cache: 'no-store' }
+    );
     const data = await response.json();
     if (data.success) {
-      // Map _id (from MongoDB) to id (for the frontend)
-      liveProfessors = data.professors.map(p => ({ 
-        ...p, 
-        id: p._id || p.id 
+      liveProfessors = data.professors.map(p => ({
+        ...p,
+        id: p._id || p.id
       }));
+      _professorsCacheAt = Date.now();
     }
   } catch (error) {
     console.error('Error fetching professors:', error);
@@ -3311,6 +3324,9 @@ async function toggleProfessorVisibility(professorId, newVisible) {
       const idx = liveProfessors.findIndex(p => (p._id || p.id) === professorId);
       if (idx >= 0) liveProfessors[idx].visible = newVisible;
 
+      // Reset the client TTL so the next fetch on any tab is fresh
+      _professorsCacheAt = 0;
+
       showToast(
         newVisible ? '👁️ Now visible to students.' : '🙈 Hidden from students.',
         'success'
@@ -5551,44 +5567,68 @@ function renderStudentHome() {
   loadApprovedFeedback();
   loadMyContributions();
 
+  // ⭐ Paint the grid immediately with whatever we already have in memory
+  renderProfessorsGrid();
+
+  // ⭐ Then refresh from the server in the background. When it lands,
+  //    re-paint the grid. Respects the 30s TTL in fetchProfessorsFromDB().
+  fetchProfessorsFromDB().then(() => {
+    // Only repaint if the user is still on the home view
+    if (studentNav === 'home' && !currentCourseId) {
+      renderProfessorsGrid();
+    }
+  });
+}
+
+/* ------------------------------------------------------------
+   Renders the "Our Team" professor grid (visible-only).
+   Extracted so it can be re-run after a background refresh.
+   ------------------------------------------------------------ */
+function renderProfessorsGrid() {
+  const grid = $('professorsGrid');
+  if (!grid) return;
+
   // Only show professors the admin has marked as visible.
   // Legacy documents without a `visible` field are treated as visible.
   const professors = getProfessors().filter(p => p.visible !== false);
+
   if (professors.length === 0) {
-    $('professorsGrid').innerHTML = `<p style="color:var(--text-tertiary);">No professors added yet.</p>`;
-  } else {
-    let html = '';
-    professors.forEach(p => {
-      const photoHtml = p.photo
-        ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy">`
-        : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(p.name))}</div>`;
-
-      const contactButtons = [];
-      if (p.email) {
-        contactButtons.push(`
-          <button type="button" class="contact-chip contact-chip-email"
-                  onclick="openContactMemberModal(${JSON.stringify(p.email).replace(/"/g, '&quot;')}, ${JSON.stringify(p.name).replace(/"/g, '&quot;')}, ${JSON.stringify(p.title || '').replace(/"/g, '&quot;')})">
-            <i class="fas fa-envelope"></i> Message
-          </button>`);
-      }
-      if (p.phone) {
-        contactButtons.push(`
-          <a href="tel:${escapeHtml(p.phone.replace(/\s+/g, ''))}" class="contact-chip contact-chip-phone">
-            <i class="fas fa-phone"></i> Call
-          </a>`);
-      }
-
-      html += `
-        <div class="professor-card">
-          ${photoHtml}
-          <h3>${escapeHtml(p.name)}</h3>
-          <div class="prof-title">${escapeHtml(p.title)}</div>
-          <p>${escapeHtml(p.description) || ''}</p>
-          ${contactButtons.length ? `<div class="team-contact-row">${contactButtons.join('')}</div>` : ''}
-        </div>`;
-    });
-    $('professorsGrid').innerHTML = html;
+    grid.innerHTML = `<p style="color:var(--text-tertiary);">No professors added yet.</p>`;
+    return;
   }
+
+  let html = '';
+  professors.forEach(p => {
+    const photoHtml = p.photo
+      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy">`
+      : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(p.name))}</div>`;
+
+    const contactButtons = [];
+    if (p.email) {
+      contactButtons.push(`
+        <button type="button" class="contact-chip contact-chip-email"
+                onclick="openContactMemberModal(${JSON.stringify(p.email).replace(/"/g, '&quot;')}, ${JSON.stringify(p.name).replace(/"/g, '&quot;')}, ${JSON.stringify(p.title || '').replace(/"/g, '&quot;')})">
+          <i class="fas fa-envelope"></i> Message
+        </button>`);
+    }
+    if (p.phone) {
+      contactButtons.push(`
+        <a href="tel:${escapeHtml(p.phone.replace(/\s+/g, ''))}" class="contact-chip contact-chip-phone">
+          <i class="fas fa-phone"></i> Call
+        </a>`);
+    }
+
+    html += `
+      <div class="professor-card">
+        ${photoHtml}
+        <h3>${escapeHtml(p.name)}</h3>
+        <div class="prof-title">${escapeHtml(p.title)}</div>
+        <p>${escapeHtml(p.description) || ''}</p>
+        ${contactButtons.length ? `<div class="team-contact-row">${contactButtons.join('')}</div>` : ''}
+      </div>`;
+  });
+
+  grid.innerHTML = html;
 }
 
 function renderStreakCard() {

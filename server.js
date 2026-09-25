@@ -2883,19 +2883,36 @@ app.post('/api/admin/send-email', requireAdminAuth, async (req, res) => {
    ============================================================ */
 app.get('/api/professors', async (req, res) => {
   try {
+    // Browser must NEVER cache this response — hide/show toggles need
+    // to reflect instantly for students. The server-side in-memory
+    // cache below still protects MongoDB from repeated reads.
+    const noStore = {
+      'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    };
+
     const cached = cacheGet('professors:all');
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.setHeader('Cache-Control', noStore['Cache-Control']);
+      res.setHeader('Pragma', noStore['Pragma']);
+      res.setHeader('Expires', noStore['Expires']);
       return res.json(cached);
     }
+
     const professors = await Professor.find()
       .select('-__v')
       .sort({ createdAt: 1 })
       .lean();
+
     const payload = { success: true, professors };
     cacheSet('professors:all', payload, 5 * 60 * 1000);
-    res.setHeader('Cache-Control', 'public, max-age=300');
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', noStore['Cache-Control']);
+    res.setHeader('Pragma', noStore['Pragma']);
+    res.setHeader('Expires', noStore['Expires']);
     res.json(payload);
   } catch (e) {
     console.error('[GET /api/professors]', e);
