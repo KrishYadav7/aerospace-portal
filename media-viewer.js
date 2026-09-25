@@ -459,9 +459,20 @@
       } catch(e){}
 
       this.materialId = opts.materialId || 'doc';
-      this.username   = opts.username || 'Student';
+      this.courseId   = opts.courseId   || null;      // ⭐ needed for paywall CTA
+      this.username   = opts.username   || 'Student';
       this.title      = opts.title || opts.fileName || 'Document';
       this._prevBodyOverflow = document.body.style.overflow;
+
+      /* ⭐ Read the paywall flags from the caller.
+         Default hasFullAccess to TRUE so any legacy call site that
+         forgets to pass the flag never accidentally locks a document. */
+      this.hasFullAccess  = opts.hasFullAccess !== false;
+      this.previewPercent = Math.max(0, Math.min(100, Number(opts.previewPercent) || 0));
+
+      /* Filled in after pdfDoc loads */
+      this.totalPages   = 0;
+      this.previewLimit = 0;   // last page the user is allowed to read
 
       this._buildUI();
       this._loadHighlights();
@@ -619,7 +630,10 @@
     _handleToolbar(act) {
       if (act === 'close') return this.close();
       if (act === 'prev') return this._scrollToPage(Math.max(1, this.currentPage - 1));
-      if (act === 'next') return this._scrollToPage(Math.min(this.pdfDoc ? this.pdfDoc.numPages : 1, this.currentPage + 1));
+      if (act === 'next') {
+        const maxPage = this.previewLimit || (this.pdfDoc ? this.pdfDoc.numPages : 1);
+        return this._scrollToPage(Math.min(maxPage, this.currentPage + 1));
+      }
       if (act === 'zoomin') return this._changeZoom(0.15);
       if (act === 'zoomout') return this._changeZoom(-0.15);
       if (act === 'fit') return this._fitToWidth();
@@ -639,20 +653,126 @@
       this.pagesEl.innerHTML = '';
       this.pageEls.clear();
       this.textLayers.clear();
+
       const total = this.pdfDoc.numPages;
-      this.modal.querySelector('#pdfvPageCount').textContent = total;
-      this.modal.querySelector('#pdfvTitle').textContent = this.title;
+      this.totalPages = total;
+
+      /* ⭐ NEW — Compute the render ceiling.
+         • Full access  → render every page
+         • Preview only → render ceil(total × previewPercent / 100),
+                          minimum 1 page, maximum = total
+         • No preview   → render 0 pages (defensive fallback; the server
+                          should already have blocked the request) */
+      let renderLimit;
+      if (this.hasFullAccess) {
+        renderLimit = total;
+      } else if (this.previewPercent > 0) {
+        renderLimit = Math.ceil(total * (this.previewPercent / 100));
+        if (renderLimit < 1)     renderLimit = 1;
+        if (renderLimit > total) renderLimit = total;
+      } else {
+        renderLimit = 0;
+      }
+      this.previewLimit = renderLimit;
+
+      /* Update toolbar: page count reflects the visible pages */
+      const pageCountEl = this.modal.querySelector('#pdfvPageCount');
+      if (pageCountEl) pageCountEl.textContent = renderLimit || total;
+
+      /* Add a "Preview" chip to the title bar in preview mode */
+      const titleEl = this.modal.querySelector('#pdfvTitle');
+      if (titleEl) {
+        const lockedCount = Math.max(0, total - renderLimit);
+        titleEl.textContent = this.title;
+        if (!this.hasFullAccess && renderLimit < total) {
+          const chip = document.createElement('span');
+          chip.className = 'pdfv-preview-chip';
+          chip.title = `${lockedCount} page${lockedCount === 1 ? '' : 's'} locked`;
+          chip.innerHTML = '<i class="fas fa-lock"></i> PREVIEW';
+          titleEl.appendChild(chip);
+        }
+      }
+
+      /* Clamp page input to the render limit */
+      const pageInput = this.modal.querySelector('#pdfvPageInput');
+      if (pageInput) pageInput.setAttribute('max', String(renderLimit || total));
+
       this._updateZoomLabel();
       this._updateHlCount();
-      for (let i = 1; i <= total; i++) {
+
+      /* Create placeholders only for pages we will actually render */
+      for (let i = 1; i <= renderLimit; i++) {
         const pageEl = document.createElement('div');
         pageEl.className = 'pdfv-page';
         pageEl.dataset.page = i;
         this.pagesEl.appendChild(pageEl);
         this.pageEls.set(i, pageEl);
       }
-      for (let i = 1; i <= total; i++) await this._renderPage(i);
+
+      /* Render each page */
+      for (let i = 1; i <= renderLimit; i++) await this._renderPage(i);
+
+      /* ⭐ Paywall card at the bottom (only when pages are locked) */
+      if (!this.hasFullAccess && renderLimit < total) {
+        this._renderPaywallCard(total, renderLimit);
+      }
+
       this._applyAllHighlights();
+    }
+
+    /* ============================================================
+       PAYWALL — appended after the last free-preview page.
+       ============================================================ */
+    _renderPaywallCard(totalPages, previewPages) {
+      const locked = totalPages - previewPages;
+
+      const card = document.createElement('div');
+      card.className = 'pdfv-paywall';
+      card.innerHTML = `
+        <div class="pdfv-paywall-inner">
+          <div class="pdfv-paywall-icon">
+            <i class="fas fa-lock"></i>
+          </div>
+          <h3 class="pdfv-paywall-title">You've reached the end of the free preview</h3>
+          <p class="pdfv-paywall-sub">
+            You can read the first <strong>${previewPages}</strong> of
+            <strong>${totalPages}</strong> pages for free.
+            <span class="pdfv-paywall-locked">${locked} more page${locked === 1 ? '' : 's'} locked.</span>
+          </p>
+          <button type="button" class="btn btn-accent btn-lg pdfv-paywall-btn">
+            <i class="fas fa-crown"></i> Unlock the full document
+          </button>
+          <p class="pdfv-paywall-note">
+            <i class="fas fa-shield-halved"></i>
+            Secure checkout · Instant access
+          </p>
+        </div>
+      `;
+
+      const btn = card.querySelector('.pdfv-paywall-btn');
+      if (btn) {
+        btn.addEventListener('click', () => this._onPaywallClick());
+      }
+
+      this.pagesEl.appendChild(card);
+    }
+
+    /* ============================================================
+       PAYWALL — CTA handler. Closes viewer, opens payment modal.
+       ============================================================ */
+    _onPaywallClick() {
+      const courseId   = this.courseId;
+      const materialId = this.materialId;
+
+      this.close();
+
+      if (typeof window.showPaymentModal === 'function' && courseId) {
+        setTimeout(() => {
+          window.showPaymentModal(courseId, materialId);
+        }, 300);
+      } else if (typeof userToast === 'function') {
+        userToast('Payment is unavailable right now.', 'error');
+      }
     }
 
     async _renderPage(n) {
