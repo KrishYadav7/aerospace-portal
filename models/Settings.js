@@ -87,13 +87,13 @@ const settingsSchema = new mongoose.Schema({
   referralRewardDesc:   { type: String,  default: 'Reward every time your referrals hit the required threshold.' },
 
   /* Organization owner profile */
-  ownerProfile: {
+  /ownerProfile: {
     type: ownerProfileSchema,
     default: () => ({
-      name:  'Krish Yadav',
-      title: 'Founder & Course Director',
-      role:  'Founder',
-      bio:   'Academic achiever and experienced educator currently pursuing Aerospace Engineering at IIT Kharagpur. Passionate about translating complex mathematical and engineering principles into accessible concepts. Proven track record in mentoring 2,000+ students and producing structured academic content across core engineering subjects and competitive mathematics.',
+      name:  'Kana Ram Yadav',
+      title: 'Co-founder',
+      role:  '',
+      bio:   'Academic achiever and experienced educator',
       email: '',
       phone: '',
       photo: '',
