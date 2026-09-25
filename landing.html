@@ -2329,10 +2329,24 @@
   /* ---------- Fetch instructor profile (silent, non-blocking, lazy photo) ---------- */
   (async function loadInstructorProfile() {
     try {
-      const res = await fetch('/api/settings/owner', { cache: 'no-store' });
+      const res = await fetch('/api/settings/owner?_t=' + Date.now(), { cache: 'no-store' });
       const data = await res.json();
       if (!data || !data.success || !data.owner) return;
       const o = data.owner;
+
+      /* ⭐ If the admin has hidden the founder section, remove it entirely
+            from the landing page and strip every link that scrolls to it.
+            Details in the database are preserved — this only affects
+            what visitors see on the public front page. */
+      if (o.visible === false) {
+        const section = document.getElementById('instructor');
+        if (section) section.remove();
+
+        // Remove nav link "About" and footer link "Instructor" — they
+        // both point at #instructor and would scroll to nothing.
+        document.querySelectorAll('a[href="#instructor"]').forEach(a => a.remove());
+        return;
+      }
 
       if (o.name)  document.getElementById('instructorName').textContent  = o.name;
       if (o.title) document.getElementById('instructorTitle').textContent = o.title;
