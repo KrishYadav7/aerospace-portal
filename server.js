@@ -134,7 +134,31 @@ function cacheClear(prefix) {
 
 
 app.use(helmet({
-  contentSecurityPolicy: false,
+  /* ============================================================
+     CSP — minimal, surgical, zero-breakage
+     ------------------------------------------------------------
+     Full CSP (script-src) deliberately NOT enabled because the
+     app uses inline onclick handlers + 6 external CDNs. That
+     would require a large refactor (Phase 2).
+
+     Instead we lock down only the 4 directives that:
+       • stop clickjacking          → frame-ancestors
+       • stop plugin-based XSS      → object-src
+       • stop <base> tag hijack     → base-uri
+       • stop form-action hijack    → form-action
+
+     These cannot break any legitimate feature of the app.
+     ============================================================ */
+  contentSecurityPolicy: {
+    useDefaults: false,
+    directives: {
+      'frame-ancestors': ["'self'"],
+      'object-src': ["'none'"],
+      'base-uri': ["'self'"],
+      'form-action': ["'self'"]
+      // Intentionally NOT setting default-src / script-src / style-src yet
+    }
+  },
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
@@ -185,7 +209,31 @@ app.use('/api/courses', (req, res, next) => {
 });
 
 app.use(compression());
-app.use(cors());
+
+/* ============================================================
+   CORS — backward-compatible whitelist
+   ------------------------------------------------------------
+   • Agar ALLOWED_ORIGINS env var khali hai → sab allow (purana
+     behaviour, koi breakage nahi).
+   • Set karke → sirf listed origins allow honge.
+   • Same-origin (no Origin header) → hamesha allow (aapka
+     frontend aur API same domain par hain).
+   ============================================================ */
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);              // same-origin / curl / Postman
+    if (ALLOWED_ORIGINS.length === 0) return cb(null, true);  // env not set → allow all
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    console.warn('[cors] blocked origin:', origin);
+    cb(null, false);   // don't throw — just omit CORS headers
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 /* Raw body capture for Razorpay webhook — MUST run before global express.json() */
 app.use('/api/razorpay-webhook', express.raw({ type: 'application/json', limit: '2mb' }));
 // File uploads use multer (separate path); JSON bodies never exceed a few MB
@@ -1236,6 +1284,25 @@ const emailReplySchema = new mongoose.Schema({
 const EmailReply = mongoose.model('EmailReply', emailReplySchema);
 
 /* ============================================================
+   WEBHOOK EVENT DEDUPE
+   ------------------------------------------------------------
+   Razorpay retries failed webhooks up to 24h. Without dedupe,
+   the same payment.captured event gets processed multiple times
+   → double purchase / double subscription extension.
+   ============================================================ */
+const webhookEventSchema = new mongoose.Schema({
+  eventId:     { type: String, required: true, unique: true, index: true },
+  eventType:   { type: String },
+  processedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+// Auto-delete webhook events after 30 days (Razorpay stops retrying after 24h)
+webhookEventSchema.index({ processedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
+
+const WebhookEvent = mongoose.models.WebhookEvent ||
+  mongoose.model('WebhookEvent', webhookEventSchema);
+
+/* ============================================================
    PERSISTENT OTP STORE
    ------------------------------------------------------------
    Replaces in-memory Maps that lose all pending OTPs when the
@@ -1330,9 +1397,27 @@ function bumpStreak(user) {
 }
 
 /* ---- Subscription helpers ---- */
-async function getGlobalSettings() {
+/* 60-second in-memory cache — cleared automatically on any admin write.
+   Any code that updates settings should call invalidateGlobalSettingsCache(). */
+let _globalSettingsCache = null;
+let _globalSettingsCacheAt = 0;
+const GLOBAL_SETTINGS_TTL_MS = 60 * 1000;
+
+function invalidateGlobalSettingsCache() {
+  _globalSettingsCache = null;
+  _globalSettingsCacheAt = 0;
+}
+
+async function getGlobalSettings(force = false) {
+  if (!force &&
+      _globalSettingsCache &&
+      (Date.now() - _globalSettingsCacheAt) < GLOBAL_SETTINGS_TTL_MS) {
+    return _globalSettingsCache;
+  }
   let s = await Settings.findOne({ key: 'global' });
   if (!s) s = await Settings.create({ key: 'global' });
+  _globalSettingsCache = s;
+  _globalSettingsCacheAt = Date.now();
   return s;
 }
 
@@ -1440,6 +1525,7 @@ async function grantReferralReward(referrer, rewardDays, settings) {
   }
 
   await referrer.save();
+  invalidateGlobalSettingsCache();   // reward may extend subscription
   console.log(`[referral] ✅ Reward granted to ${referrer.username} (+${rewardDays} days)`);
 }
 
@@ -4200,6 +4286,7 @@ app.put('/api/admin/settings/owner', requireAdminAuth, async (req, res) => {
 
     await s.save();
     cacheClear('settings:');
+    invalidateGlobalSettingsCache();
 
     res.json({
       success: true,
@@ -4306,6 +4393,7 @@ app.put('/api/admin/settings/subscription', requireAdminAuth, async (req, res) =
     s.updatedAt = new Date();
     await s.save();
     cacheClear('settings:');
+    invalidateGlobalSettingsCache();
 
     res.json({
       success: true,
@@ -4374,6 +4462,7 @@ async function ensureRazorpayPlan(s) {
 
   s.razorpayPlanId = plan.id;
   await s.save();
+  invalidateGlobalSettingsCache();
   return plan.id;
 }
 
@@ -4457,6 +4546,7 @@ app.post('/api/admin/subscription-plans', requireAdminAuth, async (req, res) => 
     s.updatedAt = new Date();
     await s.save();
     cacheClear('settings:');
+    invalidateGlobalSettingsCache();
     res.json({ success: true, message: 'Plan created.', plan: s.subscriptionPlans[s.subscriptionPlans.length - 1] });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
@@ -4489,6 +4579,7 @@ app.put('/api/admin/subscription-plans/:planId', requireAdminAuth, async (req, r
     s.updatedAt = new Date();
     await s.save();
     cacheClear('settings:');
+    invalidateGlobalSettingsCache();
     res.json({ success: true, message: 'Plan updated.', plan });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
@@ -4505,6 +4596,7 @@ app.delete('/api/admin/subscription-plans/:planId', requireAdminAuth, async (req
     s.updatedAt = new Date();
     await s.save();
     cacheClear('settings:');
+    invalidateGlobalSettingsCache();
     res.json({ success: true, message: 'Plan deleted.' });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
@@ -5021,6 +5113,7 @@ app.put('/api/admin/referral-settings', requireAdminAuth, async (req, res) => {
     s.updatedAt = new Date();
     await s.save();
     cacheClear('settings:');
+    invalidateGlobalSettingsCache();
     res.json({
       success: true,
       message: 'Referral settings saved.',
@@ -5552,6 +5645,24 @@ app.post('/api/razorpay-webhook', async (req, res) => {
 
     const event = payload.event;
     const data  = payload.payload || {};
+
+    /* ---- Idempotency: bail out if this exact event was already processed ---- */
+    const eventId = String(
+      payload.event_id ||
+      (data.payment && data.payment.entity && data.payment.entity.id) ||
+      (data.subscription && data.subscription.entity && data.subscription.entity.id) ||
+      (event + ':' + JSON.stringify(payload.created_at || ''))
+    );
+
+    try {
+      await WebhookEvent.create({ eventId, eventType: event });
+    } catch (dupErr) {
+      if (dupErr && dupErr.code === 11000) {
+        console.log(`[Webhook] ⏭️  Duplicate event ${eventId} (${event}) — skipped`);
+        return res.status(200).json({ status: 'ok', duplicate: true });
+      }
+      console.warn('[Webhook] dedupe check failed (proceeding):', dupErr.message);
+    }
 
     if (event === 'payment.captured') {
       const payment = data.payment && data.payment.entity;
@@ -6978,12 +7089,25 @@ app.get('/api/admin/live-activity', requireAdminAuth, async (req, res) => {
    • Requires:       GEMINI_API_KEY in .env
    ============================================================ */
 
-/* ---- Rate limiter — 10 requests / minute / IP ---- */
+/* ---- Rate limiter — 10 requests / minute, per-user when possible ---- */
 const aiDoubtLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  // Prefer userId (from body) → per-user limit. Fall back to IP.
+  // This stops one abusive student from rate-limiting the whole hostel/campus.
+  keyGenerator: (req) => {
+    try {
+      if (req.body && req.body.userId) return 'u:' + String(req.body.userId).slice(0, 60);
+      const auth = req.headers.authorization || '';
+      if (auth.startsWith('Bearer ')) {
+        const decoded = jwt.verify(auth.slice(7), JWT_SECRET);
+        if (decoded && decoded.id) return 'u:' + String(decoded.id);
+      }
+    } catch (e) { /* invalid token — fall through to IP */ }
+    return 'ip:' + (req.ip || 'anon');
+  },
   message: { success: false, message: 'Too many AI requests. Please wait a minute.' }
 });
 
