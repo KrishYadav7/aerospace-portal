@@ -1396,6 +1396,91 @@ function bumpStreak(user) {
   if ((user.streakCount || 0) > (user.longestStreak || 0)) user.longestStreak = user.streakCount;
 }
 
+/* ============================================================
+   XP + LEVEL SYSTEM
+   ------------------------------------------------------------
+   Aerospace-themed ranks. XP accumulates from:
+     • Viewing a material ...................... +10 XP
+     • Completing a quiz ....................... +25 XP base
+       ↳ Accuracy bonus ........................ +0-25 XP
+       ↳ Perfect score bonus ................... +50 XP
+   Level is derived from total XP.
+   ============================================================ */
+const XP_LEVELS = [
+  { level: 1,  name: 'Cadet',           minXP: 0,     icon: 'fa-user' },
+  { level: 2,  name: 'Ensign',          minXP: 100,   icon: 'fa-medal' },
+  { level: 3,  name: 'Pilot',           minXP: 300,   icon: 'fa-plane' },
+  { level: 4,  name: 'Flight Lead',     minXP: 600,   icon: 'fa-jet-fighter' },
+  { level: 5,  name: 'Squadron Lead',   minXP: 1000,  icon: 'fa-fighter-jet' },
+  { level: 6,  name: 'Wing Commander',  minXP: 1500,  icon: 'fa-star' },
+  { level: 7,  name: 'Group Captain',   minXP: 2200,  icon: 'fa-shield-halved' },
+  { level: 8,  name: 'Air Commodore',   minXP: 3000,  icon: 'fa-crown' },
+  { level: 9,  name: 'Air Marshal',     minXP: 4000,  icon: 'fa-gem' },
+  { level: 10, name: 'Ace of Aces',     minXP: 5500,  icon: 'fa-trophy' }
+];
+
+function computeLevel(xp) {
+  const safeXP = Math.max(0, Number(xp) || 0);
+  let current = XP_LEVELS[0];
+  for (const lvl of XP_LEVELS) {
+    if (safeXP >= lvl.minXP) current = lvl;
+    else break;
+  }
+  const next = XP_LEVELS.find(l => l.minXP > safeXP) || null;
+  const rangeStart = current.minXP;
+  const rangeEnd = next ? next.minXP : current.minXP + 1000;
+  const progressInLevel = safeXP - rangeStart;
+  const levelRange = rangeEnd - rangeStart;
+  const pctToNext = next ? Math.round((progressInLevel / levelRange) * 100) : 100;
+
+  return {
+    level: current.level,
+    name: current.name,
+    icon: current.icon,
+    xp: safeXP,
+    minXP: rangeStart,
+    nextLevelXP: next ? rangeEnd : null,
+    nextLevelName: next ? next.name : null,
+    pctToNext,
+    isMax: !next
+  };
+}
+
+function awardXP(user, amount, reason) {
+  if (!user || !amount) return null;
+  const oldXP = Number(user.xp) || 0;
+  const oldLevel = computeLevel(oldXP);
+
+  user.xp = oldXP + Number(amount);
+  const newLevel = computeLevel(user.xp);
+  user.level = newLevel.level;
+
+  if (newLevel.level > oldLevel.level) {
+    if (!user.notifications) user.notifications = [];
+    user.notifications.push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      type: 'level-up',
+      title: `🎉 Level ${newLevel.level} — ${newLevel.name}!`,
+      body: `You've reached a new rank. Keep up the great work!`,
+      read: false,
+      createdAt: new Date()
+    });
+    if (user.notifications.length > 50) {
+      user.notifications = user.notifications.slice(-50);
+    }
+  }
+
+  return {
+    xp: user.xp,
+    gained: amount,
+    reason,
+    leveledUp: newLevel.level > oldLevel.level,
+    level: newLevel.level,
+    levelName: newLevel.name,
+    icon: newLevel.icon
+  };
+}
+
 /* ---- Subscription helpers ---- */
 /* 60-second in-memory cache — cleared automatically on any admin write.
    Any code that updates settings should call invalidateGlobalSettingsCache(). */
@@ -1447,6 +1532,11 @@ function serializeUser(user) {
     quizResults: Object.fromEntries(user.quizResults || new Map()),
     subscription: user.subscription || null,
     isSubscribed: userHasActiveSubscription(user),
+
+    /* XP & Level */
+    xp: user.xp || 0,
+    level: user.level || 1,
+    levelInfo: computeLevel(user.xp || 0),
 
     /* Referral program */
     referralCode:  user.referralCode || null,
@@ -3685,6 +3775,15 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       score, total: autoGradedCount
     });
 
+    // ⭐ Award XP for the quiz attempt
+    const baseXP = 25;
+    const accuracyBonus = autoGradedCount > 0
+      ? Math.round((score / autoGradedCount) * 25)
+      : 0;
+    const perfectBonus = (score === autoGradedCount && autoGradedCount > 0) ? 50 : 0;
+    const totalXP = baseXP + accuracyBonus + perfectBonus;
+    const xpResult = awardXP(user, totalXP, 'quiz-complete');
+
     await user.save();
     res.json({
       success: true,
@@ -3699,7 +3798,13 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       // ⭐ NEW: signals to frontend that admin review is pending
       subjectiveCount,
       subjectiveMaxTotal,
-      pendingEvaluation: subjectiveCount > 0
+      pendingEvaluation: subjectiveCount > 0,
+
+      // ⭐ NEW: XP feedback
+      xp: user.xp || 0,
+      level: user.level || 1,
+      levelInfo: computeLevel(user.xp || 0),
+      xpResult
     });
   } catch (e) {
     console.error('[quiz/grade]', e);
@@ -5864,23 +5969,38 @@ app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
     const cid = req.params.courseId;
     const mid = req.params.materialId;
     let arr = user.progress.get(cid) || [];
+
+    const wasAlreadyViewed = arr.includes(mid);
+
     if (viewed === false) arr = arr.filter(x => x !== mid);
-    else if (!arr.includes(mid)) arr.push(mid);
+    else if (!wasAlreadyViewed) arr.push(mid);
     user.progress.set(cid, arr);
 
+    let xpResult = null;
     if (viewed !== false) {
       user.lastActivity = { courseId: cid, materialId: mid, timestamp: new Date() };
       bumpStreak(user);
       logActivity(user, { type: 'view', courseId: cid, materialId: mid });
+
+      // ⭐ Award XP only on FIRST completion
+      if (!wasAlreadyViewed) {
+        xpResult = awardXP(user, 10, 'material-view');
+      }
     }
+
     await user.save();
+
     res.json({
       success: true,
       progress: Object.fromEntries(user.progress),
       lastActivity: user.lastActivity,
       streakCount: user.streakCount,
       longestStreak: user.longestStreak,
-      lastActiveDate: user.lastActiveDate
+      lastActiveDate: user.lastActiveDate,
+      xp: user.xp || 0,
+      level: user.level || 1,
+      levelInfo: computeLevel(user.xp || 0),
+      xpResult
     });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });

@@ -900,6 +900,84 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
 /* ============================================================
+   PDF THUMBNAIL SYSTEM
+   ------------------------------------------------------------
+   • Placeholder = beautiful CSS cover (instant)
+   • Real thumbnail = generated from page 1 when student opens PDF
+   • Cached in localStorage (max 80, LRU eviction)
+   ============================================================ */
+const PDF_THUMB_CACHE_KEY = 'aero_pdf_thumbs_v1';
+const PDF_THUMB_MAX_ENTRIES = 80;
+
+function _pdfThumbCacheGet() {
+  try {
+    const raw = localStorage.getItem(PDF_THUMB_CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function _pdfThumbCacheSet(cache) {
+  try {
+    const entries = Object.entries(cache);
+    if (entries.length > PDF_THUMB_MAX_ENTRIES) {
+      entries.sort((a, b) => (b[1].at || 0) - (a[1].at || 0));
+      cache = Object.fromEntries(entries.slice(0, PDF_THUMB_MAX_ENTRIES));
+    }
+    localStorage.setItem(PDF_THUMB_CACHE_KEY, JSON.stringify(cache));
+  } catch (e) {
+    try {
+      const entries = Object.entries(cache).sort((a,b) => (b[1].at||0) - (a[1].at||0));
+      const trimmed = Object.fromEntries(entries.slice(0, Math.floor(entries.length / 2)));
+      localStorage.setItem(PDF_THUMB_CACHE_KEY, JSON.stringify(trimmed));
+    } catch { /* give up silently */ }
+  }
+}
+
+function getPDFThumbnail(materialId) {
+  const cache = _pdfThumbCacheGet();
+  return cache[materialId] ? cache[materialId].url : null;
+}
+
+function savePDFThumbnail(materialId, dataUrl) {
+  const cache = _pdfThumbCacheGet();
+  cache[materialId] = { url: dataUrl, at: Date.now() };
+  _pdfThumbCacheSet(cache);
+}
+
+async function generateThumbnailFromPDFDoc(pdfDoc, maxWidth = 220) {
+  try {
+    const page = await pdfDoc.getPage(1);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = maxWidth / baseViewport.width;
+    const viewport = page.getViewport({ scale });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    return canvas.toDataURL('image/jpeg', 0.7);
+  } catch (e) {
+    console.warn('[thumbnail]', e.message);
+    return null;
+  }
+}
+
+function hydrateMaterialThumbs() {
+  document.querySelectorAll('.material-thumb[data-material-id]').forEach(el => {
+    const mid = el.dataset.materialId;
+    if (el.classList.contains('has-thumb')) return;
+    const cached = getPDFThumbnail(mid);
+    if (cached) {
+      el.innerHTML = `<img src="${cached}" alt="" loading="lazy" decoding="async">`;
+      el.classList.add('has-thumb');
+    }
+  });
+}
+/* ============================================================
    Role helpers — case/whitespace-tolerant admin check
    ============================================================ */
 function isAdmin(u) {
@@ -5638,6 +5716,7 @@ function invalidateCommunityCache() {
 }
 
 function renderStudentHome() {
+  renderXPWidget();
   renderSubscriptionBanner();
   renderStreakCard();
   renderContinueCard();
@@ -5646,6 +5725,7 @@ function renderStudentHome() {
   renderFriendsSection();
   loadApprovedFeedback();
   loadMyContributions();
+  renderTestimonials();
 
   // ⭐ Paint the grid immediately with whatever we already have in memory
   renderProfessorsGrid();
@@ -5666,7 +5746,76 @@ function renderStudentHome() {
     }
   });
 }
+/* ============================================================
+   DYNAMIC TESTIMONIALS — pulls from approved feedback DB
+   ============================================================ */
+async function renderTestimonials() {
+  const slider = document.getElementById('testimonialsSlider');
+  if (!slider) return;
 
+  // 30s in-memory cache
+  if (renderTestimonials._cache && (Date.now() - renderTestimonials._at) < 30000) {
+    paintTestimonials(slider, renderTestimonials._cache);
+    return;
+  }
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/feedback?_t=${Date.now()}`);
+    const list = (data && data.success && Array.isArray(data.feedback)) ? data.feedback : [];
+    renderTestimonials._cache = list;
+    renderTestimonials._at = Date.now();
+    paintTestimonials(slider, list);
+  } catch (e) {
+    console.warn('[testimonials]', e.message);
+    slider.innerHTML = `
+      <div class="empty-state" style="padding:30px 20px;">
+        <i class="fas fa-star"></i>
+        <p>No reviews yet — be the first to share yours!</p>
+      </div>`;
+  }
+}
+
+function paintTestimonials(slider, list) {
+  if (!list || list.length === 0) {
+    slider.innerHTML = `
+      <div class="empty-state" style="padding:40px 20px;">
+        <i class="fas fa-star-half-alt"></i>
+        <p>No reviews yet — be the first to share yours!</p>
+        <button class="btn btn-primary" style="margin-top:14px;"
+                onclick="openFeedbackModal()">
+          <i class="fas fa-pen"></i> Write a Review
+        </button>
+      </div>`;
+    return;
+  }
+
+  const top = list.slice(0, 6);
+  let html = '';
+  top.forEach(f => {
+    const name = f.studentName || f.studentUsername || 'Student';
+    const initials = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+    const stars = '★'.repeat(f.rating || 5) + '☆'.repeat(5 - (f.rating || 5));
+    const when = f.approvedAt || f.submittedAt
+      ? new Date(f.approvedAt || f.submittedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      : '';
+
+    html += `
+      <div class="testimonial-card testimonial-real">
+        <div class="testimonial-head">
+          <div class="testimonial-avatar">${escapeHtml(initials)}</div>
+          <div class="testimonial-meta">
+            <h4>${escapeHtml(name)}</h4>
+            <span class="testimonial-stars" aria-label="${f.rating || 5} stars">${stars}</span>
+          </div>
+          ${when ? `<span class="testimonial-date">${when}</span>` : ''}
+        </div>
+        ${f.title ? `<div class="testimonial-title">${escapeHtml(f.title)}</div>` : ''}
+        <p class="testimonial-body">${escapeHtml(f.message)}</p>
+        ${f.courseName ? `<div class="testimonial-course"><i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}</div>` : ''}
+      </div>`;
+  });
+  slider.innerHTML = html;
+}
 /* ------------------------------------------------------------
    Renders the "Our Team" professor grid (visible-only).
    Extracted so it can be re-run after a background refresh.
@@ -5741,26 +5890,107 @@ function renderStreakCard() {
       </div>
     </div>`;
 }
+/* ============================================================
+   XP + LEVEL WIDGET
+   ============================================================ */
+function renderXPWidget() {
+  const container = document.getElementById('streakCardContainer');
+  if (!container) return;
+
+  if (!currentUser || isAdmin(currentUser)) return;
+
+  const existing = document.getElementById('xpWidget');
+  if (existing) existing.remove();
+
+  const info = currentUser.levelInfo || {
+    level: 1, name: 'Cadet', xp: 0,
+    nextLevelXP: 100, pctToNext: 0, isMax: false
+  };
+  const xp = currentUser.xp || 0;
+
+  const widget = document.createElement('div');
+  widget.id = 'xpWidget';
+  widget.className = 'xp-widget';
+  widget.innerHTML = `
+    <div class="xp-badge">
+      <i class="fas ${info.icon || 'fa-user'}"></i>
+      <span class="xp-badge-lvl">${info.level}</span>
+    </div>
+    <div class="xp-body">
+      <div class="xp-top">
+        <span class="xp-rank">${escapeHtml(info.name)}</span>
+        <span class="xp-amount">
+          ${info.isMax
+            ? `<strong>${xp.toLocaleString()}</strong> XP · MAX`
+            : `<strong>${xp.toLocaleString()}</strong> / ${(info.nextLevelXP || 0).toLocaleString()} XP`}
+        </span>
+      </div>
+      <div class="xp-bar">
+        <div class="xp-fill" style="width:${info.pctToNext}%"></div>
+      </div>
+      ${!info.isMax
+        ? `<div class="xp-hint">${(info.nextLevelXP - xp).toLocaleString()} XP until <strong>${escapeHtml(info.nextLevelName || 'next rank')}</strong></div>`
+        : `<div class="xp-hint">🏆 You've reached the highest rank!</div>`}
+    </div>
+  `;
+
+  container.parentNode.insertBefore(widget, container);
+}
 
 function renderContinueCard() {
   const container = document.getElementById('continueCardContainer');
   if (!container) return;
+
   const la = currentUser?.lastActivity;
-  if (!la || !la.courseId || isAdmin(currentUser)) { container.innerHTML = ''; return; }
+  if (!la || !la.courseId || isAdmin(currentUser)) {
+    container.innerHTML = '';
+    return;
+  }
+
   const course = findCourse(la.courseId);
   if (!course) { container.innerHTML = ''; return; }
+
   const acc = accentStyle(course.code || course.name);
   const viewedCount = getProgress(course.id).length;
   const totalMats = (course.materials || []).length;
+  const pct = totalMats > 0 ? Math.round((viewedCount / totalMats) * 100) : 0;
+
+  // Circle geometry: r=19, circumference = 2πr ≈ 119.38
+  const radius = 19;
+  const circumference = 2 * Math.PI * radius;
+  const dash = (pct / 100) * circumference;
+
   container.innerHTML = `
     <div class="continue-card" style="${acc}">
-      <div class="continue-icon"><i class="fas fa-play-circle"></i></div>
+      <div class="continue-ring" aria-label="${pct}% complete">
+        <svg viewBox="0 0 44 44" width="64" height="64">
+          <defs>
+            <linearGradient id="contRingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%"   stop-color="#6366f1"/>
+              <stop offset="100%" stop-color="#06b6d4"/>
+            </linearGradient>
+          </defs>
+          <circle class="continue-ring-track"
+                  cx="22" cy="22" r="${radius}"
+                  fill="none" stroke-width="3.5"/>
+          <circle class="continue-ring-fill"
+                  cx="22" cy="22" r="${radius}"
+                  fill="none" stroke-width="3.5"
+                  stroke-linecap="round"
+                  stroke="url(#contRingGrad)"
+                  stroke-dasharray="${dash} ${circumference}"
+                  transform="rotate(-90 22 22)"/>
+        </svg>
+        <span class="continue-ring-pct">${pct}<span class="continue-ring-pct-sym">%</span></span>
+      </div>
       <div class="continue-info">
         <span class="continue-label"><i class="fas fa-history"></i> Continue where you left off</span>
         <h3>${escapeHtml(course.name)}</h3>
         <p>${viewedCount} of ${totalMats} materials completed · ${timeAgo(la.timestamp)}</p>
       </div>
-      <button class="btn btn-primary continue-btn" onclick="viewCourseDetail('${course.id}')"><i class="fas fa-play"></i> Resume</button>
+      <button class="btn btn-primary continue-btn" onclick="viewCourseDetail('${course.id}')">
+        <i class="fas fa-play"></i> Resume
+      </button>
     </div>`;
 }
 /* ============================================================
@@ -6334,6 +6564,9 @@ function renderCourseDetail(courseId) {
   }
 
   $('courseDetailContent').innerHTML = html;
+
+  // ⭐ Hydrate cached PDF thumbnails on the newly-rendered cards
+  setTimeout(() => hydrateMaterialThumbs(), 30);
 }
 
 function renderMaterialCard(course, m, isPurchased) {
@@ -6350,10 +6583,6 @@ function renderMaterialCard(course, m, isPurchased) {
   const isSubscribed   = !!currentUser?.isSubscribed;
   const isAdminUser    = isAdmin(currentUser);
 
-  /* ⭐ LOCK LOGIC:
-       • Course premium + student hasn't bought → ALL materials locked
-       • Material premium + student hasn't bought → ONLY that material locked
-       • Subscription = unlock everything */
   const courseLocked   = isCoursePremium && !isPurchased    && !isSubscribed;
   const materialLocked = isMatPremium    && !isMatPurchased && !isSubscribed;
   const isLocked       = !isAdminUser && (courseLocked || materialLocked);
@@ -6362,38 +6591,55 @@ function renderMaterialCard(course, m, isPurchased) {
   const viewed    = isMaterialViewed(course.id, m.id);
   const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
 
-  /* ============================================================
-     BUTTON LOGIC
-     ============================================================ */
+  // ─── PDF detection ───
+  const cleanUrl = (m.url || '').toLowerCase().split('?')[0].split('#')[0];
+  const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
+                cleanUrl.endsWith('.pdf') ||
+                (m.fileData || '').startsWith('data:application/pdf');
+
+  // ─── ⭐ Thumbnail (CSS cover for PDFs, real thumb if cached) ───
+  let thumbHtml = '';
+  if (isPdf) {
+    const cachedThumb = getPDFThumbnail(m.id);
+    const acc = getCourseAccent(course.code || course.name);
+    if (cachedThumb) {
+      thumbHtml = `<div class="material-thumb has-thumb" data-material-id="${m.id}">
+        <img src="${cachedThumb}" alt="" loading="lazy" decoding="async">
+        ${isLocked ? '<div class="material-thumb-lock"><i class="fas fa-lock"></i></div>' : ''}
+      </div>`;
+    } else {
+      thumbHtml = `<div class="material-thumb" data-material-id="${m.id}"
+                        style="background:linear-gradient(135deg, ${acc.from}, ${acc.to});">
+        <div class="material-thumb-cover">
+          <i class="fas fa-file-pdf"></i>
+          <span>${escapeHtml(String(m.type || 'PDF').toUpperCase())}</span>
+        </div>
+        ${isLocked ? '<div class="material-thumb-lock"><i class="fas fa-lock"></i></div>' : ''}
+      </div>`;
+    }
+  }
+
+  // ─── Button logic ───
   let fileActionHtml = '';
   if (isLocked) {
     if (isCoursePremium) {
-      // COURSE-level lock → single payment unlocks EVERYTHING
       fileActionHtml = `<button class="btn btn-warning btn-sm"
                           onclick="event.stopPropagation();showPaymentModal('${course.id}', null)">
                           <i class="fas fa-crown"></i> Unlock whole course ₹${coursePrice}
                        </button>`;
     } else {
-      // MATERIAL-level lock → only this file needs payment
       fileActionHtml = `<button class="btn btn-warning btn-sm"
                           onclick="event.stopPropagation();showPaymentModal('${course.id}', '${m.id}')">
                           <i class="fas fa-lock"></i> Unlock this file ₹${matPrice}
                        </button>`;
     }
   } else {
-    // Video
     if (m.type === 'video' && hasUrl && !hasFile) {
       fileActionHtml += `<button class="btn btn-primary btn-sm"
                           onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')">
                           <i class="fas fa-play"></i> Watch
                         </button>`;
     }
-
-    // PDF detection
-    const cleanUrl = (m.url || '').toLowerCase().split('?')[0].split('#')[0];
-    const isPdf = (m.fileName || '').toLowerCase().endsWith('.pdf') ||
-                  cleanUrl.endsWith('.pdf') ||
-                  (m.fileData || '').startsWith('data:application/pdf');
 
     if (hasFile && isPdf) {
       fileActionHtml += ` <button class="btn btn-primary btn-sm"
@@ -6425,31 +6671,19 @@ function renderMaterialCard(course, m, isPurchased) {
     }
   }
 
-  /* ============================================================
-     ⭐ BADGE LOGIC — 3 RULES
-       ① Course premium       → NO badge on material (badge lives on course header)
-       ② Material-only premium → PRO badge on that material
-       ③ Truly free            → FREE badge
-       Admin & unlocked students see UNLOCKED instead of PRO.
-     ============================================================ */
+  // ─── Badge logic ───
   let badgeHtml = '';
-
   if (isCoursePremium) {
-    // Course-level premium → don't repeat the badge on every file
     if (!isAdminUser && (isPurchased || isSubscribed)) {
-      // Optional: show subtle UNLOCKED confirmation
       badgeHtml = `<span class="mat-badge unlocked"><i class="fas fa-unlock"></i> UNLOCKED</span>`;
     }
-    // else: no badge at all — keeps the material card clean
   } else if (isMatPremium) {
-    // Material-only premium
     if (isAdminUser || isSubscribed || isMatPurchased) {
       badgeHtml = `<span class="mat-badge unlocked"><i class="fas fa-unlock"></i> UNLOCKED</span>`;
     } else {
       badgeHtml = `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`;
     }
   } else {
-    // Both free
     badgeHtml = `<span class="mat-badge free">FREE</span>`;
   }
 
@@ -6459,6 +6693,7 @@ function renderMaterialCard(course, m, isPurchased) {
 
   return `
     <div class="material-item ${isLocked ? 'locked-mat' : ''}">
+      ${thumbHtml}
       <div class="mat-head">
         <div class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</div>
         ${badgeHtml}
@@ -8415,6 +8650,16 @@ async function submitQuiz(opts = {}) {
     if (data.success) {
       st.submitted = true;
       st.response = data;
+
+      // ⭐ XP + level-up feedback
+      if (data.xpResult && data.xpResult.gained > 0) {
+        showToast(`+${data.xpResult.gained} XP · ${data.xpResult.reason}`, 'success');
+      }
+      if (data.xpResult && data.xpResult.leveledUp) {
+        setTimeout(() => {
+          showToast(`🎉 Level ${data.xpResult.level} — ${data.xpResult.levelName}!`, 'success');
+        }, 1200);
+      }
 
       stopQuizTimer();
       clearQuizAnswers(st.materialId);
@@ -13694,4 +13939,62 @@ setInterval(() => {
 /* ============================================================
    END Live Activity block
    ============================================================ */
-initApp();
+/* ============================================================
+   MOBILE BOTTOM NAVIGATION
+   ============================================================ */
+function mobileNavGo(dest) {
+  if (typeof navigateStudent === 'function') {
+    navigateStudent(dest);
+  }
+  updateMobileNavActive();
+  try { if (navigator.vibrate) navigator.vibrate(8); } catch (e) {}
+}
+
+function updateMobileNavActive() {
+  const nav = document.getElementById('mobileBottomNav');
+  if (!nav) return;
+
+  // Show only for logged-in students
+  const shouldShow = !!(currentUser && !isAdmin(currentUser));
+  nav.style.display = shouldShow ? '' : 'none';
+  if (!shouldShow) return;
+
+  let active = studentNav || 'home';
+  if (currentCourseId) active = '';   // in course detail — no tab active
+  if (studentNav === 'ai') active = 'ai';
+
+  nav.querySelectorAll('.mbn-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.nav === active);
+  });
+
+  const savedCount = (currentUser.bookmarks || []).length;
+  const badge = document.getElementById('mbnSavedBadge');
+  if (badge) {
+    if (savedCount > 0) {
+      badge.textContent = savedCount > 9 ? '9+' : savedCount;
+      badge.style.display = 'flex';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+}
+
+/* Auto-update active state whenever the app renders */
+(function hookMobileNavToRender() {
+  if (typeof window._renderAppNow === 'function') {
+    const orig = window._renderAppNow;
+    window._renderAppNow = function () {
+      orig.apply(this, arguments);
+      setTimeout(updateMobileNavActive, 0);
+    };
+  }
+  if (typeof window.renderApp === 'function') {
+    const orig = window.renderApp;
+    window.renderApp = function () {
+      orig.apply(this, arguments);
+      setTimeout(updateMobileNavActive, 60);
+    };
+  }
+})();
+
+   initApp();

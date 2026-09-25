@@ -293,11 +293,11 @@
 
         <section class="testimonials section-card">
           <h2><i class="fas fa-star"></i> What Our Students Say</h2>
-          <div class="testimonials-slider">
-            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"The course materials are incredibly well-organized. I could easily access video lectures and past papers – helped me ace my exams!"</p><h4>– Amit Kumar</h4></div>
-            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"The premium courses are worth every penny. The interactive content and detailed explanations gave me an edge in my projects."</p><h4>– Priya Sharma</h4></div>
-            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"I love the professor introductions – they really helped me choose my electives. The portal is a game-changer for aerospace students."</p><h4>– Rahul Verma</h4></div>
-            <div class="testimonial-card"><i class="fas fa-quote-left"></i><p>"From tutorials to question banks, everything is in one place. The payment process was smooth and instant access was great."</p><h4>– Sneha Patil</h4></div>
+          <div class="testimonials-slider" id="testimonialsSlider">
+            <div class="empty-state" style="padding:30px 20px;">
+              <i class="fas fa-spinner fa-spin"></i>
+              <p>Loading testimonials…</p>
+            </div>
           </div>
         </section>
 
@@ -1282,6 +1282,34 @@
   </div>
 
   <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ============ MOBILE BOTTOM NAVIGATION ============ -->
+  <nav class="mobile-bottom-nav" id="mobileBottomNav" aria-label="Primary mobile navigation" style="display:none;">
+    <a href="#" class="mbn-item" data-nav="home" onclick="event.preventDefault();mobileNavGo('home')">
+      <span class="mbn-icon"><i class="fas fa-house"></i></span>
+      <span class="mbn-label">Home</span>
+    </a>
+    <a href="#" class="mbn-item" data-nav="courses" onclick="event.preventDefault();mobileNavGo('courses')">
+      <span class="mbn-icon"><i class="fas fa-graduation-cap"></i></span>
+      <span class="mbn-label">Courses</span>
+    </a>
+    <a href="#" class="mbn-item mbn-item-ai" data-nav="ai" onclick="event.preventDefault();mobileNavGo('ai')">
+      <span class="mbn-icon"><i class="fas fa-robot"></i></span>
+      <span class="mbn-label">AI</span>
+    </a>
+    <a href="#" class="mbn-item" data-nav="saved" onclick="event.preventDefault();mobileNavGo('saved')">
+      <span class="mbn-icon">
+        <i class="fas fa-bookmark"></i>
+        <span class="mbn-badge" id="mbnSavedBadge" style="display:none;">0</span>
+      </span>
+      <span class="mbn-label">Saved</span>
+    </a>
+    <a href="#" class="mbn-item" data-nav="analytics" onclick="event.preventDefault();mobileNavGo('analytics')">
+      <span class="mbn-icon"><i class="fas fa-chart-line"></i></span>
+      <span class="mbn-label">Stats</span>
+    </a>
+  </nav>
+
 <!-- ============ CANCEL SUBSCRIPTION — OTP VERIFICATION MODAL ============ -->
 <div class="modal-overlay" id="cancelSubscriptionModal">
   <div class="modal-box" style="max-width:480px;">

@@ -22,6 +22,16 @@ const userSchema = new mongoose.Schema({
   longestStreak:  { type: Number, default: 0 },
   lastActiveDate: { type: String, default: null },
 
+  /* ============================================================
+     XP & LEVEL SYSTEM
+     ============================================================ */
+  xp:    { type: Number, default: 0, index: true },
+  level: { type: Number, default: 1 },
+  achievements: [{
+    id:         { type: String, required: true },
+    unlockedAt: { type: Date, default: Date.now }
+  }],
+
   notifications: [{
     id:        { type: String },
     type:      { type: String, default: 'info' },

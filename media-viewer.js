@@ -486,6 +486,17 @@
         if (!this.active) return;
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
+
+        // ⭐ Generate + cache thumbnail (fire-and-forget, non-blocking)
+        try {
+          if (this.materialId && this.materialId !== 'doc' &&
+              typeof generateThumbnailFromPDFDoc === 'function' &&
+              typeof savePDFThumbnail === 'function') {
+            generateThumbnailFromPDFDoc(this.pdfDoc, 220).then(dataUrl => {
+              if (dataUrl) savePDFThumbnail(this.materialId, dataUrl);
+            }).catch(() => {});
+          }
+        } catch (e) { /* silent */ }
       } catch (err) {
         console.error('[PDFViewer]', err);
         if (this.loaderEl) {
