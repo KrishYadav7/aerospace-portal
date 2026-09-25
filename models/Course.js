@@ -38,20 +38,25 @@ const quizQuestionSchema = new mongoose.Schema({
 }, { _id: true });
 
 /* ---------- Material ---------- */
+/* ---------- Material ---------- */
 const materialSchema = new mongoose.Schema({
   title: { type: String, required: true },
   type:  { type: String, required: true },
   description: String,
 
-  url:      String,   // primary URL — usually '/uploads/xxx.pdf' (disk, fast)
-  cloudUrl: String,   // Cloudinary backup — used to restore disk after deploy
-  fileData: String,   // legacy base64 (do not use for new uploads)
+  url:      String,
+  cloudUrl: String,
+  fileData: String,
   fileName: String,
 
-  cloudinaryPublicId: { type: String, default: '' },  // for deletion on Cloudinary
+  cloudinaryPublicId: { type: String, default: '' },
 
   isPremium: { type: Boolean, default: false },
   price: { type: Number, default: 0 },
+
+  // ⭐ NEW — Free Preview Percentage (0 = disabled, 1–100 = % of pages free)
+  previewPercent: { type: Number, default: 0, min: 0, max: 100 },
+
   estimatedTime: { type: String, default: '' },
   tags: { type: String, default: '' },
 

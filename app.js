@@ -989,6 +989,67 @@ function isAdmin(u) {
 function jsStr(value) {
   return escapeHtml(JSON.stringify(String(value == null ? '' : value)));
 }
+
+/* ============================================================
+   getMaterialAccessInfo — client mirror of server-side evaluator
+   ------------------------------------------------------------
+   Returns everything the UI needs to decide what to show:
+     • hasFullAccess  → user paid / subscribed / is admin
+     • canPreview     → material is premium AND previewPercent > 0
+     • previewPercent → % of pages free (0 = no preview)
+     • flags for building the right CTA (course vs material unlock)
+   ============================================================ */
+function getMaterialAccessInfo(course, mat) {
+  const isCoursePremium = course.isPremium === true || course.isPremium === 'true';
+  const isMatPremium    = mat.isPremium    === true || mat.isPremium    === 'true';
+  const previewPercent  = Math.max(0, Math.min(100, Number(mat.previewPercent) || 0));
+
+  /* Guests */
+  if (!currentUser) {
+    return {
+      hasFullAccess: false,
+      canPreview: false,
+      previewPercent: 0,
+      isCoursePremium,
+      isMatPremium,
+      reason: 'login-required'
+    };
+  }
+
+  /* Admins always get full access */
+  if (isAdmin(currentUser)) {
+    return {
+      hasFullAccess: true,
+      canPreview: false,
+      previewPercent: 0,
+      isCoursePremium,
+      isMatPremium
+    };
+  }
+
+  const purchases    = Array.isArray(currentUser.purchases) ? currentUser.purchases : [];
+  const ownsCourse   = purchases.includes(String(course.id));
+  const ownsMaterial = purchases.includes(String(mat.id));
+  const subscribed   = !!currentUser.isSubscribed;
+
+  const hasFullAccess = ownsCourse || ownsMaterial || subscribed;
+
+  const canPreview =
+    !hasFullAccess &&
+    isMatPremium && !isCoursePremium &&
+    previewPercent > 0;
+
+  return {
+    hasFullAccess,
+    canPreview,
+    previewPercent: canPreview ? previewPercent : 0,
+    isCoursePremium,
+    isMatPremium,
+    ownsCourse,
+    ownsMaterial,
+    subscribed
+  };
+}
 /* ============================================================
    MATERIAL TYPES — fixed + user-defined custom types
    ============================================================ */
@@ -2406,13 +2467,22 @@ function renderAdminAddMaterial(courseId) {
       <h3 class="editor-section-title"><i class="fas fa-cog"></i> Access & Settings</h3>
       <div class="editor-grid-3">
         <div class="form-group"><label>Access Level</label>
-          <label class="toggle-box pro" style="margin-top:6px;"><input type="checkbox" id="newMatPremium" onchange="document.getElementById('newMatPriceGroup').style.display=this.checked?'block':'none'"><span><i class="fas fa-crown"></i> PRO Material</span></label>
+          <label class="toggle-box pro" style="margin-top:6px;">
+            <input type="checkbox" id="newMatPremium"
+                   onchange="document.getElementById('newMatPriceGroup').style.display=this.checked?'block':'none';document.getElementById('newMatPreviewGroup').style.display=this.checked?'block':'none';">
+            <span><i class="fas fa-crown"></i> PRO Material</span>
+          </label>
         </div>
         <div class="form-group"><label>Estimated Time (Optional)</label><input type="text" id="newMatTime" placeholder="e.g. 45 mins"></div>
         <div class="form-group"><label>Tags (Optional)</label><input type="text" id="newMatTags" placeholder="e.g. aerodynamics, basics"></div>
       </div>
       <div class="form-group" id="newMatPriceGroup" style="display:none; margin-top:10px;">
         <label>Unlock Price (₹)</label><input type="number" id="newMatPrice" placeholder="e.g. 49" min="0" step="1">
+      </div>
+      <div class="form-group" id="newMatPreviewGroup" style="display:none; margin-top:10px;">
+        <label><i class="fas fa-eye"></i> Free Preview Percentage</label>
+        <input type="number" id="newMatPreview" value="0" min="0" max="100" step="1" placeholder="e.g. 10">
+        <span class="hint">Percentage of PDF pages free to read. <strong>0 = no preview.</strong> 10 = first 10% of pages.</span>
       </div>
     </div>
   `;
@@ -2435,6 +2505,11 @@ async function saveNewMaterialPage() {
       return showToast('Please enter a name for the custom material type.', 'error');
     }
 
+    const previewRaw = parseInt($('newMatPreview')?.value, 10);
+    const previewPercent = isPremium
+      ? Math.max(0, Math.min(100, Number.isFinite(previewRaw) ? previewRaw : 0))
+      : 0;
+
     const payload = {
       title,
       type: resolvedType,
@@ -2442,6 +2517,7 @@ async function saveNewMaterialPage() {
       url: fileUrl || $('newMatUrl').value.trim(),
       isPremium: isPremium,
       price: isPremium ? (parseFloat($('newMatPrice').value) || 0) : 0,
+      previewPercent: previewPercent,
       estimatedTime: $('newMatTime').value.trim(),
       tags: $('newMatTags').value.trim(),
       fileName: fileName || ''
@@ -4792,7 +4868,8 @@ function renderEditorMaterials(course) {
           <div class="form-group">
             <label>Access Level</label>
             <label class="toggle-box pro" style="margin-top:6px;">
-              <input type="checkbox" id="newMatInlinePremium">
+              <input type="checkbox" id="newMatInlinePremium"
+                     onchange="document.getElementById('newMatInlinePreviewGroup').style.display=this.checked?'block':'none';">
               <span><i class="fas fa-crown"></i> PRO Material</span>
             </label>
           </div>
@@ -4800,6 +4877,12 @@ function renderEditorMaterials(course) {
             <label>Price (₹) — only if PRO</label>
             <input type="number" id="newMatInlinePrice" value="0" min="0" step="1">
           </div>
+        </div>
+
+        <div class="form-group" id="newMatInlinePreviewGroup" style="display:none;">
+          <label><i class="fas fa-eye"></i> Free Preview Percentage</label>
+          <input type="number" id="newMatInlinePreview" value="0" min="0" max="100" step="1">
+          <span class="hint">0 = no preview. 10 = first 10% of the PDF is free to read.</span>
         </div>
 
         <div class="me-actions">
@@ -4991,6 +5074,13 @@ function renderMaterialEditorCard(courseId, m, idx) {
             </label>
           </div>
           <div class="form-group"><label>Price (₹)</label><input type="number" class="me-price" value="${m.price || 0}" min="0" step="1"></div>
+        </div>
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label><i class="fas fa-eye"></i> Free Preview Percentage</label>
+            <input type="number" class="me-preview" value="${m.previewPercent || 0}" min="0" max="100" step="1">
+            <span class="hint">0 = no preview. 10 = first 10% of the PDF is free.</span>
+          </div>
         </div>
         <div class="me-file-section">
           <label>File</label>
@@ -5360,13 +5450,20 @@ async function saveMaterialInline(courseId, materialId) {
     return showToast('Please enter a name for the custom material type.', 'error');
   }
 
+  const isPremium = el.querySelector('.me-premium').checked;
+  const previewRaw = parseInt(el.querySelector('.me-preview')?.value, 10);
+  const previewPercent = isPremium
+    ? Math.max(0, Math.min(100, Number.isFinite(previewRaw) ? previewRaw : 0))
+    : 0;
+
   const payload = {
     title: el.querySelector('.me-title').value.trim(),
     type: resolvedType,
     description: el.querySelector('.me-desc').value.trim(),
     url: el.querySelector('.me-url').value.trim(),
-    isPremium: el.querySelector('.me-premium').checked,
-    price: parseFloat(el.querySelector('.me-price').value) || 0
+    isPremium: isPremium,
+    price: parseFloat(el.querySelector('.me-price').value) || 0,
+    previewPercent: previewPercent
   };
   if (!payload.title) return showToast('Title required.', 'error');
   try {
@@ -5409,6 +5506,12 @@ function resetNewMaterialInlineForm() {
   const typeEl = $('newMatInlineType');
   if (typeEl) typeEl.value = 'other';
 
+  // ⭐ NEW — reset the preview field + hide its group
+  const previewEl = $('newMatInlinePreview');
+  if (previewEl) previewEl.value = '0';
+  const previewGroup = $('newMatInlinePreviewGroup');
+  if (previewGroup) previewGroup.style.display = 'none';
+
   const grp = $('newMatInlineCustomGroup');
   if (grp) grp.style.display = 'none';
 }
@@ -5442,6 +5545,11 @@ async function saveNewMaterialInline(courseId) {
 
   const isPremium = premEl ? premEl.checked : false;
   const price = isPremium ? (parseFloat(priceEl ? priceEl.value : '0') || 0) : 0;
+  // ⭐ NEW — read + clamp preview percentage
+  const previewRaw = parseInt($('newMatInlinePreview')?.value, 10);
+  const previewPercent = isPremium
+    ? Math.max(0, Math.min(100, Number.isFinite(previewRaw) ? previewRaw : 0))
+    : 0;
   const file = fileEl && fileEl.files ? fileEl.files[0] : null;
 
   const doSave = async (fileData, fileName, cloudUrl, publicId, diskName) => {
@@ -5458,6 +5566,7 @@ async function saveNewMaterialInline(courseId) {
       diskName: diskName || '',
       isPremium,
       price,
+      previewPercent,                       // ⭐ NEW
       fileData: isUploadedFile ? '' : (fileData || ''),
       fileName: fileName || ''
     };
@@ -6622,16 +6731,27 @@ function renderMaterialCard(course, m, isPurchased) {
   // ─── Button logic ───
   let fileActionHtml = '';
   if (isLocked) {
+    const previewPct = Math.max(0, Math.min(100, Number(m.previewPercent) || 0));
+    // ⭐ Preview button only for material-level premium (not course-wide premium)
+    const canPreview = !isCoursePremium && previewPct > 0;
+
+    if (canPreview) {
+      fileActionHtml += `<button class="btn btn-accent btn-sm"
+                          onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')">
+                          <i class="fas fa-eye"></i> Preview ${previewPct}%
+                        </button> `;
+    }
+
     if (isCoursePremium) {
-      fileActionHtml = `<button class="btn btn-warning btn-sm"
+      fileActionHtml += `<button class="btn btn-warning btn-sm"
                           onclick="event.stopPropagation();showPaymentModal('${course.id}', null)">
                           <i class="fas fa-crown"></i> Unlock whole course ₹${coursePrice}
-                       </button>`;
+                        </button>`;
     } else {
-      fileActionHtml = `<button class="btn btn-warning btn-sm"
+      fileActionHtml += `<button class="btn btn-warning btn-sm"
                           onclick="event.stopPropagation();showPaymentModal('${course.id}', '${m.id}')">
                           <i class="fas fa-lock"></i> Unlock this file ₹${matPrice}
-                       </button>`;
+                        </button>`;
     }
   } else {
     if (m.type === 'video' && hasUrl && !hasFile) {
@@ -9113,29 +9233,64 @@ function assertMaterialUnlocked(courseId, materialId, opts) {
 }
 
 /* ============================================================
-   viewFileOnline — PREMIUM GATED + AUTH-TOKEN-AWARE
+   viewFileOnline — PREMIUM + PREVIEW GATED + AUTH-TOKEN-AWARE
+   ------------------------------------------------------------
+   Behaviour:
+     • Full access   → viewer opens with all pages.
+     • Preview mode  → viewer opens with only previewPercent% pages
+                       and a paywall card appended at the end.
+     • Fully locked  → toast + abort (no network call).
    ============================================================ */
 async function viewFileOnline(courseId, materialId) {
-  /* ① HARD GATE — before ANY network call or viewer open */
-  if (!assertMaterialUnlocked(courseId, materialId)) return;
+  const course = findCourse(courseId);
+  if (!course) return showToast('Course not found.', 'error');
 
-  const course = findCourse(courseId); if (!course) return;
   const mat = (course.materials || []).find(m => m.id === materialId);
   if (!mat) return showToast('Material not found.', 'info');
+
+  if (!currentUser) {
+    return showToast('Please log in to open this material.', 'error');
+  }
+
+  /* ① Preview-aware gate — no network call before this passes */
+  const access = getMaterialAccessInfo(course, mat);
+  if (!access.hasFullAccess && !access.canPreview) {
+    if (access.isCoursePremium) {
+      return showToast('Purchase the course to access this material.', 'error');
+    }
+    return showToast('This content is locked. Purchase it to unlock.', 'error');
+  }
 
   try { await window.loadPDFJS(); }
   catch { return showToast('Could not load PDF viewer.', 'error'); }
 
-  /* ② Server re-verify — defends against stale client-side state */
+  /* Viewer options — the viewer decides how many pages to render */
+  const viewerOpts = {
+    materialId:     mat.id,
+    courseId:       course.id,
+    fileName:       mat.fileName,
+    title:          mat.title,
+    username:       currentUser.fullName || currentUser.username || 'Student',
+    hasFullAccess:  access.hasFullAccess,   // ⭐ NEW
+    previewPercent: access.previewPercent   // ⭐ NEW (0 when full access)
+  };
+
+  /* ② Server re-verify — authoritative source of truth */
   try {
     const check = await fetchJSON(
       `${API_BASE}/courses/${courseId}/materials/${materialId}/file?_t=${Date.now()}`
     );
+
     if (check && check.success === false &&
         (check.code === 'course-premium' || check.code === 'material-premium')) {
       return showToast(check.message || 'This content is locked.', 'error');
     }
+
     if (check && check.success && check.fileData) {
+      // Trust the server's verdict over the client cache
+      viewerOpts.hasFullAccess  = check.hasFullAccess === true;
+      viewerOpts.previewPercent = check.previewPercent || 0;
+
       const fd = check.fileData;
       const isPdfInline =
         String(fd).startsWith('data:application/pdf') ||
@@ -9143,20 +9298,11 @@ async function viewFileOnline(courseId, materialId) {
 
       if (isPdfInline) {
         if (fd.startsWith('data:')) {
-          window.PDFViewer.open({
-            data: fd,
-            materialId: mat.id, courseId: course.id,
-            fileName: mat.fileName, title: mat.title,
-            username: currentUser.fullName || currentUser.username || 'Student'
-          });
+          viewerOpts.data = fd;
         } else {
-          window.PDFViewer.open({
-            url: withAuthToken(fd),
-            materialId: mat.id, courseId: course.id,
-            fileName: mat.fileName, title: mat.title,
-            username: currentUser.fullName || currentUser.username || 'Student'
-          });
+          viewerOpts.url = withAuthToken(fd);
         }
+        window.PDFViewer.open(viewerOpts);
         return;
       }
     }
@@ -9167,7 +9313,7 @@ async function viewFileOnline(courseId, materialId) {
     console.warn('[viewFileOnline] file-check failed:', e.message);
   }
 
-  /* ③ Legacy URL path */
+  /* ③ Legacy URL path (disk / Cloudinary) */
   let fileUrl = null;
   if (mat.url && (mat.url.startsWith('/uploads/') || /^https?:/i.test(mat.url))) {
     fileUrl = mat.url;
@@ -9179,15 +9325,12 @@ async function viewFileOnline(courseId, materialId) {
                   || (mat.fileName || '').toLowerCase().endsWith('.pdf');
 
     if (isPdfUrl) {
-      const pdfUrl = fileUrl.startsWith('/uploads/') ? withAuthToken(fileUrl) : fileUrl;
-      window.PDFViewer.open({
-        url: pdfUrl,
-        materialId: mat.id, courseId: course.id,
-        fileName: mat.fileName, title: mat.title,
-        username: currentUser.fullName || currentUser.username || 'Student'
-      });
+      viewerOpts.url = fileUrl.startsWith('/uploads/')
+        ? withAuthToken(fileUrl)
+        : fileUrl;
+      window.PDFViewer.open(viewerOpts);
     } else {
-      showToast('Preview is only available for PDFs. Download is disabled.', 'error');
+      showToast('Preview is only available for PDFs.', 'error');
     }
     return;
   }

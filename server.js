@@ -328,13 +328,7 @@ const upload = multer({
    yesterday cannot stay in the browser cache after the admin
    flips it to Premium.
    ============================================================ */
-app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
-  const filename = path.basename(req.params.filename);   // sanitize
-  if (!filename || filename.includes('..')) {
-    return res.status(400).send('Invalid filename');
-  }
-
-  /* ---- ⭐ PREMIUM ACCESS CHECK — reject before serving any bytes ---- */
+  /* ---- ⭐ PREMIUM ACCESS CHECK — now preview-aware ---- */
   try {
     const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const owner = await Course.findOne({
@@ -346,8 +340,16 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
         m.url && m.url.endsWith('/' + filename)
       );
       if (mat) {
-        const access = checkMaterialAccess(req.authUser, owner, mat);
-        if (!access.allowed) {
+        const access = evaluateMaterialAccess(req.authUser, owner, mat);
+
+        // ⭐ Preview mode: user has no full access but a preview is allowed
+        if (!access.allowed && access.canPreview) {
+          res.setHeader('X-Aero-Preview-Percent', String(access.previewPercent));
+          res.setHeader('X-Aero-Preview-Mode', '1');
+          // fall through to file-serving code below
+        }
+        // Hard block (no preview available)
+        else if (!access.allowed) {
           res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
           res.setHeader('Pragma', 'no-cache');
           res.setHeader('Expires', '0');
@@ -361,82 +363,8 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res, next) => {
     }
   } catch (e) {
     console.warn('[uploads] premium check failed:', e.message);
-    // ⚠️ Fail-CLOSED — never serve premium content on a DB hiccup
     return res.status(503).send('Access check temporarily unavailable. Please retry.');
   }
-
-  /* ---- NO-CACHE headers for every successful response ---- */
-  const noStore = {
-    'Cache-Control': 'private, no-store, no-cache, must-revalidate',
-    'Pragma': 'no-cache',
-    'Expires': '0'
-  };
-
-  const diskPath = path.join(UPLOAD_DIR, filename);
-
-  /* ---- Fast path: file exists on disk ---- */
-  if (fs.existsSync(diskPath)) {
-    res.set(noStore);
-    return res.sendFile(diskPath);
-  }
-
-  /* ---- Slow path: try to restore from Cloudinary ---- */
-  console.log('[uploads] 💾 Disk miss for', filename, '— attempting Cloudinary restore…');
-
-  let cloudUrl = readCloudSidecar(filename);
-
-  // Sidecar also missing (fresh deploy) → look up in DB
-  if (!cloudUrl) {
-    try {
-      const course = await Course.findOne({
-        $or: [
-          { 'materials.url':      new RegExp('/uploads/' + filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') },
-          { 'materials.diskName': filename }
-        ]
-      })
-      .select('materials.url materials.cloudUrl materials.cloudinaryPublicId')
-      .lean();
-
-      if (course) {
-        const mat = (course.materials || []).find(m =>
-          (m.url && m.url.endsWith('/' + filename)) || m.diskName === filename
-        );
-        if (mat) {
-          cloudUrl = mat.cloudUrl;
-          if (!cloudUrl && mat.cloudinaryPublicId) {
-            cloudUrl = cloudinary.url(mat.cloudinaryPublicId, { secure: true, resource_type: 'auto' });
-          }
-        }
-      }
-    } catch (e) {
-      console.warn('[uploads] DB lookup failed:', e.message);
-    }
-  }
-
-  if (!cloudUrl) {
-    console.warn('[uploads] ❌ No Cloudinary URL for', filename);
-    return res.status(404).send('File not found and no cloud backup available.');
-  }
-
-  /* ---- Download from Cloudinary, cache to disk, then serve ---- */
-  try {
-    const response = await fetch(cloudUrl, { redirect: 'follow' });
-    if (!response.ok) throw new Error('Cloudinary HTTP ' + response.status);
-
-    const buffer = Buffer.from(await response.arrayBuffer());
-    fs.writeFileSync(diskPath, buffer);
-    writeCloudSidecar(filename, cloudUrl);
-    console.log('[uploads] ✅ Restored from Cloudinary:', filename,
-                '(' + Math.round(buffer.length / 1024 / 1024) + ' MB)');
-
-    res.set(noStore);
-    res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
-    res.send(buffer);
-  } catch (e) {
-    console.error('[uploads] ❌ Restore failed:', e.message);
-    res.status(502).send('Could not restore file from backup.');
-  }
-});
 
 /* ============================================================
    HYBRID UPLOAD — Disk (fast) + Cloudinary (durable backup)
@@ -845,29 +773,78 @@ async function attachUserFromToken(req, res, next) {
 
    Admins are ALWAYS allowed.
    ============================================================ */
-function checkMaterialAccess(user, course, material) {
-  if (!user) {
-    const cp = course    && (course.isPremium   === true || course.isPremium   === 'true');
-    const mp = material  && (material.isPremium === true || material.isPremium === 'true');
-    if (cp || mp) return { allowed: false, reason: 'login-required' };
-    return { allowed: true };
-  }
-  if (user.role === 'admin') return { allowed: true };
+/* ============================================================
+   PREMIUM ACCESS — single source of truth (with preview support)
+   ------------------------------------------------------------
+   Returns:
+     {
+       allowed:        bool   — full access granted
+       canPreview:     bool   — user may read the preview slice
+       previewPercent: number — % of pages free (0 if none)
+       reason:         string — why access was denied
+     }
+   ============================================================ */
+function evaluateMaterialAccess(user, course, material) {
+  const isCoursePremium = course   && (course.isPremium   === true || course.isPremium   === 'true');
+  const isMatPremium    = material && (material.isPremium === true || material.isPremium === 'true');
+  const previewPercent  = Math.max(0, Math.min(100, Number(material && material.previewPercent) || 0));
 
-  const purchases = Array.isArray(user.purchases) ? user.purchases : [];
+  /* ---- Guests ---- */
+  if (!user) {
+    if (isCoursePremium || isMatPremium) {
+      return {
+        allowed: false,
+        canPreview: false,                     // guests must log in first
+        previewPercent: 0,
+        reason: 'login-required'
+      };
+    }
+    return { allowed: true, canPreview: false, previewPercent: 0 };
+  }
+
+  /* ---- Admins always get full access ---- */
+  if (user.role === 'admin') {
+    return { allowed: true, canPreview: false, previewPercent: 0 };
+  }
+
+  const purchases    = Array.isArray(user.purchases) ? user.purchases : [];
   const ownsCourse   = course   && purchases.includes(String(course._id));
   const ownsMaterial = material && purchases.includes(String(material._id));
   const subscribed   = userHasActiveSubscription(user);
 
-  if (subscribed || ownsCourse) return { allowed: true };
+  /* ---- Paid access ---- */
+  if (subscribed || ownsCourse || ownsMaterial) {
+    return { allowed: true, canPreview: false, previewPercent: 0 };
+  }
 
-  const cp = course   && (course.isPremium   === true || course.isPremium   === 'true');
-  if (cp && !ownsCourse) return { allowed: false, reason: 'course-premium' };
+  /* ---- Course premium → whole course must be bought (no per-file preview) ---- */
+  if (isCoursePremium) {
+    return {
+      allowed: false,
+      canPreview: false,
+      previewPercent: 0,
+      reason: 'course-premium'
+    };
+  }
 
-  const mp = material && (material.isPremium === true || material.isPremium === 'true');
-  if (mp && !ownsMaterial) return { allowed: false, reason: 'material-premium' };
+  /* ---- Material premium → preview only if previewPercent > 0 ---- */
+  if (isMatPremium) {
+    return {
+      allowed: false,
+      canPreview: previewPercent > 0,
+      previewPercent,
+      reason: 'material-premium'
+    };
+  }
 
-  return { allowed: true };
+  /* ---- Free content ---- */
+  return { allowed: true, canPreview: false, previewPercent: 0 };
+}
+
+/* Backwards-compat shim — any old call sites keep working */
+function checkMaterialAccess(user, course, material) {
+  const r = evaluateMaterialAccess(user, course, material);
+  return { allowed: r.allowed, reason: r.reason };
 }
 /* ============================================================
    ADMIN — Razorpay health check
@@ -3259,11 +3236,11 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
 
       const mat = (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
       if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
-      if (!mat.fileData) return res.status(404).json({ success: false, message: 'No file attached.' });
 
-      // ⭐ PREMIUM ACCESS CHECK
-      const access = checkMaterialAccess(req.authUser, course, mat);
-      if (!access.allowed) {
+      // ⭐ Preview-aware access check
+      const access = evaluateMaterialAccess(req.authUser, course, mat);
+
+      if (!access.allowed && !access.canPreview) {
         return res.status(403).json({
           success: false,
           code: access.reason,
@@ -3271,7 +3248,17 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
         });
       }
 
-      res.json({ success: true, fileData: mat.fileData, fileName: mat.fileName || '' });
+      if (!mat.fileData) {
+        return res.status(404).json({ success: false, message: 'No file attached.' });
+      }
+
+      res.json({
+        success: true,
+        fileData: mat.fileData,
+        fileName: mat.fileName || '',
+        hasFullAccess:   !!access.allowed,
+        previewPercent:  access.canPreview ? access.previewPercent : 0
+      });
     } catch (e) {
       res.status(500).json({ success: false, message: 'Server error: ' + e.message });
     }
@@ -3298,9 +3285,9 @@ app.get('/api/courses/:courseId/materials/:materialId/full-quiz',
       );
       if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
 
-      // ⭐ PREMIUM ACCESS CHECK
-      const access = checkMaterialAccess(req.authUser, course, mat);
-      if (!access.allowed) {
+      // ⭐ PREVIEW-AWARE ACCESS CHECK — preview mode also lets the quiz through
+      const access = evaluateMaterialAccess(req.authUser, course, mat);
+      if (!access.allowed && !access.canPreview) {
         return res.status(403).json({
           success: false,
           code: access.reason,
@@ -3333,26 +3320,22 @@ app.get('/api/courses/:id', async (req, res) => {
           learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
           isPremium: 1, price: 1, announcements: 1, playlists: 1, doubts: 1,
           createdAt: 1, updatedAt: 1,
-          materials: {
-            $map: {
-              input: { $ifNull: ['$materials', []] },
-              as: 'm',
-              in: {
-                _id: '$$m._id',
-                title: '$$m.title',
-                type: '$$m.type',
-                description: '$$m.description',
-                url: '$$m.url',
-                fileName: '$$m.fileName',
-                isPremium: '$$m.isPremium',
-                price: '$$m.price',
-                estimatedTime: '$$m.estimatedTime',
-                tags: '$$m.tags',
-                examConfig: '$$m.examConfig',
-                quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
-              }
-            }
-          }
+       materials: {
+  $map: {
+    input: { $ifNull: ['$materials', []] },
+    as: 'm',
+    in: {
+      _id: '$$m._id', title: '$$m.title', type: '$$m.type',
+      description: '$$m.description', url: '$$m.url',
+      fileName: '$$m.fileName', isPremium: '$$m.isPremium',
+      price: '$$m.price',
+      previewPercent: '$$m.previewPercent',          // ⭐ NEW
+      estimatedTime: '$$m.estimatedTime',
+      tags: '$$m.tags', examConfig: '$$m.examConfig',
+      quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
+    }
+  }
+}
         }
       }
     ]);
@@ -3420,7 +3403,7 @@ app.put('/api/courses/:courseId/materials/:materialId', requireAdminAuth, async 
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
     const mat = course.materials.id(req.params.materialId);
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
-    const fields = ['title', 'type', 'description', 'url', 'isPremium', 'price', 'fileData', 'fileName'];
+    const fields = ['title', 'type', 'description', 'url', 'isPremium', 'price', 'previewPercent', 'fileData', 'fileName'];
     fields.forEach(f => { if (req.body[f] !== undefined) mat[f] = req.body[f]; });
     await course.save();
     cacheClear('courses:');
@@ -7037,6 +7020,7 @@ app.get('/api/admin/students/export-csv', requireAdminAuth, async (req, res) => 
 
     const csv = '\uFEFF' + lines.join('\n');
     const filename = `aero-students-backup-${new Date().toISOString().slice(0, 10)}.csv`;
+      res.setHeader('Access-Control-Expose-Headers', 'X-Aero-Preview-Percent, X-Aero-Preview-Mode');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(csv);
