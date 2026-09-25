@@ -1687,7 +1687,7 @@
           <i class="fas fa-right-to-bracket"></i> Log In
         </a>
         <a href="/app?intent=register" class="landing-cta-btn">
-          <i class="fas fa-rocket"></i> <span>Start Free</span>
+          <i class="fas fa-rocket"></i> <span>Get Started</span>
         </a>
       </div>
     </div>
@@ -1717,18 +1717,18 @@
 
         <div class="landing-hero-actions">
           <a href="/app?intent=register" class="landing-cta-magnet">
-            <i class="fas fa-unlock"></i> Unlock 5 Years of Solved PYQs — Free
+            <i class="fas fa-rocket"></i> Start Learning — 100% Free
           </a>
           <a href="#curriculum" class="landing-cta-ghost"
              onclick="scrollToId(event, 'curriculum')">
-            <i class="fas fa-list-check"></i> See Your Syllabus Covered
+            <i class="fas fa-list-check"></i> See What's Inside
           </a>
         </div>
 
         <div class="landing-hero-trust">
           <span><i class="fas fa-bolt"></i> Setup in 30 seconds</span>
-          <span><i class="fas fa-shield-halved"></i> No credit card, ever</span>
-          <span><i class="fas fa-download"></i> 2,847 downloads this week</span>
+          <span><i class="fas fa-infinity"></i> Free forever — no card needed</span>
+          <span><i class="fas fa-code-branch"></i> Open &amp; community-driven</span>
         </div>
 
         <!-- Material type pills — matches the new tagline exactly -->
@@ -1873,12 +1873,12 @@
             <i class="fas fa-circle-check"></i>
             <div>
               <strong>Every subject above has PYQs, tutorials, and video lectures.</strong>
-              <span>Register free to unlock 5 years of solved papers for your semester.</span>
+              <span>Register free to access solved papers, notes, and everything else.</span>
             </div>
           </div>
           <a href="/app?intent=register" class="landing-cta-magnet"
              style="padding:14px 28px;font-size:14.5px;">
-            <i class="fas fa-unlock"></i> Unlock Free Access
+            <i class="fas fa-rocket"></i> Get Started Free
           </a>
         </div>
       </div>
@@ -1990,7 +1990,7 @@
               <div class="landing-preview-row">
                 <span class="landing-preview-chip">SEM 5</span>
                 <span class="landing-preview-chip">AERODYNAMICS</span>
-                <span class="landing-preview-chip gold">PREMIUM</span>
+                <span class="landing-preview-chip gold">FEATURED</span>
               </div>
               <div class="landing-preview-card">
                 <div class="landing-preview-card-icon"><i class="fas fa-video"></i></div>
@@ -2156,19 +2156,19 @@
         <div class="landing-cta-inner reveal">
           <h2>Ready to stop guessing<br>and start solving?</h2>
           <p>
-            Join thousands of aerospace students already using AeroGyan.
-            Register in 30 seconds — no credit card, no spam, just results.
+            Join a growing community of aerospace students using AeroGyan every day.
+            Register in 30 seconds — everything is open and free.
           </p>
           <div class="landing-hero-actions" style="margin-top:32px;">
             <a href="/app?intent=register" class="landing-cta-magnet"
                style="padding:18px 42px;font-size:16px;">
-              <i class="fas fa-user-plus"></i> Create Your Free Account
+              <i class="fas fa-rocket"></i> Start Learning Free
             </a>
           </div>
           <div class="landing-hero-trust" style="margin-top:22px;">
             <span><i class="fas fa-bolt"></i> Instant access</span>
             <span><i class="fas fa-lock"></i> Secure OTP login</span>
-            <span><i class="fas fa-infinity"></i> Free forever tier</span>
+            <span><i class="fas fa-heart"></i> Built by students, for students</span>
           </div>
         </div>
       </div>
@@ -2206,7 +2206,7 @@
       <div class="landing-footer-col">
         <h4>Account</h4>
         <a href="/app">Sign In</a>
-        <a href="/app">Register</a>
+        <a href="/app?intent=register">Register Free</a>
         <a href="/app">Forgot Password</a>
       </div>
 
@@ -2495,8 +2495,8 @@
     const cta = document.createElement('div');
     cta.className = 'lp-mini-cta';
     cta.innerHTML =
-      '<span class="lp-mini-cta-text"><i class="fas fa-bolt"></i> Unlock 5 years of solved PYQs — free</span>' +
-      '<a href="/app?intent=register" class="lp-mini-cta-btn"><i class="fas fa-unlock"></i> Start Free</a>' +
+      '<span class="lp-mini-cta-text"><i class="fas fa-bolt"></i> Notes · PYQs · Lectures — all free</span>' +
+      '<a href="/app?intent=register" class="lp-mini-cta-btn"><i class="fas fa-rocket"></i> Start Learning</a>' +
       '<button class="lp-mini-cta-close" aria-label="Dismiss"><i class="fas fa-times"></i></button>';
     document.body.appendChild(cta);
     let dismissed = false;
@@ -2668,48 +2668,59 @@
       features.parentNode.insertBefore(sec, features.nextSibling);
     }
 
-    /* 8c. Comparison table — insert after "materials" section */
+    /* 8c. "Everything Included" — insert after "materials" section */
     const materials = $('#materials');
     if (materials && materials.parentNode) {
       const sec = document.createElement('section');
       sec.className = 'landing-full';
-      sec.id = 'lp-compare-sec';
+      sec.id = 'lp-included-sec';
+
+      const items = [
+        { icon: 'fa-video',             tone: 'brand',   title: 'Video Lectures',          desc: 'Curated, semester-mapped lectures' },
+        { icon: 'fa-file-lines',        tone: 'violet',  title: 'Lecture Notes',           desc: 'Complete, well-formatted notes' },
+        { icon: 'fa-file-pdf',          tone: 'cyan',    title: 'Previous Year Papers',    desc: 'Years of solved PYQs, exam-ready' },
+        { icon: 'fa-pen-ruler',         tone: 'emerald', title: 'Tutorial Sheets',         desc: 'Practice problems with solutions' },
+        { icon: 'fa-chalkboard',        tone: 'gold',    title: 'Slides & Presentations',  desc: 'Class slides and topic summaries' },
+        { icon: 'fa-robot',             tone: 'rose',    title: 'AI Doubt Solver',         desc: 'Ask anything, get step-by-step help' },
+        { icon: 'fa-file-circle-check', tone: 'brand',   title: 'Auto-Graded Quizzes',     desc: 'Practice with instant feedback' },
+        { icon: 'fa-chart-line',        tone: 'cyan',    title: 'Progress Analytics',      desc: 'See exactly where you stand' },
+        { icon: 'fa-award',             tone: 'emerald', title: 'Completion Certificates', desc: 'Earn a signed certificate per course' }
+      ];
+
+      const cards = items.map(it => `
+        <div class="landing-feature reveal reveal-d1" style="padding:22px 20px;">
+          <div class="landing-feature-icon tone-${it.tone}" style="width:48px;height:48px;font-size:20px;margin-bottom:14px;border-radius:12px;">
+            <i class="fas ${it.icon}"></i>
+          </div>
+          <h3 style="font-size:15px;">${it.title}</h3>
+          <p style="font-size:13px;">${it.desc}</p>
+        </div>`).join('');
+
       sec.innerHTML = `
         <div class="landing-container">
           <div class="landing-section-head reveal">
-            <span class="landing-section-eyebrow"><i class="fas fa-scale-balanced"></i> Free vs Premium</span>
-            <h2>Start free. <em>Upgrade when ready.</em></h2>
+            <span class="landing-section-eyebrow"><i class="fas fa-gift"></i> Everything Included</span>
+            <h2>All of this is <em>completely free</em></h2>
             <p class="landing-section-sub">
-              No credit card required to start. Upgrade any time and unlock every course instantly.
+              No paywalls. No premium tiers. No credit cards. Just open access to everything
+              you need to succeed in your aerospace courses.
             </p>
           </div>
-          <div class="lp-compare reveal reveal-d1">
-            <table>
-              <thead>
-                <tr>
-                  <th>Feature</th>
-                  <th style="text-align:center;">Free</th>
-                  <th class="lp-col-pro" style="text-align:center;">Premium</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr><td>PYQs (Previous Year Questions)</td><td style="text-align:center;"><i class="fas fa-check lp-check"></i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr><td>Tutorial Sheets</td><td style="text-align:center;"><i class="fas fa-check lp-check"></i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr><td>Video Lectures</td><td style="text-align:center;"><i class="fas fa-cross lp-cross">—</i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr><td>Lecture Notes (full library)</td><td style="text-align:center;"><i class="fas fa-cross lp-cross">—</i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr><td>Practice Papers &amp; Quizzes</td><td style="text-align:center;"><i class="fas fa-cross lp-cross">—</i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr><td>AI Doubt Solver (unlimited)</td><td style="text-align:center;"><i class="fas fa-cross lp-cross">Limited</i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr><td>Personal Analytics &amp; Heatmap</td><td style="text-align:center;"><i class="fas fa-cross lp-cross">—</i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr><td>Completion Certificates</td><td style="text-align:center;"><i class="fas fa-cross lp-cross">—</i></td><td class="lp-col-pro" style="text-align:center;"><i class="fas fa-check lp-check"></i></td></tr>
-                <tr class="lp-cta-row">
-                  <td colspan="3">
-                    <a href="/app?intent=register" class="landing-cta-magnet" style="padding:14px 30px;font-size:14.5px;">
-                      <i class="fas fa-unlock"></i> Start Free — Upgrade Anytime
-                    </a>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          <div class="landing-features-grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr));">
+            ${cards}
+          </div>
+          <div class="landing-curriculum-cta reveal" style="margin-top:40px;">
+            <div class="landing-curriculum-cta-text">
+              <i class="fas fa-unlock"></i>
+              <div>
+                <strong>Everything above, unlocked from day one.</strong>
+                <span>Register in 30 seconds — start learning immediately.</span>
+              </div>
+            </div>
+            <a href="/app?intent=register" class="landing-cta-magnet"
+               style="padding:14px 28px;font-size:14.5px;">
+              <i class="fas fa-rocket"></i> Create Free Account
+            </a>
           </div>
         </div>`;
       materials.parentNode.insertBefore(sec, materials.nextSibling);
@@ -2732,8 +2743,8 @@
           </div>
           <div class="lp-faq-list">
             <div class="lp-faq-item reveal reveal-d1">
-              <button class="lp-faq-q" type="button">Is AeroGyan really free to start?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
-              <div class="lp-faq-a">Yes. Register in 30 seconds and instantly unlock years of solved PYQs and tutorial sheets — no credit card, no hidden charges, no spam. Premium unlocks video lectures, full notes, and quizzes.</div>
+              <button class="lp-faq-q" type="button">What is AeroGyan?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
+              <div class="lp-faq-a">AeroGyan is a free, student-built course materials hub for IIT Kharagpur's Aerospace Engineering department. It aggregates video lectures, notes, PYQs, tutorials, slides, quizzes, and an AI doubt solver — all in one place, all open to every student.</div>
             </div>
             <div class="lp-faq-item reveal reveal-d1">
               <button class="lp-faq-q" type="button">Which subjects are covered?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
@@ -2741,15 +2752,15 @@
             </div>
             <div class="lp-faq-item reveal reveal-d1">
               <button class="lp-faq-q" type="button">How is this different from YouTube?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
-              <div class="lp-faq-a">Structure. Everything is mapped to your semester and syllabus, with PYQs, tutorials, quizzes, and analytics all in one place. It's built to help you <em>pass</em>, not just watch.</div>
+              <div class="lp-faq-a">Structure. Everything is mapped to your semester and syllabus, with PYQs, tutorials, quizzes, and analytics all in one place. It's built to help you <em>pass</em>, not just watch random lectures.</div>
             </div>
             <div class="lp-faq-item reveal reveal-d1">
-              <button class="lp-faq-q" type="button">Can I cancel my subscription anytime?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
-              <div class="lp-faq-a">Yes. Cancel in one click from your dashboard. Your access continues until the end of the billing period — no hoops, no phone calls, no dark patterns.</div>
+              <button class="lp-faq-q" type="button">Is the content really free?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
+              <div class="lp-faq-a">Yes — every course, every video, every note, every quiz. No paywalls, no premium tiers, no credit cards. Register in 30 seconds and start learning immediately.</div>
             </div>
             <div class="lp-faq-item reveal reveal-d1">
               <button class="lp-faq-q" type="button">Is my data safe?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
-              <div class="lp-faq-a">Every login is protected with OTP-based two-factor authentication. Payments are processed by Razorpay — we never see or store your card details.</div>
+              <div class="lp-faq-a">Yes. Every login is protected with OTP-based two-factor authentication. We don't ask for payment details — because there's nothing to pay.</div>
             </div>
             <div class="lp-faq-item reveal reveal-d1">
               <button class="lp-faq-q" type="button">Can I access AeroGyan on my phone?<span class="lp-faq-icon"><i class="fas fa-plus"></i></span></button>
@@ -2816,7 +2827,7 @@
   function setupSocialProof() {
     const names = ['Rohan', 'Priya', 'Amit', 'Sneha', 'Rahul', 'Ananya', 'Vikram', 'Kavya', 'Aditya', 'Meera'];
     const cities = ['Delhi', 'Bengaluru', 'Mumbai', 'Chennai', 'Pune', 'Hyderabad', 'Kolkata', 'Jaipur'];
-    const actions = ['just joined AeroGyan', 'unlocked the PYQ library', 'started Aerodynamics I', 'took a practice quiz'];
+    const actions = ['just joined AeroGyan', 'explored the PYQ library', 'started Aerodynamics I', 'took a practice quiz'];
     const pick = a => a[Math.floor(Math.random() * a.length)];
     const toast = document.createElement('div');
     toast.className = 'lp-sp-toast';
