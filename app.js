@@ -2725,11 +2725,22 @@ function navigateStudent(dest) {
 
   renderApp();
 }
-function viewCourseDetail(courseId, filter = 'all') {
-  currentCourseId = courseId; window.currentSelectedCourseId = courseId;
+async function viewCourseDetail(courseId, filter = 'all') {
+  currentCourseId = courseId;
+  window.currentSelectedCourseId = courseId;
   editingCourseId = null;
   currentMaterialFilter = filter;
-  pushHash(`#/course/${courseId}`); renderApp();
+  pushHash(`#/course/${courseId}`);
+
+  // ⭐ FIX: Force a fresh fetch of this specific course from the server
+  // to prevent stale 'isPremium' flags causing UI/Server mismatches.
+  try {
+    await fetchSingleCourse(courseId);
+  } catch (e) {
+    console.warn('[viewCourseDetail] fetch failed, using cached data:', e);
+  }
+  
+  renderApp();
 }
 function goBackFromDetail() {
   if (history.length > 1) history.back();
