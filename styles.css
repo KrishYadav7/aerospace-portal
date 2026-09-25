@@ -3871,6 +3871,11 @@ input, textarea, select { font-family: inherit; }
   min-height: 34px;
   align-items: center;
 }
+/* Admin cards render only the delete button (no bookmark) — drop
+   the left gutter so the code chip hugs the edge. */
+.course-card:not(.has-thumb):not(:has(.bookmark-btn)) .course-code {
+  padding-left: 0;
+}
 /* ============================================================
    44. SUBSCRIPTION / AUTO-PAY
    ============================================================ */

@@ -1220,16 +1220,21 @@ function normalizePhone(p) {
    DB
    ============================================================ */
 mongoose.connect(process.env.MONGO_URI, {
-  maxPoolSize: 10,               // Reduced from 50 to prevent overwhelming the DB
-  minPoolSize: 2,                // Reduced from 5
-  maxIdleTimeMS: 30000,
-  serverSelectionTimeoutMS: 30000, // Increased from 5s to 30s to allow slower networks
+  maxPoolSize: 10,
+  minPoolSize: 2,
+  /* ⚠️ Previous value was 30 s, which caused constant
+     "disconnected / connected" flapping on Render's free tier —
+     the driver closed idle sockets faster than the topology monitor
+     could reuse them. 5 min is the standard default and stops the
+     churn entirely. */
+  maxIdleTimeMS: 5 * 60 * 1000,
+  serverSelectionTimeoutMS: 30000,
   socketTimeoutMS: 45000,
   connectTimeoutMS: 10000,
   family: 4,
   retryWrites: true,
   retryReads: true,
-  bufferCommands: false          // ⭐ CRITICAL: Fail fast instead of hanging
+  bufferCommands: false
 })
   .then(() => console.log('🚀 MongoDB Connected — pool ready'))
   .catch((err) => console.error('❌ MongoDB Error:', err.message));
@@ -3700,14 +3705,20 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
         correct = !isNaN(chosen) && !isNaN(min) && !isNaN(max) &&
                   chosen >= min && chosen <= max;
       }
-      else if (qType === 'matrix') {
+           else if (qType === 'matrix') {
         const chosen = Array.isArray(ans) ? ans : [];
         const rows = q.matrixRows || [];
         if (rows.length === 0) correct = false;
         else {
           let hits = 0;
           rows.forEach((row, ri) => {
-            if (Number(chosen[ri]) === Number(row.correctIndex)) hits++;
+            const val = chosen[ri];
+            /* ⚠️ A missing row serialises as null over JSON.
+               Number(null) === 0, so without this guard a blank row
+               would be counted as correct whenever the true answer is
+               index 0. Reject null/undefined/empty outright. */
+            if (val === null || val === undefined || val === '') return;
+            if (Number(val) === Number(row.correctIndex)) hits++;
           });
           correct = (hits === rows.length);
         }
@@ -6049,9 +6060,16 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
 /* ============================================================
    VIDEO SESSION — PREMIUM PROTECTED (checks COURSE + MATERIAL)
    ============================================================ */
-app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) => {
+app.post('/api/materials/:courseId/:materialId/video-session',
+  attachUserFromToken,
+  async (req, res) => {
   try {
-    const { userId } = req.body || {};
+    /* ⚠️ SECURITY: We must NOT trust a client-supplied userId — a
+       student could pass another student's _id and stream their
+       premium video. The attachUserFromToken middleware reads the
+       signed JWT from the Authorization header (added automatically
+       by the client-side fetch interceptor) and gives us an
+       authoritative req.authUser. */
 
     if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
       return res.status(400).json({ success: false, message: 'Invalid course ID.' });
@@ -6069,14 +6087,13 @@ app.post('/api/materials/:courseId/:materialId/video-session', async (req, res) 
     const isPremiumCourse = course.isPremium === true || course.isPremium === 'true';
 
     if (isPremiumMat || isPremiumCourse) {
-      if (!userId) {
+      const user = req.authUser;   // ← authoritative, from the JWT
+      if (!user) {
         return res.status(403).json({
           success: false,
           message: 'Purchase or subscription required to watch this video.'
         });
       }
-      const user = await User.findById(userId).select('role purchases subscription').lean();
-      if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
       const ownsCourse   = (user.purchases || []).includes(String(course._id));
       const ownsMaterial = (user.purchases || []).includes(String(mat._id));

@@ -8432,7 +8432,9 @@ function renderQuizExamShell() {
     if (q.type === 'integer') return s + (a !== '' && a !== null && a !== undefined && !isNaN(Number(a)) ? 1 : 0);
     if (q.type === 'matrix') {
       const rows = q.matrixRows || [];
-      const filled = Array.isArray(a) ? a.filter(x => x !== undefined && x !== '').length : 0;
+      const filled = Array.isArray(a)
+        ? a.filter(x => x !== undefined && x !== null && x !== '').length
+        : 0;
       return s + (filled >= rows.length ? 1 : 0);
     }
     return s + (Array.isArray(a) ? (a.length > 0 ? 1 : 0) : (a >= 0 ? 1 : 0));
@@ -8477,7 +8479,7 @@ function renderQuizExamShell() {
       const a = st.answers[qi];
       const isAnswered =
         qType === 'integer' ? (a !== '' && a !== null && a !== undefined && !isNaN(Number(a))) :
-        qType === 'matrix'  ? (Array.isArray(a) && a.filter(x => x !== undefined && x !== '').length >= (q.matrixRows || []).length) :
+        qType === 'matrix'  ? (Array.isArray(a) && a.filter(x => x !== undefined && x !== null && x !== '').length >= (q.matrixRows || []).length) :
                               (Array.isArray(a) ? a.length > 0 : (a >= 0));
 
       qHtml += `<div class="quiz-play-card ${isAnswered ? 'answered' : ''}">
@@ -8586,8 +8588,22 @@ function _onExamVisibilityChange() {
 function _onExamWindowBlur() {
   if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
   if (document.querySelector('.modal-overlay.active')) return;
-  if (window.__examAllowBlur) return;   // ⭐ ADD: file picker grace period
+  if (window.__examAllowBlur) return;   // file picker grace period
   _handleExamViolation('The exam window lost focus.');
+}
+
+/* Allow a brief window-blur without triggering a proctoring violation.
+   Used when the student opens the OS file picker for subjective uploads.
+   The flag auto-clears after 8 s — this is CRITICAL: if the student
+   cancels the file dialog, the input's onchange never fires, and
+   without this timer the proctoring would stay disabled for the rest
+   of the exam. */
+function allowExamBlurBriefly() {
+  window.__examAllowBlur = true;
+  clearTimeout(window.__examBlurTimer);
+  window.__examBlurTimer = setTimeout(() => {
+    window.__examAllowBlur = false;
+  }, 8000);
 }
 
 function _onExamFullscreenChange() {
@@ -8776,7 +8792,8 @@ async function submitQuiz(opts = {}) {
         }
       } else if (q.type === 'matrix') {
         const rows = q.matrixRows || [];
-        if (!Array.isArray(a) || a.filter(x => x !== undefined && x !== '').length < rows.length) {
+        if (!Array.isArray(a) ||
+            a.filter(x => x !== undefined && x !== null && x !== '').length < rows.length) {
           return showToast(`Please match all items in Q${i + 1}.`, 'error');
         }
       } else {
@@ -8909,7 +8926,8 @@ function _isQuestionAnswered(q, a) {
   }
   if (qType === 'matrix') {
     const rows = q.matrixRows || [];
-    return Array.isArray(a) && a.filter(x => x !== undefined && x !== '').length >= rows.length;
+    return Array.isArray(a) &&
+      a.filter(x => x !== undefined && x !== null && x !== '').length >= rows.length;
   }
   return Array.isArray(a) ? a.length > 0 : (a >= 0);
 }
@@ -9026,8 +9044,8 @@ function renderStudentAnswerArea(q, qi) {
         </div>
         <label class="subjective-upload-btn">
           <input type="file" accept="image/*" multiple style="display:none;"
-                 onmousedown="window.__examAllowBlur = true;"
-                 onfocus="window.__examAllowBlur = true;"
+                 onmousedown="allowExamBlurBriefly();"
+                 onfocus="allowExamBlurBriefly();"
                  onchange="handleSubjectiveUpload(${qi}, this);">
           <i class="fas fa-camera"></i> Choose Photos of Your Solution
         </label>
@@ -11008,10 +11026,16 @@ function renderMarkdown(text) {
   html = html.replace(/\\\[([\s\S]*?)\\\]/g, (_, body) => stashMath('\\[' + body + '\\]'));
   // Inline math: \( ... \)
   html = html.replace(/\\\(([\s\S]*?)\\\)/g, (_, body) => stashMath('\\(' + body + '\\)'));
-  // Inline math: $ ... $  — skip escaped \$ and skip $$ (display)
-  html = html.replace(/(^|[^\\$])\$([^\$\n]+?)\$(?!\$)/g, (full, before, body) => {
-    return before + stashMath('$' + body + '$');
-  });
+  // Inline math: $ ... $  — skip escaped \$ and skip $$ (display).
+  // The body must START and END with a non-whitespace character
+  // (standard "tight math" heuristic). This prevents currency
+  // phrases like "$100 and $200" from being eaten as math — those
+  // would fail the closing non-space requirement because they end
+  // in a space before the next $.
+  html = html.replace(
+    /(^|[^\\$])\$(\S(?:[^\$\n]*?\S)?)\$(?!\$)/g,
+    (full, before, body) => before + stashMath('$' + body + '$')
+  );
 
   // ---- Step 3: Escape remaining HTML ----
   html = escapeHtml(html);
@@ -13484,6 +13508,8 @@ async function handleSubjectiveUpload(qi, input) {
 
   const files = Array.from(input.files || []);
   if (files.length === 0) {
+    // User cancelled the picker — release the blur grace immediately.
+    clearTimeout(window.__examBlurTimer);
     window.__examAllowBlur = false;
     return;
   }
@@ -13531,7 +13557,10 @@ async function handleSubjectiveUpload(qi, input) {
   input.value = '';
   // Release the blur-grace flag after a short delay so any leftover
   // OS window transitions don't accidentally trigger a violation.
-  setTimeout(() => { window.__examAllowBlur = false; }, 1500);
+  clearTimeout(window.__examBlurTimer);
+  window.__examBlurTimer = setTimeout(() => {
+    window.__examAllowBlur = false;
+  }, 1500);
 }
 
 function renderSubjectiveUpload(u, qi, idx) {
