@@ -4138,18 +4138,26 @@ app.get('/api/settings/subscription', async (req, res) => {
    ============================================================ */
 app.get('/api/settings/owner', async (req, res) => {
   try {
+    // Browser must NEVER cache this — hide/show toggles need to reach
+    // students instantly. The server-side in-memory cache below still
+    // protects MongoDB from repeated reads.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     const cached = cacheGet('settings:owner');
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=120');
       return res.json(cached);
     }
+
     const s = await getGlobalSettings();
     const op = (s.ownerProfile && typeof s.ownerProfile === 'object')
       ? s.ownerProfile
       : (typeof s.toObject === 'function'
           ? (s.toObject().ownerProfile || {})
           : {});
+
     const payload = {
       success: true,
       owner: {
@@ -4160,11 +4168,12 @@ app.get('/api/settings/owner', async (req, res) => {
         email:   op.email || '',
         phone:   op.phone || '',
         photo:   op.photo || '',
-        visible: op.visible !== false   // ⭐ default true when missing
+        visible: op.visible !== false
       }
     };
+
     cacheSet('settings:owner', payload, 5 * 60 * 1000);
-    res.setHeader('Cache-Control', 'public, max-age=120');
+    res.setHeader('X-Cache', 'MISS');
     res.json(payload);
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });

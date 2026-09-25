@@ -840,17 +840,30 @@ let liveOwnerProfile = {
 };
 let _ownerProfileLoaded = false;
 
-async function fetchOwnerProfile() {
+let _ownerProfileCacheAt = 0;
+const OWNER_PROFILE_CACHE_MS = 30 * 1000;   // 30s — short enough for live hide/show
+
+async function fetchOwnerProfile(force = false) {
+  // Reuse the in-memory value if it's still fresh (unless force=true)
+  if (!force && _ownerProfileLoaded &&
+      (Date.now() - _ownerProfileCacheAt) < OWNER_PROFILE_CACHE_MS) {
+    return;
+  }
+
   try {
-    const res = await fetch(`${API_BASE}/settings/owner`);
+    // ?_t= cache-buster + cache:'no-store' → guaranteed fresh network read
+    const res = await fetch(
+      `${API_BASE}/settings/owner?_t=${Date.now()}`,
+      { cache: 'no-store' }
+    );
     const data = await res.json();
     if (data.success && data.owner) {
       liveOwnerProfile = data.owner;
+      _ownerProfileCacheAt = Date.now();
     }
   } catch (e) { /* silent */ }
 
-  // ⭐ Flip the flag so renderOwnerProfile() can stop showing the
-  // skeleton and paint the real content (or the empty state).
+  // Flip the flag so renderOwnerProfile() can stop showing the skeleton
   _ownerProfileLoaded = true;
 }
 
@@ -5638,11 +5651,18 @@ function renderStudentHome() {
   renderProfessorsGrid();
 
   // ⭐ Then refresh from the server in the background. When it lands,
-  //    re-paint the grid. Respects the 30s TTL in fetchProfessorsFromDB().
+  //    re-paint the grid AND the founder block. Both respect a 30s TTL.
   fetchProfessorsFromDB().then(() => {
-    // Only repaint if the user is still on the home view
     if (studentNav === 'home' && !currentCourseId) {
       renderProfessorsGrid();
+    }
+  });
+
+  // Same background refresh for the founder profile — this is what
+  // makes hide/show reach students without a full page reload.
+  fetchOwnerProfile().then(() => {
+    if (studentNav === 'home' && !currentCourseId) {
+      renderOwnerProfile();
     }
   });
 }
