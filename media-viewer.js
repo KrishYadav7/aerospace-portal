@@ -193,9 +193,9 @@
 
       const iframe = document.createElement('iframe');
       iframe.className = 'vp-iframe';
-      iframe.setAttribute('allowfullscreen', 'true');
-      iframe.setAttribute('webkitallowfullscreen', 'true');
-      iframe.setAttribute('mozallowfullscreen', 'true');
+      /* `allow` below already includes `fullscreen`, so we skip the
+         redundant `allowfullscreen` attributes — they trigger a
+         harmless but noisy Chrome console warning. */
       iframe.setAttribute(
         'allow',
         'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen'

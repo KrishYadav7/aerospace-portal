@@ -1004,7 +1004,25 @@ function getMaterialAccessInfo(course, mat) {
   const isMatPremium    = mat.isPremium    === true || mat.isPremium    === 'true';
   const previewPercent  = Math.max(0, Math.min(100, Number(mat.previewPercent) || 0));
 
-  /* Guests */
+  /* ⭐ FREE CONTENT — neither course nor material is premium.
+     Every logged-in user gets full access. This must come BEFORE
+     the purchase check, otherwise free items get locked for
+     students who simply haven't bought anything. */
+  if (!isCoursePremium && !isMatPremium) {
+    return {
+      hasFullAccess: true,
+      canPreview: false,
+      previewPercent: 0,
+      isCoursePremium: false,
+      isMatPremium: false,
+      ownsCourse: false,
+      ownsMaterial: false,
+      subscribed: false,
+      isFreeContent: true
+    };
+  }
+
+  /* Guests — premium content requires login */
   if (!currentUser) {
     return {
       hasFullAccess: false,
@@ -1034,6 +1052,8 @@ function getMaterialAccessInfo(course, mat) {
 
   const hasFullAccess = ownsCourse || ownsMaterial || subscribed;
 
+  /* Material-level premium → allow preview only if previewPercent > 0
+     and the course itself is free. */
   const canPreview =
     !hasFullAccess &&
     isMatPremium && !isCoursePremium &&
@@ -1047,7 +1067,8 @@ function getMaterialAccessInfo(course, mat) {
     isMatPremium,
     ownsCourse,
     ownsMaterial,
-    subscribed
+    subscribed,
+    isFreeContent: false
   };
 }
 /* ============================================================
@@ -9216,6 +9237,10 @@ function assertMaterialUnlocked(courseId, materialId, opts) {
   const isCoursePremium = course.isPremium === true || course.isPremium === 'true';
   const isMatPremium    = mat.isPremium    === true || mat.isPremium    === 'true';
 
+  /* ⭐ FREE CONTENT — neither course nor material is premium.
+     Always allow. This is the only case where purchase is NOT required. */
+  if (!isCoursePremium && !isMatPremium) return true;
+
   const purchases    = Array.isArray(currentUser.purchases) ? currentUser.purchases : [];
   const ownsCourse   = purchases.includes(String(course.id));
   const ownsMaterial = purchases.includes(String(mat.id));
@@ -9223,13 +9248,10 @@ function assertMaterialUnlocked(courseId, materialId, opts) {
 
   if (subscribed || ownsCourse || ownsMaterial) return true;
 
-  if (isCoursePremium || isMatPremium) {
-    if (!opts.silent) {
-      showToast('This content is locked. Purchase it or subscribe to unlock.', 'error');
-    }
-    return false;
+  if (!opts.silent) {
+    showToast('This content is locked. Purchase it or subscribe to unlock.', 'error');
   }
-  return true;
+  return false;
 }
 
 /* ============================================================
