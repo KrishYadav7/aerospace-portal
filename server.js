@@ -2932,6 +2932,49 @@ app.post('/api/professors', requireAdminAuth, async (req, res) => {
     res.status(500).json({ success: false, message: 'Error deleting professor: ' + e.message });
   }
 });
+
+/* ============================================================
+   PROFESSOR — Visibility toggle (hide/show without deleting)
+   ------------------------------------------------------------
+   Sets `visible: true|false` on the professor document.
+   No other field is touched — details stay 100% intact.
+   Also clears the professors cache so the change is instant.
+   ============================================================ */
+app.put('/api/professors/:id/visibility', requireAdminAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: 'Invalid professor ID format.' });
+    }
+
+    const { visible } = req.body || {};
+    if (typeof visible !== 'boolean') {
+      return res.status(400).json({ success: false, message: '`visible` must be a boolean (true or false).' });
+    }
+
+    const updated = await Professor.findByIdAndUpdate(
+      req.params.id,
+      { $set: { visible } },
+      { new: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Professor not found.' });
+    }
+
+    // Flush the 5-minute professors cache so the next GET is fresh
+    cacheClear('professors:');
+
+    console.log(`[professor/visibility] ${updated.name} → visible=${visible}`);
+    res.json({
+      success: true,
+      message: visible ? 'Professor is now visible to students.' : 'Professor hidden from students.',
+      professor: updated
+    });
+  } catch (e) {
+    console.error('[professor/visibility] Error:', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
 /* ============================================================
    COURSES — CRUD
    ============================================================ */

@@ -8301,3 +8301,55 @@ body.body-content-hidden .vp-shell {
   70%  { box-shadow: 0 0 0 8px rgba(16,185,129,0); }
   100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
 }
+/* ============================================================
+   67. PROFESSOR VISIBILITY TOGGLE (admin)
+   ============================================================ */
+.visibility-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+.visibility-pill.visibility-visible {
+  background: rgba(16,185,129,.15);
+  color: var(--emerald-600);
+}
+.visibility-pill.visibility-hidden {
+  background: rgba(148,163,184,.22);
+  color: #64748b;
+}
+[data-theme="dark"] .visibility-pill.visibility-visible,
+[data-theme="dim"]   .visibility-pill.visibility-visible { color: var(--emerald-400); }
+[data-theme="dark"] .visibility-pill.visibility-hidden,
+[data-theme="dim"]   .visibility-pill.visibility-hidden { color: #cbd5e1; }
+
+/* Hidden professor card — visually de-emphasized but still fully interactive */
+.admin-professor-item.professor-hidden {
+  opacity: .62;
+  border-style: dashed;
+}
+.admin-professor-item.professor-hidden:hover {
+  opacity: 1;
+}
+
+/* Keep the actions column tidy with two buttons */
+.admin-professor-item .actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  flex-shrink: 0;
+  align-self: flex-start;
+}
+.admin-professor-item .actions .btn {
+  justify-content: center;
+  white-space: nowrap;
+}

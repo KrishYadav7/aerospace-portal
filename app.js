@@ -3218,7 +3218,13 @@ async function renderAdminCourses() {
 function renderAdminProfessors() {
   const professors = getProfessors();
   const countEl = $('professorCountLabel');
-  if (countEl) countEl.textContent = `${professors.length} member${professors.length === 1 ? '' : 's'}`;
+  if (countEl) {
+    const hidden = professors.filter(p => p.visible === false).length;
+    const total = professors.length;
+    countEl.textContent = hidden > 0
+      ? `${total} member${total === 1 ? '' : 's'} · ${hidden} hidden`
+      : `${total} member${total === 1 ? '' : 's'}`;
+  }
 
   if (professors.length === 0) {
     $('adminProfessorList').innerHTML = `
@@ -3234,32 +3240,89 @@ function renderAdminProfessors() {
 
   let html = `<div class="admin-professor-grid">`;
   professors.forEach(p => {
+    const isVisible = p.visible !== false;   // legacy docs without field => visible
     const photoHtml = p.photo
       ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" loading="lazy">`
       : `<div class="avatar-placeholder"><i class="fas fa-user-tie"></i></div>`;
 
     let contactHtml = '';
-    if (p.email) contactHtml += `<div class="prof-contact-item"><i class="fas fa-envelope"></i> ${escapeHtml(p.email)}</div>`;
-    if (p.phone) contactHtml += `<div class="prof-contact-item"><i class="fas fa-phone"></i> ${escapeHtml(p.phone)}</div>`;
+    if (p.email)  contactHtml += `<div class="prof-contact-item"><i class="fas fa-envelope"></i> ${escapeHtml(p.email)}</div>`;
+    if (p.phone)  contactHtml += `<div class="prof-contact-item"><i class="fas fa-phone"></i> ${escapeHtml(p.phone)}</div>`;
     if (p.office) contactHtml += `<div class="prof-contact-item"><i class="fas fa-map-marker-alt"></i> ${escapeHtml(p.office)}</div>`;
 
+    const visibilityPill = isVisible
+      ? `<span class="visibility-pill visibility-visible" title="Visible to students"><i class="fas fa-eye"></i> Visible</span>`
+      : `<span class="visibility-pill visibility-hidden" title="Hidden from students"><i class="fas fa-eye-slash"></i> Hidden</span>`;
+
+    const toggleBtn = isVisible
+      ? `<button class="btn btn-outline btn-sm"
+                 onclick="toggleProfessorVisibility('${p._id}', false)"
+                 title="Hide this member from students">
+           <i class="fas fa-eye-slash"></i> Hide
+         </button>`
+      : `<button class="btn btn-success btn-sm"
+                 onclick="toggleProfessorVisibility('${p._id}', true)"
+                 title="Show this member to students">
+           <i class="fas fa-eye"></i> Show
+         </button>`;
+
     html += `
-      <div class="admin-professor-item">
+      <div class="admin-professor-item ${isVisible ? '' : 'professor-hidden'}">
         ${photoHtml}
         <div class="info">
-          <h4>${escapeHtml(p.name)}</h4>
+          <h4>${escapeHtml(p.name)} ${visibilityPill}</h4>
           <div class="title">${escapeHtml(p.title)}</div>
           <div class="desc">${escapeHtml(p.description) || ''}</div>
           ${contactHtml ? `<div class="prof-contact-block">${contactHtml}</div>` : ''}
         </div>
         <div class="actions">
-<button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p._id}')" title="Delete" aria-label="Delete professor">            <i class="fas fa-trash"></i>
+          ${toggleBtn}
+          <button class="btn btn-danger btn-sm" onclick="deleteProfessor('${p._id}')" title="Delete" aria-label="Delete professor">
+            <i class="fas fa-trash"></i>
           </button>
         </div>
       </div>`;
   });
   html += `</div>`;
   $('adminProfessorList').innerHTML = html;
+}
+
+/* ------------------------------------------------------------
+   Toggle professor visibility (hide / show without deletion)
+   ------------------------------------------------------------ */
+async function toggleProfessorVisibility(professorId, newVisible) {
+  const action = newVisible ? 'show' : 'hide';
+  if (!confirm(
+    `Are you sure you want to ${action} this team member ` +
+    `${newVisible ? 'to' : 'from'} students?\n\n` +
+    `Their details will NOT be deleted — only visibility changes.`
+  )) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/professors/${professorId}/visibility`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visible: newVisible })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      // Update the in-memory cache so the UI reflects the change instantly
+      const idx = liveProfessors.findIndex(p => (p._id || p.id) === professorId);
+      if (idx >= 0) liveProfessors[idx].visible = newVisible;
+
+      showToast(
+        newVisible ? '👁️ Now visible to students.' : '🙈 Hidden from students.',
+        'success'
+      );
+      renderAdminProfessors();
+    } else {
+      showToast(data.message || 'Failed to update visibility.', 'error');
+    }
+  } catch (err) {
+    console.error('[toggleProfessorVisibility]', err);
+    showToast('Server error while updating visibility.', 'error');
+  }
 }
 
 async function renderAdminStudents() {
@@ -5488,7 +5551,9 @@ function renderStudentHome() {
   loadApprovedFeedback();
   loadMyContributions();
 
-  const professors = getProfessors();
+  // Only show professors the admin has marked as visible.
+  // Legacy documents without a `visible` field are treated as visible.
+  const professors = getProfessors().filter(p => p.visible !== false);
   if (professors.length === 0) {
     $('professorsGrid').innerHTML = `<p style="color:var(--text-tertiary);">No professors added yet.</p>`;
   } else {

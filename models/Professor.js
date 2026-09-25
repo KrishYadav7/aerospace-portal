@@ -9,7 +9,8 @@ const professorSchema = new mongoose.Schema({
   office: { type: String, default: '' },
   department: { type: String, default: '' },
   website: { type: String, default: '' },
-  photo: { type: String, default: '' } // Base64 for now, Cloud URL later
+  photo: { type: String, default: '' }, // Base64 for now, Cloud URL later
+  visible: { type: Boolean, default: true } // admin can hide/show without deleting
 }, { timestamps: true });
 
 module.exports = mongoose.model('Professor', professorSchema);
