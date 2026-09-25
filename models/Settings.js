@@ -9,6 +9,7 @@ const ownerProfileSchema = new mongoose.Schema({
   email: { type: String, default: '' },
   phone: { type: String, default: '' },
   photo: { type: String, default: '' },
+  visible: { type: Boolean, default: true },   // ⭐ admin can hide founder section
   updatedAt: { type: Date, default: Date.now }
 }, { _id: false });
 
@@ -95,7 +96,8 @@ const settingsSchema = new mongoose.Schema({
       bio:   'Academic achiever and experienced educator currently pursuing Aerospace Engineering at IIT Kharagpur. Passionate about translating complex mathematical and engineering principles into accessible concepts. Proven track record in mentoring 2,000+ students and producing structured academic content across core engineering subjects and competitive mathematics.',
       email: '',
       phone: '',
-      photo: ''
+      photo: '',
+      visible: true
     })
   },
 

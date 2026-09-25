@@ -835,7 +835,8 @@ let liveOwnerProfile = {
   bio:   '',
   email: '',
   phone: '',
-  photo: ''
+  photo: '',
+  visible: true   // ⭐ admin can hide the founder section
 };
 let _ownerProfileLoaded = false;
 
@@ -4215,12 +4216,32 @@ function renderAdminOrganizationTab() {
     ? `<img src="${o.photo}" class="owner-preview-img" alt="Preview" id="ownerPhotoPreview">`
     : `<div class="owner-preview-fallback" id="ownerPhotoPreview">${escapeHtml(getInitials(o.name || '?'))}</div>`;
 
+  const isVisible = o.visible !== false;
+  const visibilityPill = isVisible
+    ? `<span class="visibility-pill visibility-visible" title="Visible to students"><i class="fas fa-eye"></i> Visible to students</span>`
+    : `<span class="visibility-pill visibility-hidden" title="Hidden from students"><i class="fas fa-eye-slash"></i> Hidden from students</span>`;
+
+  const toggleBtn = isVisible
+    ? `<button class="btn btn-outline" onclick="toggleOwnerVisibility(false)" title="Hide this founder section from students">
+         <i class="fas fa-eye-slash"></i> Hide Founder Section
+       </button>`
+    : `<button class="btn btn-success" onclick="toggleOwnerVisibility(true)" title="Show this founder section to students">
+         <i class="fas fa-eye"></i> Show Founder Section
+       </button>`;
+
   container.innerHTML = `
     <div class="editor-section">
-      <h3 class="editor-section-title"><i class="fas fa-building-user"></i> Owner / Head Owner Profile</h3>
+      <div class="editor-section-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <h3 class="editor-section-title" style="margin:0;">
+          <i class="fas fa-building-user"></i> Owner / Head Owner Profile
+          ${visibilityPill}
+        </h3>
+        <div>${toggleBtn}</div>
+      </div>
       <p class="editor-hint">
         These details power the "About the Founder" section on the student home page.
         Changes go live immediately — no redeployment required.
+        Use <strong>Hide Founder Section</strong> to temporarily remove it from the student view.
       </p>
 
       <div class="editor-grid-2">
@@ -4371,6 +4392,46 @@ async function saveOwnerProfile() {
     }
   } catch (err) {
     showToast(err.message || 'Server error.', 'error');
+  }
+}
+
+/* ------------------------------------------------------------
+   Toggle owner / founder visibility (hide/show without deletion)
+   ------------------------------------------------------------ */
+async function toggleOwnerVisibility(newVisible) {
+  const action = newVisible ? 'show' : 'hide';
+  if (!confirm(
+    `Are you sure you want to ${action} the founder section ` +
+    `${newVisible ? 'to' : 'from'} students?\n\n` +
+    `All details are preserved — only visibility changes.`
+  )) return;
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/settings/owner`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        adminId: currentUser._id,
+        visible: newVisible
+      })
+    });
+
+    if (data.success) {
+      // Update local cache so student home reflects the change instantly
+      liveOwnerProfile.visible = newVisible;
+      _ownerProfileLoaded = true;
+
+      showToast(
+        newVisible ? '👁️ Founder section is now visible to students.' : '🙈 Founder section hidden from students.',
+        'success'
+      );
+      renderAdminOrganizationTab();
+    } else {
+      showToast(data.message || 'Failed to update visibility.', 'error');
+    }
+  } catch (err) {
+    console.error('[toggleOwnerVisibility]', err);
+    showToast('Server error while updating visibility.', 'error');
   }
 }
 
@@ -5512,6 +5573,12 @@ function renderOwnerProfile() {
 
   // 3. Data mil gaya, ab real content render karo
   const o = liveOwnerProfile;
+
+  // ⭐ Admin has hidden the founder section — render nothing.
+  if (o.visible === false) {
+    container.innerHTML = '';
+    return;
+  }
 
   const avatarHtml = o.photo
     ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy">`

@@ -6,7 +6,7 @@
    come from the network. Only truly static assets (manifest, images)
    go in the cache.
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v52';
+const CACHE_NAME = 'aero-shell-v53';
 
 /* ONLY these go into the offline cache — they never change silently */
 const SHELL_ASSETS = [

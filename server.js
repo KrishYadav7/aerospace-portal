@@ -4153,13 +4153,14 @@ app.get('/api/settings/owner', async (req, res) => {
     const payload = {
       success: true,
       owner: {
-        name:  op.name  || 'Krish Yadav',
-        title: op.title || 'Founder & Course Director',
-        role:  op.role  || 'Founder',
-        bio:   op.bio   || '',
-        email: op.email || '',
-        phone: op.phone || '',
-        photo: op.photo || ''
+        name:    op.name  || 'Krish Yadav',
+        title:   op.title || 'Founder & Course Director',
+        role:    op.role  || 'Founder',
+        bio:     op.bio   || '',
+        email:   op.email || '',
+        phone:   op.phone || '',
+        photo:   op.photo || '',
+        visible: op.visible !== false   // ⭐ default true when missing
       }
     };
     cacheSet('settings:owner', payload, 5 * 60 * 1000);
@@ -4172,18 +4173,19 @@ app.get('/api/settings/owner', async (req, res) => {
 
 app.put('/api/admin/settings/owner', requireAdminAuth, async (req, res) => {
   try {
-    const { name, title, role, bio, email, phone, photo } = req.body || {};
+    const { name, title, role, bio, email, phone, photo, visible } = req.body || {};
 
     const s = await getGlobalSettings();
     if (!s.ownerProfile) s.ownerProfile = {};
 
-    if (typeof name  === 'string') s.ownerProfile.name  = name.trim().slice(0, 80);
-    if (typeof title === 'string') s.ownerProfile.title = title.trim().slice(0, 120);
-    if (typeof role  === 'string') s.ownerProfile.role  = role.trim().slice(0, 60);
-    if (typeof bio   === 'string') s.ownerProfile.bio   = bio.trim().slice(0, 2000);
-    if (typeof email === 'string') s.ownerProfile.email = email.trim().slice(0, 200);
-    if (typeof phone === 'string') s.ownerProfile.phone = phone.trim().slice(0, 40);
-    if (typeof photo === 'string') s.ownerProfile.photo = photo; // base64 or ''
+    if (typeof name  === 'string')  s.ownerProfile.name  = name.trim().slice(0, 80);
+    if (typeof title === 'string')  s.ownerProfile.title = title.trim().slice(0, 120);
+    if (typeof role  === 'string')  s.ownerProfile.role  = role.trim().slice(0, 60);
+    if (typeof bio   === 'string')  s.ownerProfile.bio   = bio.trim().slice(0, 2000);
+    if (typeof email === 'string')  s.ownerProfile.email = email.trim().slice(0, 200);
+    if (typeof phone === 'string')  s.ownerProfile.phone = phone.trim().slice(0, 40);
+    if (typeof photo === 'string')  s.ownerProfile.photo = photo; // base64 or ''
+    if (typeof visible === 'boolean') s.ownerProfile.visible = visible;  // ⭐ NEW
     s.ownerProfile.updatedAt = new Date();
     s.updatedAt = new Date();
 
