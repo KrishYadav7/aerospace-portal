@@ -87,7 +87,7 @@ const settingsSchema = new mongoose.Schema({
   referralRewardDesc:   { type: String,  default: 'Reward every time your referrals hit the required threshold.' },
 
   /* Organization owner profile */
-  /ownerProfile: {
+  ownerProfile: {
     type: ownerProfileSchema,
     default: () => ({
       name:  'Kana Ram Yadav',
