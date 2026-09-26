@@ -6787,18 +6787,30 @@ function renderMaterialCard(course, m, isPurchased) {
     }
   } else {
     if (m.type === 'video' && hasUrl && !hasFile) {
+      /* ─── Video with an external URL (YouTube / direct link) ─── */
       fileActionHtml += `<button class="btn btn-primary btn-sm"
                           onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')">
                           <i class="fas fa-play"></i> Watch
                         </button>`;
-    }
+    } else if (hasFile || hasUrl) {
+      /* ─── Read button ───────────────────────────────────────────
+         FIX (missing "Read" button on certain PDFs):
+         Previously this branch only fired when:
+           (a) hasFile && isPdf                 — a PDF whose fileName
+                                                   or URL literally ended in .pdf
+           (b) hasUrl && !hasFile && !video     — URL with no file
 
-    if (hasFile && isPdf) {
-      fileActionHtml += ` <button class="btn btn-primary btn-sm"
-                          onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')">
-                          <i class="fas fa-book-open"></i> Read
-                        </button>`;
-    } else if (hasUrl && !hasFile && m.type !== 'video') {
+         That silently dropped the button for any material that had
+         BOTH a fileName AND a URL but neither ended in ".pdf"
+         (e.g. legacy disk names without extensions, Cloudinary URLs
+         with query strings, or uploads where the extension was lost
+         during chunked assembly). The material was valid — only the
+         heuristics were wrong.
+
+         We now show "Read" whenever the material has any content at
+         all. viewFileOnline() re-verifies with the server before
+         rendering, so a truly broken file just shows a toast.
+         ──────────────────────────────────────────────────────────── */
       fileActionHtml += ` <button class="btn btn-primary btn-sm"
                           onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')">
                           <i class="fas fa-book-open"></i> Read
