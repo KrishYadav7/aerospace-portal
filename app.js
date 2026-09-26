@@ -6711,8 +6711,22 @@ function renderCourseDetail(courseId) {
 }
 
 function renderMaterialCard(course, m, isPurchased) {
-  const hasFile = (m.fileData && m.fileData.length > 0) || (m.fileName && m.fileName.length > 0);
-  const hasUrl  = m.url && m.url.length > 0;
+  /* ─── Content detection ─────────────────────────────────────────
+     The client NEVER receives `fileData` (it is stripped server-side
+     for performance). So we must also consult the fallback fields
+     the server DOES send: `cloudUrl` and `diskName`. Without this,
+     a PDF that arrived with only a Cloudinary backup or an on-disk
+     name would be treated as if it had no content at all.
+     ─────────────────────────────────────────────────────────────── */
+  const hasFile = !!(
+    (m.fileData && m.fileData.length > 0) ||
+    (m.fileName && String(m.fileName).trim().length > 0) ||
+    (m.diskName && String(m.diskName).trim().length > 0)
+  );
+  const hasUrl = !!(
+    (m.url      && String(m.url).trim().length > 0) ||
+    (m.cloudUrl && String(m.cloudUrl).trim().length > 0)
+  );
 
   const isMatPremium    = m.isPremium    === true || m.isPremium    === 'true';
   const isCoursePremium = course.isPremium === true || course.isPremium === 'true';
@@ -6792,24 +6806,16 @@ function renderMaterialCard(course, m, isPurchased) {
                           onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')">
                           <i class="fas fa-play"></i> Watch
                         </button>`;
-    } else if (hasFile || hasUrl) {
+    } else {
       /* ─── Read button ───────────────────────────────────────────
-         FIX (missing "Read" button on certain PDFs):
-         Previously this branch only fired when:
-           (a) hasFile && isPdf                 — a PDF whose fileName
-                                                   or URL literally ended in .pdf
-           (b) hasUrl && !hasFile && !video     — URL with no file
-
-         That silently dropped the button for any material that had
-         BOTH a fileName AND a URL but neither ended in ".pdf"
-         (e.g. legacy disk names without extensions, Cloudinary URLs
-         with query strings, or uploads where the extension was lost
-         during chunked assembly). The material was valid — only the
-         heuristics were wrong.
-
-         We now show "Read" whenever the material has any content at
-         all. viewFileOnline() re-verifies with the server before
-         rendering, so a truly broken file just shows a toast.
+         Shown for EVERY material that is not a video-with-URL.
+         Previously this was `else if (hasFile || hasUrl)` — which
+         silently dropped the button when a PDF arrived with all
+         client-visible content fields (url, fileName, diskName,
+         cloudUrl) empty. The server is the real source of truth,
+         so viewFileOnline() now decides. If the file exists it
+         opens; if not, the student sees a clean "No file attached"
+         toast instead of a card with no button at all.
          ──────────────────────────────────────────────────────────── */
       fileActionHtml += ` <button class="btn btn-primary btn-sm"
                           onclick="event.stopPropagation();viewFileOnline('${course.id}', '${m.id}')">
