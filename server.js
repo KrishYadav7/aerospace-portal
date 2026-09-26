@@ -656,18 +656,24 @@ function sendCached(res, file, maxAge = 300) {
 // A new deploy ships a new URL (v=42), so a 1-year immutable cache
 // is 100% safe AND makes repeat visits near-instant.
 // Only index.html and sw.js stay no-cache (they must always be fresh).
-app.get('/app.js',          (req, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  res.sendFile(path.join(__dirname, 'app.js'));
-});
-app.get('/styles.css',      (req, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  res.sendFile(path.join(__dirname, 'styles.css'));
-});
-app.get('/media-viewer.js', (req, res) => {
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  res.sendFile(path.join(__dirname, 'media-viewer.js'));
-});
+/* Auto cache-busting for JS/CSS — the file's mtime is used as the
+   version key, so every deploy is instantly picked up without
+   manually bumping ?v=NN in index.html. */
+function sendImmutableAsset(res, filename) {
+  const filePath = path.join(__dirname, filename);
+  try {
+    const stat = fs.statSync(filePath);
+    // 1-year immutable cache keyed on the file's mtime (as a version stamp)
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('ETag', `"${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}"`);
+    res.sendFile(filePath);
+  } catch (e) {
+    res.status(404).send('Not found');
+  }
+}
+app.get('/app.js',          (req, res) => sendImmutableAsset(res, 'app.js'));
+app.get('/styles.css',      (req, res) => sendImmutableAsset(res, 'styles.css'));
+app.get('/media-viewer.js', (req, res) => sendImmutableAsset(res, 'media-viewer.js'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 /* ---- Logo / PWA icons ---- */
 app.get('/favicon-16.png',       (req, res) => sendCached(res, 'favicon-16.png', 604800));
