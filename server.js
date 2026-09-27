@@ -5532,23 +5532,51 @@ app.get('/api/admin/subscriptions', requireAdminAuth, async (req, res) => {
   try {
 
     const users = await User.find({ 'subscription.status': { $in: ['pending','active','expired','cancelled','halted'] } })
-      .select('fullName username email subscription').lean();
+      .select('fullName username email role purchases subscription').lean();
 
     const now = new Date();
     const subscriptions = users.map(u => {
       const s = u.subscription || {};
-      const isActive = !!(s.active && s.status === 'active' &&
+      const role = String(u.role || '').toLowerCase();
+
+      // ---- Paid subscription state (the raw truth) ----
+      const hasPaidActiveSub = !!(s.active && s.status === 'active' &&
         (!s.expiresAt || new Date(s.expiresAt) > now));
+
+      // ---- Effective access state for display ----
+      //   • Active paid sub             → 'active'
+      //   • Admin (platform-wide access)→ 'admin'
+      //   • Payment started but never completed → 'pending'
+      //   • Cancelled / halted          → 'cancelled'
+      //   • Expired paid sub            → 'expired'
+      const isAdminUser = role === 'admin';
+      const isPending   = s.status === 'pending' && !s.active;
+      const isCancelled = s.status === 'cancelled' || s.status === 'halted';
+      const isExpired   = !!(s.expiresAt && new Date(s.expiresAt) < now &&
+                             s.status === 'active');
+
+      let effectiveStatus;
+      if (hasPaidActiveSub) effectiveStatus = 'active';
+      else if (isAdminUser) effectiveStatus = 'admin';
+      else if (isPending)   effectiveStatus = 'pending';
+      else if (isCancelled) effectiveStatus = 'cancelled';
+      else if (isExpired)   effectiveStatus = 'expired';
+      else                  effectiveStatus = s.status || 'none';
+
       const daysLeft = s.expiresAt
         ? Math.ceil((new Date(s.expiresAt) - now) / 86400000)
         : null;
+
       return {
         _id: u._id,
         fullName: u.fullName,
         username: u.username,
         email: u.email,
+        role: u.role || 'student',
         subscription: s,
-        isActive,
+        isActive: hasPaidActiveSub,                        // raw paid-active
+        hasAccess: hasPaidActiveSub || isAdminUser,        // effective access
+        effectiveStatus,                                   // ⭐ for display
         daysLeft
       };
     });

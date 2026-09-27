@@ -3789,7 +3789,7 @@ async function renderAdminSubscriptions() {
   try {
     const s = data.settings;
     const subs = data.subscriptions || [];
-    const activeCount = subs.filter(x => x.isActive).length;
+    const activeCount = subs.filter(x => x.hasAccess || x.isActive).length;
 
     let html = `
       <div class="sub-settings-card">
@@ -3839,9 +3839,13 @@ async function renderAdminSubscriptions() {
         const sub = u.subscription || {};
         const initials = (u.fullName || u.username || '?')
           .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-        const status = u.isActive ? 'active' :
+        // Prefer server-computed effectiveStatus — it accounts for admin
+        // role (which grants platform-wide access without a paid sub).
+        const status = u.effectiveStatus || (
+          u.isActive ? 'active' :
           sub.status === 'pending' ? 'pending' :
-          sub.status === 'halted' ? 'cancelled' : sub.status || 'expired';
+          sub.status === 'halted' ? 'cancelled' : sub.status || 'expired'
+        );
         const expiresTxt = sub.expiresAt
           ? new Date(sub.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
           : '—';
@@ -3856,18 +3860,33 @@ async function renderAdminSubscriptions() {
               <h4>${escapeHtml(u.fullName || u.username)}</h4>
               <p>@${escapeHtml(u.username)} ${u.email ? '· ' + escapeHtml(u.email) : ''}</p>
             </div>
-            <span class="subscriber-status ${status}">${status}</span>
+            <span class="subscriber-status ${status}"
+                  title="${status === 'admin'
+                    ? 'Admin — has platform-wide access regardless of subscription'
+                    : status === 'active'
+                      ? 'Paid subscription active'
+                      : status === 'pending'
+                        ? 'Payment was never completed'
+                        : ''}">
+              ${status === 'admin' ? 'ADMIN' : status}
+            </span>
             <span class="subscriber-meta">Until ${expiresTxt} ${daysTxt}</span>
             <div class="subscriber-actions">
-              <button class="btn btn-outline btn-sm" onclick="adminGrantSubscription('${u._id}', 30)" title="Grant 30 days">
-                <i class="fas fa-plus"></i> Grant
-              </button>
-              <button class="btn btn-outline btn-sm" onclick="adminExtendSubscription('${u._id}')" title="Extend">
-                <i class="fas fa-clock"></i> Extend
-              </button>
-              ${u.isActive ? `<button class="btn btn-danger btn-sm" onclick="adminRevokeSubscription('${u._id}')" title="Revoke">
-                <i class="fas fa-times"></i> Revoke
-              </button>` : ''}
+              ${status === 'admin'
+                ? `<span class="subscriber-meta" style="font-style:italic;">
+                     Access via admin role
+                   </span>`
+                : `
+                  <button class="btn btn-outline btn-sm" onclick="adminGrantSubscription('${u._id}', 30)" title="Grant 30 days">
+                    <i class="fas fa-plus"></i> Grant
+                  </button>
+                  <button class="btn btn-outline btn-sm" onclick="adminExtendSubscription('${u._id}')" title="Extend">
+                    <i class="fas fa-clock"></i> Extend
+                  </button>
+                  ${u.isActive ? `<button class="btn btn-danger btn-sm" onclick="adminRevokeSubscription('${u._id}')" title="Revoke">
+                    <i class="fas fa-times"></i> Revoke
+                  </button>` : ''}
+                `}
             </div>
           </div>`;
       });

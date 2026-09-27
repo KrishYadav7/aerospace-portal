@@ -4032,6 +4032,15 @@ input, textarea, select { font-family: inherit; }
 .subscriber-status.expired { background: rgba(245,158,11,.15); color: var(--gold-600); }
 .subscriber-status.cancelled { background: rgba(239,68,68,.15); color: var(--rose-600); }
 .subscriber-status.pending { background: rgba(99,102,241,.15); color: var(--brand-600); }
+.subscriber-status.admin {
+  background: linear-gradient(135deg, var(--gold-400), var(--gold-500));
+  color: #422006;
+  box-shadow: 0 2px 8px rgba(245,158,11,.35);
+}
+[data-theme="dark"] .subscriber-status.admin,
+[data-theme="dim"]   .subscriber-status.admin {
+  color: #422006;
+}
 [data-theme="dark"] .subscriber-status.active,
 [data-theme="dim"] .subscriber-status.active { color: var(--emerald-400); }
 [data-theme="dark"] .subscriber-status.expired,
