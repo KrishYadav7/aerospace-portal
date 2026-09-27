@@ -983,6 +983,43 @@ function hydrateMaterialThumbs() {
 function isAdmin(u) {
   return String((u && u.role) || '').trim().toLowerCase() === 'admin';
 }
+
+/* ============================================================
+   ⭐ FIX: Robust purchase-ownership check.
+   ------------------------------------------------------------
+   Single source of truth for "does this user own X?".
+   Handles:
+     • ObjectId vs string mismatches
+     • Admin + active-subscription bypass
+     • null/undefined safety
+     • Array OR Set storage shape
+   ============================================================ */
+function normalizePurchaseId(id) {
+  if (id === null || id === undefined) return '';
+  return String(id).trim();
+}
+
+function userOwnsItem(itemId) {
+  if (!currentUser) return false;
+
+  const role = String(currentUser.role || '').trim().toLowerCase();
+  if (role === 'admin') return true;
+  if (currentUser.isSubscribed === true) return true;
+
+  const list = Array.isArray(currentUser.purchases)
+    ? currentUser.purchases
+    : (currentUser.purchases instanceof Set
+        ? Array.from(currentUser.purchases)
+        : []);
+
+  const target = normalizePurchaseId(itemId);
+  if (!target) return false;
+
+  for (let i = 0; i < list.length; i++) {
+    if (normalizePurchaseId(list[i]) === target) return true;
+  }
+  return false;
+}
 /* Safely embed a value as a JS string literal inside an HTML attribute.
    Handles ', ", <, >, & and any unicode without breaking out of the string.
    NOTE: the output already includes surrounding double-quotes. */
@@ -2732,14 +2769,27 @@ async function viewCourseDetail(courseId, filter = 'all') {
   currentMaterialFilter = filter;
   pushHash(`#/course/${courseId}`);
 
-  // ⭐ FIX: Force a fresh fetch of this specific course from the server
-  // to prevent stale 'isPremium' flags causing UI/Server mismatches.
+  // ⭐ FIX: Force a fresh fetch of this specific course from the
+  // server to prevent stale 'isPremium' flags causing UI/Server
+  // mismatches.
   try {
     await fetchSingleCourse(courseId);
   } catch (e) {
     console.warn('[viewCourseDetail] fetch failed, using cached data:', e);
   }
-  
+
+  // ⭐ NEW FIX: If this is a premium course and the client thinks
+  // it's locked, ask the server for the current user's purchase
+  // list before painting the "locked" badge. This is the definitive
+  // safety net for the payment-persistence bug.
+  const course = findCourse(courseId);
+  const isPremiumCourse = course &&
+    (course.isPremium === true || course.isPremium === 'true');
+
+  if (isPremiumCourse && currentUser && !userOwnsItem(courseId)) {
+    try { await refreshUserData(); } catch (e) { /* silent */ }
+  }
+
   renderApp();
 }
 function goBackFromDetail() {
@@ -6426,7 +6476,7 @@ function renderStudentCourses() {
 }
 
 function renderStudentCourseCard(c) {
-  const isPurchased  = currentUser.purchases && currentUser.purchases.includes(c.id);
+  const isPurchased  = userOwnsItem(c.id);
   const isSubscribed = !!currentUser?.isSubscribed;
   const unlocked     = isPurchased || isSubscribed;
 
@@ -6537,8 +6587,8 @@ function renderCourseDetail(courseId) {
     return;
   }
   const isPremiumCourse = course.isPremium || false;
-  const isPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(course.id);
-  const isSubscribed = !!currentUser?.isSubscribed;   // ← NEW LINE (moved up)
+  const isPurchased = userOwnsItem(course.id);
+  const isSubscribed = !!currentUser?.isSubscribed;
   const acc = accentStyle(course.code || course.name);
   const diff = difficultyColor(course.difficulty);
 
@@ -6734,7 +6784,7 @@ function renderMaterialCard(course, m, isPurchased) {
   const matPrice    = parseFloat(m.price)    || 0;
   const coursePrice = parseFloat(course.price) || 0;
 
-  const isMatPurchased = currentUser && currentUser.purchases && currentUser.purchases.includes(m.id);
+  const isMatPurchased = userOwnsItem(m.id);
   const isSubscribed   = !!currentUser?.isSubscribed;
   const isAdminUser    = isAdmin(currentUser);
 
@@ -9288,9 +9338,8 @@ function assertMaterialUnlocked(courseId, materialId, opts) {
      Always allow. This is the only case where purchase is NOT required. */
   if (!isCoursePremium && !isMatPremium) return true;
 
-  const purchases    = Array.isArray(currentUser.purchases) ? currentUser.purchases : [];
-  const ownsCourse   = purchases.includes(String(course.id));
-  const ownsMaterial = purchases.includes(String(mat.id));
+  const ownsCourse   = userOwnsItem(course.id);
+  const ownsMaterial = userOwnsItem(mat.id);
   const subscribed   = !!currentUser.isSubscribed;
 
   if (subscribed || ownsCourse || ownsMaterial) return true;
@@ -9801,7 +9850,7 @@ async function showPaymentModal(courseId, materialId = null) {
     amount = Number(course.price) || 0;
   }
 
-  if (Array.isArray(currentUser.purchases) && currentUser.purchases.includes(purchaseId)) {
+  if (userOwnsItem(purchaseId)) {
     return showToast('You already own this item.', 'info');
   }
   if (currentUser.isSubscribed) {
@@ -9871,11 +9920,20 @@ async function showPaymentModal(courseId, materialId = null) {
         });
 
         if (verifyData && verifyData.success) {
+          // ⭐ FIX 1: Trust the server's authoritative purchase list.
+          if (Array.isArray(verifyData.purchases)) {
+            currentUser.purchases = verifyData.purchases;
+          }
+          // Safety net — ensure the just-bought ID is present locally.
           if (!Array.isArray(currentUser.purchases)) currentUser.purchases = [];
-          if (!currentUser.purchases.includes(purchaseId)) {
+          if (!userOwnsItem(purchaseId)) {
             currentUser.purchases.push(purchaseId);
           }
           saveSessionUser(currentUser);
+
+          // ⭐ FIX 2: Re-sync from the server so we never carry stale
+          // state forward on the next refresh.
+          try { await refreshUserData(); } catch (e) { /* silent */ }
 
           showToast('🎉 Payment successful! Content unlocked.', 'success');
           renderApp();
@@ -9993,11 +10051,18 @@ async function initApp() {
   ];
 
   if (savedUser && savedUser._id) {
-    // user-scoped data — fire and forget, no need to block paint
-    setTimeout(() => {
-      refreshUserData().catch(() => {});
-      loadNotifications().catch(() => {});
-    }, 400);
+    // ⭐ FIX: Fetch fresh user data IMMEDIATELY (no 400ms delay) and
+    // RE-RENDER once it lands. This is the actual fix for the
+    // "course shows locked after refresh" bug — previously
+    // refreshUserData() updated currentUser but the UI was never
+    // repainted, so the stale sessionStorage snapshot stayed visible.
+    refreshUserData()
+      .then(() => {
+        try { renderApp(); } catch (e) { /* non-fatal */ }
+      })
+      .catch(() => { /* offline — sessionStorage copy stays as fallback */ });
+
+    loadNotifications().catch(() => {});
   }
 
   // Await and log failures only (renderApp already scheduled above)
