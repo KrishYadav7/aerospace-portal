@@ -2786,8 +2786,21 @@ async function viewCourseDetail(courseId, filter = 'all') {
   const isPremiumCourse = course &&
     (course.isPremium === true || course.isPremium === 'true');
 
+  console.log('[viewCourseDetail] 🔍 State:', {
+    courseId,
+    isPremiumCourse,
+    hasCurrentUser: !!currentUser,
+    userId: currentUser && currentUser._id,
+    ownsItem: userOwnsItem(courseId),
+    purchases: currentUser && currentUser.purchases
+  });
+
   if (isPremiumCourse && currentUser && !userOwnsItem(courseId)) {
-    try { await refreshUserData(); } catch (e) { /* silent */ }
+    console.log('[viewCourseDetail] 🔄 Triggering refreshUserData');
+    try { await refreshUserData(); }
+    catch (e) { console.warn('[viewCourseDetail] refresh failed:', e); }
+  } else {
+    console.log('[viewCourseDetail] ⏭️ Refresh NOT needed');
   }
 
   renderApp();
@@ -9543,17 +9556,55 @@ async function toggleMaterialViewed(e, courseId, materialId) {
 }
 
 async function refreshUserData() {
-  if (!currentUser?._id) return;
+  if (!currentUser?._id) {
+    console.warn('[refreshUserData] ❌ No currentUser._id — aborting');
+    return;
+  }
   const userIdAtStart = currentUser._id;
+
   try {
-    const res = await fetch(`/api/user/me/${userIdAtStart}`);
-    const data = await res.json();
-    // Guard: don't overwrite state if session was killed while we were fetching
-    if (data.success && currentUser && currentUser._id === userIdAtStart && !_sessionKilled) {
-      currentUser = data.user;
-      saveSessionUser(currentUser);
+    const url = `${API_BASE}/user/me/${userIdAtStart}?_t=${Date.now()}`;
+    console.log('[refreshUserData] 🔄 Fetching', url);
+
+    const res = await fetch(url, { cache: 'no-store' });
+    console.log('[refreshUserData] 📥 HTTP', res.status);
+
+    if (!res.ok) {
+      console.warn('[refreshUserData] ❌ Non-OK status:', res.status);
+      return;
     }
-  } catch {}
+
+    const data = await res.json();
+    console.log('[refreshUserData] 📦 Response:', {
+      success: data.success,
+      hasUser: !!data.user,
+      purchaseCount: Array.isArray(data.user && data.user.purchases)
+        ? data.user.purchases.length
+        : 'n/a',
+      purchases: data.user && data.user.purchases
+    });
+
+    if (!data.success) {
+      console.warn('[refreshUserData] ❌ Server said not success:', data.message);
+      return;
+    }
+
+    if (!currentUser || currentUser._id !== userIdAtStart) {
+      console.warn('[refreshUserData] ⚠️ User changed during fetch — skipping');
+      return;
+    }
+    if (_sessionKilled) {
+      console.warn('[refreshUserData] ⚠️ Session killed — skipping');
+      return;
+    }
+
+    currentUser = data.user;
+    saveSessionUser(currentUser);
+    console.log('[refreshUserData] ✅ Updated. Purchases count:',
+                (currentUser.purchases || []).length);
+  } catch (e) {
+    console.warn('[refreshUserData] ❌ Fetch failed:', e && e.message);
+  }
 }
 
 /* ============================================================
