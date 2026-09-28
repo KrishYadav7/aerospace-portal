@@ -574,7 +574,7 @@
              in the background so scrolling never stutters. */
           task = pdfjsLib.getDocument({
             url: opts.url,
-            rangeChunkSize: 2097152,        // 2 MB (was 256 KB originally)
+            rangeChunkSize: 1048576,        // 1 MB (faster first page paint)
             disableAutoFetch: false,        // prefetch in background
             disableStream: false,
             disableRange: false,

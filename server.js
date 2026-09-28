@@ -7922,28 +7922,20 @@ app.get('/api/admin/contributions/:id/download', requireAdminAuth, async (req, r
       });
     }
 
-    const buf = Buffer.from(await response.arrayBuffer());
-
-    // Cache to disk for future requests (best-effort)
-    try {
-      const cacheName = diskFilename || ('restored-' + Date.now() + (ext || ''));
-      const cachePath = path.join(UPLOAD_DIR, cacheName);
-      if (!fs.existsSync(cachePath)) {
-        fs.writeFileSync(cachePath, buf);
-        console.log('[contribution/download] cached to disk as:', cacheName);
-      }
-    } catch (e) {
-      console.warn('[contribution/download] cache write failed:', e.message);
-    }
-
+    // Stream directly to client instead of buffering into memory
+    const { Readable } = require('stream');
+    const contentLength = response.headers.get('content-length');
+    
     res.setHeader('Content-Type', response.headers.get('content-type') || contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
-    res.setHeader('Content-Length', buf.length);
+    if (contentLength) res.setHeader('Content-Length', contentLength);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
 
     markDownloaded();
-    res.send(buf);
+    
+    // Convert Web Stream to Node Stream and pipe
+    Readable.fromWeb(response.body).pipe(res);
     console.log(`[contribution/download] ✅ sent ${buf.length} bytes (via ${usedName})`);
   } catch (e) {
     console.error('[admin/contributions/download] fatal:', e);

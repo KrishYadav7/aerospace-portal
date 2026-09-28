@@ -10121,7 +10121,7 @@ async function viewFileOnline(courseId, materialId) {
        very first range request hits disk instead of waiting for the
        network. Saves 300–800 ms on cold opens. Fire-and-forget. */
     try {
-      fetch(url, { headers: { 'Range': 'bytes=0-2097151' } }).catch(() => {});
+      fetch(url, { headers: { 'Range': 'bytes=0-1048575' } }).catch(() => {});
     } catch (e) {}
 
     window.PDFViewer.open({
