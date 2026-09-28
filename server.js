@@ -2282,6 +2282,8 @@ async function serveUploadFile(filename, req, res) {
     res.removeHeader('Cache-Control');
     res.removeHeader('Expires');
     res.removeHeader('Pragma');
+    res.removeHeader('Accept-Ranges');   // ← ADD THIS LINE
+    res.removeHeader('Vary');            // ← and this (also duplicated)
 
     // Hand off to Nginx. Only the redirect + content-type hint survive.
     res.setHeader('X-Accel-Redirect', accelPath);
