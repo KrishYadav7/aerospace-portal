@@ -4700,8 +4700,13 @@ app.put('/api/admin/subscription-plans/:planId', requireAdminAuth, async (req, r
     if (featured !== undefined) plan.featured = !!featured;
     if (enabled !== undefined)  plan.enabled = !!enabled;
 
-    /* Invalidate cached Razorpay plan id if amount changed */
-    if (amount !== undefined) plan.razorpayPlanId = null;
+    /* ⭐ Invalidate the cached Razorpay plan if the amount OR the
+       duration changed. Checking only `amount` is a bug: changing
+       a plan from 1-month to 6-month while keeping the same price
+       would silently keep billing monthly via the old Razorpay plan. */
+    if (amount !== undefined || durationDays !== undefined) {
+      plan.razorpayPlanId = null;
+    }
 
     s.updatedAt = new Date();
     await s.save();
@@ -4840,31 +4845,106 @@ app.post('/api/validate-coupon', async (req, res) => {
      • No coupon  → Razorpay SUBSCRIPTION (auto-renewing)
      • With coupon → Razorpay ORDER (one-time payment for plan.durationDays)
    ============================================================ */
+/* ============================================================
+   RAZORPAY PLAN RESOLVER
+   ------------------------------------------------------------
+   Resolves (or creates) a Razorpay plan that matches the admin's
+   internal plan definition (amount + billing interval).
+
+   KEY BEHAVIOURS:
+     • Caches the created plan_id back into Settings so the SAME
+       Razorpay plan is reused for every future subscriber.
+     • Verifies BOTH amount AND interval when reusing a cached id —
+       changing a plan's duration invalidates the old id.
+     • Maps durationDays onto the closest Razorpay period/interval
+       (daily / weekly / monthly / yearly) instead of blindly
+       rounding to months.
+   ============================================================ */
 async function ensureRazorpayPlanForThisPlan(plan) {
+  const planAmount   = Math.max(0, Number(plan.amount) || 0);
+  const planDays     = Math.max(1, Number(plan.durationDays) || 30);
+  const wantedAmount = Math.round(planAmount * 100);
+
+  /* ---- Map durationDays → Razorpay period/interval ----
+     Razorpay accepts:
+       daily   : 1–90
+       weekly  : 1–52
+       monthly : 1, 2, 3, 6, 12
+       yearly  : 1, 2, 3
+     We pick the closest exact match. Anything else falls back to
+     daily so the amount is still charged for the correct period. */
+  let interval, period;
+  if (planDays % 365 === 0 && (planDays / 365) <= 3) {
+    period   = 'yearly';
+    interval = planDays / 365;
+  } else if (planDays % 30 === 0 &&
+             [1, 2, 3, 6, 12].includes(planDays / 30)) {
+    period   = 'monthly';
+    interval = planDays / 30;
+  } else if (planDays % 7 === 0 && (planDays / 7) <= 52) {
+    period   = 'weekly';
+    interval = planDays / 7;
+  } else {
+    period   = 'daily';
+    interval = Math.min(90, planDays);
+  }
+
+  /* ---- 1) Reuse cached plan if it fully matches ---- */
   if (plan.razorpayPlanId) {
     try {
-      const fetched = await razorpay.plans.fetch(plan.razorpayPlanId);
-      const fetchedAmt = fetched && fetched.item ? Number(fetched.item.amount) : null;
-      const wanted = Math.round(Number(plan.amount) * 100);
-      if (fetchedAmt === wanted) return plan.razorpayPlanId;
+      const fetched   = await razorpay.plans.fetch(plan.razorpayPlanId);
+      const fAmount   = fetched && fetched.item ? Number(fetched.item.amount) : null;
+      const fInterval = fetched && fetched.interval != null ? Number(fetched.interval) : null;
+      const fPeriod   = fetched && fetched.period ? String(fetched.period) : null;
+
+      if (fAmount === wantedAmount &&
+          fInterval === interval &&
+          fPeriod === period) {
+        return plan.razorpayPlanId;
+      }
+      console.log(
+        `[plan] cached Razorpay plan mismatch — ` +
+        `have ${fAmount}p/${fInterval}${fPeriod}, want ${wantedAmount}p/${interval}${period}. ` +
+        `Creating a new one.`
+      );
     } catch (e) {
       console.warn('[plan] cached razorpayPlanId invalid:', e.message);
     }
   }
-  // Create a new Razorpay plan (monthly interval = 1) — Razorpay uses
-  // interval/period; we approximate any duration with monthly cycles.
-  const months = Math.max(1, Math.round(plan.durationDays / 30));
+
+  /* ---- 2) Create a new Razorpay plan ---- */
   const created = await razorpay.plans.create({
-    period: 'monthly',
-    interval: months,
+    period,
+    interval,
     item: {
-      name: plan.title,
-      amount: Math.round(plan.amount * 100),
-      currency: 'INR',
+      name:        plan.title,
+      amount:      wantedAmount,
+      currency:    'INR',
       description: plan.description || ''
     },
     notes: { internalPlanId: plan.id }
   });
+
+  /* ---- 3) ⭐ Persist the id back so the NEXT student reuses it ----
+     Without this, every checkout creates a duplicate Razorpay plan. */
+  try {
+    const s = await getGlobalSettings();
+    const stored = (s.subscriptionPlans || []).find(p => p.id === plan.id);
+    if (stored) {
+      stored.razorpayPlanId = created.id;
+      s.updatedAt = new Date();
+      await s.save();
+      invalidateGlobalSettingsCache();
+      cacheClear('settings:');
+      console.log(
+        `[plan] ✅ Cached Razorpay plan id "${created.id}" on internal plan "${plan.id}" ` +
+        `(${interval} ${period}, ₹${planAmount})`
+      );
+    }
+  } catch (saveErr) {
+    console.warn('[plan] Could not persist razorpayPlanId:', saveErr.message);
+  }
+
   return created.id;
 }
 
@@ -4947,7 +5027,7 @@ app.post('/api/subscribe/create', async (req, res) => {
       plan_id: rzpPlanId,
       customer_notify: 1,
       quantity: 1,
-      total_count: 120,
+      total_count: 100,
       notes: {
         userId: String(user._id),
         planId: plan.id,
