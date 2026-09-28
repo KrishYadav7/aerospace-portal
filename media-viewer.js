@@ -487,6 +487,10 @@
       this._prevBodyOverflow = '';
       this._selTimer = null;
       this._blurTimer = null;
+      /* ⭐ Reading-progress state */
+      this._resumePage = 1;              // saved page to jump to on open
+      this._saveProgressTimer = null;    // debounce handle for saves
+      this._resumeApplied = false;       // guard: only scroll once per open
 
       this._onSelectionChange = this._onSelectionChange.bind(this);
       this._onKeyDown = this._onKeyDown.bind(this);
@@ -494,6 +498,7 @@
       this._onWindowBlur = this._onWindowBlur.bind(this);
       this._onWindowFocus = this._onWindowFocus.bind(this);
       this._onVisibility = this._onVisibility.bind(this);
+      this._onPageHide = this._onPageHide.bind(this);   // ⭐ new
     }
 
     async open(opts) {
@@ -527,6 +532,12 @@
       /* Filled in after pdfDoc loads */
       this.totalPages   = 0;
       this.previewLimit = 0;   // last page the user is allowed to read
+
+      /* ⭐ Read the last read page for this material before we
+         build the UI, so the resume scroll can be scheduled as
+         soon as the DOM is ready. */
+      this._resumeApplied = false;
+      this._loadReadingProgress();
 
       this._buildUI();
       this._loadHighlights();
@@ -692,6 +703,9 @@
       window.addEventListener('blur', this._onWindowBlur);
       window.addEventListener('focus', this._onWindowFocus);
       document.addEventListener('visibilitychange', this._onVisibility);
+      /* ⭐ Flush reading position on tab close / mobile app kill */
+      window.addEventListener('pagehide', this._onPageHide);
+      window.addEventListener('beforeunload', this._onPageHide);
 
       this.bodyEl.addEventListener('dragstart', e => e.preventDefault());
       this.bodyEl.addEventListener('contextmenu', e => { e.preventDefault(); return false; });
@@ -862,6 +876,12 @@
         }
 
         this._setupPageObserver();
+
+        /* ⭐ NEW: Restore the last reading position on this PDF.
+           Runs AFTER every placeholder div exists so scrollIntoView
+           can find the target page. The IntersectionObserver we
+           just attached will lazy-render it on demand. */
+        this._applyReadingResume();
       };
 
       if (typeof window.requestIdleCallback === 'function') {
@@ -1111,6 +1131,10 @@
         : 0;
       const bar = this.modal.querySelector('#pdfvProgress');
       if (bar) bar.style.width = pct + '%';
+
+      /* ⭐ Persist the current page (debounced so long scrolls
+         don't hammer localStorage). */
+      this._scheduleProgressSave();
     }
 
     // Do NOT blur on tab switch — users often check notes/slides and come
@@ -1373,6 +1397,105 @@
       try { localStorage.setItem(this._storageKey(), JSON.stringify(this.highlights)); } catch(e){}
     }
 
+    /* ============================================================
+       READING PROGRESS — resume where you left off
+       ------------------------------------------------------------
+       Stored per material in localStorage:
+         • page       — last visible page
+         • totalPages — sanity guard (clamps if a re-uploaded PDF
+                        now has fewer pages than the saved one)
+         • updatedAt  — timestamp of last save
+       ============================================================ */
+
+    _progressKey() {
+      return 'aero_pdf_progress_' + this.materialId;
+    }
+
+    _loadReadingProgress() {
+      this._resumePage = 1;
+      try {
+        const raw = localStorage.getItem(this._progressKey());
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        const page = parseInt(data && data.page, 10);
+        if (Number.isFinite(page) && page > 1) this._resumePage = page;
+      } catch (e) {
+        this._resumePage = 1;
+      }
+    }
+
+    _saveReadingProgress(immediate) {
+      if (immediate && this._saveProgressTimer) {
+        clearTimeout(this._saveProgressTimer);
+        this._saveProgressTimer = null;
+      }
+      try {
+        const payload = {
+          page: this.currentPage || 1,
+          totalPages: this.pdfDoc ? this.pdfDoc.numPages : (this.totalPages || 0),
+          updatedAt: Date.now()
+        };
+        localStorage.setItem(this._progressKey(), JSON.stringify(payload));
+      } catch (e) { /* quota / private mode — silent */ }
+    }
+
+    _scheduleProgressSave() {
+      if (this._saveProgressTimer) return;
+      this._saveProgressTimer = setTimeout(() => {
+        this._saveProgressTimer = null;
+        this._saveReadingProgress(false);
+      }, 1200);
+    }
+
+    _applyReadingResume() {
+      if (this._resumeApplied) return;
+      this._resumeApplied = true;
+
+      let target = this._resumePage;
+      if (!target || target <= 1) return;
+
+      /* Clamp to the free-preview ceiling if this material is locked
+         and the saved position was deeper than the allowed range. */
+      if (this.previewLimit && target > this.previewLimit) {
+        target = this.previewLimit;
+        this._resumePage = target;
+      }
+
+      const pageEl = this.pageEls.get(target);
+      if (!pageEl) return;
+
+      requestAnimationFrame(() => {
+        if (!this.active || !this.bodyEl) return;
+
+        /* Instant jump — not smooth — so the target is visible the
+           moment the loader hides. */
+        this.bodyEl.scrollTop = pageEl.offsetTop - 12;
+        this.currentPage = target;
+
+        const inp = this.modal && this.modal.querySelector('#pdfvPageInput');
+        if (inp) inp.value = target;
+
+        /* Render the target page immediately if the observer hasn't
+           already kicked it off. */
+        if (pageEl.dataset.rendered !== '1') {
+          this._renderPage(target)
+            .then(() => { pageEl.dataset.rendered = '1'; })
+            .catch(() => {});
+        }
+
+        if (typeof userToast === 'function') {
+          userToast('📖 Resuming from page ' + target, 'info');
+        }
+      });
+    }
+
+    /* Flush reading position when the tab is closed or the mobile
+       app is backgrounded/killed. */
+    _onPageHide() {
+      if (!this.active) return;
+      try { this._saveReadingProgress(true); } catch (e) {}
+    }
+
     _updateHlCount() {
       if (!this.modal) return;
       const el = this.modal.querySelector('#pdfvHlCount');
@@ -1511,15 +1634,24 @@
 
     close() {
       if (!this.active) return;
+
+      /* ⭐ Persist the last read page synchronously before the DOM
+         is torn down. This is what makes "Back" and Esc restore
+         correctly on the next open. */
+      try { this._saveReadingProgress(true); } catch (e) {}
+
       this.active = false;
       clearTimeout(this._selTimer);
       clearTimeout(this._blurTimer);
+      clearTimeout(this._saveProgressTimer);
       document.removeEventListener('selectionchange', this._onSelectionChange);
       document.removeEventListener('keydown', this._onKeyDown, true);
       if (this.bodyEl) this.bodyEl.removeEventListener('scroll', this._onBodyScroll);
       window.removeEventListener('blur', this._onWindowBlur);
       window.removeEventListener('focus', this._onWindowFocus);
       document.removeEventListener('visibilitychange', this._onVisibility);
+      window.removeEventListener('pagehide', this._onPageHide);
+      window.removeEventListener('beforeunload', this._onPageHide);
       document.body.style.overflow = this._prevBodyOverflow || '';
 
       const m = this.modal;
