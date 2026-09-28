@@ -569,19 +569,20 @@
         let task;
         if (opts.url) {
           /* ── Streaming-optimized loading for large PDFs ──
-             rangeChunkSize: 1 MB (was 64 KB) → up to 16× fewer HTTP
-             round trips. For a 50 MB PDF this drops ~800 requests
-             to ~50, cutting load time from ~20 s to ~2 s.
-             disableAutoFetch: true → PDF.js fetches ONLY what the
-             current page needs, instead of greedily downloading the
-             whole file in the background. Perfect for mobile data. */
+             disableAutoFetch: true → PDF.js fetches ONLY the byte ranges
+             the currently-visible pages need. It does NOT silently
+             download the whole file in the background, which used to
+             compete with page-1 fetches and made large PDFs feel slow.
+             disableStream/disableRange: false → keep HTTP 206 range
+             requests + progressive streaming so page 1 can paint while
+             the rest of the file streams on demand. */
           task = pdfjsLib.getDocument({
             url: opts.url,
-            rangeChunkSize: 262144,       // 256 KB chunks — smaller = snappier first page
-            disableAutoFetch: false,      // let PDF.js stream the rest in the background
+            rangeChunkSize: 262144,       // 256 KB chunks — snappy first page
+            disableAutoFetch: true,       // ✅ ONLY fetch what's needed
             disableStream: false,
             disableRange: false,
-            stopAtErrors: false,          // ⭐ keep going past non-fatal warnings
+            stopAtErrors: false,
             cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
             cMapPacked: true,
             useSystemFonts: true,
@@ -592,16 +593,32 @@
             ? opts.data
             : 'data:application/pdf;base64,' + opts.data;
           const bytes = await dataURLToBytes(dataURL);
-          task = pdfjsLib.getDocument({
-            data: bytes,
-            cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
-            cMapPacked: true,
-            useSystemFonts: true,
-            verbosity: 0
-          });
+        task = pdfjsLib.getDocument({
+  url: opts.url,
+  rangeChunkSize: 262144,       // 256 KB — good balance
+  disableAutoFetch: true,       // ✅ ONLY fetch what's needed
+  disableStream: false,         // ✅ keep progressive streaming
+  disableRange: false,          // ✅ keep HTTP range requests
+  stopAtErrors: false,
+  cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
+  cMapPacked: true,
+  useSystemFonts: true,
+  verbosity: 0
+});  
         }
+        if (this.loaderEl) {
+          const t = this.loaderEl.querySelector('#pdfvLoaderText');
+          if (t) t.textContent = 'Fetching document…';
+        }
+
         this.pdfDoc = await task.promise;
         if (!this.active) return;
+
+        if (this.loaderEl) {
+          const t = this.loaderEl.querySelector('#pdfvLoaderText');
+          if (t) t.textContent = 'Rendering page 1…';
+        }
+
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
 
@@ -678,7 +695,7 @@
             '<div class="pdfv-watermark" id="pdfvWatermark"></div>' +
             '<div class="pdfv-loader" id="pdfvLoader">' +
               '<div class="pdfv-spinner"></div>' +
-              '<p>Loading document…</p>' +
+              '<p id="pdfvLoaderText">Connecting to server…</p>' +
             '</div>' +
           '</div>' +
         '</div>' +

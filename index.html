@@ -18,6 +18,15 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 
+  <!-- PDF.js warm-up: start the byte transfer for the library + worker
+       immediately at page load so the first PDF open never has to wait
+       for them. They're lazy-deferred on the parser side but the network
+       fetch starts now. -->
+  <link rel="preload" as="script" crossorigin
+        href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js">
+  <link rel="preload" as="script" crossorigin
+        href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
+
 
   <!-- Google Fonts — non-blocking -->
   <link rel="preload" as="style"

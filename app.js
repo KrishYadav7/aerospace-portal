@@ -4,6 +4,38 @@
 const API_BASE = '/api';
 
 /* ============================================================
+   PDF.js PRELOAD ON INTENT
+   ------------------------------------------------------------
+   The PDF.js bundle is ~1 MB from cdnjs. It used to load only
+   AFTER the student clicked "Read", adding 300–800 ms before
+   any PDF bytes even began fetching. Now we start the download
+   the moment the cursor enters (or a thumb touches) any material
+   card — so by the time the click lands, PDF.js is already warm.
+   ============================================================ */
+(function preloadPDFOnIntent() {
+  let warmed = false;
+  const warm = () => {
+    if (warmed) return;
+    warmed = true;
+    try { window.loadPDFJS().catch(() => {}); } catch (e) {}
+  };
+
+  // Desktop: hover anywhere on a material card
+  document.addEventListener('mouseover', (e) => {
+    if (e.target && e.target.closest && e.target.closest('.material-item, .material-card, [data-material-id]')) {
+      warm();
+    }
+  }, { passive: true, capture: true });
+
+  // Mobile: first touch on a material card
+  document.addEventListener('touchstart', (e) => {
+    if (e.target && e.target.closest && e.target.closest('.material-item, .material-card, [data-material-id]')) {
+      warm();
+    }
+  }, { passive: true, capture: true });
+})();
+
+/* ============================================================
    UNIVERSAL LIVE SYNC CLIENT
    ------------------------------------------------------------
    • Listens on /api/events/stream (SSE) for content updates.
