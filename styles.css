@@ -8840,3 +8840,90 @@ body:has(.modal-overlay.active) .mobile-bottom-nav {
   .mbn-item .mbn-icon,
   .mbn-item .mbn-icon i { transition: none !important; }
 }
+/* ============================================================
+   PDF VIEWER v6 — Progressive loading + UX polish + extra colors
+   ============================================================ */
+
+/* Anchor the progress bar inside the shell */
+.pdfv-shell { position: relative; }
+
+/* ---- Reading progress bar (thin line at very top) ---- */
+.pdfv-progress {
+  position: absolute;
+  top: 0; left: 0;
+  height: 3px;
+  width: 0%;
+  background: linear-gradient(90deg, #6366f1, #06b6d4);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.55);
+  z-index: 25;
+  transition: width .12s linear;
+  pointer-events: none;
+  border-radius: 0 3px 3px 0;
+}
+
+/* ---- Page placeholder skeleton (shown until a page renders) ---- */
+.pdfv-page-skeleton {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #ffffff;
+  z-index: 1;
+  pointer-events: none;
+}
+.pdfv-page-skeleton::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(99, 102, 241, 0.07) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: pdfvSkelShimmer 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes pdfvSkelShimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.pdfv-skeleton-spinner {
+  width: 30px; height: 30px;
+  border: 3px solid rgba(99, 102, 241, 0.15);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: pdfSpin .8s linear infinite;
+  position: relative;
+  z-index: 1;
+}
+.pdfv-skeleton-text {
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: .4px;
+  color: #94a3b8;
+  position: relative;
+  z-index: 1;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* ---- Extra highlighter swatches (purple / aqua / coral) ---- */
+.pdfv-color.purple { background: #a78bfa; }
+.pdfv-color.cyan   { background: #22d3ee; }
+.pdfv-color.red    { background: #f87171; }
+
+/* Tighter swatches when 8 are present on narrow screens */
+@media (max-width: 720px) {
+  .pdfv-hl-colors { gap: 3px; padding: 2px; }
+  .pdfv-color { width: 18px; height: 18px; }
+}
+@media (max-width: 420px) {
+  .pdfv-hl-colors { gap: 2px; }
+  .pdfv-color { width: 16px; height: 16px; }
+}

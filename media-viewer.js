@@ -56,10 +56,24 @@
     else console.log('[MediaViewer]', msg);
   }
 
+  /* ------------------------------------------------------------
+     Highlighter palette — 8 soft, readable colors.
+     Alpha tuned to ~40-45% so text stays perfectly legible.
+     ------------------------------------------------------------ */
   const HL_COLORS = {
-    yellow:'rgba(253,224,71,0.55)', green:'rgba(52,211,153,0.50)',
-    blue:'rgba(96,165,250,0.50)',   pink:'rgba(244,114,182,0.50)',
-    orange:'rgba(251,146,60,0.55)'
+    yellow: 'rgba(255, 224, 102, 0.45)',   // warm classroom yellow
+    green:  'rgba(134, 239, 172, 0.45)',   // soft mint
+    blue:   'rgba(147, 197, 253, 0.45)',   // sky
+    pink:   'rgba(249, 168, 212, 0.45)',   // rose
+    orange: 'rgba(253, 186, 116, 0.45)',   // peach
+    purple: 'rgba(196, 181, 253, 0.42)',   // lavender
+    cyan:   'rgba(103, 232, 249, 0.40)',   // aqua
+    red:    'rgba(252, 165, 165, 0.42)'    // coral
+  };
+
+  const HL_COLOR_LABELS = {
+    yellow: 'Yellow', green: 'Mint', blue: 'Sky', pink: 'Rose',
+    orange: 'Peach',  purple: 'Lavender', cyan: 'Aqua', red: 'Coral'
   };
 
   /* ============================================================
@@ -542,11 +556,14 @@
       el.className = 'pdf-viewer-modal';
 
       const colorBtns = Object.keys(HL_COLORS).map(c =>
-        '<button class="pdfv-color ' + c + '" data-color="' + c + '" title="' + c + '" type="button"></button>'
+        '<button class="pdfv-color ' + c + '" data-color="' + c +
+        '" title="' + (HL_COLOR_LABELS[c] || c) + '" aria-label="Highlight ' +
+        (HL_COLOR_LABELS[c] || c) + '" type="button"></button>'
       ).join('');
 
       el.innerHTML =
         '<div class="pdfv-shell" oncontextmenu="return false;">' +
+          '<div class="pdfv-progress" id="pdfvProgress"></div>' +
           '<div class="pdfv-toolbar">' +
             '<div class="pdfv-toolbar-left">' +
               '<button type="button" class="pdfv-back-btn" data-act="close" title="Back (Esc)">' +
@@ -566,7 +583,8 @@
               '<button type="button" class="pdfv-btn" data-act="zoomout" title="Zoom out"><i class="fas fa-search-minus"></i></button>' +
               '<span class="pdfv-zoomlabel" id="pdfvZoomLabel">100%</span>' +
               '<button type="button" class="pdfv-btn" data-act="zoomin" title="Zoom in"><i class="fas fa-search-plus"></i></button>' +
-              '<button type="button" class="pdfv-btn" data-act="fit" title="Fit to width"><i class="fas fa-arrows-alt-h"></i></button>' +
+              '<button type="button" class="pdfv-btn" data-act="fit" title="Fit to width (W)"><i class="fas fa-arrows-alt-h"></i></button>' +
+              '<button type="button" class="pdfv-btn" data-act="fitpage" title="Fit whole page (F)"><i class="fas fa-expand"></i></button>' +
             '</div>' +
             '<div class="pdfv-toolbar-right">' +
               '<div class="pdfv-hl-colors" id="pdfvColors">' + colorBtns + '</div>' +
@@ -649,6 +667,7 @@
       if (act === 'zoomin') return this._changeZoom(0.15);
       if (act === 'zoomout') return this._changeZoom(-0.15);
       if (act === 'fit') return this._fitToWidth();
+      if (act === 'fitpage') return this._fitToPage();
       if (act === 'clear-page') return this._clearPageHighlights(this.currentPage);
       if (act === 'clear-all') return this._clearAllHighlights();
     }
@@ -661,20 +680,15 @@
       });
     }
 
-    async _renderAllPages() {
+       async _renderAllPages() {
       this.pagesEl.innerHTML = '';
       this.pageEls.clear();
       this.textLayers.clear();
+      this._disconnectPageObserver();
 
       const total = this.pdfDoc.numPages;
       this.totalPages = total;
 
-      /* ⭐ NEW — Compute the render ceiling.
-         • Full access  → render every page
-         • Preview only → render ceil(total × previewPercent / 100),
-                          minimum 1 page, maximum = total
-         • No preview   → render 0 pages (defensive fallback; the server
-                          should already have blocked the request) */
       let renderLimit;
       if (this.hasFullAccess) {
         renderLimit = total;
@@ -687,11 +701,9 @@
       }
       this.previewLimit = renderLimit;
 
-      /* Update toolbar: page count reflects the visible pages */
       const pageCountEl = this.modal.querySelector('#pdfvPageCount');
       if (pageCountEl) pageCountEl.textContent = renderLimit || total;
 
-      /* Add a "Preview" chip to the title bar in preview mode */
       const titleEl = this.modal.querySelector('#pdfvTitle');
       if (titleEl) {
         const lockedCount = Math.max(0, total - renderLimit);
@@ -705,31 +717,131 @@
         }
       }
 
-      /* Clamp page input to the render limit */
       const pageInput = this.modal.querySelector('#pdfvPageInput');
       if (pageInput) pageInput.setAttribute('max', String(renderLimit || total));
 
       this._updateZoomLabel();
       this._updateHlCount();
 
-      /* Create placeholders only for pages we will actually render */
+      /* Probe page 1 dimensions so every placeholder gets the exact size */
+      let placeholderW = 612;
+      let placeholderH = 792;
+      try {
+        const p1 = await this.pdfDoc.getPage(1);
+        const vp1 = p1.getViewport({ scale: this.scale });
+        placeholderW = Math.round(vp1.width);
+        placeholderH = Math.round(vp1.height);
+      } catch (e) {
+        console.warn('[PDFViewer] placeholder probe failed:', e);
+      }
+
+      /* Create shimmering skeletons for all pages upfront */
       for (let i = 1; i <= renderLimit; i++) {
         const pageEl = document.createElement('div');
         pageEl.className = 'pdfv-page';
         pageEl.dataset.page = i;
+        pageEl.style.width  = placeholderW + 'px';
+        pageEl.style.height = placeholderH + 'px';
+        pageEl.style.position = 'relative';
+        pageEl.style.background = '#ffffff';
+
+        const skel = document.createElement('div');
+        skel.className = 'pdfv-page-skeleton';
+        skel.innerHTML =
+          '<div class="pdfv-skeleton-spinner"></div>' +
+          '<div class="pdfv-skeleton-text">Loading page ' + i + '…</div>';
+        pageEl.appendChild(skel);
+
         this.pagesEl.appendChild(pageEl);
         this.pageEls.set(i, pageEl);
       }
 
-      /* Render each page */
-      for (let i = 1; i <= renderLimit; i++) await this._renderPage(i);
-
-      /* ⭐ Paywall card at the bottom (only when pages are locked) */
       if (!this.hasFullAccess && renderLimit < total) {
         this._renderPaywallCard(total, renderLimit);
       }
 
-      this._applyAllHighlights();
+      /* Paint page 1 IMMEDIATELY */
+      if (renderLimit >= 1) {
+        await this._renderPage(1);
+        const first = this.pageEls.get(1);
+        if (first) first.dataset.rendered = '1';
+      }
+
+      /* Background lazy-render for pages 2…N */
+      this._setupPageObserver();
+    }
+
+    _setupPageObserver() {
+      this._disconnectPageObserver();
+
+      if (typeof IntersectionObserver !== 'function') {
+        this.pageEls.forEach((el, n) => {
+          if (el.dataset.rendered !== '1') {
+            this._renderPage(n).then(() => { el.dataset.rendered = '1'; });
+          }
+        });
+        return;
+      }
+
+      this._pageObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          const pageEl = entry.target;
+          if (!entry.isIntersecting) return;
+          if (pageEl.dataset.rendered === '1') {
+            this._pageObserver.unobserve(pageEl);
+            return;
+          }
+          const pageNum = parseInt(pageEl.dataset.page, 10);
+          if (!this._renderingPages) this._renderingPages = new Set();
+          if (this._renderingPages.has(pageNum)) return;
+
+          this._renderingPages.add(pageNum);
+          this._pageObserver.unobserve(pageEl);
+
+          this._renderPage(pageNum)
+            .then(() => {
+              pageEl.dataset.rendered = '1';
+              this._renderingPages.delete(pageNum);
+            })
+            .catch((err) => {
+              console.warn('[PDFViewer] lazy render failed page ' + pageNum, err);
+              this._renderingPages.delete(pageNum);
+            });
+        });
+      }, {
+        root: this.bodyEl,
+        rootMargin: '150% 0px 150% 0px',
+        threshold: 0
+      });
+
+      this.pageEls.forEach((el) => {
+        if (el.dataset.rendered !== '1') this._pageObserver.observe(el);
+      });
+    }
+
+    _disconnectPageObserver() {
+      if (this._pageObserver) {
+        try { this._pageObserver.disconnect(); } catch (e) {}
+        this._pageObserver = null;
+      }
+      if (this._renderingPages) this._renderingPages.clear();
+    }
+
+    async _renderVisiblePagesNow() {
+      const bodyRect = this.bodyEl.getBoundingClientRect();
+      const tasks = [];
+      this.pageEls.forEach((pageEl, n) => {
+        if (pageEl.dataset.rendered === '1') return;
+        const r = pageEl.getBoundingClientRect();
+        if (r.bottom >= bodyRect.top - 200 && r.top <= bodyRect.bottom + 200) {
+          tasks.push(
+            this._renderPage(n)
+              .then(() => { pageEl.dataset.rendered = '1'; })
+              .catch(() => {})
+          );
+        }
+      });
+      await Promise.all(tasks);
     }
 
     /* ============================================================
@@ -858,6 +970,9 @@
       }
       await task.promise;
       this.textLayers.set(n, textLayer);
+
+      /* Apply saved highlights for this page as soon as it renders */
+      this._applyPageHighlights(n);
     }
 
     _scrollToPage(n) {
@@ -876,6 +991,14 @@
       this.currentPage = current;
       const inp = this.modal.querySelector('#pdfvPageInput');
       if (inp && document.activeElement !== inp) inp.value = current;
+
+      /* Update reading-progress bar */
+      const totalH = this.bodyEl.scrollHeight - this.bodyEl.clientHeight;
+      const pct = totalH > 0
+        ? Math.min(100, Math.max(0, (scrollTop / totalH) * 100))
+        : 0;
+      const bar = this.modal.querySelector('#pdfvProgress');
+      if (bar) bar.style.width = pct + '%';
     }
 
     // Do NOT blur on tab switch — users often check notes/slides and come
@@ -915,13 +1038,16 @@
     async _setZoom(scale) {
       scale = Math.max(0.4, Math.min(3.5, scale));
       if (Math.abs(scale - this.scale) < 0.01) return;
+
       const ratio = this.bodyEl.scrollTop / Math.max(1, this.bodyEl.scrollHeight);
       this.scale = scale;
       this._updateZoomLabel();
-      this.loaderEl.style.display = 'flex';
+
+      this.bodyEl.style.visibility = 'hidden';
       await this._renderAllPages();
       this.bodyEl.scrollTop = ratio * this.bodyEl.scrollHeight;
-      this.loaderEl.style.display = 'none';
+      await this._renderVisiblePagesNow();
+      this.bodyEl.style.visibility = '';
     }
 
     _updateZoomLabel() {
@@ -936,6 +1062,18 @@
       const vp = page.getViewport({ scale: 1 });
       const target = (this.bodyEl.clientWidth - 60) / vp.width;
       this._setZoom(target);
+    }
+
+    async _fitToPage() {
+      if (!this.pdfDoc) return;
+      try {
+        const page = await this.pdfDoc.getPage(1);
+        const vp = page.getViewport({ scale: 1 });
+        const availW = this.bodyEl.clientWidth  - 60;
+        const availH = this.bodyEl.clientHeight - 60;
+        const scale = Math.min(availW / vp.width, availH / vp.height);
+        this._setZoom(scale);
+      } catch (e) { /* silent */ }
     }
 
     _onSelectionChange() {
@@ -1204,11 +1342,32 @@
       });
       wm.style.opacity = '0.42';
     }
-
     _onKeyDown(e) {
       if (!this.active) return;
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
 
+      const inField = e.target && e.target.matches &&
+                      e.target.matches('input, textarea, [contenteditable="true"]');
+
+      /* Navigation shortcuts (plain keys, not typing) */
+      if (!inField && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const maxPage = this.previewLimit || (this.pdfDoc ? this.pdfDoc.numPages : 1);
+        const cur = this.currentPage || 1;
+        const go = (n) => { e.preventDefault(); this._scrollToPage(n); };
+
+        switch (e.key) {
+          case 'PageDown':   return go(Math.min(maxPage, cur + 1));
+          case 'PageUp':     return go(Math.max(1, cur - 1));
+          case 'ArrowRight': return go(Math.min(maxPage, cur + 1));
+          case 'ArrowLeft':  return go(Math.max(1, cur - 1));
+          case 'Home':       return go(1);
+          case 'End':        return go(maxPage);
+          case 'w': case 'W': return (e.preventDefault(), this._fitToWidth());
+          case 'f': case 'F': return (e.preventDefault(), this._fitToPage());
+        }
+      }
+
+      /* Screenshot blocking (unchanged) */
       if (e.key === 'PrintScreen' || e.keyCode === 44) {
         e.preventDefault();
         if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1256,6 +1415,7 @@
         m.classList.remove('active');
         setTimeout(() => { try { m.remove(); } catch(e){} }, 240);
       }
+      this._disconnectPageObserver();
       this.pdfDoc = null;
       this.pageEls.clear();
       this.textLayers.clear();
