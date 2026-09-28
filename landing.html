@@ -1660,7 +1660,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 22px;
-  max-width: 980px;
+  max-width: 1280px;   /* was 980 — widened so 4 cards fit in one row */
   margin: 0 auto;
 }
 
@@ -1732,6 +1732,10 @@
 .lp-app-icon.tone-windows {
   background: linear-gradient(135deg, #00a4ef, #0078d4);
   box-shadow: 0 12px 28px rgba(0,164,239,.4);
+}
+.lp-app-icon.tone-ios {
+  background: linear-gradient(135deg, #0a84ff, #0040dd);
+  box-shadow: 0 12px 28px rgba(10,132,255,.45);
 }
 .lp-app-icon.tone-mac {
   background: linear-gradient(135deg, #6e6e73, #1d1d1f);
@@ -2423,8 +2427,24 @@
         </span>
       </div>
 
+      <!-- ===== iOS ===== -->
+      <div class="lp-app-card reveal reveal-d2" data-platform="ios">
+        <div class="lp-app-icon tone-ios">
+          <i class="fab fa-apple"></i>
+        </div>
+        <h3>iPhone &amp; iPad</h3>
+        <p class="lp-app-desc">Add to your home screen from Safari — full‑screen app, offline access, one‑tap launch.</p>
+        <button class="lp-app-btn" type="button" onclick="installApp('ios')">
+          <i class="fas fa-download"></i>
+          <span class="lp-app-btn-label">Install for iOS</span>
+        </button>
+        <span class="lp-app-hint" data-hint="ios">
+          Uses Safari’s “Add to Home Screen” — takes 10 seconds.
+        </span>
+      </div>
+
       <!-- ===== WINDOWS ===== -->
-      <div class="lp-app-card reveal reveal-d2" data-platform="windows">
+      <div class="lp-app-card reveal reveal-d3" data-platform="windows">
         <div class="lp-app-icon tone-windows">
           <i class="fab fa-windows"></i>
         </div>
@@ -2440,7 +2460,7 @@
       </div>
 
       <!-- ===== MAC ===== -->
-      <div class="lp-app-card reveal reveal-d3" data-platform="mac">
+      <div class="lp-app-card reveal reveal-d4" data-platform="mac">
         <div class="lp-app-icon tone-mac">
           <i class="fab fa-apple"></i>
         </div>
@@ -3499,6 +3519,18 @@
           'Tap the <strong>⋮ menu</strong> (top right).',
           'Tap <strong>“Install app”</strong> or <strong>“Add to Home screen”</strong>.',
           'Confirm — the app icon will appear on your home screen.'
+        ]
+      };
+    }
+
+    if (platform === 'ios') {
+      return {
+        title: 'Install on iPhone / iPad',
+        steps: [
+          'Open <strong>aerogyan.app</strong> in <strong>Safari</strong> on your iPhone or iPad. <em>(Chrome, Firefox, and Edge cannot install PWAs on iOS — Apple requires Safari.)</em>',
+          'Tap the <strong>Share button</strong> — the square with an arrow pointing up ⬆️, at the bottom of the screen.',
+          'Scroll down in the share sheet and tap <strong>“Add to Home Screen”</strong>.',
+          'Tap <strong>“Add”</strong> in the top-right corner — the AeroGyan icon will appear on your home screen.'
         ]
       };
     }
