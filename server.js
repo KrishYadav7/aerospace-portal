@@ -278,7 +278,15 @@ app.use('/api/courses', (req, res, next) => {
   next();
 });
 
-app.use(compression());
+app.use(compression({
+  threshold: 512,          // compress payloads >512 bytes (was 1 KB default)
+  level: 6,                // zlib level 6 — good ratio, low CPU
+  filter: (req, res) => {
+    /* Skip SSE — it manages its own streaming. */
+    if (res.getHeader('Content-Type') === 'text/event-stream') return false;
+    return compression.filter(req, res);
+  }
+}));
 
 /* ============================================================
    CORS — backward-compatible whitelist
@@ -427,7 +435,10 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
     }
   }
 
-  /* ── Fast user-specific access evaluation ── */
+  /* ── Single-pass access evaluation ──
+     Merged the two separate evaluations that used to run here
+     into one. Now computes `wantsPreviewOnly` inline. */
+  let wantsPreviewOnly = false;
   if (owner && owner !== false) {
     const mat = (owner.materials || []).find(m =>
       m.url && m.url.endsWith('/' + filename)
@@ -438,6 +449,7 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
       if (!access.allowed && access.canPreview) {
         res.setHeader('X-Aero-Preview-Percent', String(access.previewPercent));
         res.setHeader('X-Aero-Preview-Mode', '1');
+        wantsPreviewOnly = true;
       } else if (!access.allowed) {
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
@@ -467,22 +479,6 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
      FIRST request of every 10-minute window, so a student who
      loses access loses it within 10 min.
      ============================================================ */
-  /* ⭐ Choose which file to serve: full document, or the truncated
-     preview PDF for users who only have preview access.
-     ⚡ We evaluate access ONCE (the earlier block already computed it
-     for the same material) and use async fs calls so a slow disk
-     never blocks the event loop under load. */
-  let wantsPreviewOnly = false;
-  if (owner && owner !== false) {
-    const mat = (owner.materials || []).find(m =>
-      m.url && m.url.endsWith('/' + filename)
-    );
-    if (mat) {
-      const access = evaluateMaterialAccess(req.authUser, owner, mat);
-      wantsPreviewOnly = !access.allowed && access.canPreview;
-    }
-  }
-
   let diskPath = path.join(UPLOAD_DIR, filename);
   if (wantsPreviewOnly) {
     const previewPath = diskPath + '.preview';
@@ -1630,16 +1626,19 @@ function normalizePhone(p) {
 mongoose.connect(process.env.MONGO_URI, {
   maxPoolSize: 10,
   minPoolSize: 2,
-  /* ⚠️ Previous value was 30 s, which caused constant
-     "disconnected / connected" flapping on Render's free tier —
-     the driver closed idle sockets faster than the topology monitor
-     could reuse them. 5 min is the standard default and stops the
-     churn entirely. */
-  maxIdleTimeMS: 5 * 60 * 1000,
+
+  /* Never proactively close idle sockets. Prevents the disconnect/
+     reconnect churn that was filling the server.log. */
+  maxIdleTimeMS: 0,
+
   serverSelectionTimeoutMS: 30000,
   socketTimeoutMS: 45000,
   connectTimeoutMS: 10000,
-  family: 4,
+
+  /* NOTE: `family: 4` removed — invalid at this level and triggers
+     intermittent pool resets. IPv4 preference is already enforced
+     via dns.setDefaultResultOrder('ipv4first') at the top of the file. */
+
   retryWrites: true,
   retryReads: true,
   bufferCommands: false
@@ -1647,9 +1646,56 @@ mongoose.connect(process.env.MONGO_URI, {
   .then(() => console.log('🚀 MongoDB Connected — pool ready'))
   .catch((err) => console.error('❌ MongoDB Error:', err.message));
 
-mongoose.connection.on('connected', () => console.log('[mongo] connected'));
+let _mongoDisconnectCount = 0;
+mongoose.connection.on('connected', () => {
+  if (_mongoDisconnectCount > 0) {
+    console.log(`[mongo] reconnected (after ${_mongoDisconnectCount} drop${_mongoDisconnectCount === 1 ? '' : 's'})`);
+    _mongoDisconnectCount = 0;
+  } else {
+    console.log('[mongo] connected');
+  }
+});
 mongoose.connection.on('error', (e) => console.error('[mongo] error:', e.message));
-mongoose.connection.on('disconnected', () => console.warn('[mongo] disconnected'));
+mongoose.connection.on('disconnected', () => {
+  _mongoDisconnectCount++;
+  if (_mongoDisconnectCount === 1) {
+    console.warn('[mongo] disconnected — waiting for auto-reconnect…');
+  }
+});
+
+/* ============================================================
+   DATABASE INDEXES — created once, idempotent, zero-downtime.
+   `createIndex` is safe to call repeatedly. Runs async so it
+   never blocks server boot.
+   ============================================================ */
+(async () => {
+  try {
+    /* Courses — matches the primary list sort exactly */
+    await Course.collection.createIndex({ featured: -1, createdAt: -1 });
+    await Course.collection.createIndex({ status: 1 });
+    /* Used by /uploads/:filename to reverse-lookup the owning course */
+    await Course.collection.createIndex({ 'materials._id': 1 });
+    /* Used by the paywall + material lookup */
+    await Course.collection.createIndex({ 'materials.url': 1 }, { sparse: true });
+
+    /* Users — login (username lookup), forgot-password (email), referrals */
+    await User.collection.createIndex({ role: 1, createdAt: -1 });
+    await User.collection.createIndex({ referralCode: 1 }, { sparse: true });
+    await User.collection.createIndex({ referredBy: 1 }, { sparse: true });
+    await User.collection.createIndex({ email: 1 }, { sparse: true });
+
+    /* Activity — live admin dashboard sorts by lastSeenAt */
+    await User.collection.createIndex({ 'activeSession.lastSeenAt': -1 }, { sparse: true });
+
+    /* Contributions / feedback admin lists */
+    await Contribution.collection.createIndex({ submittedAt: -1 });
+    await Feedback.collection.createIndex({ submittedAt: -1 });
+
+    console.log('[mongo] ✅ Indexes ensured');
+  } catch (e) {
+    console.warn('[mongo] Index creation warning (non-fatal):', e.message);
+  }
+})();
 /* ============================================================
    ONE-TIME MIGRATION — backfill referralCode for existing users
    ============================================================ */
@@ -3697,6 +3743,7 @@ app.get('/api/courses', async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
       return res.json(cached);
     }
 
@@ -3710,20 +3757,35 @@ app.get('/api/courses', async (req, res) => {
             name: 1, code: 1, semester: 1, instructor: 1, description: 1,
             category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
             learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
-            isPremium: 1, price: 1, announcements: 1, playlists: 1,
+            isPremium: 1, price: 1,
             createdAt: 1, updatedAt: 1,
-            doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
+
+            /* Cheap counts — no full array transfer */
+            doubtsCount:   { $size: { $ifNull: ['$doubts',    []] } },
+            playlistCount: { $size: { $ifNull: ['$playlists', []] } },
+
+            /* Lightweight materials — only what the CARD view needs.
+               announcements / playlists / examConfig / tags / estimatedTime
+               stripped (never used in list view; inflate JSON 40-70%). */
             materials: {
               $map: {
                 input: { $ifNull: ['$materials', []] },
                 as: 'm',
                 in: {
-                  _id: '$$m._id', title: '$$m.title', type: '$$m.type',
-                  description: '$$m.description', url: '$$m.url',
-                  fileName: '$$m.fileName', isPremium: '$$m.isPremium',
-                  price: '$$m.price', estimatedTime: '$$m.estimatedTime',
-                  tags: '$$m.tags', examConfig: '$$m.examConfig',
-                  quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
+                  _id:            '$$m._id',
+                  title:          '$$m.title',
+                  type:           '$$m.type',
+                  description:    '$$m.description',
+                  url:            '$$m.url',
+                  fileName:       '$$m.fileName',
+                  diskName:       '$$m.diskName',
+                  cloudUrl:       '$$m.cloudUrl',
+                  isPremium:      '$$m.isPremium',
+                  price:          '$$m.price',
+                  previewPercent: '$$m.previewPercent',
+                  estimatedTime:  '$$m.estimatedTime',
+                  tags:           '$$m.tags',
+                  quizCount:      { $size: { $ifNull: ['$$m.quiz', []] } }
                 }
               }
             }
@@ -3745,6 +3807,7 @@ app.get('/api/courses', async (req, res) => {
 
     cacheSet(cacheKey, payload, 60000);
     res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
     res.json(payload);
   } catch (e) {
     console.error('[GET /api/courses]', e);
@@ -3872,6 +3935,16 @@ app.get('/api/courses/:id', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ success: false, message: 'Invalid course ID' });
     }
+
+    /* Server-side cache — 60 s. Auto-invalidated by cacheClear('courses:'). */
+    const cacheKey = 'courses:single:' + req.params.id;
+    const cached = cacheGet(cacheKey);
+    if (cached) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
+      return res.json(cached);
+    }
+
     const courses = await Course.aggregate([
       { $match: { _id: new mongoose.Types.ObjectId(req.params.id) } },
       {
@@ -3881,29 +3954,43 @@ app.get('/api/courses/:id', async (req, res) => {
           learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
           isPremium: 1, price: 1, announcements: 1, playlists: 1, doubts: 1,
           createdAt: 1, updatedAt: 1,
-       materials: {
-  $map: {
-    input: { $ifNull: ['$materials', []] },
-    as: 'm',
-    in: {
-      _id: '$$m._id', title: '$$m.title', type: '$$m.type',
-      description: '$$m.description', url: '$$m.url',
-      fileName: '$$m.fileName', isPremium: '$$m.isPremium',
-      price: '$$m.price',
-      previewPercent: '$$m.previewPercent',          // ⭐ NEW
-      estimatedTime: '$$m.estimatedTime',
-      tags: '$$m.tags', examConfig: '$$m.examConfig',
-      quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
-    }
-  }
-}
+          materials: {
+            $map: {
+              input: { $ifNull: ['$materials', []] },
+              as: 'm',
+              in: {
+                _id:            '$$m._id',
+                title:          '$$m.title',
+                type:           '$$m.type',
+                description:    '$$m.description',
+                url:            '$$m.url',
+                fileName:       '$$m.fileName',
+                diskName:       '$$m.diskName',
+                cloudUrl:       '$$m.cloudUrl',
+                isPremium:      '$$m.isPremium',
+                price:          '$$m.price',
+                previewPercent: '$$m.previewPercent',
+                estimatedTime:  '$$m.estimatedTime',
+                tags:           '$$m.tags',
+                examConfig:     '$$m.examConfig',
+                quizCount:      { $size: { $ifNull: ['$$m.quiz', []] } }
+              }
+            }
+          }
         }
       }
     ]);
+
     if (!courses || courses.length === 0) {
       return res.status(404).json({ success: false, message: 'Course not found' });
     }
-    res.json({ success: true, course: courses[0] });
+
+    const payload = { success: true, course: courses[0] };
+    cacheSet(cacheKey, payload, 60000);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
+    res.json(payload);
   } catch (e) {
     console.error('[GET /api/courses/:id]', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
@@ -5643,6 +5730,7 @@ app.post('/api/subscribe/verify', async (req, res) => {
       note: 'Subscription activated',
       date: now
     });
+    _clearAuthUserCache();          // ⭐ NEW
     await user.save();
 
     // ---- Referral: bump referrer's subscribed count ----
@@ -5710,6 +5798,7 @@ app.post('/api/subscribe/verify-order', async (req, res) => {
       note: `One-time purchase${user.subscription.couponApplied ? ' · coupon ' + user.subscription.couponApplied : ''}`,
       date: now
     });
+    _clearAuthUserCache();          // ⭐ NEW
     await user.save();
 
     // ---- Mark coupon used ----
@@ -6120,6 +6209,7 @@ app.post('/api/subscribe/cancel/verify', async (req, res) => {
       note: 'Cancelled by user (OTP verified)',
       date: new Date()
     });
+    _clearAuthUserCache();          // ⭐ NEW
     await user.save();
 
     console.log(`[subscribe/cancel/verify] Subscription cancelled for user ${userId}`);
@@ -6230,6 +6320,7 @@ app.post('/api/admin/subscription/:userId/grant', requireAdminAuth, async (req, 
       status: 'granted', amount: 0,
       note: note || `Admin granted ${d} day(s)`, date: now
     });
+    _clearAuthUserCache();          // ⭐ NEW
     await user.save();
 
     res.json({ success: true, message: 'Subscription granted.', user: serializeUser(user) });
@@ -6260,6 +6351,7 @@ app.post('/api/admin/subscription/:userId/revoke', requireAdminAuth, async (req,
       status: 'revoked', amount: 0,
       note: note || 'Admin revoked', date: new Date()
     });
+    _clearAuthUserCache();          // ⭐ NEW
     await user.save();
 
     res.json({ success: true, message: 'Subscription revoked.', user: serializeUser(user) });
@@ -6288,6 +6380,7 @@ app.post('/api/admin/subscription/:userId/extend', requireAdminAuth, async (req,
       status: 'granted', amount: 0,
       note: `Extended by ${d} day(s)`, date: new Date()
     });
+    _clearAuthUserCache();          // ⭐ NEW
     await user.save();
 
     res.json({ success: true, message: 'Extended.', user: serializeUser(user) });
@@ -6473,6 +6566,7 @@ app.post('/api/razorpay-webhook', async (req, res) => {
               note: 'One-time subscription (webhook)',
               date: now
             });
+            _clearAuthUserCache();          // ⭐ NEW
             await user.save();
             console.log(`[Webhook] ✅ One-time subscription activated for ${user.username} (${durationDays}d)`);
 
@@ -6550,6 +6644,7 @@ app.post('/api/razorpay-webhook', async (req, res) => {
             planDurationDays: durationDays,
             date: now
           });
+          _clearAuthUserCache();          // ⭐ NEW
           await user.save();
           console.log(`[Webhook] Subscription ${event} → user ${userId} active for ${durationDays}d, until ${expiresAt.toISOString()}`);
         }

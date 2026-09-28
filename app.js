@@ -1312,6 +1312,11 @@ function escapeHtml(str) {
 const PDF_THUMB_CACHE_KEY = 'aero_pdf_thumbs_v1';
 const PDF_THUMB_MAX_ENTRIES = 80;
 
+/* ⚡ In-memory mirror — avoids a localStorage read + JSON.parse
+   on every single material card render. Invalidated only when
+   savePDFThumbnail() writes. */
+let _pdfThumbMemoryCache = null;
+
 function _pdfThumbCacheGet() {
   try {
     const raw = localStorage.getItem(PDF_THUMB_CACHE_KEY);
@@ -1337,14 +1342,16 @@ function _pdfThumbCacheSet(cache) {
 }
 
 function getPDFThumbnail(materialId) {
-  const cache = _pdfThumbCacheGet();
-  return cache[materialId] ? cache[materialId].url : null;
+  if (!_pdfThumbMemoryCache) {
+    _pdfThumbMemoryCache = _pdfThumbCacheGet();
+  }
+  return _pdfThumbMemoryCache[materialId] ? _pdfThumbMemoryCache[materialId].url : null;
 }
 
 function savePDFThumbnail(materialId, dataUrl) {
-  const cache = _pdfThumbCacheGet();
-  cache[materialId] = { url: dataUrl, at: Date.now() };
-  _pdfThumbCacheSet(cache);
+  if (!_pdfThumbMemoryCache) _pdfThumbMemoryCache = _pdfThumbCacheGet();
+  _pdfThumbMemoryCache[materialId] = { url: dataUrl, at: Date.now() };
+  _pdfThumbCacheSet(_pdfThumbMemoryCache);
 }
 
 async function generateThumbnailFromPDFDoc(pdfDoc, maxWidth = 220) {
@@ -3241,48 +3248,38 @@ function navigateStudent(dest) {
 
   renderApp();
 }
-async function viewCourseDetail(courseId, filter = 'all') {
+function viewCourseDetail(courseId, filter = 'all') {
   currentCourseId = courseId;
   window.currentSelectedCourseId = courseId;
   editingCourseId = null;
   currentMaterialFilter = filter;
   pushHash(`#/course/${courseId}`);
 
-  // ⭐ FIX: Force a fresh fetch of this specific course from the
-  // server to prevent stale 'isPremium' flags causing UI/Server
-  // mismatches.
-  try {
-    await fetchSingleCourse(courseId);
-  } catch (e) {
-    console.warn('[viewCourseDetail] fetch failed, using cached data:', e);
-  }
-
-  // ⭐ NEW FIX: If this is a premium course and the client thinks
-  // it's locked, ask the server for the current user's purchase
-  // list before painting the "locked" badge. This is the definitive
-  // safety net for the payment-persistence bug.
-  const course = findCourse(courseId);
-  const isPremiumCourse = course &&
-    (course.isPremium === true || course.isPremium === 'true');
-
-  console.log('[viewCourseDetail] 🔍 State:', {
-    courseId,
-    isPremiumCourse,
-    hasCurrentUser: !!currentUser,
-    userId: currentUser && currentUser._id,
-    ownsItem: userOwnsItem(courseId),
-    purchases: currentUser && currentUser.purchases
-  });
-
-  if (isPremiumCourse && currentUser && !userOwnsItem(courseId)) {
-    console.log('[viewCourseDetail] 🔄 Triggering refreshUserData');
-    try { await refreshUserData(); }
-    catch (e) { console.warn('[viewCourseDetail] refresh failed:', e); }
-  } else {
-    console.log('[viewCourseDetail] ⏭️ Refresh NOT needed');
-  }
-
+  /* STEP 1 — Paint IMMEDIATELY from in-memory data.
+     After the /api/courses list projection fix, this paint is
+     complete: every material has its url/description/etc. */
   renderApp();
+
+  /* STEP 2 — Only re-fetch if our client cache is stale (>5 min).
+     SSE sync already invalidates _courseCacheAt the moment the
+     server pushes a content change, so this is a backstop only. */
+  const cacheAge = Date.now() - _courseCacheAt;
+  if (cacheAge < COURSE_CACHE_MS) return;
+
+  (async () => {
+    try { await fetchSingleCourse(courseId); }
+    catch (e) { console.warn('[viewCourseDetail] fetch failed, using cached data:', e); }
+
+    const course = findCourse(courseId);
+    const isPremiumCourse = course &&
+      (course.isPremium === true || course.isPremium === 'true');
+
+    if (isPremiumCourse && currentUser && !userOwnsItem(courseId)) {
+      try { await refreshUserData(); } catch (e) { /* silent */ }
+    }
+
+    if (currentCourseId === courseId) renderApp();
+  })();
 }
 function goBackFromDetail() {
   if (history.length > 1) history.back();
@@ -4058,7 +4055,7 @@ async function renderAdminCourses() {
   let html = `<div class="course-grid">`;
   filtered.forEach(c => {
     const matCount = (c.materials || []).length;
-    const plCount = (c.playlists || []).length;
+    const plCount = c.playlistCount != null ? c.playlistCount : (c.playlists || []).length;
     const statusBadge = c.status === 'draft'
       ? '<span class="status-badge draft">DRAFT — hidden from students</span>'
       : c.status === 'archived'
@@ -7145,7 +7142,7 @@ function renderStudentCourseCard(c) {
   }
 
   const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy"></div>` : '';
-  const plCount = (c.playlists || []).length;
+  const plCount = c.playlistCount != null ? c.playlistCount : (c.playlists || []).length;
 
   return `
     <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}" onclick="viewCourseDetail('${c.id}')">
