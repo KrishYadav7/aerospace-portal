@@ -1619,20 +1619,11 @@ function normalizePhone(p) {
    ============================================================ */
 mongoose.connect(process.env.MONGO_URI, {
   maxPoolSize: 10,
-  minPoolSize: 2,
-
-  /* Never proactively close idle sockets. Prevents the disconnect/
-     reconnect churn that was filling the server.log. */
-  maxIdleTimeMS: 0,
-
+  minPoolSize: 0, // Allow the connection pool to shrink to zero when idle
+  maxIdleTimeMS: 45000, // Close idle connections after 45 seconds, safely before Atlas's 5-minute timeout
   serverSelectionTimeoutMS: 30000,
   socketTimeoutMS: 45000,
   connectTimeoutMS: 10000,
-
-  /* NOTE: `family: 4` removed — invalid at this level and triggers
-     intermittent pool resets. IPv4 preference is already enforced
-     via dns.setDefaultResultOrder('ipv4first') at the top of the file. */
-
   retryWrites: true,
   retryReads: true,
   bufferCommands: false
