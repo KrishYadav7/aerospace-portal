@@ -8928,153 +8928,275 @@ body:has(.modal-overlay.active) .mobile-bottom-nav {
   .pdfv-color { width: 16px; height: 16px; }
 }
 /* ============================================================
-   PROFILE DROPDOWN (Replaces cramped header items)
+   HEADER + PROFILE — v2 Fix (no-wrap desktop, clean avatar,
+   floating dropdown). Replaces all earlier header rules.
    ============================================================ */
-.user-profile-wrap {
-  position: relative;
-  display: inline-flex;
+
+/* ---------- 1. Header: NEVER wrap on desktop ---------- */
+#appHeader {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  padding: 10px 20px !important;
+  flex-wrap: nowrap !important;
+  min-height: 62px !important;
 }
 
+/* ---------- 2. Brand ---------- */
+.brand { flex-shrink: 0 !important; gap: 10px !important; }
+.brand-icon {
+  width: 38px !important;
+  height: 38px !important;
+  font-size: 16px !important;
+  border-radius: 10px !important;
+  flex-shrink: 0 !important;
+}
+.brand-text h1 {
+  font-size: 15px !important;
+  line-height: 1.15 !important;
+  letter-spacing: -.2px !important;
+}
+.brand-text span { font-size: 10.5px !important; }
+
+/* ---------- 3. Nav — shrinks, never wraps ---------- */
+.main-nav {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  gap: 2px !important;
+  min-width: 0 !important;
+  flex-wrap: nowrap !important;
+}
+.main-nav a {
+  padding: 7px 13px !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  gap: 6px !important;
+  white-space: nowrap !important;
+  flex-shrink: 0 !important;
+}
+
+/* ---------- 4. User-info cluster ---------- */
+.user-info {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  flex-shrink: 0 !important;
+}
+.user-info .icon-btn {
+  width: 34px !important;
+  height: 34px !important;
+  font-size: 13px !important;
+  flex-shrink: 0 !important;
+}
+
+/* ---------- 5. Streak badge ---------- */
+.streak-badge {
+  padding: 4px 10px !important;
+  font-size: 11.5px !important;
+  gap: 4px !important;
+  flex-shrink: 0 !important;
+  height: 30px !important;
+  align-items: center !important;
+}
+.streak-badge i { font-size: 11px !important; }
+
+/* ---------- 6. Profile wrapper + button ---------- */
+.user-profile-wrap {
+  position: relative !important;
+  display: inline-flex !important;
+  flex-shrink: 0 !important;
+}
 .user-profile-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  padding: 5px 12px 5px 5px;
-  border-radius: 999px;
-  color: #fff;
-  cursor: pointer;
-  transition: 0.2s ease;
-  font-family: inherit;
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+  padding: 4px 10px 4px 4px !important;
+  border-radius: 999px !important;
+  background: rgba(255,255,255,.08) !important;
+  border: 1px solid rgba(255,255,255,.18) !important;
+  color: #fff !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  height: 38px !important;
+  max-width: 180px !important;
+  transition: background .2s, border-color .2s !important;
 }
 .user-profile-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255,255,255,.16) !important;
+  border-color: rgba(255,255,255,.3) !important;
 }
 
+/* ⭐ THE AVATAR — locked size, gradient, no bleed-through */
 .user-avatar-sm {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--brand-500), var(--accent-500));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 800;
-  color: #fff;
-  flex-shrink: 0;
+  width: 28px !important;
+  height: 28px !important;
+  min-width: 28px !important;
+  min-height: 28px !important;
+  border-radius: 50% !important;
+  background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  color: #ffffff !important;
+  flex-shrink: 0 !important;
+  line-height: 1 !important;
+  overflow: hidden !important;
+  letter-spacing: 0 !important;
+  box-shadow: 0 2px 6px rgba(99,102,241,.5) !important;
+  text-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+/* ⭐ Username — clean ellipsis, hidden on narrow screens */
+.user-profile-btn .user-name {
+  display: inline-block !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+  color: rgba(255,255,255,.92) !important;
+  max-width: 90px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  line-height: 1 !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
 
 .profile-chevron {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.5);
-  transition: transform 0.2s;
+  font-size: 9px !important;
+  color: rgba(255,255,255,.55) !important;
+  transition: transform .25s !important;
+  flex-shrink: 0 !important;
 }
 .user-profile-wrap.open .profile-chevron {
-  transform: rotate(180deg);
+  transform: rotate(180deg) !important;
 }
 
-/* The Dropdown Box */
+/* ---------- 7. Dropdown — floats, never pushes ---------- */
 .user-dropdown {
-  position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
-  width: 240px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xl);
-  z-index: 500;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(-8px);
-  transition: opacity 0.2s, transform 0.2s, visibility 0.2s;
-  overflow: hidden;
+  position: absolute !important;
+  top: calc(100% + 10px) !important;
+  right: 0 !important;
+  width: 240px !important;
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 14px !important;
+  box-shadow: 0 20px 48px rgba(0,0,0,.25),
+              0 8px 16px rgba(0,0,0,.08) !important;
+  z-index: 500 !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  transform: translateY(-8px) !important;
+  transition: opacity .2s ease, transform .2s ease, visibility .2s !important;
+  overflow: hidden !important;
 }
 .user-profile-wrap.open .user-dropdown {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: translateY(0) !important;
 }
 
 .user-dropdown-header {
-  padding: 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--bg-surface-2);
+  padding: 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  background: var(--bg-surface-2) !important;
 }
 .user-avatar-lg {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--brand-500), var(--accent-500));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  font-weight: 800;
-  color: #fff;
-  flex-shrink: 0;
+  width: 44px !important;
+  height: 44px !important;
+  min-width: 44px !important;
+  border-radius: 50% !important;
+  background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 15px !important;
+  font-weight: 800 !important;
+  color: #fff !important;
+  flex-shrink: 0 !important;
+  box-shadow: 0 4px 12px rgba(99,102,241,.35) !important;
 }
 .user-dropdown-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 5px !important;
+  min-width: 0 !important;
 }
 .user-dropdown-info strong {
-  font-size: 14px;
-  color: var(--text-primary);
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 14px !important;
+  color: var(--text-primary) !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
 }
 .user-dropdown-divider {
-  height: 1px;
-  background: var(--border-subtle);
+  height: 1px !important;
+  background: var(--border-subtle) !important;
 }
-
 .user-dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 14px 16px;
-  background: transparent;
-  border: none;
-  color: var(--text-secondary);
-  font-size: 14px;
-  font-family: inherit;
-  cursor: pointer;
-  text-align: left;
-  transition: 0.15s ease;
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  width: 100% !important;
+  padding: 14px 16px !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--text-secondary) !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  text-align: left !important;
+  transition: background .15s, color .15s !important;
 }
 .user-dropdown-item:hover {
-  background: var(--bg-surface-3);
-  color: var(--text-primary);
+  background: var(--bg-surface-3) !important;
+  color: var(--text-primary) !important;
 }
-.user-dropdown-item.logout {
-  color: var(--rose-500);
-}
+.user-dropdown-item.logout { color: var(--rose-500) !important; }
 .user-dropdown-item.logout:hover {
-  background: rgba(239, 68, 68, 0.08);
-  color: var(--rose-600);
+  background: rgba(239,68,68,.08) !important;
+  color: var(--rose-600) !important;
 }
 .user-dropdown-item i {
-  width: 18px;
-  text-align: center;
-  font-size: 15px;
+  width: 18px !important;
+  text-align: center !important;
+  font-size: 15px !important;
 }
 
-/* Mobile Optimization: Hide the name text, show only avatar + chevron */
+/* ---------- 8. Responsive compaction ---------- */
+
+/* Hide username + chevron at medium widths */
+@media (max-width: 1150px) {
+  .user-profile-btn .user-name { display: none !important; }
+  .user-profile-btn { padding: 4px !important; gap: 0 !important; }
+  .user-profile-btn .profile-chevron { display: none !important; }
+}
+
+/* Shrink nav links a touch */
+@media (max-width: 1080px) {
+  .main-nav a { padding: 6px 11px !important; font-size: 12.5px !important; }
+  .brand-text h1 { font-size: 14px !important; }
+  .brand-text span { font-size: 10px !important; }
+}
+
+/* At mobile, hand control back to the original responsive rules */
 @media (max-width: 860px) {
-  .user-profile-btn .user-name {
-    display: none;
-  }
-  .user-profile-btn {
-    padding: 4px 10px 4px 4px;
-  }
+  #appHeader { flex-wrap: wrap !important; }
+}
+
+/* Extra tight on small phones */
+@media (max-width: 640px) {
+  #appHeader { padding: 10px 14px !important; gap: 8px !important; }
+  .user-info { gap: 4px !important; }
+  .user-info .icon-btn { width: 32px !important; height: 32px !important; font-size: 12px !important; }
 }
