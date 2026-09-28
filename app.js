@@ -1529,7 +1529,55 @@ function getMaterialAccessInfo(course, mat) {
 /* ============================================================
    MATERIAL TYPES — fixed + user-defined custom types
    ============================================================ */
-const KNOWN_MAT_TYPES = ['video', 'pyq', 'tutorial', 'slides', 'other'];
+/* ============================================================
+   MATERIAL TYPES — single source of truth
+   ------------------------------------------------------------
+   Every dropdown / filter tab / admin form is generated from
+   this array. To add a new type in the future, just append an
+   entry here and it appears everywhere automatically.
+
+   Fields:
+     slug        — value stored in the DB (lowercase, kebab-case)
+     label       — full text shown in the admin dropdown
+     emoji       — prefix for the dropdown entry
+     filterLabel — compact text shown on the student filter tab
+   ============================================================ */
+const MATERIAL_TYPES = [
+  { slug: 'video',           label: 'Video Lecture',           emoji: '🎬', filterLabel: '🎬 Video' },
+  { slug: 'notes',           label: 'Class Notes',             emoji: '📘', filterLabel: '📘 Notes' },
+  { slug: 'slides',          label: 'Presentation Slides',     emoji: '📊', filterLabel: '📊 Slides' },
+  { slug: 'mid-pyq',         label: 'Mid-Semester PYQs',       emoji: '📄', filterLabel: '📄 Mid PYQ' },
+  { slug: 'end-pyq',         label: 'End-Semester PYQs',       emoji: '📄', filterLabel: '📄 End PYQ' },
+  { slug: 'class-test',      label: 'Class Tests',             emoji: '📝', filterLabel: '📝 Class Test' },
+  { slug: 'mid-sol',         label: 'Mid-Semester Solutions',  emoji: '✅', filterLabel: '✅ Mid Sol' },
+  { slug: 'end-sol',         label: 'End-Semester Solutions',  emoji: '✅', filterLabel: '✅ End Sol' },
+  { slug: 'class-test-sol',  label: 'Class Test Solutions',    emoji: '✅', filterLabel: '✅ CT Sol' },
+  { slug: 'lab-manual',      label: 'Lab Manuals',             emoji: '🔬', filterLabel: '🔬 Lab Manual' },
+  { slug: 'lab-report',      label: 'Lab Reports',             emoji: '📋', filterLabel: '📋 Lab Report' },
+  { slug: 'book',            label: 'Books & Supplementary',   emoji: '📖', filterLabel: '📖 Books' },
+  /* Legacy types — kept so existing materials don't get orphaned */
+  { slug: 'tutorial',        label: 'Tutorial Sheet',          emoji: '📝', filterLabel: '📝 Tutorial' },
+  { slug: 'pyq',             label: 'Previous Year Question',  emoji: '📄', filterLabel: '📄 PYQ' },
+  { slug: 'other',           label: 'Other',                   emoji: '📁', filterLabel: '📁 Other' }
+];
+
+/* Derived — used by the "is this a custom type?" check */
+const KNOWN_MAT_TYPES = MATERIAL_TYPES.map(t => t.slug);
+
+/* Helper — builds the <option> list for every admin dropdown.
+   Pass the currently-selected slug, and whether to add the
+   "Custom Type…" escape hatch at the bottom. */
+function materialTypeOptionsHTML(currentValue, includeCustom) {
+  let html = '';
+  MATERIAL_TYPES.forEach(t => {
+    const sel = (String(currentValue || '').toLowerCase() === t.slug) ? ' selected' : '';
+    html += `<option value="${t.slug}"${sel}>${t.emoji} ${t.label}</option>`;
+  });
+  if (includeCustom) {
+    html += `<option value="__custom__">✨ Custom Type…</option>`;
+  }
+  return html;
+}
 
 function isKnownMaterialType(t) {
   return KNOWN_MAT_TYPES.includes(String(t || '').toLowerCase());
@@ -2935,11 +2983,7 @@ function renderAdminAddMaterial(courseId) {
         <div class="form-group"><label>Title *</label><input type="text" id="newMatTitle" placeholder="e.g. Lecture 1: Introduction" required></div>
         <div class="form-group"><label>Type *</label>
           <select id="newMatType">
-            <option value="video">🎬 Video Lecture</option>
-            <option value="pyq">📄 Previous Year Question</option>
-            <option value="tutorial">📝 Tutorial Sheet</option>
-            <option value="slides">📊 Slides</option>
-            <option value="other">📁 Other</option>
+            ${materialTypeOptionsHTML('video', false)}
           </select>
         </div>
       </div>
@@ -5468,12 +5512,7 @@ function renderEditorMaterials(course) {
           <div class="form-group">
             <label>Type *</label>
             <select id="newMatInlineType" onchange="handleMaterialTypeChange(this, '${customGroupId}')">
-              <option value="video">🎬 Video Lecture</option>
-              <option value="pyq">📄 Previous Year Question</option>
-              <option value="tutorial">📝 Tutorial Sheet</option>
-              <option value="slides">📊 Slides</option>
-              <option value="other" selected>📁 Other</option>
-              <option value="__custom__">✨ Custom Type…</option>
+              ${materialTypeOptionsHTML('other', true)}
             </select>
             <div id="${customGroupId}" style="display:none; margin-top:8px;">
               <input type="text" id="newMatInlineCustomType"
@@ -5686,12 +5725,7 @@ function renderMaterialEditorCard(courseId, m, idx) {
           <div class="form-group"><label>Title</label><input type="text" class="me-title" value="${escapeHtml(m.title)}"></div>
           <div class="form-group"><label>Type</label>
             <select class="me-type" onchange="handleMaterialTypeChange(this, '${customId}')">
-              <option value="video" ${m.type === 'video' ? 'selected' : ''}>🎬 Video</option>
-              <option value="pyq" ${m.type === 'pyq' ? 'selected' : ''}>📄 PYQ</option>
-              <option value="tutorial" ${m.type === 'tutorial' ? 'selected' : ''}>📝 Tutorial</option>
-              <option value="slides" ${m.type === 'slides' ? 'selected' : ''}>📊 Slides</option>
-              <option value="other" ${m.type === 'other' ? 'selected' : ''}>📁 Other</option>
-              <option value="__custom__" ${isCustom ? 'selected' : ''}>✨ Custom Type…</option>
+              ${materialTypeOptionsHTML(isCustom ? '__custom__' : m.type, true)}
             </select>
             <div id="${customId}" style="display:${isCustom ? 'block' : 'none'}; margin-top:8px;">
               <input type="text" class="me-custom-type" placeholder="e.g. Lab Manual, Assignment" maxlength="40" autocomplete="off" value="${isCustom ? escapeHtml(m.type) : ''}">
@@ -7227,38 +7261,49 @@ function renderCourseDetail(courseId) {
   const hasPlaylists = (course.playlists || []).length > 0;
   const filtered = currentMaterialFilter === 'all'
     ? materials
-    : materials.filter(m => String(m.type || '').toLowerCase() === String(currentMaterialFilter).toLowerCase());
+    : currentMaterialFilter === 'playlists'
+      ? []
+      : currentMaterialFilter === 'qa'
+        ? []
+        : materials.filter(m => String(m.type || '').toLowerCase() === String(currentMaterialFilter).toLowerCase());
 
-  let types = hasPlaylists
-    ? ['all', 'playlists', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other']
-    : ['all', 'video', 'pyq', 'tutorial', 'slides', 'qa', 'other'];
-
-  const typeLabels = {
-    all: 'All',
-    playlists: '▶️ Playlists',
-    video: '🎬 Video',
-    pyq: '📄 PYQ',
-    tutorial: '📝 Tutorial',
-    slides: '📊 Slides',
-    qa: '❓ Q&A',
-    other: '📁 Other'
-  };
-
-  // NEW: detect custom (non-known) types used by materials in this course
+  /* ⭐ Build tabs dynamically — only show tabs for types that
+     actually have materials in this course. Prevents 15 empty
+     tabs from cluttering the student view. */
   const presentTypes = new Set(
     materials.map(m => String(m.type || '').toLowerCase()).filter(Boolean)
   );
-  const customTypes = Array.from(presentTypes)
-    .filter(t => !KNOWN_MAT_TYPES.includes(t))
-    .sort();
 
-  // Insert custom tabs just before "other"
-  const otherIdx = types.indexOf('other');
-  customTypes.forEach((ct, i) => {
-    const display = ct.replace(/[-_]+/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
-    typeLabels[ct] = `📎 ${display}`;
-    types.splice(otherIdx + i, 0, ct);
+  const types = ['all'];
+  if (hasPlaylists) types.push('playlists');
+
+  /* Known types in canonical order — only if present */
+  MATERIAL_TYPES.forEach(t => {
+    if (presentTypes.has(t.slug)) types.push(t.slug);
   });
+
+  /* Any custom (user-defined) types not in MATERIAL_TYPES */
+  Array.from(presentTypes)
+    .filter(t => !KNOWN_MAT_TYPES.includes(t))
+    .sort()
+    .forEach(t => types.push(t));
+
+  /* Q&A always shown last (uses doubts, not materials) */
+  if ((course.doubts || []).length > 0) types.push('qa');
+
+  /* Labels */
+  const typeLabels = {
+    all: 'All',
+    playlists: '▶️ Playlists',
+    qa: '❓ Q&A'
+  };
+  MATERIAL_TYPES.forEach(t => { typeLabels[t.slug] = t.filterLabel; });
+  Array.from(presentTypes)
+    .filter(t => !KNOWN_MAT_TYPES.includes(t))
+    .forEach(t => {
+      const display = t.replace(/[-_]+/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
+      typeLabels[t] = `📎 ${display}`;
+    });
 
   if (hasPlaylists && currentMaterialFilter !== 'playlists') {
     const totalVids = (course.playlists || []).reduce((sum, p) => sum + (p.materialIds || []).length, 0);

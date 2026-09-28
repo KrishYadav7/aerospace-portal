@@ -1129,12 +1129,24 @@ input, textarea, select { font-family: inherit; }
   /* fallback for user-defined custom types */
   background: linear-gradient(135deg, #6b7280, #9ca3af);
 }
-.mat-type.video    { background: linear-gradient(135deg, #2563eb, #3b82f6); }
-.mat-type.pyq      { background: linear-gradient(135deg, #7c3aed, #a855f7); }
-.mat-type.tutorial { background: linear-gradient(135deg, var(--emerald-600), var(--emerald-500)); }
-.mat-type.slides   { background: linear-gradient(135deg, var(--gold-600), var(--gold-500)); }
-.mat-type.qa       { background: linear-gradient(135deg, #0e7490, #06b6d4); }
-.mat-type.other    { background: linear-gradient(135deg, #6b7280, #9ca3af); }
+/* ---- Material type badges — one colour per type ---- */
+.mat-type.video           { background: linear-gradient(135deg, #2563eb, #3b82f6); }
+.mat-type.notes           { background: linear-gradient(135deg, #059669, #10b981); }
+.mat-type.slides          { background: linear-gradient(135deg, #d97706, #f59e0b); }
+.mat-type.mid-pyq         { background: linear-gradient(135deg, #7c3aed, #a855f7); }
+.mat-type.end-pyq         { background: linear-gradient(135deg, #6d28d9, #c084fc); }
+.mat-type.class-test      { background: linear-gradient(135deg, #be185d, #ec4899); }
+.mat-type.mid-sol         { background: linear-gradient(135deg, #0891b2, #22d3ee); }
+.mat-type.end-sol         { background: linear-gradient(135deg, #0e7490, #06b6d4); }
+.mat-type.class-test-sol  { background: linear-gradient(135deg, #be185d, #f472b6); }
+.mat-type.lab-manual      { background: linear-gradient(135deg, #4338ca, #6366f1); }
+.mat-type.lab-report      { background: linear-gradient(135deg, #0369a1, #0ea5e9); }
+.mat-type.book            { background: linear-gradient(135deg, #92400e, #f59e0b); }
+/* Legacy — kept for backward compatibility */
+.mat-type.tutorial        { background: linear-gradient(135deg, var(--emerald-600), var(--emerald-500)); }
+.mat-type.pyq             { background: linear-gradient(135deg, #7c3aed, #a855f7); }
+.mat-type.qa              { background: linear-gradient(135deg, #0e7490, #06b6d4); }
+.mat-type.other           { background: linear-gradient(135deg, #6b7280, #9ca3af); }
 .mat-badge { font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: var(--radius-pill); letter-spacing: .3px; }
 .mat-badge.premium { background: var(--gold-500); color: #422006; }
 /* ⭐ NEW: Unlocked badge — shown to students who already paid/subscribed */
