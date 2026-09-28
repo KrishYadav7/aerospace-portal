@@ -3083,18 +3083,25 @@ function _renderAppNow() {
   if (currentUser) {
     const initials = (currentUser.fullName || currentUser.username || '?')
       .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-    
+
     if (avatarSm) avatarSm.textContent = initials;
     if (avatarLg) avatarLg.textContent = initials;
     if (userDropdownName) userDropdownName.textContent = currentUser.fullName || currentUser.username;
-    
+
     if (roleBadgeDropdown) {
       roleBadgeDropdown.textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
       roleBadgeDropdown.className = 'role-badge ' + currentUser.role;
     }
   }
-  $('roleBadge').textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
-  $('roleBadge').className = 'role-badge ' + currentUser.role;
+
+  /* ⚠️ Legacy #roleBadge (kept for backward-compat with any older
+     deployed HTML that still contains the inline role badge).
+     Guarded so a missing element NEVER halts the render pipeline. */
+  const legacyRoleBadge = document.getElementById('roleBadge');
+  if (legacyRoleBadge) {
+    legacyRoleBadge.textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
+    legacyRoleBadge.className = 'role-badge ' + currentUser.role;
+  }
 
   const streakEl = $('streakBadge'); const streakNum = $('streakCount');
   if (streakEl && streakNum) {
