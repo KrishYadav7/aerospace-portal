@@ -1503,12 +1503,36 @@
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      // Force SW to bypass HTTP cache and always check for a new version
+      // updateViaCache:'none' forces the browser to fetch the SW script
+      // from the network on every update check — critical for iOS/Safari
+      // which otherwise uses an HTTP-cached copy.
       navigator.serviceWorker.register('/sw.js?v=65', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
-          // Actively check for updates on every page load
+
+          // Kick an immediate update check on every page load
           reg.update().catch(() => {});
+
+          // ── Force any waiting SW to activate right away ──
+          // Chrome/Edge honour postMessage; Safari/iOS additionally
+          // needs the statechange listener below.
+          const promoteWaiting = (worker) => {
+            if (!worker) return;
+            if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+              worker.postMessage({ type: 'SKIP_WAITING' });
+            }
+          };
+          promoteWaiting(reg.waiting);
+          reg.addEventListener('updatefound', () => {
+            const nw = reg.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', () => promoteWaiting(nw));
+          });
+
+          // ── Periodic SW re-check (covers long-lived PWAs on iOS/Mac/Win) ──
+          // Without this, an installed app that never navigates would never
+          // look for an update. Runs every 5 minutes; cheap and safe.
+          setInterval(() => reg.update().catch(() => {}), 5 * 60 * 1000);
         })
         .catch(err => console.warn('[SW] register failed:', err));
     });

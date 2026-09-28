@@ -191,6 +191,145 @@ const API_BASE = '/api';
 })();
 
 /* ============================================================
+   UNIVERSAL APP-UPDATE WATCHDOG — cross-platform
+   ------------------------------------------------------------
+   Detects when the SERVER has deployed new client code
+   (app.js / styles.css / sw.js / index.html / …) and reloads
+   the page so every platform — Android PWA, iOS home-screen
+   app, macOS PWA, Windows PWA — picks up the new bundle
+   without a manual refresh.
+
+   This is the missing piece: the existing live-sync only
+   tracks CONTENT changes; this watchdog tracks CODE changes.
+   ============================================================ */
+(function installAppUpdateWatchdog() {
+  if (window.__aeroAppUpdateWatchdog) return;
+  window.__aeroAppUpdateWatchdog = true;
+
+  let currentBundle = null;
+  let pendingReload = false;
+
+  function isBusy() {
+    return !!(
+      document.querySelector('.modal-overlay.active') ||
+      document.querySelector('#quizExamShell[aria-hidden="false"]') ||
+      document.querySelector('#videoPlayerModal.active') ||
+      document.querySelector('#pdfViewerModal.active') ||
+      document.querySelector('#adminEditView.active') ||
+      document.querySelector('#adminAddCourseView.active') ||
+      document.querySelector('#adminAddProfessorView.active') ||
+      document.querySelector('#adminAddMaterialView.active') ||
+      document.querySelector('#adminAddStudentView.active') ||
+      document.querySelector('#adminQuizEditorView.active')
+    );
+  }
+
+  async function fetchBundleVersion() {
+    try {
+      const res = await fetch('/api/app-version?_t=' + Date.now(), { cache: 'no-store' });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && data.success ? String(data.bundle) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function hardReload() {
+    console.log('[app-watchdog] applying update — clearing caches and reloading');
+    try {
+      if (window.caches && caches.keys) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k).catch(() => {})));
+      }
+    } catch (e) {}
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.update().catch(() => {})));
+      }
+    } catch (e) {}
+    location.reload();
+  }
+
+  function applyUpdate() {
+    if (isBusy()) {
+      pendingReload = true;
+      if (typeof showToast === 'function') {
+        showToast('🔄 Update available — will apply when you finish', 'info');
+      }
+      return;
+    }
+    hardReload();
+  }
+
+  async function checkNow() {
+    const v = await fetchBundleVersion();
+    if (!v) return;
+
+    // First observation — record baseline, do not reload
+    if (currentBundle === null) {
+      currentBundle = v;
+      console.log('[app-watchdog] bundle baseline:', v);
+      try {
+        if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+          navigator.serviceWorker.getRegistrations().then(regs => {
+            regs.forEach(r => r.update().catch(() => {}));
+          }).catch(() => {});
+        }
+      } catch (e) {}
+      return;
+    }
+
+    if (v !== currentBundle) {
+      console.log('[app-watchdog] bundle changed:', currentBundle, '→', v);
+      currentBundle = v;
+      applyUpdate();
+    }
+  }
+
+  function flushPending() {
+    if (pendingReload && !isBusy()) {
+      pendingReload = false;
+      hardReload();
+    }
+  }
+
+  // ---- Triggers that cover every platform ----
+  setTimeout(checkNow, 2000);                                  // 1. Boot baseline
+
+  setInterval(() => {                                          // 2. Poll when visible
+    if (document.hidden) return;
+    checkNow();
+  }, 60000);
+
+  window.addEventListener('focus', checkNow);                  // 3. Tab regains focus
+
+  document.addEventListener('visibilitychange', () => {        // 4. Hidden→visible
+    if (!document.hidden) {
+      checkNow();
+      flushPending();
+    }
+  });
+
+  window.addEventListener('pageshow', () => checkNow());       // 5. iOS bfcache resume
+
+  window.addEventListener('online', () => checkNow());         // 6. Network restored
+
+  window.addEventListener('hashchange', flushPending);         // 7. Deferred reload
+  window.addEventListener('popstate',   flushPending);
+
+  try {                                                        // 8. SW controller swap
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        console.log('[app-watchdog] SW controller changed');
+        applyUpdate();
+      });
+    }
+  } catch (e) {}
+})();
+
+/* ============================================================
    ONE-TIME CACHE WIPE (v2)
    ------------------------------------------------------------
    Nukes the Service Worker cache and forces an SW update ONCE

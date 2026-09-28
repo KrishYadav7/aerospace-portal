@@ -748,6 +748,7 @@ function broadcastContentChange(scope, detail) {
   const payload = JSON.stringify({
     type: 'content-update',
     version: CONTENT_SYNC.version,
+    bundle: getAppBundleVersion(),       // ⭐ NEW
     scope,
     detail: detail || null
   });
@@ -809,6 +810,45 @@ app.use('/api/', (req, res, next) => {
   next();
 });
 
+/* ============================================================
+   APP BUNDLE VERSION — cross-platform auto-update
+   ------------------------------------------------------------
+   Hashes the mtime + size of every client-side asset. Any
+   deploy that touches app.js / styles.css / sw.js / index.html
+   produces a new bundle ID. Every client (Android PWA, iOS
+   home-screen app, macOS PWA, Windows PWA) polls this and
+   reloads automatically the moment it changes.
+   ============================================================ */
+const APP_BUNDLE_FILES = [
+  'app.js', 'media-viewer.js', 'styles.css',
+  'sw.js', 'index.html', 'landing.html'
+];
+
+function computeAppBundleVersion() {
+  let stamp = '';
+  for (const f of APP_BUNDLE_FILES) {
+    try {
+      const st = fs.statSync(path.join(__dirname, f));
+      stamp += f + ':' + st.mtimeMs + ':' + st.size + ';';
+    } catch (e) {
+      stamp += f + ':missing;';
+    }
+  }
+  return crypto.createHash('sha1').update(stamp).digest('hex').slice(0, 12);
+}
+
+let _bundleVersionCache = null;
+let _bundleVersionCacheAt = 0;
+function getAppBundleVersion() {
+  const now = Date.now();
+  if (_bundleVersionCache && (now - _bundleVersionCacheAt) < 5000) {
+    return _bundleVersionCache;
+  }
+  _bundleVersionCache = computeAppBundleVersion();
+  _bundleVersionCacheAt = now;
+  return _bundleVersionCache;
+}
+
 /* ---- Public: current version (used by polling fallback) ---- */
 app.get('/api/version', (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -816,7 +856,20 @@ app.get('/api/version', (req, res) => {
   res.json({
     success: true,
     version: CONTENT_SYNC.version,
+    bundle:  getAppBundleVersion(),     // ⭐ NEW
     lastChange: CONTENT_SYNC.lastChange
+  });
+});
+
+/* ---- Public: current APP BUNDLE version (code assets only) ---- */
+app.get('/api/app-version', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.json({
+    success: true,
+    bundle: getAppBundleVersion(),
+    serverTime: Date.now()
   });
 });
 
@@ -840,7 +893,8 @@ app.get('/api/events/stream', (req, res) => {
   /* Handshake so the client knows the current version immediately */
   res.write('data: ' + JSON.stringify({
     type: 'handshake',
-    version: CONTENT_SYNC.version
+    version: CONTENT_SYNC.version,
+    bundle: getAppBundleVersion()       // ⭐ NEW
   }) + '\n\n');
 
   CONTENT_SYNC.clients.add(res);
