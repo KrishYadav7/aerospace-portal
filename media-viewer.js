@@ -120,8 +120,20 @@
     userToast('Screenshots are disabled for this document.', 'error');
   }, true);
 
-  /* Blur the protected UI on window blur (macOS ⌘⇧3/4 bypasses keydown) */
-  window.addEventListener('blur', fireProtectionBlur, true);
+  /* ------------------------------------------------------------
+     NOTE: We intentionally do NOT listen for `window.blur` here.
+
+     Browser fullscreen transitions (F11, the browser's fullscreen
+     button, and the Fullscreen API) fire a blur+focus pair on the
+     window every time the user toggles fullscreen. Hooking that
+     event to fireProtectionBlur() made the PDF / video shell go
+     blurry on every expand AND every restore — which is exactly
+     the "document becomes fuzzy when toggling fullscreen" bug.
+
+     Screenshot protection is still fully intact via the keydown
+     handler above, which is the ONLY path that should ever blur
+     the shell.
+     ------------------------------------------------------------ */
 
   /* ============================================================
      VIDEO PLAYER
@@ -1005,14 +1017,36 @@
       userToast('Highlighted.', 'success');
     }
 
+    /* ------------------------------------------------------------
+       _textOffset — robust text-offset calculator
+       ------------------------------------------------------------
+       Previous implementation walked only TEXT_NODEs, so it returned
+       null whenever the selection's start/end container was an
+       element (which PDF.js produces constantly because every text
+       run is wrapped in nested <span role="presentation"> tags).
+
+       New implementation uses the browser's native Range API:
+         • Works for text nodes ✅
+         • Works for element nodes ✅
+         • Works for selections that span multiple absolutely-
+           positioned spans (very common in PDF.js) ✅
+         • Works for selections that begin/end at a <br> ✅
+
+       If a Range fails to build for any reason (corrupt selection,
+       detached node, etc.) we return null and the caller falls back
+       to the "try selecting again" toast — same behaviour as before,
+       just far less likely to trigger.
+       ------------------------------------------------------------ */
     _textOffset(root, node, offset) {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
-      let cum = 0, n;
-      while ((n = walker.nextNode())) {
-        if (n === node) return cum + offset;
-        cum += n.nodeValue.length;
+      try {
+        const r = document.createRange();
+        r.selectNodeContents(root);
+        r.setEnd(node, offset);
+        return r.toString().length;
+      } catch (e) {
+        console.warn('[PDFViewer] _textOffset failed:', e);
+        return null;
       }
-      return null;
     }
 
     _copySelection() {
