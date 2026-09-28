@@ -101,7 +101,7 @@
 
       <nav class="main-nav" id="mainNav"></nav>
 
-      <div class="user-info">
+            <div class="user-info">
         <button class="icon-btn" id="globalSearchTrigger" aria-label="Global search (Ctrl+K)" title="Search (Ctrl+K)">
           <i class="fas fa-search"></i>
         </button>
@@ -130,11 +130,28 @@
           <i class="fas fa-fire"></i> <span id="streakCount">0</span>
         </span>
 
-        <span id="userDisplay" class="user-name">User</span>
-        <span class="role-badge" id="roleBadge">Student</span>
-        <button class="btn-logout" onclick="logout()">
-          <i class="fas fa-sign-out-alt"></i><span class="logout-text">Logout</span>
-        </button>
+        <!-- NEW: Profile Chip & Dropdown -->
+        <div class="user-profile-wrap" id="userProfileWrap">
+          <button class="user-profile-btn" id="userProfileBtn">
+            <div class="user-avatar-sm" id="userAvatarSm">U</div>
+            <span id="userDisplay" class="user-name">User</span>
+            <i class="fas fa-chevron-down profile-chevron"></i>
+          </button>
+          
+          <div class="user-dropdown" id="userDropdown">
+            <div class="user-dropdown-header">
+              <div class="user-avatar-lg" id="userAvatarLg">U</div>
+              <div class="user-dropdown-info">
+                <strong id="userDisplayDropdown">User</strong>
+                <span class="role-badge" id="roleBadgeDropdown">Student</span>
+              </div>
+            </div>
+            <div class="user-dropdown-divider"></div>
+            <button class="user-dropdown-item logout" onclick="logout()">
+              <i class="fas fa-sign-out-alt"></i> Logout
+            </button>
+          </div>
+        </div>
       </div>
     </header>
 

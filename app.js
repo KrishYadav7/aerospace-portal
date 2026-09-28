@@ -1533,20 +1533,37 @@ document.addEventListener('click', (e) => {
     cycleTheme();
     return;
   }
-  if (e.target.closest('#navToggle')) {
-    document.getElementById('mainNav')?.classList.toggle('open');
-    return;
-  }
-  if (e.target.closest('.main-nav a')) document.getElementById('mainNav')?.classList.remove('open');
 
+  // --- Profile Dropdown Logic ---
+  const profileWrap = document.getElementById('userProfileWrap');
+  if (profileWrap) {
+    if (e.target.closest('#userProfileBtn')) {
+      profileWrap.classList.toggle('open');
+      // Close notifications if profile opens
+      document.getElementById('notifWrap')?.classList.remove('open');
+      return;
+    }
+    if (!e.target.closest('#userProfileWrap')) {
+      profileWrap.classList.remove('open');
+    }
+  }
+
+  // --- Notifications Logic (existing) ---
   const notifWrap = document.getElementById('notifWrap');
   if (notifWrap) {
     if (e.target.closest('#notifBtn')) {
       notifWrap.classList.toggle('open');
-      if (notifWrap.classList.contains('open')) { renderNotificationList(); loadNotifications(); }
+      if (notifWrap.classList.contains('open')) {
+        // Close profile if notifications opens
+        profileWrap?.classList.remove('open');
+        renderNotificationList();
+        loadNotifications();
+      }
       return;
     }
-    if (!e.target.closest('#notifWrap')) notifWrap.classList.remove('open');
+    if (!e.target.closest('#notifWrap')) {
+      notifWrap.classList.remove('open');
+    }
   }
 });
 document.addEventListener('DOMContentLoaded', updateThemeIcon);
@@ -3057,6 +3074,25 @@ function _renderAppNow() {
   $('appHeader').style.display = 'flex';
   $('appFooter').style.display = 'block';
   $('userDisplay').textContent = currentUser.username;
+    // Update Profile Dropdown Avatars & Text
+  const avatarSm = document.getElementById('userAvatarSm');
+  const avatarLg = document.getElementById('userAvatarLg');
+  const userDropdownName = document.getElementById('userDisplayDropdown');
+  const roleBadgeDropdown = document.getElementById('roleBadgeDropdown');
+
+  if (currentUser) {
+    const initials = (currentUser.fullName || currentUser.username || '?')
+      .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+    
+    if (avatarSm) avatarSm.textContent = initials;
+    if (avatarLg) avatarLg.textContent = initials;
+    if (userDropdownName) userDropdownName.textContent = currentUser.fullName || currentUser.username;
+    
+    if (roleBadgeDropdown) {
+      roleBadgeDropdown.textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
+      roleBadgeDropdown.className = 'role-badge ' + currentUser.role;
+    }
+  }
   $('roleBadge').textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
   $('roleBadge').className = 'role-badge ' + currentUser.role;
 
