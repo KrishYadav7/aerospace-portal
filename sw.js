@@ -6,7 +6,7 @@
    come from the network. Only truly static assets (manifest, images)
    go in the cache.
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v62';
+const CACHE_NAME = 'aero-shell-v63';
 
 /* ONLY these go into the offline cache — they never change silently */
 const SHELL_ASSETS = [
@@ -52,7 +52,22 @@ self.addEventListener('activate', (event) => {
         )
       )
       .then(() => self.clients.claim())
+      .then(() => self.clients.matchAll({ type: 'window' }))
+      .then((clients) => {
+        /* Notify every open tab that the SW was just updated.
+           The client-side listener decides whether to reload. */
+        clients.forEach((c) => {
+          try { c.postMessage({ type: 'SW_UPDATED', cache: CACHE_NAME }); } catch (e) {}
+        });
+      })
   );
+});
+
+/* Allow the page to force-activate a waiting SW immediately */
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('fetch', (event) => {

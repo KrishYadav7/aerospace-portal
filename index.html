@@ -1480,20 +1480,37 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=60" defer></script>
-  <script src="app.js?v=63" defer></script>
+ 	<script src="media-viewer.js?v=61" defer></script>
+  <script src="app.js?v=64" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       // Force SW to bypass HTTP cache and always check for a new version
-      navigator.serviceWorker.register('/sw.js?v=62', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=63', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
           // Actively check for updates on every page load
           reg.update().catch(() => {});
         })
         .catch(err => console.warn('[SW] register failed:', err));
+    });
+
+    // Auto-reload this tab when a new Service Worker activates.
+    // Guarded so a fresh deploy never interrupts an exam / form.
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (!event.data || event.data.type !== 'SW_UPDATED') return;
+      const busy =
+        document.querySelector('.modal-overlay.active') ||
+        document.querySelector('#quizExamShell[aria-hidden="false"]') ||
+        document.querySelector('#videoPlayerModal.active') ||
+        document.querySelector('#pdfViewerModal.active');
+      if (busy) {
+        console.log('[SW] new version ready — will reload when you finish');
+        return;
+      }
+      console.log('[SW] new version activated — reloading');
+      location.reload();
     });
   }
 </script>

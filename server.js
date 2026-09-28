@@ -721,6 +721,142 @@ app.use('/api/forgot-username/send-otp', recoveryLimiter);
 app.use('/api/forgot-password/send-otp', recoveryLimiter);
 app.use('/api/admin/login/verify-otp', authLimiter);
 
+/* ============================================================
+   UNIVERSAL LIVE SYNC — version counter + public SSE broadcast
+   ------------------------------------------------------------
+   • CONTENT_SYNC.version bumps on every admin content write.
+   • Every connected client (via /api/events/stream) receives
+     the new version instantly and refreshes its data.
+   • No polling needed while the stream is healthy.
+   ============================================================ */
+const CONTENT_SYNC = {
+  version: Date.now(),
+  clients: new Set(),
+  lastChange: { scope: 'init', at: Date.now() },
+  MAX_CLIENTS: 500
+};
+
+function broadcastContentChange(scope, detail) {
+  CONTENT_SYNC.version = Date.now();
+  CONTENT_SYNC.lastChange = {
+    scope,
+    at: CONTENT_SYNC.version,
+    detail: detail || null
+  };
+  if (CONTENT_SYNC.clients.size === 0) return;
+
+  const payload = JSON.stringify({
+    type: 'content-update',
+    version: CONTENT_SYNC.version,
+    scope,
+    detail: detail || null
+  });
+  const frame = 'data: ' + payload + '\n\n';
+
+  for (const res of CONTENT_SYNC.clients) {
+    try { res.write(frame); }
+    catch (e) { CONTENT_SYNC.clients.delete(res); }
+  }
+}
+
+/* ---- Classify an admin mutation so the client knows what to refresh ---- */
+function classifyMutation(method, path) {
+  // Never broadcast noise / user-specific / auth
+  if (/heartbeat|session-check|^\/auth\//.test(path)) return null;
+  if (/^\/user\/(progress|bookmarks|notifications|referral)/.test(path)) return null;
+  if (/^\/ai\//.test(path)) return null;
+  if (/^\/user\/quiz/.test(path)) return null;      // student quiz submit
+  if (/^\/courses\/[^/]+\/doubts/.test(path)) return null; // user-generated
+  if (/^\/feedback\/submit/.test(path)) return null;
+  if (/^\/alumni\/submit|^\/friends\/submit/.test(path)) return null;
+  if (/^\/contact\//.test(path)) return null;
+  if (/^\/subscribe\//.test(path)) return null;
+
+  // Admin content mutations → broadcast
+  if (method === 'POST' && /^\/courses\/?$/.test(path)) return 'courses:created';
+  if (method === 'PUT' && /^\/courses\/[^/]+$/.test(path)) return 'courses:updated';
+  if (method === 'DELETE' && /^\/courses\/[^/]+$/.test(path)) return 'courses:deleted';
+  if (/^\/courses\/[^/]+\/(materials|announcements|playlists|quiz)/.test(path)) return 'courses:content';
+  if (/^\/professors/.test(path))      return 'professors';
+  if (/^\/admin\/settings/.test(path)) return 'settings';
+  if (/^\/admin\/subscription-plans/.test(path)) return 'plans';
+  if (/^\/admin\/coupons/.test(path))            return 'coupons';
+  if (/^\/admin\/referral-settings/.test(path))  return 'referral';
+  if (/^\/admin\/feedback/.test(path))           return 'feedback';
+  if (/^\/admin\/alumni|^\/admin\/friends/.test(path)) return 'community';
+  if (/^\/admin\/subscription/.test(path))       return 'subscription';
+  return null;
+}
+
+/* ---- Auto-broadcast middleware — runs on every /api/ mutation ---- */
+app.use('/api/', (req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+    return next();
+  }
+  const originalJson = res.json.bind(res);
+  res.json = function (body) {
+    try {
+      if (res.statusCode >= 200 && res.statusCode < 300 &&
+          body && body.success !== false) {
+        const scope = classifyMutation(req.method, req.path);
+        if (scope) {
+          broadcastContentChange(scope, { path: req.path, method: req.method });
+        }
+      }
+    } catch (e) { /* never let sync break a request */ }
+    return originalJson(body);
+  };
+  next();
+});
+
+/* ---- Public: current version (used by polling fallback) ---- */
+app.get('/api/version', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.json({
+    success: true,
+    version: CONTENT_SYNC.version,
+    lastChange: CONTENT_SYNC.lastChange
+  });
+});
+
+/* ---- Public: SSE stream — every connected client gets pushes ---- */
+app.get('/api/events/stream', (req, res) => {
+  /* Cap concurrent clients so a bad actor can't OOM the server */
+  if (CONTENT_SYNC.clients.size >= CONTENT_SYNC.MAX_CLIENTS) {
+    const oldest = CONTENT_SYNC.clients.values().next().value;
+    if (oldest) {
+      try { oldest.end(); } catch (e) {}
+      CONTENT_SYNC.clients.delete(oldest);
+    }
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');   // disable nginx buffering
+  res.flushHeaders?.();
+
+  /* Handshake so the client knows the current version immediately */
+  res.write('data: ' + JSON.stringify({
+    type: 'handshake',
+    version: CONTENT_SYNC.version
+  }) + '\n\n');
+
+  CONTENT_SYNC.clients.add(res);
+
+  const keepAlive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch (e) {}
+  }, 25000);
+
+  const cleanup = () => {
+    clearInterval(keepAlive);
+    CONTENT_SYNC.clients.delete(res);
+  };
+  req.on('close',  cleanup);
+  req.on('aborted', cleanup);
+});
+
 const JWT_SECRET = process.env.JWT_SECRET || 'SuperSecretAeroKey';
 if (!process.env.JWT_SECRET) {
   console.warn('⚠️  WARNING: JWT_SECRET not set. Using insecure fallback.');

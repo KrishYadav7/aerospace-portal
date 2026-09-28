@@ -3812,5 +3812,45 @@
   console.log('[navbar-install] Ready');
 })();
 </script>
+<!-- ============================================================
+     LANDING PAGE — light sync (version check + reload)
+     ============================================================ -->
+<script>
+(function landingLiveSync() {
+  if (window.__landingSyncInstalled) return;
+  window.__landingSyncInstalled = true;
+
+  let lastVersion = 0;
+
+  async function check() {
+    if (document.hidden) return;
+    try {
+      const res  = await fetch('/api/version?_t=' + Date.now(), { cache: 'no-store' });
+      const data = await res.json();
+      if (data && data.success && data.version) {
+        if (lastVersion && data.version !== lastVersion) {
+          /* Content changed — soft reload the page.
+             The landing page has no state to preserve. */
+          console.log('[landing-sync] content updated — reloading');
+          location.reload();
+          return;
+        }
+        lastVersion = data.version;
+      }
+    } catch (e) { /* silent */ }
+  }
+
+  /* Initial read */
+  setTimeout(check, 800);
+
+  /* Poll every 30 s while the tab is visible */
+  setInterval(check, 30000);
+
+  /* Re-check when the tab comes back into focus */
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) check();
+  });
+})();
+</script>
 </body>
 </html>

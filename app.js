@@ -4,6 +4,193 @@
 const API_BASE = '/api';
 
 /* ============================================================
+   UNIVERSAL LIVE SYNC CLIENT
+   ------------------------------------------------------------
+   • Listens on /api/events/stream (SSE) for content updates.
+   • On version change: wipes caches, refetches, re-renders,
+     and tells sibling tabs via BroadcastChannel.
+   • Falls back to /api/version polling if SSE dies.
+   • Skips destructive re-renders while a modal / exam / editor
+     is open — queues the refresh until the user is free.
+   ============================================================ */
+(function initLiveSync() {
+  if (window.__aeroLiveSyncInstalled) return;
+  window.__aeroLiveSyncInstalled = true;
+
+  let currentVersion = 0;
+  let es = null;
+  let esFails = 0;
+  let reconnectTimer = null;
+  let pollTimer = null;
+  let bc = null;
+
+  /* ---- Cross-tab bus ---- */
+  try {
+    bc = new BroadcastChannel('aero-sync');
+    bc.onmessage = (ev) => {
+      const msg = ev.data;
+      if (!msg) return;
+      if (msg.type === 'reload') {
+        handleSyncReload(msg.scope, msg.detail, true);
+      }
+    };
+  } catch (e) { /* unsupported browser — fine */ }
+
+  /* ---- Detect mid-flow states where re-render is unsafe ---- */
+  function isBusy() {
+    return !!(
+      document.querySelector('.modal-overlay.active') ||
+      document.querySelector('#quizExamShell[aria-hidden="false"]') ||
+      document.querySelector('#videoPlayerModal.active') ||
+      document.querySelector('#pdfViewerModal.active') ||
+      document.querySelector('#adminEditView.active') ||
+      document.querySelector('#adminAddCourseView.active') ||
+      document.querySelector('#adminAddProfessorView.active') ||
+      document.querySelector('#adminAddMaterialView.active') ||
+      document.querySelector('#adminAddStudentView.active') ||
+      document.querySelector('#adminQuizEditorView.active')
+    );
+  }
+
+  /* ---- Apply a sync event ---- */
+  function handleSyncReload(scope, detail, fromOtherTab) {
+    /* Always invalidate caches — cheap and safe */
+    try { _courseCacheAt = 0; } catch (e) {}
+    try { _professorsCacheAt = 0; } catch (e) {}
+    try { _ownerProfileCacheAt = 0; } catch (e) {}
+    try { _analyticsCacheAt = 0; } catch (e) {}
+    try { invalidateCommunityCache(); } catch (e) {}
+
+    /* If the user is mid-flow, queue and bail */
+    if (isBusy()) {
+      window.__aeroSyncPending = { scope, detail };
+      if (typeof showToast === 'function') {
+        showToast('🔄 Update available — will apply when you finish', 'info');
+      }
+      return;
+    }
+
+    /* Silent refetch */
+    try { if (typeof fetchCoursesFromDB   === 'function') fetchCoursesFromDB(true).catch(() => {}); } catch (e) {}
+    try { if (typeof fetchProfessorsFromDB === 'function') fetchProfessorsFromDB(true).catch(() => {}); } catch (e) {}
+    try { if (typeof fetchOwnerProfile     === 'function') fetchOwnerProfile(true).catch(() => {}); } catch (e) {}
+    try { if (typeof fetchSubscriptionPlans === 'function') fetchSubscriptionPlans().catch(() => {}); } catch (e) {}
+
+    if (!fromOtherTab && typeof showToast === 'function') {
+      showToast('🔄 Content updated', 'info');
+    }
+  }
+
+  /* ---- Flush any queued sync when the user leaves a busy state ---- */
+  function flushPendingSync() {
+    if (!window.__aeroSyncPending) return;
+    const p = window.__aeroSyncPending;
+    window.__aeroSyncPending = null;
+    handleSyncReload(p.scope, p.detail, true);
+  }
+
+  window.addEventListener('hashchange', flushPendingSync);
+  window.addEventListener('popstate',   flushPendingSync);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) flushPendingSync();
+  });
+
+  /* ---- SSE stream ---- */
+  function openStream() {
+    if (es) { try { es.close(); } catch (e) {} es = null; }
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+
+    try {
+      es = new EventSource('/api/events/stream');
+
+      es.onopen = () => { esFails = 0; };
+
+      es.onmessage = (ev) => {
+        let data;
+        try { data = JSON.parse(ev.data); } catch (e) { return; }
+        if (!data) return;
+
+        if (data.type === 'handshake') {
+          if (data.version) currentVersion = data.version;
+          return;
+        }
+
+        if (data.type === 'content-update') {
+          if (data.version && data.version === currentVersion) return;
+          currentVersion = data.version;
+          handleSyncReload(data.scope, data.detail, false);
+
+          /* Tell sibling tabs */
+          if (bc) {
+            try {
+              bc.postMessage({
+                type: 'reload',
+                version: data.version,
+                scope: data.scope,
+                detail: data.detail
+              });
+            } catch (e) {}
+          }
+        }
+      };
+
+      es.onerror = () => {
+        esFails++;
+        if (esFails >= 3) {
+          try { es.close(); } catch (e) {}
+          es = null;
+          reconnectTimer = setTimeout(openStream, 30000);
+        }
+      };
+    } catch (e) {
+      esFails++;
+      reconnectTimer = setTimeout(openStream, 30000);
+    }
+  }
+
+  /* ---- Slow-polling fallback (only runs if SSE is dead) ---- */
+  function startVersionPoll() {
+    if (pollTimer) return;
+    pollTimer = setInterval(async () => {
+      if (es) return;               // SSE alive — skip polling
+      if (document.hidden) return;
+      try {
+        const res  = await fetch('/api/version?_t=' + Date.now(), { cache: 'no-store' });
+        const data = await res.json();
+        if (data && data.success && data.version && data.version !== currentVersion) {
+          currentVersion = data.version;
+          handleSyncReload(
+            data.lastChange ? data.lastChange.scope : 'version',
+            null, false
+          );
+          if (bc) {
+            try { bc.postMessage({ type: 'reload', version: data.version, scope: 'version' }); } catch (e) {}
+          }
+        }
+      } catch (e) { /* silent */ }
+    }, 30000);
+  }
+
+  /* ---- Re-check on tab focus (catches any missed event) ---- */
+  document.addEventListener('visibilitychange', async () => {
+    if (document.hidden) return;
+    if (es) return;                 // SSE will push it
+    try {
+      const res  = await fetch('/api/version?_t=' + Date.now(), { cache: 'no-store' });
+      const data = await res.json();
+      if (data && data.success && data.version && data.version !== currentVersion) {
+        currentVersion = data.version;
+        handleSyncReload('visibility-refresh', null, false);
+      }
+    } catch (e) {}
+  });
+
+  openStream();
+  startVersionPoll();
+  console.log('[sync] Live sync ready');
+})();
+
+/* ============================================================
    ONE-TIME CACHE WIPE (v2)
    ------------------------------------------------------------
    Nukes the Service Worker cache and forces an SW update ONCE
