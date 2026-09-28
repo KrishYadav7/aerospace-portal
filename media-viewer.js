@@ -563,9 +563,11 @@
              whole file in the background. Perfect for mobile data. */
           task = pdfjsLib.getDocument({
             url: opts.url,
-            rangeChunkSize: 1048576,      // 1 MB chunks
-            disableAutoFetch: true,       // fetch on demand only
-            disableStream: false,         // still use Range transport
+            rangeChunkSize: 1048576,      // 1 MB chunks → fewer round trips
+            disableAutoFetch: true,       // fetch only what's needed
+            disableStream: false,         // allow Range transport
+            disableRange: false,          // ⭐ ensure Range requests are used
+            stopAtErrors: false,          // ⭐ keep going past non-fatal warnings
             cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
             cMapPacked: true,
             useSystemFonts: true,

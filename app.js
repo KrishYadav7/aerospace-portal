@@ -10079,7 +10079,11 @@ async function viewFileOnline(courseId, materialId) {
     try { await pdfJsPromise; }
     catch { return showToast('Could not load PDF viewer.', 'error'); }
 
-    const url = isDiskUrl ? withAuthToken(serverFileUrl) : serverFileUrl;
+    // If the server issued a signed URL, use it as-is (no ?auth= needed).
+    // Otherwise fall back to appending ?auth= (legacy path).
+    const url = (meta && meta.signedUrl)
+      ? serverFileUrl
+      : (isDiskUrl ? withAuthToken(serverFileUrl) : serverFileUrl);
       window.PDFViewer.open({
         url,
         materialId:     mat.id,
