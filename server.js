@@ -2316,32 +2316,61 @@ async function serveUploadFile(filename, req, res) {
      2. If qpdf is unavailable → fall back to a no-op so uploads
         still succeed (the PDF stays functional, just slower).
    ============================================================ */
+/* ============================================================
+   PDF LINEARIZATION (Fast Web View)
+   ------------------------------------------------------------
+   Produces a linearized copy of the PDF so readers can render
+   page 1 without fetching the whole file.
+
+   TWO CRITICAL FIXES baked into this function:
+
+   1. Output filename uses a SINGLE extension ("-linearized.pdf").
+      Hostinger's security layer blocks writes to files with two
+      dots like "foo.pdf.lin" or "foo.pdf.tmp" — that was silently
+      breaking linearization on this server.
+
+   2. qpdf exit code 3 is treated as SUCCESS.
+      Exit codes:  0 = success   ·   2 = real failure   ·   3 = success with warnings.
+      Node's execFile() sets `err` for any non-zero code, so we
+      must explicitly allow 3. Otherwise valid linearizations were
+      being reported as failures.
+   ============================================================ */
 async function linearizePdf(diskPath) {
   if (!diskPath || !diskPath.toLowerCase().endsWith('.pdf')) return false;
 
   return new Promise((resolve) => {
-    const outPath = diskPath + '.lin';
+    /* FIX 1: Single-extension output name (Hostinger blocks "*.pdf.lin") */
+    const outPath = diskPath.replace(/\.pdf$/i, '') + '-linearized.pdf';
 
     execFile(
       'qpdf',
       ['--linearize', '--object-streams=generate', diskPath, outPath],
       { timeout: 60000, maxBuffer: 8 * 1024 * 1024 },
       (err, _stdout, stderr) => {
-        if (err) {
+        /* FIX 2: Allow exit code 3 (success-with-warnings) */
+        const exitCode = err && typeof err.code === 'number' ? err.code : 0;
+
+        if (err && exitCode !== 3) {
           const msg = (stderr || err.message || '').trim().split('\n')[0];
-          console.warn('[linearize] skipped (qpdf unavailable or failed):', msg);
+          console.warn('[linearize] skipped:', msg);
           try { fs.unlinkSync(outPath); } catch (_) {}
           return resolve(false);
         }
+
         try {
           const st = fs.statSync(outPath);
           if (st.size < 1024) {
+            console.warn('[linearize] output too small, skipping');
             try { fs.unlinkSync(outPath); } catch (_) {}
             return resolve(false);
           }
           fs.renameSync(outPath, diskPath);
-          console.log('[linearize] ✅ Linearized:', path.basename(diskPath),
-                      `(${Math.round(st.size / 1024)} KB)`);
+          console.log(
+            '[linearize] ✅ Linearized:',
+            path.basename(diskPath),
+            `(${Math.round(st.size / 1024)} KB)`,
+            exitCode === 3 ? '(with warnings)' : ''
+          );
           resolve(true);
         } catch (e) {
           console.warn('[linearize] rename failed:', e.message);
