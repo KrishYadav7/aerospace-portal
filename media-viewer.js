@@ -567,19 +567,15 @@
 
       try {
         let task;
+
         if (opts.url) {
-          /* ── Streaming-optimized loading for large PDFs ──
-             disableAutoFetch: true → PDF.js fetches ONLY the byte ranges
-             the currently-visible pages need. It does NOT silently
-             download the whole file in the background, which used to
-             compete with page-1 fetches and made large PDFs feel slow.
-             disableStream/disableRange: false → keep HTTP 206 range
-             requests + progressive streaming so page 1 can paint while
-             the rest of the file streams on demand. */
+          /* ── Streaming path (preferred) ──
+             1 MB chunks + background prefetch = far fewer round-trips
+             and instant scroll after page 1. */
           task = pdfjsLib.getDocument({
             url: opts.url,
-            rangeChunkSize: 262144,       // 256 KB chunks — snappy first page
-            disableAutoFetch: true,       // ✅ ONLY fetch what's needed
+            rangeChunkSize: 1048576,      // 1 MB (was 256 KB)
+            disableAutoFetch: false,      // prefetch in background
             disableStream: false,
             disableRange: false,
             stopAtErrors: false,
@@ -589,22 +585,21 @@
             verbosity: 0
           });
         } else {
+          /* ── Base64 fallback ──
+             Decode to a Uint8Array and pass via `data:` — NOT `url:`.
+             The previous code passed `url: opts.url` here, which is
+             undefined in this branch, so the fallback never worked. */
           const dataURL = String(opts.data || '').indexOf('data:') === 0
             ? opts.data
             : 'data:application/pdf;base64,' + opts.data;
           const bytes = await dataURLToBytes(dataURL);
-        task = pdfjsLib.getDocument({
-  url: opts.url,
-  rangeChunkSize: 262144,       // 256 KB — good balance
-  disableAutoFetch: true,       // ✅ ONLY fetch what's needed
-  disableStream: false,         // ✅ keep progressive streaming
-  disableRange: false,          // ✅ keep HTTP range requests
-  stopAtErrors: false,
-  cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
-  cMapPacked: true,
-  useSystemFonts: true,
-  verbosity: 0
-});  
+          task = pdfjsLib.getDocument({
+            data: bytes,
+            cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
+            cMapPacked: true,
+            useSystemFonts: true,
+            verbosity: 0
+          });
         }
         if (this.loaderEl) {
           const t = this.loaderEl.querySelector('#pdfvLoaderText');
