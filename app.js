@@ -1462,8 +1462,23 @@ function getMaterialAccessInfo(course, mat) {
     };
   }
 
-  /* Guests — premium content requires login */
+  /* Guests — course-level premium still requires login,
+     but material-level premium can be previewed anonymously. */
   if (!currentUser) {
+    if (!isCoursePremium && isMatPremium && previewPercent > 0) {
+      return {
+        hasFullAccess: false,
+        canPreview: true,
+        previewPercent,
+        isCoursePremium: false,
+        isMatPremium: true,
+        ownsCourse: false,
+        ownsMaterial: false,
+        subscribed: false,
+        isFreeContent: false,
+        reason: 'material-premium'
+      };
+    }
     return {
       hasFullAccess: false,
       canPreview: false,
@@ -9910,12 +9925,14 @@ async function viewFileOnline(courseId, materialId) {
   const mat = (course.materials || []).find(m => m.id === materialId);
   if (!mat) return showToast('Material not found.', 'info');
 
-  if (!currentUser) {
+  /* ① Client-side preview/access gate — zero network cost.
+     We compute this BEFORE the login check, so guests on a
+     previewable material can still open the viewer. */
+  const access = getMaterialAccessInfo(course, mat);
+
+  if (!currentUser && !access.canPreview) {
     return showToast('Please log in to open this material.', 'error');
   }
-
-  /* ① Client-side preview/access gate — zero network cost */
-  const access = getMaterialAccessInfo(course, mat);
   if (!access.hasFullAccess && !access.canPreview) {
     if (access.isCoursePremium) {
       return showToast('Purchase the course to access this material.', 'error');
@@ -9966,16 +9983,17 @@ async function viewFileOnline(courseId, materialId) {
     catch { return showToast('Could not load PDF viewer.', 'error'); }
 
     const url = isDiskUrl ? withAuthToken(serverFileUrl) : serverFileUrl;
-
-    window.PDFViewer.open({
-      url,
-      materialId:     mat.id,
-      courseId:       course.id,
-      title:          mat.title,
-      username:       currentUser.fullName || currentUser.username || 'Student',
-      hasFullAccess:  meta ? (meta.hasFullAccess === true) : access.hasFullAccess,
-      previewPercent: meta ? (meta.previewPercent || 0) : access.previewPercent
-    });
+      window.PDFViewer.open({
+        url,
+        materialId:     mat.id,
+        courseId:       course.id,
+        title:          mat.title,
+        username:       currentUser
+                          ? (currentUser.fullName || currentUser.username || 'Guest')
+                          : 'Guest · ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        hasFullAccess:  meta ? (meta.hasFullAccess === true) : access.hasFullAccess,
+        previewPercent: meta ? (meta.previewPercent || 0) : access.previewPercent
+      });
     return;
   }
 
@@ -10005,7 +10023,9 @@ async function viewFileOnline(courseId, materialId) {
         courseId:       course.id,
         fileName:       fileName,
         title:          mat.title,
-        username:       currentUser.fullName || currentUser.username || 'Student',
+        username:       currentUser
+                          ? (currentUser.fullName || currentUser.username || 'Guest')
+                          : 'Guest · ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
         hasFullAccess:  check.hasFullAccess === true,
         previewPercent: check.previewPercent || 0
       };

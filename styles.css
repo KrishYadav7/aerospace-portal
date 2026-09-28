@@ -9200,3 +9200,211 @@ body:has(.modal-overlay.active) .mobile-bottom-nav {
   .user-info { gap: 4px !important; }
   .user-info .icon-btn { width: 32px !important; height: 32px !important; font-size: 12px !important; }
 }
+/* ============================================================
+   PDF PAYWALL — lock screen + preview badge
+   ============================================================ */
+
+/* ---- "PREVIEW" chip in the toolbar title ---- */
+.pdfv-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  color: #422006;
+  box-shadow: 0 3px 10px rgba(245, 158, 11, 0.4);
+  vertical-align: middle;
+}
+.pdfv-preview-chip i { font-size: 10px; }
+
+/* ---- Paywall card — appears after the last free page ---- */
+.pdfv-paywall {
+  width: 100%;
+  max-width: 720px;
+  margin: 8px auto 60px;
+  padding: 0 16px;
+  box-sizing: border-box;
+}
+
+.pdfv-paywall-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+  padding: 44px 32px 36px;
+  border-radius: 20px;
+  background:
+    radial-gradient(500px 260px at 50% 0%, rgba(99, 102, 241, 0.10), transparent 70%),
+    var(--bg-surface, #ffffff);
+  border: 2px dashed rgba(99, 102, 241, 0.35);
+  box-shadow:
+    0 24px 60px rgba(20, 22, 28, 0.14),
+    0 0 0 1px rgba(99, 102, 241, 0.08) inset;
+}
+[data-theme="dark"] .pdfv-paywall-inner {
+  background:
+    radial-gradient(500px 260px at 50% 0%, rgba(99, 102, 241, 0.22), transparent 70%),
+    var(--bg-surface, #0c1020);
+  border-color: rgba(99, 102, 241, 0.5);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(99, 102, 241, 0.15) inset;
+}
+
+/* Decorative lock ring at the top */
+.pdfv-paywall-icon {
+  width: 78px;
+  height: 78px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  color: #fff;
+  background: linear-gradient(135deg, #6366f1, #06b6d4);
+  box-shadow:
+    0 14px 34px rgba(99, 102, 241, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  position: relative;
+  margin-bottom: 4px;
+}
+.pdfv-paywall-icon::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.4), rgba(6, 182, 212, 0.4));
+  filter: blur(18px);
+  z-index: -1;
+  opacity: 0.7;
+}
+
+.pdfv-paywall-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  line-height: 1.2;
+  color: var(--text-primary, #14161c);
+  margin: 4px 0 0;
+  max-width: 480px;
+}
+
+.pdfv-paywall-sub {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--text-secondary, #4a4d5a);
+  max-width: 480px;
+  margin: 0;
+}
+.pdfv-paywall-sub strong {
+  color: var(--text-primary, #14161c);
+  font-weight: 800;
+}
+.pdfv-paywall-locked {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--gold-600, #d97706);
+  font-weight: 700;
+  font-size: 13.5px;
+}
+
+.pdfv-paywall-btn {
+  margin-top: 6px;
+  padding: 15px 34px !important;
+  font-size: 15.5px !important;
+  font-weight: 800 !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, #10b981, #059669) !important;
+  color: #fff !important;
+  box-shadow: 0 14px 34px rgba(16, 185, 129, 0.45) !important;
+  border: none !important;
+  cursor: pointer !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  position: relative !important;
+  overflow: hidden !important;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+.pdfv-paywall-btn::before {
+  content: "";
+  position: absolute;
+  top: 0; left: -100%;
+  width: 100%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  transition: left 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.pdfv-paywall-btn:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 20px 44px rgba(16, 185, 129, 0.55) !important;
+}
+.pdfv-paywall-btn:hover::before { left: 100%; }
+.pdfv-paywall-btn:active { transform: translateY(0) scale(0.98) !important; }
+.pdfv-paywall-btn i { font-size: 15px; }
+
+.pdfv-paywall-note {
+  font-size: 12px;
+  color: var(--text-tertiary, #8b8d98);
+  margin: 6px 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.pdfv-paywall-note i { color: #10b981; font-size: 12px; }
+
+/* ---- "No preview available" card (renderLimit === 0) ---- */
+.pdfv-paywall--blank .pdfv-paywall-icon {
+  background: linear-gradient(135deg, #94a3b8, #64748b);
+  box-shadow: 0 14px 34px rgba(100, 116, 139, 0.4);
+}
+.pdfv-paywall--blank .pdfv-paywall-icon::after {
+  background: linear-gradient(135deg, rgba(148, 163, 184, 0.4), rgba(100, 116, 139, 0.4));
+}
+
+/* ---- Scroll-triggered blur — applied to the last free page
+       when the paywall card scrolls into view ---- */
+.pdfv-page--fading {
+  filter: blur(2.5px) brightness(0.97);
+  transition: filter 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+}
+[data-theme="dark"] .pdfv-page--fading {
+  filter: blur(2.5px) brightness(0.85);
+}
+
+/* ---- Pulsing attention state on the paywall when it's on screen ---- */
+.pdfv-paywall--attention .pdfv-paywall-inner {
+  animation: pdfvPaywallPulse 2.2s ease-in-out infinite;
+}
+@keyframes pdfvPaywallPulse {
+  0%, 100% {
+    box-shadow:
+      0 24px 60px rgba(20, 22, 28, 0.14),
+      0 0 0 0 rgba(16, 185, 129, 0.5);
+  }
+  50% {
+    box-shadow:
+      0 24px 60px rgba(20, 22, 28, 0.14),
+      0 0 0 14px rgba(16, 185, 129, 0);
+  }
+}
+
+/* ---- Mobile ---- */
+@media (max-width: 640px) {
+  .pdfv-paywall { padding: 0 12px; margin-bottom: 40px; }
+  .pdfv-paywall-inner { padding: 32px 20px 28px; border-radius: 16px; }
+  .pdfv-paywall-icon { width: 64px; height: 64px; font-size: 26px; }
+  .pdfv-paywall-title { font-size: 18px; }
+  .pdfv-paywall-sub { font-size: 13.5px; }
+  .pdfv-paywall-btn { padding: 13px 26px !important; font-size: 14px !important; }
+}

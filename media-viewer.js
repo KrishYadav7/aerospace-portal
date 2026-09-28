@@ -491,6 +491,7 @@
       this._resumePage = 1;              // saved page to jump to on open
       this._saveProgressTimer = null;    // debounce handle for saves
       this._resumeApplied = false;       // guard: only scroll once per open
+      this._paywallObserver = null;      // ⭐ scroll-triggered paywall observer
 
       this._onSelectionChange = this._onSelectionChange.bind(this);
       this._onKeyDown = this._onKeyDown.bind(this);
@@ -526,7 +527,10 @@
       /* ⭐ Read the paywall flags from the caller.
          Default hasFullAccess to TRUE so any legacy call site that
          forgets to pass the flag never accidentally locks a document. */
-      this.hasFullAccess  = opts.hasFullAccess !== false;
+      /* Fail-closed: if the caller forgot to pass the flag, we assume
+         NO full access. Legacy callers that truly need full access
+         must now explicitly pass hasFullAccess:true. */
+      this.hasFullAccess  = opts.hasFullAccess === true;
       this.previewPercent = Math.max(0, Math.min(100, Number(opts.previewPercent) || 0));
 
       /* Filled in after pdfDoc loads */
@@ -790,6 +794,9 @@
 
       if (renderLimit === 0) {
         this.loaderEl.style.display = 'none';
+        /* ⭐ No free pages at all — show a "login or purchase" card
+           instead of an empty white screen. */
+        this._renderBlankPaywallCard(total);
         return;
       }
 
@@ -956,6 +963,11 @@
         try { this._pageObserver.disconnect(); } catch (e) {}
         this._pageObserver = null;
       }
+      /* ⭐ Also detach the paywall attention observer */
+      if (this._paywallObserver) {
+        try { this._paywallObserver.disconnect(); } catch (e) {}
+        this._paywallObserver = null;
+      }
       if (this._renderingPages) this._renderingPages.clear();
     }
 
@@ -978,6 +990,12 @@
 
     /* ============================================================
        PAYWALL — appended after the last free-preview page.
+       ============================================================ */
+    /* ============================================================
+       PAYWALL — appended after the last free-preview page.
+       Renders an attractive lock card with a scroll-aware
+       attention pulse and blurs the previous page when it enters
+       the viewport.
        ============================================================ */
     _renderPaywallCard(totalPages, previewPages) {
       const locked = totalPages - previewPages;
@@ -1011,8 +1029,78 @@
       }
 
       this.pagesEl.appendChild(card);
+
+      /* ⭐ Scroll-triggered attention + blur of the last free page */
+      this._attachPaywallAttention(card);
     }
 
+    /* ============================================================
+       BLANK PAYWALL — used when previewPercent = 0 (no free pages).
+       Called instead of returning an empty white screen.
+       ============================================================ */
+    _renderBlankPaywallCard(totalPages) {
+      const card = document.createElement('div');
+      card.className = 'pdfv-paywall pdfv-paywall--blank';
+      card.innerHTML = `
+        <div class="pdfv-paywall-inner">
+          <div class="pdfv-paywall-icon">
+            <i class="fas fa-lock"></i>
+          </div>
+          <h3 class="pdfv-paywall-title">This document is locked</h3>
+          <p class="pdfv-paywall-sub">
+            All <strong>${totalPages}</strong> page${totalPages === 1 ? '' : 's'} require purchase or an active subscription.
+          </p>
+          <button type="button" class="btn btn-accent btn-lg pdfv-paywall-btn">
+            <i class="fas fa-crown"></i> Unlock the full document
+          </button>
+          <p class="pdfv-paywall-note">
+            <i class="fas fa-shield-halved"></i>
+            Secure checkout · Instant access
+          </p>
+        </div>
+      `;
+      const btn = card.querySelector('.pdfv-paywall-btn');
+      if (btn) {
+        btn.addEventListener('click', () => this._onPaywallClick());
+      }
+      this.pagesEl.appendChild(card);
+    }
+
+    /* ============================================================
+       PAYWALL ATTENTION — when the user scrolls the paywall card
+       into view, gently blur the previous page and pulse the CTA.
+       This satisfies the "overlay appears when you try to scroll
+       past the free limit" spec without a full-screen overlay.
+       ============================================================ */
+    _attachPaywallAttention(card) {
+      if (typeof IntersectionObserver !== 'function') return;
+
+      /* Detach any previous observer before attaching a new one */
+      if (this._paywallObserver) {
+        try { this._paywallObserver.disconnect(); } catch (e) {}
+        this._paywallObserver = null;
+      }
+
+      const lastPageEl = this.pageEls.get(this.previewLimit);
+
+      const io = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            card.classList.add('pdfv-paywall--attention');
+            if (lastPageEl) lastPageEl.classList.add('pdfv-page--fading');
+          } else {
+            card.classList.remove('pdfv-paywall--attention');
+            if (lastPageEl) lastPageEl.classList.remove('pdfv-page--fading');
+          }
+        });
+      }, {
+        root: this.bodyEl,
+        rootMargin: '0px 0px -20% 0px',
+        threshold: 0.15
+      });
+      io.observe(card);
+      this._paywallObserver = io;
+    }
     /* ============================================================
        PAYWALL — CTA handler. Closes viewer, opens payment modal.
        ============================================================ */

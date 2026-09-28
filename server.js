@@ -44,6 +44,65 @@ const UPLOAD_DIR = process.env.UPLOAD_DIR
   ? path.resolve(process.env.UPLOAD_DIR)
   : path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+/* ============================================================
+   PREVIEW PDF GENERATOR
+   ------------------------------------------------------------
+   At upload time we produce a second, physically-truncated PDF
+   that contains ONLY the first N pages. Preview users are served
+   this file instead of the full document, so downloading the raw
+   bytes gives them no more content than the viewer shows.
+
+   The truncated file is cached next to the original:
+     uploads/foo.pdf          ← full document (paid users)
+     uploads/foo.pdf.preview  ← first N pages only (preview users)
+     uploads/foo.pdf.pages    ← sidecar with { total, preview }
+   ============================================================ */
+async function generatePreviewPdf(diskFilename, previewPercent) {
+  if (!previewPercent || previewPercent <= 0) return null;
+  try {
+    const { PDFDocument } = require('pdf-lib');
+    const fullPath    = path.join(UPLOAD_DIR, diskFilename);
+    const previewPath = fullPath + '.preview';
+    const metaPath    = fullPath + '.pages';
+
+    if (!fs.existsSync(fullPath)) return null;
+    if (fs.existsSync(previewPath)) {
+      // Rebuild the metadata in case it was lost
+      try {
+        const buf = fs.readFileSync(previewPath);
+        const doc = await PDFDocument.load(buf, { ignoreEncryption: true });
+        const previewPages = doc.getPageCount();
+        return { previewPages, previewPath };
+      } catch (e) { /* fall through and regenerate */ }
+    }
+
+    const fullBuf = fs.readFileSync(fullPath);
+    const srcDoc  = await PDFDocument.load(fullBuf, { ignoreEncryption: true });
+    const total   = srcDoc.getPageCount();
+
+    let previewPages = Math.ceil(total * (previewPercent / 100));
+    if (previewPages < 1)     previewPages = 1;
+    if (previewPages >= total) previewPages = total - 1;
+
+    const outDoc = await PDFDocument.create();
+    const indices = Array.from({ length: previewPages }, (_, i) => i);
+    const pages = await outDoc.copyPages(srcDoc, indices);
+    pages.forEach(p => outDoc.addPage(p));
+
+    const outBytes = await outDoc.save();
+    fs.writeFileSync(previewPath, Buffer.from(outBytes));
+    fs.writeFileSync(metaPath, JSON.stringify({ total, preview: previewPages }), 'utf8');
+
+    console.log(
+      `[preview-pdf] ✅ ${diskFilename} → ${previewPages}/${total} pages ` +
+      `(${previewPercent}%)`
+    );
+    return { previewPages, previewPath };
+  } catch (e) {
+    console.warn('[preview-pdf] generation failed:', e.message);
+    return null;
+  }
+}
 
 /* Sidecar: next to every /uploads/xxx.pdf we write /uploads/xxx.pdf.cloudurl
    containing the Cloudinary URL. This lets us restore even without a DB
@@ -408,7 +467,26 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
      FIRST request of every 10-minute window, so a student who
      loses access loses it within 10 min.
      ============================================================ */
-  const diskPath = path.join(UPLOAD_DIR, filename);
+  /* ⭐ Choose which file to serve: full document, or the truncated
+     preview PDF for users who only have preview access. */
+  const wantsPreviewOnly = owner && owner !== false &&
+    (function () {
+      const mat = (owner.materials || []).find(m =>
+        m.url && m.url.endsWith('/' + filename)
+      );
+      if (!mat) return false;
+      const access = evaluateMaterialAccess(req.authUser, owner, mat);
+      return !access.allowed && access.canPreview;
+    })();
+
+  let diskPath = path.join(UPLOAD_DIR, filename);
+  if (wantsPreviewOnly) {
+    const previewPath = diskPath + '.preview';
+    if (fs.existsSync(previewPath)) {
+      diskPath = previewPath;
+      console.log('[uploads] 🎬 serving truncated preview:', filename);
+    }
+  }
 
   let stat = null;
   try {
@@ -422,7 +500,7 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
     res.setHeader('Cache-Control', 'private, max-age=600');
 
     /* Set proper Content-Type so the browser doesn't guess */
-    const ext = path.extname(filename).toLowerCase();
+    const ext = path.extname(filename.replace(/\.preview$/, '')).toLowerCase();
     const MIME = {
       '.pdf':  'application/pdf',
       '.mp4':  'video/mp4',
@@ -467,6 +545,16 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
     // ---- 2) Upload to Cloudinary (durable backup) ----
     const cloud = await uploadToCloudinary(diskPath, req.file.originalname);
+        // ---- 1b) Generate a truncated preview PDF (if the file is a PDF) ----
+    //        We can't know previewPercent here (it's per-material), so we
+    //        defer generation until the material is saved. For now just
+    //        record the total page count.
+    if (diskName.toLowerCase().endsWith('.pdf')) {
+      // (fire-and-forget — page counting is not on the critical path)
+      setTimeout(() => {
+        generatePreviewPdf(diskName, 10).catch(() => {});
+      }, 500);
+    }
     if (cloud) {
       writeCloudSidecar(diskName, cloud.url);
       console.log('[upload] ☁️  Cloudinary backup:', cloud.url);
@@ -627,6 +715,11 @@ app.post('/api/upload/complete', async (req, res) => {
     const diskUrl = '/uploads/' + diskName;
     console.log('[chunked] ✅ Disk saved:', diskName,
                 '(' + Math.round(session.fileSize / 1024 / 1024) + ' MB)');
+                    if (diskName.toLowerCase().endsWith('.pdf')) {
+      setTimeout(() => {
+        generatePreviewPdf(diskName, 10).catch(() => {});
+      }, 500);
+    }
 
     // ---- 3) Upload to Cloudinary in the background (non-blocking for response) ----
     // We AWAIT it so the response includes the cloudUrl + publicId,
