@@ -1497,7 +1497,7 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=62" defer></script>
+ 	<script src="media-viewer.js?v=63" defer></script>
   <script src="app.js?v=66" defer></script>
   <!-- Service worker registration -->
 <script>
@@ -1506,7 +1506,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=65', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=66', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 

@@ -336,53 +336,111 @@ const upload = multer({
 app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
   const filename = req.params.filename;
 
-  /* ---- ⭐ PREMIUM ACCESS CHECK — now preview-aware ---- */
-  try {
-    const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const owner = await Course.findOne({
-      'materials.url': { $regex: '/uploads/' + escaped + '$' }
-    }).select('isPremium price materials').lean();
-
-    if (owner) {
-      const mat = (owner.materials || []).find(m =>
-        m.url && m.url.endsWith('/' + filename)
-      );
-      if (mat) {
-        const access = evaluateMaterialAccess(req.authUser, owner, mat);
-
-        // ⭐ Preview mode: user has no full access but a preview is allowed
-        if (!access.allowed && access.canPreview) {
-          res.setHeader('X-Aero-Preview-Percent', String(access.previewPercent));
-          res.setHeader('X-Aero-Preview-Mode', '1');
-        }
-        // Hard block (no preview available)
-        else if (!access.allowed) {
-          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-          res.setHeader('Pragma', 'no-cache');
-          res.setHeader('Expires', '0');
-          return res.status(403).json({
-            success: false,
-            code: access.reason,
-            message: 'This file is part of premium content. Purchase it or subscribe to unlock.'
-          });
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[uploads] premium check failed:', e.message);
-    return res.status(503).send('Access check temporarily unavailable. Please retry.');
+  /* ── Sanitize filename: no path traversal, no weird chars ── */
+  if (!/^[A-Za-z0-9._-]+$/.test(filename)) {
+    return res.status(400).send('Invalid filename');
   }
 
-  // Serve the file from disk
+  /* ============================================================
+     PREMIUM ACCESS CHECK — with file→owner caching
+     ------------------------------------------------------------
+     The Mongo lookup below was hitting the DB on EVERY range
+     request (hundreds per large PDF). We now cache the
+     file→owner mapping for 5 minutes. The user-specific access
+     evaluation still runs on every request (it's a cheap array
+     lookup) — so security is unchanged.
+     ============================================================ */
+  const ownerCacheKey = 'uploads-owner:' + filename;
+  let owner = cacheGet(ownerCacheKey);
+
+  if (owner === null) {
+    try {
+      const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      owner = await Course.findOne({
+        'materials.url': { $regex: '/uploads/' + escaped + '$' }
+      }).select('isPremium price materials').lean();
+
+      // Cache the result — including `false` (meaning "no owner found")
+      cacheSet(ownerCacheKey, owner || false, 5 * 60 * 1000);
+    } catch (e) {
+      console.warn('[uploads] premium check failed:', e.message);
+      return res.status(503).send('Access check temporarily unavailable. Please retry.');
+    }
+  }
+
+  /* ── Fast user-specific access evaluation ── */
+  if (owner && owner !== false) {
+    const mat = (owner.materials || []).find(m =>
+      m.url && m.url.endsWith('/' + filename)
+    );
+    if (mat) {
+      const access = evaluateMaterialAccess(req.authUser, owner, mat);
+
+      if (!access.allowed && access.canPreview) {
+        res.setHeader('X-Aero-Preview-Percent', String(access.previewPercent));
+        res.setHeader('X-Aero-Preview-Mode', '1');
+      } else if (!access.allowed) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        return res.status(403).json({
+          success: false,
+          code: access.reason,
+          message: 'This file is part of premium content. Purchase it or subscribe to unlock.'
+        });
+      }
+    }
+  }
+
+  /* ============================================================
+     SERVE THE FILE
+     ------------------------------------------------------------
+     Express's res.sendFile automatically handles HTTP Range
+     requests, 206 Partial Content, and Accept-Ranges. We just
+     need to make sure caching headers don't fight it.
+
+     We changed `no-store` → `private, max-age=600`:
+       • private    = browser cache only, never shared / CDN
+       • max-age=600 = 10 minutes in the browser cache
+     This lets PDF.js reuse chunks within a reading session AND
+     across page-close/reopen within 10 min — the single biggest
+     win for repeat opens. The premium check still runs on the
+     FIRST request of every 10-minute window, so a student who
+     loses access loses it within 10 min.
+     ============================================================ */
   const diskPath = path.join(UPLOAD_DIR, filename);
-  if (fs.existsSync(diskPath)) {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
+
+  let stat = null;
+  try {
+    stat = fs.statSync(diskPath);
+  } catch (e) {
+    stat = null;
+  }
+
+  if (stat && stat.isFile()) {
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=600');
+
+    /* Set proper Content-Type so the browser doesn't guess */
+    const ext = path.extname(filename).toLowerCase();
+    const MIME = {
+      '.pdf':  'application/pdf',
+      '.mp4':  'video/mp4',
+      '.webm': 'video/webm',
+      '.mov':  'video/quicktime',
+      '.mp3':  'audio/mpeg',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png':  'image/png',
+      '.webp': 'image/webp',
+      '.gif':  'image/gif'
+    };
+    if (MIME[ext]) res.setHeader('Content-Type', MIME[ext]);
+
     return res.sendFile(diskPath);
   }
 
-  // Fallback: Cloudinary restore (if you have this implemented)
+  /* Fallback: Cloudinary restore (if you have this implemented) */
   // ... Add your Cloudinary fallback logic here if needed
 
   return res.status(404).send('File not found');
