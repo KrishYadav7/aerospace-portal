@@ -3417,6 +3417,34 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
         });
       }
 
+      /* ⭐ FAST PATH — metadata-only response.
+         Returns access flags + the on-disk file URL WITHOUT the huge
+         base64 payload. The client uses this to decide whether to
+         stream the PDF binary directly from /uploads/ (via range
+         requests — orders of magnitude faster than base64-in-JSON).
+
+         This is 100% additive: existing clients that don't send
+         ?meta=1 continue to receive the original base64 response. */
+      if (req.query.meta === '1') {
+        const rawUrl = String(mat.url || '');
+        let diskFileExists = false;
+        if (rawUrl.startsWith('/uploads/')) {
+          const fn = path.basename(rawUrl);
+          try { diskFileExists = fs.existsSync(path.join(UPLOAD_DIR, fn)); }
+          catch (e) { diskFileExists = false; }
+        }
+        return res.json({
+          success:        true,
+          meta:           true,
+          fileName:       mat.fileName || '',
+          fileUrl:        rawUrl,
+          diskFileExists,
+          hasInlineData:  !!mat.fileData,
+          hasFullAccess:  !!access.allowed,
+          previewPercent: access.canPreview ? access.previewPercent : 0
+        });
+      }
+
       if (!mat.fileData) {
         return res.status(404).json({ success: false, message: 'No file attached.' });
       }
