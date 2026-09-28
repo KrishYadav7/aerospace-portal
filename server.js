@@ -2123,36 +2123,81 @@ app.post('/api/login', async (req, res) => {
         console.warn('[login] bumpStreak failed (non-fatal):', bumpErr.message);
       }
     }
-
-    // ---------- SINGLE-DEVICE SESSION ----------
-    // Generate a fresh sessionId. This instantly invalidates any
-    // previous device/browser session for this account.
-    let sessionId;
+    // ---------- 1. Persist streak / self-heal changes ----------
+    // bumpStreak() (student branch) and the legacy-admin self-heal above
+    // only touched the in-memory document. Flush those now so they're not
+    // lost when we switch to the atomic session write below.
     try {
-      sessionId = crypto.randomBytes(24).toString('hex');
-      user.activeSession = {
-        sessionId,
-        deviceInfo: String(req.headers['user-agent'] || 'Unknown device').slice(0, 200),
-        loginAt: new Date(),
-        lastSeenAt: new Date()
-      };
-      await user.save(); // persists both streak + new session
+      await user.save();
+    } catch (preSaveErr) {
+      console.warn('[login] pre-session save failed (non-fatal):', preSaveErr.message);
+    }
+
+    // ---------- 2. SINGLE-DEVICE SESSION (atomic write) ----------
+    // We deliberately do NOT use user.save() here. Mongoose's save() only
+    // sends fields flagged as "modified" — and for nested / Mixed paths
+    // like `activeSession`, that flag isn't reliably set after a whole-
+    // object assignment. The OLD sessionId would silently remain in the
+    // database, letting the previous device stay logged in.
+    //
+    // updateOne({ $set: ... }) bypasses the document layer entirely and
+    // writes the new sessionId directly, guaranteeing that any device
+    // still holding a token with the OLD sessionId is rejected on its
+    // next /api/auth/session-check heartbeat.
+    const sessionId  = crypto.randomBytes(24).toString('hex');
+    const deviceInfo = String(req.headers['user-agent'] || 'Unknown device').slice(0, 200);
+    const now        = new Date();
+
+    let sessionOk = false;
+    try {
+      const upd = await User.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            activeSession: { sessionId, deviceInfo, loginAt: now, lastSeenAt: now }
+          }
+        }
+      );
+      sessionOk = !!(upd && (upd.matchedCount || 0) > 0);
+
+      if (sessionOk) {
+        // Read back to confirm the field actually persisted. This catches
+        // any schema / strict-mode surprise immediately, rather than
+        // silently shipping a broken single-device session.
+        const verify = await User.findById(user._id).select('activeSession').lean();
+        sessionOk = !!(verify &&
+                       verify.activeSession &&
+                       verify.activeSession.sessionId === sessionId);
+      }
     } catch (sessErr) {
-      console.error('[login] could not persist activeSession:', sessErr);
+      console.error('[login] ❌ could not persist activeSession:', sessErr);
       return res.status(500).json({
         success: false,
         message: 'Login succeeded but session could not be established. Please try again.'
       });
     }
 
-    // ---------- Issue token (with sessionId embedded) ----------
+    if (!sessionOk) {
+      console.error(
+        '[login] ❌ sessionId failed verification — refusing to issue token. ' +
+        'Check that the User schema defines `activeSession`.'
+      );
+      return res.status(500).json({
+        success: false,
+        message: 'Login succeeded but session could not be verified. Please try again.'
+      });
+    }
+
+    console.log(`[login] 🔐 session issued · user=${user.username} · sid=${sessionId.slice(0,8)}…`);
+
+    // ---------- 3. Issue token (with sessionId embedded) ----------
     const token = jwt.sign(
       { id: user._id, role: user.role, sessionId },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
 
-    // ---------- Serialize (defensive) ----------
+    // ---------- 4. Serialize (defensive) ----------
     let serialized;
     try {
       serialized = serializeUser(user);
@@ -2181,9 +2226,6 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-/* ============================================================
-   ADMIN 2FA — step 2 of 2 (verify OTP → issue JWT)
-   ============================================================ */
 /* ============================================================
    ADMIN 2FA — step 2 of 2 (verify OTP → issue JWT)
    ============================================================ */
@@ -2229,34 +2271,60 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Admin account not found.' });
     }
 
-    // Single-device session
-    let sessionId;
+    // Single-device session — atomic write (see /api/login for rationale)
+    const sessionId  = crypto.randomBytes(24).toString('hex');
+    const deviceInfo = String(req.headers['user-agent'] || 'Unknown device').slice(0, 200);
+    const now        = new Date();
+
+    let sessionOk = false;
     try {
-      sessionId = crypto.randomBytes(24).toString('hex');
-      user.activeSession = {
-        sessionId,
-        deviceInfo: String(req.headers['user-agent'] || 'Unknown device').slice(0, 200),
-        loginAt: new Date(),
-        lastSeenAt: new Date()
-      };
-      await user.save();
+      const upd = await User.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            activeSession: { sessionId, deviceInfo, loginAt: now, lastSeenAt: now }
+          }
+        }
+      );
+      sessionOk = !!(upd && (upd.matchedCount || 0) > 0);
+
+      if (sessionOk) {
+        const verify = await User.findById(user._id).select('activeSession').lean();
+        sessionOk = !!(verify &&
+                       verify.activeSession &&
+                       verify.activeSession.sessionId === sessionId);
+      }
     } catch (sessErr) {
-      console.error('[login-2fa/verify] session save failed:', sessErr);
+      console.error('[login-2fa/verify] ❌ could not persist activeSession:', sessErr);
       return res.status(500).json({ success: false, message: 'Could not establish session.' });
     }
+
+    if (!sessionOk) {
+      return res.status(500).json({ success: false, message: 'Could not establish session.' });
+    }
+
+    console.log(`[login-2fa] 🔐 session issued · user=${user.username} · sid=${sessionId.slice(0,8)}…`);
 
     const token = jwt.sign(
       { id: user._id, role: user.role, sessionId },
       JWT_SECRET,
       { expiresIn: '1d' }
     );
+
     console.log('[login-2fa] ✅ Admin login success:', user.username);
-    res.json({ success: true, message: 'Login successful!', token, user: serializeUser(user) });
+    return res.json({
+      success: true,
+      message: 'Login successful!',
+      token,
+      user: serializeUser(user)
+    });
+
   } catch (e) {
     console.error('[login-2fa/verify] Error:', e);
-    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+    return res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+
 /* ============================================================
    SESSION CHECK — single-device login enforcement
    ------------------------------------------------------------
@@ -2267,6 +2335,11 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
    the old device with a clear message.
    ============================================================ */
 app.get('/api/auth/session-check', async (req, res) => {
+  // Never let an intermediary cache the session verdict.
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   try {
     const auth = req.headers.authorization;
     if (!auth || !auth.startsWith('Bearer ')) {
@@ -2311,7 +2384,11 @@ app.get('/api/auth/session-check', async (req, res) => {
     }
 
     if (currentSessionId !== decoded.sessionId) {
-      console.log(`[session-check] ⚠️ Session replaced for ${user.username}`);
+      console.log(
+        `[session-check] ⚠️  session replaced · user=${user.username}` +
+        ` · token=${String(decoded.sessionId).slice(0,8)}…` +
+        ` · current=${String(currentSessionId).slice(0,8)}…`
+      );
       return res.status(401).json({
         success: false,
         code: 'SESSION_REPLACED',

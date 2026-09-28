@@ -864,7 +864,9 @@ async function checkSessionAlive() {
   try {
     const res = await fetch(`${API_BASE}/auth/session-check`, {
       method: 'GET',
-      cache: 'no-store'
+      cache: 'no-store',
+      // Explicit header — do not rely solely on the global fetch interceptor.
+      headers: { 'Authorization': 'Bearer ' + token }
     });
 
     if (res.status === 401) {
