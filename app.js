@@ -10238,11 +10238,28 @@ async function toggleMaterialViewed(e, courseId, materialId) {
   } catch { showToast('Server error.', 'error'); }
 }
 
-async function refreshUserData() {
+/* ⚡ Throttle — ensures we only hit /api/user/me at most once every
+   20 s per session. Course-navigation flows used to fire this on
+   every click; under traffic that's thousands of redundant reads. */
+let _lastRefreshUserDataAt = 0;
+const REFRESH_USER_DATA_MIN_MS = 20000;
+
+async function refreshUserData(force = false) {
   if (!currentUser?._id) {
     console.warn('[refreshUserData] ❌ No currentUser._id — aborting');
     return;
   }
+
+  if (!force) {
+    const now = Date.now();
+    if (now - _lastRefreshUserDataAt < REFRESH_USER_DATA_MIN_MS) {
+      return;
+    }
+    _lastRefreshUserDataAt = now;
+  } else {
+    _lastRefreshUserDataAt = Date.now();
+  }
+
   const userIdAtStart = currentUser._id;
 
   try {
