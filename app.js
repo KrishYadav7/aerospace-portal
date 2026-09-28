@@ -3970,6 +3970,23 @@ async function renderAdminLive() {
   `;
 }
 
+/* ============================================================
+   ADMIN — Course filter reset (mirrors clearCourseFilters)
+   ============================================================ */
+function clearAdminCourseFilters() {
+  const s = $('adminFilterSemester');
+  const c = $('adminFilterCategory');
+  const d = $('adminFilterDifficulty');
+  const p = $('adminFilterPrice');
+  const q = $('adminCourseSearch');
+  if (s) s.value = '';
+  if (c) c.value = '';
+  if (d) d.value = '';
+  if (p) p.value = '';
+  if (q) q.value = '';
+  renderAdminCourses();
+}
+
 async function renderAdminCourses() {  
   const courses = getCourses();
 
@@ -3989,14 +4006,52 @@ async function renderAdminCourses() {
     return;
   }
 
-  const searchTerm = ($('adminCourseSearch')?.value || '').toLowerCase().trim();
-  const filtered = courses.filter(c =>
-    c.name.toLowerCase().includes(searchTerm) ||
-    (c.code && c.code.toLowerCase().includes(searchTerm))
-  );
+  /* ============================================================
+     ADMIN FILTERS — mirrors the student course view
+     ------------------------------------------------------------
+     Unlike the student renderer, we deliberately do NOT hide
+     draft / archived courses here — admins must see everything
+     they've created. Only the filter values below narrow the list.
+     ============================================================ */
+  const searchTerm  = ($('adminCourseSearch')?.value     || '').toLowerCase().trim();
+  const fSemester   = ($('adminFilterSemester')?.value   || '').trim();
+  const fCategory   = ($('adminFilterCategory')?.value   || '').trim();
+  const fDifficulty = ($('adminFilterDifficulty')?.value || '').trim();
+  const fPrice      = ($('adminFilterPrice')?.value      || '').trim();
+
+  function normalizeSemester(v) {
+    if (v === null || v === undefined) return '';
+    const s = String(v).trim();
+    const m = s.match(/\d+/);
+    return m ? m[0] : s.toLowerCase();
+  }
+
+  const filtered = courses.filter(c => {
+    if (searchTerm) {
+      const hit = (c.name || '').toLowerCase().includes(searchTerm) ||
+                  (c.code && c.code.toLowerCase().includes(searchTerm)) ||
+                  (c.instructor && c.instructor.toLowerCase().includes(searchTerm));
+      if (!hit) return false;
+    }
+    if (fSemester) {
+      if (normalizeSemester(c.semester) !== normalizeSemester(fSemester)) return false;
+    }
+    if (fCategory   && c.category   !== fCategory)   return false;
+    if (fDifficulty && c.difficulty !== fDifficulty) return false;
+    if (fPrice === 'free'    &&  c.isPremium) return false;
+    if (fPrice === 'premium' && !c.isPremium) return false;
+    return true;
+  });
 
   if (filtered.length === 0) {
-    $('adminCourseList').innerHTML = `<div class="empty-state"><i class="fas fa-graduation-cap"></i><p>No courses found. Create your first course above.</p></div>`;
+    $('adminCourseList').innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-graduation-cap"></i>
+        <p>No courses match your filters.</p>
+        <button class="btn btn-outline btn-sm" style="margin-top:14px;" onclick="clearAdminCourseFilters()">
+          <i class="fas fa-times"></i> Clear Filters
+        </button>
+      </div>`;
     return;
   }
 

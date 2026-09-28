@@ -480,6 +480,47 @@
               <input type="text" id="adminCourseSearch" placeholder="Search courses..." oninput="debouncedRenderAdminCourses()">
             </div>
           </div>
+
+          <!-- ⭐ NEW: Same filter bar as the student course view -->
+          <div class="filter-bar" id="adminFilterBar">
+            <select id="adminFilterSemester" onchange="renderAdminCourses()">
+              <option value="">All Semesters</option>
+              <option value="1">Semester 1</option>
+              <option value="2">Semester 2</option>
+              <option value="3">Semester 3</option>
+              <option value="4">Semester 4</option>
+              <option value="5">Semester 5</option>
+              <option value="6">Semester 6</option>
+              <option value="7">Semester 7</option>
+              <option value="8">Semester 8</option>
+              <option value="9">Semester 9</option>
+              <option value="10">Semester 10</option>
+            </select>
+            <select id="adminFilterCategory" onchange="renderAdminCourses()">
+              <option value="">All Categories</option>
+              <option value="Aerodynamics">Aerodynamics</option>
+              <option value="Propulsion">Propulsion</option>
+              <option value="Structures">Structures</option>
+              <option value="Avionics">Avionics</option>
+              <option value="Mathematics">Mathematics</option>
+              <option value="General">General</option>
+            </select>
+            <select id="adminFilterDifficulty" onchange="renderAdminCourses()">
+              <option value="">All Levels</option>
+              <option value="Beginner">Beginner</option>
+              <option value="Intermediate">Intermediate</option>
+              <option value="Advanced">Advanced</option>
+            </select>
+            <select id="adminFilterPrice" onchange="renderAdminCourses()">
+              <option value="">All Prices</option>
+              <option value="free">Free</option>
+              <option value="premium">Premium</option>
+            </select>
+            <button class="btn btn-outline btn-sm" onclick="clearAdminCourseFilters()">
+              <i class="fas fa-times"></i> Clear
+            </button>
+          </div>
+
           <div id="adminCourseList"></div>
         </div>
 
