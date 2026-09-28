@@ -1447,6 +1447,27 @@ webhookEventSchema.index({ processedAt: 1 }, { expireAfterSeconds: 30 * 24 * 60 
 
 const WebhookEvent = mongoose.models.WebhookEvent ||
   mongoose.model('WebhookEvent', webhookEventSchema);
+  /* ============================================================
+   ACTIVE SESSIONS — v2 (dedicated collection)
+   ------------------------------------------------------------
+   One document per user, keyed on userId (unique).
+   Every login overwrites this doc, which instantly invalidates
+   every prior session for that user. This is decoupled from the
+   User schema so it always works, even if User.activeSession
+   isn't a defined field.
+   ============================================================ */
+const activeSessionSchema = new mongoose.Schema({
+  userId:     { type: mongoose.Schema.Types.ObjectId, required: true, unique: true, index: true },
+  sessionId:  { type: String, required: true },
+  deviceInfo: { type: String, default: 'Unknown device' },
+  loginAt:    { type: Date, default: Date.now },
+  lastSeenAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const ActiveSession = mongoose.models.ActiveSession ||
+  mongoose.model('ActiveSession', activeSessionSchema);
+
+console.log('[session] ActiveSession model ready');
 
 /* ============================================================
    PERSISTENT OTP STORE

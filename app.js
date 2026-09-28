@@ -817,57 +817,95 @@ let addingStudent = false;
 // ---- Bulk email selection (in-memory only; cleared on tab switch / logout) ----
 let _emailSelectedIds = new Set();
 /* ============================================================
-   SESSION HEARTBEAT — single-device login enforcement (client)
+   SESSION HEARTBEAT — single-device login enforcement (client v2)
    ------------------------------------------------------------
-   Polls /api/auth/session-check every 20s. If the server says
-   our sessionId was replaced by a newer login, we immediately
-   wipe local state and show a clear "session ended" modal.
+   Detects when this device's session has been replaced by a
+   newer login on another device, and forces a clean logout.
+
+   v2 fixes the "old device never logs out" bug:
+     • The tab keeps checking even when hidden — just at a
+       slower cadence (20s visible, 60s hidden). No more
+       `_heartbeatPaused` early-return that killed all checks
+       while the user was on the other device.
+     • Fires an immediate check on: window focus,
+       visibilitychange, any user tap/click/keypress
+       (throttled to 30s), and regaining network connectivity.
+     • Every check is throttled so we never spam the server.
    ============================================================ */
 let _sessionHeartbeatTimer = null;
 let _sessionKilled = false;
-// 60s is plenty for single-device enforcement and cuts DB traffic by 3×
-const SESSION_HEARTBEAT_MS = 60000;
-const SESSION_FIRST_CHECK_MS = 5000;
-// Pause heartbeats when the tab is hidden — saves battery + DB hits
-let _heartbeatPaused = false;
-document.addEventListener('visibilitychange', () => {
-  _heartbeatPaused = document.hidden;
-  if (!document.hidden && currentUser && !_sessionKilled) {
-    // Immediate check when user comes back
-    checkSessionAlive();
-  }
-});
+let _lastSessionCheck = 0;
+
+const SESSION_HEARTBEAT_VISIBLE_MS = 20000;   // cadence while tab is focused
+const SESSION_HEARTBEAT_HIDDEN_MS  = 60000;   // cadence while tab is backgrounded
+const SESSION_FIRST_CHECK_MS       = 4000;    // first check right after login
+const SESSION_MIN_INTERVAL_VISIBLE = 10000;   // hard throttle (visible)
+const SESSION_MIN_INTERVAL_HIDDEN  = 45000;   // hard throttle (hidden)
 
 function startSessionHeartbeat() {
   stopSessionHeartbeat();
   _sessionKilled = false;
-  setTimeout(() => { if (!_sessionKilled) checkSessionAlive(); }, SESSION_FIRST_CHECK_MS);
-  _sessionHeartbeatTimer = setInterval(checkSessionAlive, SESSION_HEARTBEAT_MS);
+  _lastSessionCheck = 0;
+
+  // First check shortly after login, so any immediate device clash is caught
+  setTimeout(() => {
+    if (!_sessionKilled) checkSessionAlive(true);
+  }, SESSION_FIRST_CHECK_MS);
+
+  _scheduleNextSessionCheck();
+}
+
+function _scheduleNextSessionCheck() {
+  if (_sessionHeartbeatTimer) {
+    clearTimeout(_sessionHeartbeatTimer);
+    _sessionHeartbeatTimer = null;
+  }
+  if (_sessionKilled || !currentUser) return;
+
+  const delay = document.hidden
+    ? SESSION_HEARTBEAT_HIDDEN_MS
+    : SESSION_HEARTBEAT_VISIBLE_MS;
+
+  _sessionHeartbeatTimer = setTimeout(async () => {
+    try { await checkSessionAlive(false); } catch (e) {}
+    if (!_sessionKilled && currentUser) _scheduleNextSessionCheck();
+  }, delay);
 }
 
 function stopSessionHeartbeat() {
   if (_sessionHeartbeatTimer) {
-    clearInterval(_sessionHeartbeatTimer);
+    clearTimeout(_sessionHeartbeatTimer);
     _sessionHeartbeatTimer = null;
   }
 }
 
-async function checkSessionAlive() {
+async function checkSessionAlive(force) {
   if (_sessionKilled) return;
-  if (_heartbeatPaused) return;
   if (!currentUser) return;
+
+  // Throttle so user activity doesn't flood the server
+  const now = Date.now();
+  if (!force) {
+    const minGap = document.hidden
+      ? SESSION_MIN_INTERVAL_HIDDEN
+      : SESSION_MIN_INTERVAL_VISIBLE;
+    if (now - _lastSessionCheck < minGap) return;
+  }
+  _lastSessionCheck = now;
 
   let token = null;
   try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
   if (!token) return;
 
   try {
-    const res = await fetch(`${API_BASE}/auth/session-check`, {
-      method: 'GET',
-      cache: 'no-store',
-      // Explicit header — do not rely solely on the global fetch interceptor.
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
+    const res = await fetch(
+      `${API_BASE}/auth/session-check?_t=${Date.now()}`,
+      {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { 'Authorization': 'Bearer ' + token }
+      }
+    );
 
     if (res.status === 401) {
       let data = {};
@@ -875,13 +913,50 @@ async function checkSessionAlive() {
       _sessionKilled = true;
       stopSessionHeartbeat();
       forceLogoutDueToNewLogin(
-        data.message || 'Your session has ended. Please log in again.'
+        data.message ||
+        'You were signed out because this account was just signed in on another device.'
       );
     }
   } catch (e) {
+    // Network error — do NOT treat as session end. Retry next tick.
     console.warn('[session-heartbeat]', e && e.message);
   }
 }
+
+/* ---- Immediate checks on user-presence signals ---- */
+
+// 1. Tab regains focus (user switches back to it)
+window.addEventListener('focus', () => {
+  if (currentUser && !_sessionKilled) checkSessionAlive(true);
+});
+
+// 2. Tab goes from hidden → visible
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && currentUser && !_sessionKilled) {
+    checkSessionAlive(true);
+  }
+  // Reschedule the next tick with the new visibility cadence
+  if (currentUser && !_sessionKilled) {
+    _scheduleNextSessionCheck();
+  }
+});
+
+// 3. User interaction (throttled to once per 30s)
+let _lastInteractionCheck = 0;
+['click', 'touchstart', 'keydown'].forEach(evt => {
+  document.addEventListener(evt, () => {
+    if (!currentUser || _sessionKilled) return;
+    const now = Date.now();
+    if (now - _lastInteractionCheck < 30000) return;
+    _lastInteractionCheck = now;
+    checkSessionAlive(true);
+  }, { passive: true, capture: true });
+});
+
+// 4. Network comes back online — verify we still have the current session
+window.addEventListener('online', () => {
+  if (currentUser && !_sessionKilled) checkSessionAlive(true);
+});
 /* ============================================================
    STALE SESSION HANDLER
    Called by the fetch interceptor when a protected /api/ call
