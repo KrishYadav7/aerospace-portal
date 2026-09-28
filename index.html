@@ -1480,14 +1480,14 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=59" defer></script>
+ 	<script src="media-viewer.js?v=60" defer></script>
   <script src="app.js?v=63" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       // Force SW to bypass HTTP cache and always check for a new version
-      navigator.serviceWorker.register('/sw.js?v=61', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=62', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
           // Actively check for updates on every page load

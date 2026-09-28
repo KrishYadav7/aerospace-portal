@@ -36,7 +36,35 @@
       '</svg>';
     return 'url("data:image/svg+xml;charset=utf-8,'+encodeURIComponent(svg)+'")';
   }
-  function dataURLToBytes(dataURL) {
+  /* ------------------------------------------------------------
+     dataURLToBytes — native fast-path base64 decode.
+     ------------------------------------------------------------
+     The old implementation used atob() + a JS charCodeAt loop.
+     For a 30 MB PDF that meant ~40 million JS iterations on the
+     main thread, blocking page 1 from rendering for 400–800 ms.
+
+     Browsers expose a native decode path via fetch() on the data
+     URL. It runs in C++ and returns an ArrayBuffer directly —
+     typically 5–10× faster than the manual loop.
+
+     The manual loop is kept as a fallback in case fetch() is
+     unavailable or the browser blocks data: URLs.
+     ------------------------------------------------------------ */
+  async function dataURLToBytes(dataURL) {
+    const isBase64 = dataURL.indexOf(';base64,') !== -1;
+
+    /* Fast path — let the browser decode */
+    if (isBase64 && typeof fetch === 'function') {
+      try {
+        const res = await fetch(dataURL);
+        const buf = await res.arrayBuffer();
+        return new Uint8Array(buf);
+      } catch (e) {
+        /* fall through to slow path */
+      }
+    }
+
+    /* Slow path (original behaviour, kept as fallback) */
     const idx = dataURL.indexOf(',');
     const meta = dataURL.slice(0, idx);
     const b64 = dataURL.slice(idx + 1);
@@ -516,7 +544,7 @@
           const dataURL = String(opts.data || '').indexOf('data:') === 0
             ? opts.data
             : 'data:application/pdf;base64,' + opts.data;
-          const bytes = dataURLToBytes(dataURL);
+          const bytes = await dataURLToBytes(dataURL);
           task = pdfjsLib.getDocument({ data: bytes });
         }
         this.pdfDoc = await task.promise;
@@ -679,8 +707,7 @@
         b.classList.toggle('active', b.dataset.color === c);
       });
     }
-
-       async _renderAllPages() {
+    async _renderAllPages() {
       this.pagesEl.innerHTML = '';
       this.pageEls.clear();
       this.textLayers.clear();
@@ -689,6 +716,7 @@
       const total = this.pdfDoc.numPages;
       this.totalPages = total;
 
+      /* ── Compute render ceiling (unchanged) ── */
       let renderLimit;
       if (this.hasFullAccess) {
         renderLimit = total;
@@ -701,6 +729,7 @@
       }
       this.previewLimit = renderLimit;
 
+      /* ── Toolbar updates (unchanged) ── */
       const pageCountEl = this.modal.querySelector('#pdfvPageCount');
       if (pageCountEl) pageCountEl.textContent = renderLimit || total;
 
@@ -723,7 +752,19 @@
       this._updateZoomLabel();
       this._updateHlCount();
 
-      /* Probe page 1 dimensions so every placeholder gets the exact size */
+      if (renderLimit === 0) {
+        this.loaderEl.style.display = 'none';
+        return;
+      }
+
+      /* ============================================================
+         PHASE 1 — render page 1 IMMEDIATELY.
+         Everything else is deferred so the student can start
+         reading as soon as the very first canvas is on screen.
+         ============================================================ */
+
+      /* Probe page 1 dimensions once — the same size is applied to
+         every placeholder so scroll height never jumps. */
       let placeholderW = 612;
       let placeholderH = 792;
       try {
@@ -735,42 +776,74 @@
         console.warn('[PDFViewer] placeholder probe failed:', e);
       }
 
-      /* Create shimmering skeletons for all pages upfront */
-      for (let i = 1; i <= renderLimit; i++) {
-        const pageEl = document.createElement('div');
-        pageEl.className = 'pdfv-page';
-        pageEl.dataset.page = i;
-        pageEl.style.width  = placeholderW + 'px';
-        pageEl.style.height = placeholderH + 'px';
-        pageEl.style.position = 'relative';
-        pageEl.style.background = '#ffffff';
+      if (!this.active) return;
 
-        const skel = document.createElement('div');
-        skel.className = 'pdfv-page-skeleton';
-        skel.innerHTML =
-          '<div class="pdfv-skeleton-spinner"></div>' +
-          '<div class="pdfv-skeleton-text">Loading page ' + i + '…</div>';
-        pageEl.appendChild(skel);
+      /* Create page 1's placeholder */
+      const page1El = document.createElement('div');
+      page1El.className = 'pdfv-page';
+      page1El.dataset.page = '1';
+      page1El.style.width  = placeholderW + 'px';
+      page1El.style.height = placeholderH + 'px';
+      page1El.style.position = 'relative';
+      page1El.style.background = '#ffffff';
+      this.pagesEl.appendChild(page1El);
+      this.pageEls.set(1, page1El);
 
-        this.pagesEl.appendChild(pageEl);
-        this.pageEls.set(i, pageEl);
+      /* Render page 1 */
+      await this._renderPage(1);
+      if (!this.active) return;
+      page1El.dataset.rendered = '1';
+
+      /* ============================================================
+         PHASE 2 — HIDE THE LOADER NOW.
+         Page 1 is on screen. The student can begin reading while
+         the remaining skeletons and the observer are set up.
+         ============================================================ */
+      this.loaderEl.style.display = 'none';
+
+      /* ============================================================
+         PHASE 3 — build the remaining skeletons asynchronously.
+         requestIdleCallback lets the browser finish its paint +
+         layout pass first, so page 1 feels instant.
+         ============================================================ */
+      if (renderLimit <= 1) return;
+
+      const buildRest = () => {
+        if (!this.active) return;
+
+        for (let i = 2; i <= renderLimit; i++) {
+          const pageEl = document.createElement('div');
+          pageEl.className = 'pdfv-page';
+          pageEl.dataset.page = i;
+          pageEl.style.width  = placeholderW + 'px';
+          pageEl.style.height = placeholderH + 'px';
+          pageEl.style.position = 'relative';
+          pageEl.style.background = '#ffffff';
+
+          const skel = document.createElement('div');
+          skel.className = 'pdfv-page-skeleton';
+          skel.innerHTML =
+            '<div class="pdfv-skeleton-spinner"></div>' +
+            '<div class="pdfv-skeleton-text">Loading page ' + i + '…</div>';
+          pageEl.appendChild(skel);
+
+          this.pagesEl.appendChild(pageEl);
+          this.pageEls.set(i, pageEl);
+        }
+
+        if (!this.hasFullAccess && renderLimit < total) {
+          this._renderPaywallCard(total, renderLimit);
+        }
+
+        this._setupPageObserver();
+      };
+
+      if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(buildRest, { timeout: 400 });
+      } else {
+        setTimeout(buildRest, 0);
       }
-
-      if (!this.hasFullAccess && renderLimit < total) {
-        this._renderPaywallCard(total, renderLimit);
-      }
-
-      /* Paint page 1 IMMEDIATELY */
-      if (renderLimit >= 1) {
-        await this._renderPage(1);
-        const first = this.pageEls.get(1);
-        if (first) first.dataset.rendered = '1';
-      }
-
-      /* Background lazy-render for pages 2…N */
-      this._setupPageObserver();
     }
-
     _setupPageObserver() {
       this._disconnectPageObserver();
 
