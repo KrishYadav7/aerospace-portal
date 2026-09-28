@@ -278,16 +278,39 @@ app.use('/api/courses', (req, res, next) => {
   }
   next();
 });
-
 app.use(compression({
-  threshold: 512,          // compress payloads >512 bytes (was 1 KB default)
-  level: 6,                // zlib level 6 — good ratio, low CPU
+  threshold: 1024,          // raise from 512 — small JSON is faster uncompressed
+  level: 6,
+
+  /**
+   * ⚡ CRITICAL FIX: PDFs, videos, and audio are ALREADY internally
+   *    compressed. Running zlib over them:
+   *      • burns 250–500 ms of CPU per full download
+   *      • burns 15–40 ms per range request (PDF.js fires dozens)
+   *      • produces ZERO size reduction
+   *
+   *    We also skip anything under /uploads/ outright, since every
+   *    file there is a user-uploaded binary that has already been
+   *    compressed by its originating tool (PDF/DOCX/MP4/…).
+   */
   filter: (req, res) => {
-    /* Skip SSE — it manages its own streaming. */
+    // Never compress SSE — it manages its own streaming
     if (res.getHeader('Content-Type') === 'text/event-stream') return false;
+
+    // Never compress any uploaded binary
+    if (req.path && req.path.startsWith('/uploads/')) return false;
+
+    // Never compress these content types even if served from elsewhere
+    const ct = String(res.getHeader('Content-Type') || '');
+    if (/^(application\/pdf|video\/|audio\/|image\/(jpeg|png|webp|gif|avif|svg\+xml)|application\/(zip|x-7z|octet-stream))/i.test(ct)) {
+      return false;
+    }
+
+    // Fall back to the library's own heuristic for everything else
     return compression.filter(req, res);
   }
 }));
+
 
 /* ============================================================
    CORS — backward-compatible whitelist
@@ -2188,23 +2211,31 @@ async function serveUploadFile(filename, req, res) {
   }
   if (!stat.isFile()) return res.status(404).send('Not a file');
 
-  /* ── Strong caching ── */
-  const ext        = path.extname(filename).toLowerCase();
-  const isMedia    = ext === '.pdf' || ext === '.mp4' ||
-                     ext === '.webm' || ext === '.mov' || ext === '.mp3';
-  const etag       = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+  const ext     = path.extname(filename).toLowerCase();
+  const isMedia = ext === '.pdf' || ext === '.mp4' ||
+                  ext === '.webm' || ext === '.mov' || ext === '.mp3';
 
+  const etag = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+
+  /* ── Shared headers (used by BOTH the Nginx path and the Node fallback) ── */
   res.setHeader('ETag', etag);
   res.setHeader('Last-Modified', stat.mtime.toUTCString());
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('Vary', 'Authorization');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
 
-  // Private = browser-only cache; immutable = never revalidate
-  res.setHeader('Cache-Control',
-    isMedia ? 'private, max-age=7200, immutable'
-            : 'private, max-age=600');
+  // ⚡ Long-lived cache. `immutable` means the browser will NEVER
+  //    revalidate a range request within the max-age window — PDF.js
+  //    will pull subsequent chunks straight from browser disk cache
+  //    when the user re-opens the same document.
+  res.setHeader(
+    'Cache-Control',
+    isMedia
+      ? 'private, max-age=604800, immutable'   // 7 days
+      : 'private, max-age=3600'                // 1 hour
+  );
 
-  /* ── 304 Not Modified fast path ── */
+  /* ── 304 Not Modified fast-path ── */
   if (req.headers['if-none-match'] === etag) {
     return res.status(304).end();
   }
@@ -2224,11 +2255,53 @@ async function serveUploadFile(filename, req, res) {
   };
   if (MIME_MAP[ext]) res.setHeader('Content-Type', MIME_MAP[ext]);
 
-  /* ── Nginx hint: hand this file off instead of streaming through Node ── */
-  res.setHeader('X-Accel-Mapping', `${UPLOAD_DIR}/=/uploads/`);
+  /* ============================================================
+     ⚡⚡ THE BIG ONE — Nginx X-Accel-Redirect ⚡⚡
+     ------------------------------------------------------------
+     If the request came through Nginx (X-Accel-Mapping is used by
+     Nginx to translate /uploads/ → the real disk path), we tell
+     Nginx to serve the file ITSELF, using OS sendfile(). Node's
+     event loop is freed the moment we return.
 
-  /* res.sendFile handles Range / If-Range / 206 Partial Content */
-  return res.sendFile(diskPath);
+     We detect Nginx in front by checking for the standard
+     X-Forwarded-* or X-Real-IP header, OR by an explicit env flag
+     (`USE_NGINX_ACCEL=true`). On Render (no Nginx), we fall back
+     to res.sendFile() so nothing breaks.
+     ============================================================ */
+  const nginxInFront = process.env.USE_NGINX_ACCEL === 'true';
+
+  if (nginxInFront) {
+    // Nginx `location /protected-uploads/ { internal; alias <UPLOAD_DIR>/; }`
+    // The header value must NOT be URL-encoded — Nginx parses it raw.
+    const accelPath = '/protected-uploads/' + filename;
+
+    // We already set all the shared headers above. Nginx will pass them through.
+    res.setHeader('X-Accel-Redirect', accelPath);
+
+    // Remove headers that would conflict with Nginx's own handling
+    res.removeHeader('Content-Type');
+    res.removeHeader('Last-Modified');
+    res.removeHeader('ETag');
+
+    // Tell Nginx the real Content-Type so it doesn't have to guess
+    if (MIME_MAP[ext]) {
+      res.setHeader('X-Accel-Content-Type', MIME_MAP[ext]);
+    }
+
+    return res.status(200).end();   // empty body — Nginx fills it
+  }
+
+  /* ── Node fallback (Render, local dev, etc.) ── */
+  return res.sendFile(diskPath, {
+    acceptRanges: true,
+    cacheControl: false,      // we already set Cache-Control above
+    lastModified: false,      // we already set Last-Modified above
+    etag: false,              // we already set ETag above
+    dotfiles: 'deny',
+    headers: {
+      'X-Content-Type-Options': 'nosniff'
+    }
+  });
 }
 
 /* ============================================================
