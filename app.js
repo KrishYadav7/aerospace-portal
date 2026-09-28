@@ -3248,16 +3248,23 @@ function setMaterialFilter(type) {
    ------------------------------------------------------------
    Multiple synchronous calls collapse into ONE paint per frame.
 
-   ⭐ FIX: added a watchdog timer. requestAnimationFrame is
-   throttled (sometimes indefinitely) when the tab is hidden or
-   blurred — which is exactly the state right after a login /
-   OTP-modal submit. Without the watchdog, the post-fetch render
-   could be silently dropped, forcing a manual page refresh.
+   ⭐ FIX v3 (stuck-login-view invariant):
+   The heavy render is still rAF-batched, but a lightweight
+   SYNCHRONOUS view-invariant check now runs on EVERY
+   renderApp() call, BEFORE any scheduling. This guarantees the
+   UI can never end up showing the login card while the
+   authenticated header is also visible (which happened when a
+   scheduled rAF was swallowed by the browser and the login
+   view never had its `active` class removed).
    ============================================================ */
 let _renderScheduled = false;
 let _renderWatchdog = null;
 
 function renderApp() {
+  /* ① Synchronous invariant enforcement — runs immediately,
+        on every call, before any rAF scheduling. */
+  try { _enforceViewInvariant(); } catch (e) { /* never break render */ }
+
   if (_renderScheduled) return;
   _renderScheduled = true;
 
@@ -3267,7 +3274,8 @@ function renderApp() {
       _renderWatchdog = null;
     }
     _renderScheduled = false;
-    _renderAppNow();
+    try { _renderAppNow(); }
+    catch (e) { console.error('[renderApp] _renderAppNow threw:', e); }
   };
 
   if (typeof requestAnimationFrame === 'function') {
@@ -3278,6 +3286,57 @@ function renderApp() {
     _renderWatchdog = setTimeout(run, 16);
   }
 }
+
+/* ------------------------------------------------------------
+   _enforceViewInvariant — synchronous, idempotent, safe.
+   Ensures exactly one top-level view is visible.
+     • Logged in  → loginView MUST NOT be active
+     • Logged out → loginView MUST be the active view
+   Also resets the login button if it's stuck in its loading
+   state while a valid session already exists.
+   ------------------------------------------------------------ */
+function _enforceViewInvariant() {
+  const loginView = document.getElementById('loginView');
+  if (!loginView) return;
+
+  if (currentUser) {
+    // ── Logged in ──
+    if (loginView.classList.contains('active')) {
+      loginView.classList.remove('active');
+    }
+    // Reset the login button if it's stuck on "Signing in…"
+    const submitBtn = document.querySelector('#loginForm button[type="submit"]');
+    if (submitBtn && submitBtn.disabled) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Sign In';
+    }
+  } else {
+    // ── Logged out ──
+    if (!loginView.classList.contains('active')) {
+      loginView.classList.add('active');
+    }
+    document.querySelectorAll('.view').forEach(function (v) {
+      if (v.id !== 'loginView' && v.classList.contains('active')) {
+        v.classList.remove('active');
+      }
+    });
+  }
+}
+
+/* Safety net — enforce the invariant on visibility changes and
+   hash navigation, even if renderApp() wasn't called for some
+   reason (e.g. browser silently dropping a rAF tick). */
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden) {
+    try { _enforceViewInvariant(); } catch (e) {}
+  }
+});
+window.addEventListener('focus', function () {
+  try { _enforceViewInvariant(); } catch (e) {}
+});
+window.addEventListener('hashchange', function () {
+  try { _enforceViewInvariant(); } catch (e) {}
+});
 
 function _renderAppNow() {
   ['loginView', 'adminView', 'adminEditView', 'studentAIHomeView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
