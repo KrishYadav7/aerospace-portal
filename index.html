@@ -20,11 +20,11 @@
 
   <!-- PDF.js warm-up: start the byte transfer for the library + worker
        immediately at page load so the first PDF open never has to wait
-       for them. They're lazy-deferred on the parser side but the network
-       fetch starts now. -->
+       for them. The worker uses as="worker" so the browser fetches it
+       on the worker connection pool (parallel to the main thread). -->
   <link rel="preload" as="script" crossorigin
         href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js">
-  <link rel="preload" as="script" crossorigin
+  <link rel="preload" as="worker" crossorigin
         href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
 
 

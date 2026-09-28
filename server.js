@@ -2192,55 +2192,17 @@ function verifyUploadToken(filename, userId, token) {
    Handles ETag, Last-Modified, Range, MIME, path-traversal guard.
    ------------------------------------------------------------ */
 async function serveUploadFile(filename, req, res) {
-  /* ── Path-traversal defense (belt + suspenders) ── */
-  const uploadRoot = path.resolve(UPLOAD_DIR);
+  /* ── Path-traversal defense ── */
+  const uploadRoot = UPLOAD_DIR;                       // already absolute
   const diskPath   = path.resolve(path.join(UPLOAD_DIR, filename));
 
-  if (diskPath !== uploadRoot &&
-      !diskPath.startsWith(uploadRoot + path.sep)) {
+  if (diskPath !== uploadRoot && !diskPath.startsWith(uploadRoot + path.sep)) {
     console.warn('[uploads] 🚫 traversal attempt:', filename);
     return res.status(400).send('Invalid path');
   }
 
-  /* ── Stat once (never blocks the event loop) ── */
-  let stat;
-  try {
-    stat = await fs.promises.stat(diskPath);
-  } catch (e) {
-    return res.status(404).send('File not found');
-  }
-  if (!stat.isFile()) return res.status(404).send('Not a file');
+  const ext = path.extname(filename).toLowerCase();
 
-  const ext     = path.extname(filename).toLowerCase();
-  const isMedia = ext === '.pdf' || ext === '.mp4' ||
-                  ext === '.webm' || ext === '.mov' || ext === '.mp3';
-
-  const etag = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
-
-  /* ── Shared headers (used by BOTH the Nginx path and the Node fallback) ── */
-  res.setHeader('ETag', etag);
-  res.setHeader('Last-Modified', stat.mtime.toUTCString());
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Vary', 'Authorization');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-
-  // ⚡ Long-lived cache. `immutable` means the browser will NEVER
-  //    revalidate a range request within the max-age window — PDF.js
-  //    will pull subsequent chunks straight from browser disk cache
-  //    when the user re-opens the same document.
-  res.setHeader(
-    'Cache-Control',
-    isMedia
-      ? 'private, max-age=604800, immutable'   // 7 days
-      : 'private, max-age=3600'                // 1 hour
-  );
-
-  /* ── 304 Not Modified fast-path ── */
-  if (req.headers['if-none-match'] === etag) {
-    return res.status(304).end();
-  }
-
-  /* ── Correct MIME (prevents browser sniffing) ── */
   const MIME_MAP = {
     '.pdf':  'application/pdf',
     '.mp4':  'video/mp4',
@@ -2253,60 +2215,65 @@ async function serveUploadFile(filename, req, res) {
     '.webp': 'image/webp',
     '.gif':  'image/gif'
   };
-  if (MIME_MAP[ext]) res.setHeader('Content-Type', MIME_MAP[ext]);
 
   /* ============================================================
-     ⚡⚡ THE BIG ONE — Nginx X-Accel-Redirect ⚡⚡
+     ⚡ NGINX ACCEL FAST PATH
      ------------------------------------------------------------
-     If the request came through Nginx (X-Accel-Mapping is used by
-     Nginx to translate /uploads/ → the real disk path), we tell
-     Nginx to serve the file ITSELF, using OS sendfile(). Node's
-     event loop is freed the moment we return.
+     Hand off to Nginx BEFORE any disk stat, header setup, or
+     Cache-Control logic. Nginx will:
+       • serve the file with sendfile() (kernel zero-copy)
+       • handle HTTP Range natively (206 Partial Content)
+       • set Cache-Control / Accept-Ranges / Content-Type from
+         its own mime.types and the /protected-uploads/ location
+       • return 404 automatically if the file is missing
 
-     We detect Nginx in front by checking for the standard
-     X-Forwarded-* or X-Real-IP header, OR by an explicit env flag
-     (`USE_NGINX_ACCEL=true`). On Render (no Nginx), we fall back
-     to res.sendFile() so nothing breaks.
+     Node's entire job here is: verify signed token → set one
+     header → return. Total cost: ~0.1 ms per range request.
      ============================================================ */
-  const nginxInFront = process.env.USE_NGINX_ACCEL === 'true';
-
-  if (nginxInFront) {
-    // Nginx `location /protected-uploads/ { internal; alias <UPLOAD_DIR>/; }`
-    // The header value must NOT be URL-encoded — Nginx parses it raw.
-    const accelPath = '/protected-uploads/' + filename;
-
-    // Let Nginx own Content-Type, Last-Modified, ETag, Cache-Control
-    res.removeHeader('Content-Type');
-    res.removeHeader('Last-Modified');
-    res.removeHeader('ETag');
-    res.removeHeader('Cache-Control');
-    res.removeHeader('Expires');
-    res.removeHeader('Pragma');
-    res.removeHeader('Accept-Ranges');   // ← ADD THIS LINE
-    res.removeHeader('Vary');            // ← and this (also duplicated)
-
-    // Hand off to Nginx. Only the redirect + content-type hint survive.
-    res.setHeader('X-Accel-Redirect', accelPath);
+  if (process.env.USE_NGINX_ACCEL === 'true') {
+    res.setHeader('X-Accel-Redirect', '/protected-uploads/' + filename);
     if (MIME_MAP[ext]) {
-      res.setHeader('X-Accel-Content-Type', MIME_MAP[ext]);
+      res.setHeader('Content-Type', MIME_MAP[ext]);
     }
-
-    return res.status(200).end();   // empty body — Nginx fills it
+    return res.status(200).end();
   }
 
-  /* ── Node fallback (Render, local dev, etc.) ── */
+  /* ── Node fallback (dev / non-Nginx environments) ── */
+  let stat;
+  try {
+    stat = await fs.promises.stat(diskPath);
+  } catch (e) {
+    return res.status(404).send('File not found');
+  }
+  if (!stat.isFile()) return res.status(404).send('Not a file');
+
+  const isMedia = ['.pdf', '.mp4', '.webm', '.mov', '.mp3'].includes(ext);
+  const etag = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+
+  res.setHeader('ETag', etag);
+  res.setHeader('Last-Modified', stat.mtime.toUTCString());
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader(
+    'Cache-Control',
+    isMedia ? 'private, max-age=604800, immutable' : 'private, max-age=3600'
+  );
+
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
+
+  if (MIME_MAP[ext]) res.setHeader('Content-Type', MIME_MAP[ext]);
+
   return res.sendFile(diskPath, {
     acceptRanges: true,
-    cacheControl: false,      // we already set Cache-Control above
-    lastModified: false,      // we already set Last-Modified above
-    etag: false,              // we already set ETag above
+    cacheControl: false,
+    lastModified: false,
+    etag: false,
     dotfiles: 'deny',
-    headers: {
-      'X-Content-Type-Options': 'nosniff'
-    }
+    headers: { 'X-Content-Type-Options': 'nosniff' }
   });
 }
-
 /* ============================================================
    PDF LINEARIZATION (Fast Web View)
    ------------------------------------------------------------
