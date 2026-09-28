@@ -2275,15 +2275,16 @@ async function serveUploadFile(filename, req, res) {
     // The header value must NOT be URL-encoded — Nginx parses it raw.
     const accelPath = '/protected-uploads/' + filename;
 
-    // We already set all the shared headers above. Nginx will pass them through.
-    res.setHeader('X-Accel-Redirect', accelPath);
-
-    // Remove headers that would conflict with Nginx's own handling
+    // Let Nginx own Content-Type, Last-Modified, ETag, Cache-Control
     res.removeHeader('Content-Type');
     res.removeHeader('Last-Modified');
     res.removeHeader('ETag');
+    res.removeHeader('Cache-Control');
+    res.removeHeader('Expires');
+    res.removeHeader('Pragma');
 
-    // Tell Nginx the real Content-Type so it doesn't have to guess
+    // Hand off to Nginx. Only the redirect + content-type hint survive.
+    res.setHeader('X-Accel-Redirect', accelPath);
     if (MIME_MAP[ext]) {
       res.setHeader('X-Accel-Content-Type', MIME_MAP[ext]);
     }
