@@ -1857,6 +1857,112 @@
   .lp-app-card { padding: 28px 20px 22px; }
   .lp-app-card h3 { font-size: 17px; }
 }
+
+/* ============================================================
+   NAVBAR — Direct Install Pill Button
+   ============================================================ */
+.landing-install-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.22);
+  background: rgba(255,255,255,.08);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .1px;
+  cursor: pointer;
+  transition: .22s cubic-bezier(.4,0,.2,1);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.landing-install-pill i {
+  font-size: 12.5px;
+  transition: transform .3s cubic-bezier(.34,1.56,.64,1);
+}
+.landing-install-pill:hover {
+  background: rgba(255,255,255,.16);
+  border-color: rgba(255,255,255,.38);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(0,0,0,.28);
+}
+.landing-install-pill:hover i {
+  transform: translateY(1px) scale(1.1);
+}
+.landing-install-pill:active { transform: translateY(0) scale(.97); }
+
+/* Ready state — subtle green pulse when PWA prompt is available */
+.landing-install-pill.is-ready {
+  background: linear-gradient(135deg, rgba(16,185,129,.22), rgba(52,211,153,.12));
+  border-color: rgba(52,211,153,.55);
+  box-shadow: 0 0 0 0 rgba(52,211,153,.5);
+  animation: landingInstallGlow 2.4s ease-in-out infinite;
+}
+@keyframes landingInstallGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,.55); }
+  50%      { box-shadow: 0 0 0 10px rgba(52,211,153,0); }
+}
+
+/* Installed state — muted check */
+.landing-install-pill.is-installed {
+  background: rgba(16,185,129,.16);
+  border-color: rgba(16,185,129,.42);
+  color: #6ee7b7;
+  cursor: default;
+  animation: none;
+}
+.landing-install-pill.is-installed:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Pulsing indicator dot */
+.landing-install-pill-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #34d399;
+  border: 2px solid rgba(10,14,31,.9);
+  box-shadow: 0 0 0 0 rgba(52,211,153,.7);
+  animation: landingInstallDot 1.6s ease-in-out infinite;
+}
+@keyframes landingInstallDot {
+  0%   { box-shadow: 0 0 0 0 rgba(52,211,153,.7); }
+  70%  { box-shadow: 0 0 0 8px rgba(52,211,153,0); }
+  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+}
+
+.landing-install-pill-text { display: inline; }
+
+/* Gentle highlight on the destination section when scrolled into view */
+.landing-apps-section.landing-apps-highlight {
+  animation: landingAppsHighlight 2.2s ease-out;
+}
+@keyframes landingAppsHighlight {
+  0%, 100% { background: var(--bg-surface-2); }
+  30%      { background: linear-gradient(135deg, rgba(99,102,241,.12), rgba(16,185,129,.08)); }
+}
+
+/* ---- Mobile: icon only ---- */
+@media (max-width: 860px) {
+  .landing-install-pill { padding: 8px 10px; gap: 0; }
+  .landing-install-pill-text { display: none; }
+  .landing-install-pill i { font-size: 14px; }
+}
+@media (max-width: 520px) {
+  .landing-install-pill { padding: 8px 9px; }
+  .landing-install-pill i { font-size: 13px; }
+}
 </style>
 </head>
 <body>
@@ -1891,6 +1997,17 @@
         <button class="icon-btn theme-toggle" id="landingThemeToggle" aria-label="Toggle theme">
           <i class="fas fa-moon"></i>
         </button>
+
+        <!-- ⬇️ Install App — direct link to #apps section -->
+        <button class="landing-install-pill" id="landingInstallPill"
+                onclick="landingInstallClick(event)"
+                title="Install AeroGyan App"
+                aria-label="Install AeroGyan App">
+          <i class="fas fa-download"></i>
+          <span class="landing-install-pill-text">Get App</span>
+          <span class="landing-install-pill-dot" id="landingInstallPillDot" style="display:none;"></span>
+        </button>
+
         <a href="/app" class="landing-signin-btn">
           <i class="fas fa-right-to-bracket"></i> Log In
         </a>
@@ -3224,6 +3341,8 @@
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
+    window.__pwaInstallPrompt = e;                            // expose to navbar
+    window.dispatchEvent(new Event('aerogyan:pwa-ready'));    // notify navbar
 
     // Mark matching platform card as "ready"
     const platform = detectPlatform();
@@ -3244,6 +3363,9 @@
   window.addEventListener('appinstalled', () => {
     deferredPrompt = null;
     installedAlready = true;
+    window.__pwaInstallPrompt = null;
+    document.documentElement.dataset.aeroAppInstalled = '1';
+    window.dispatchEvent(new Event('aerogyan:app-installed'));
 
     document.querySelectorAll('.lp-app-card').forEach(card => {
       card.classList.remove('lp-app-ready');
@@ -3354,6 +3476,8 @@
         }
       } finally {
         deferredPrompt = null;
+        window.__pwaInstallPrompt = null;
+        window.dispatchEvent(new Event('aerogyan:pwa-consumed'));
         if (card) card.classList.remove('lp-app-busy', 'lp-app-ready');
         if (lbl) lbl.textContent = originalLabel;
       }
@@ -3542,6 +3666,118 @@
 
   console.log('[installer] App installer ready · platform:', detectPlatform(),
               '· standalone:', IS_STANDALONE);
+})();
+</script>
+
+<!-- ============================================================
+     NAVBAR INSTALL BUTTON — behaviour
+     Drives the pill in the top-right corner of the navbar.
+     Listens to broadcast events from the installer script above.
+     ============================================================ -->
+<script>
+(function initNavbarInstallButton() {
+  'use strict';
+
+  const btn = document.getElementById('landingInstallPill');
+  const dot = document.getElementById('landingInstallPillDot');
+  if (!btn) return;
+
+  /* ---------- React to installer state changes ---------- */
+  function setReady(isReady) {
+    if (!btn) return;
+    btn.classList.toggle('is-ready', !!isReady);
+    if (dot) dot.style.display = isReady ? 'inline-block' : 'none';
+  }
+
+  function setInstalled() {
+    if (!btn) return;
+    btn.classList.remove('is-ready');
+    btn.classList.add('is-installed');
+    if (dot) dot.style.display = 'none';
+
+    const label = btn.querySelector('.landing-install-pill-text');
+    if (label) label.textContent = 'Installed';
+    const icon = btn.querySelector('i');
+    if (icon) {
+      icon.classList.remove('fa-download');
+      icon.classList.add('fa-check');
+    }
+    btn.title = 'AeroGyan is installed';
+  }
+
+  /* Listen for the events the installer script broadcasts */
+  window.addEventListener('aerogyan:pwa-ready',     () => setReady(true));
+  window.addEventListener('aerogyan:pwa-consumed',  () => setReady(false));
+  window.addEventListener('aerogyan:app-installed', () => setInstalled());
+
+  /* Initial sync — installer may have already fired */
+  if (window.__pwaInstallPrompt) setReady(true);
+  if (document.documentElement.dataset.aeroAppInstalled === '1') setInstalled();
+
+  /* ---------- Click handler ---------- */
+  window.landingInstallClick = function (event) {
+    if (event) event.preventDefault();
+
+    // Already installed → gentle nudge
+    if (btn.classList.contains('is-installed')) {
+      if (typeof window.showToast === 'function') {
+        window.showToast('App is already installed on this device. 🎉', 'success');
+      }
+      return;
+    }
+
+    // 1) Prompt is ready → install directly (one-tap)
+    if (window.__pwaInstallPrompt) {
+      (async () => {
+        try {
+          window.__pwaInstallPrompt.prompt();
+          const { outcome } = await window.__pwaInstallPrompt.userChoice;
+          if (outcome === 'accepted') {
+            if (typeof window.showToast === 'function') {
+              window.showToast('Installing AeroGyan…', 'success');
+            }
+          }
+        } catch (err) {
+          console.warn('[navbar-install] prompt failed:', err);
+          // Fall through to scrolling
+          scrollToAppsSection(event);
+        } finally {
+          window.__pwaInstallPrompt = null;
+          setReady(false);
+          window.dispatchEvent(new Event('aerogyan:pwa-consumed'));
+        }
+      })();
+      return;
+    }
+
+    // 2) No prompt → scroll to the install section
+    scrollToAppsSection(event);
+  };
+
+  /* ---------- Scroll to #apps with a soft highlight ---------- */
+  function scrollToAppsSection(event) {
+    if (typeof window.scrollToId === 'function') {
+      window.scrollToId(event, 'apps');
+    } else {
+      const el = document.getElementById('apps');
+      if (el) {
+        const nav = document.getElementById('landingNav');
+        const offset = (nav ? nav.offsetHeight : 0) + 12;
+        const top = el.getBoundingClientRect().top + window.scrollY - offset;
+        window.scrollTo({ top, behavior: 'smooth' });
+      }
+    }
+
+    // Soft highlight pulse on arrival
+    setTimeout(() => {
+      const section = document.getElementById('apps');
+      if (!section) return;
+      section.classList.add('landing-apps-highlight');
+      setTimeout(() => section.classList.remove('landing-apps-highlight'), 2400);
+    }, 500);
+  }
+
+  console.log('[navbar-install] Ready');
 })();
 </script>
 </body>
