@@ -9,3 +9,5 @@ migrate-to-disk.js
 .env
 node_modules/
 uploads/
+*.pre-*
+*.bak
