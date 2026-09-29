@@ -1324,7 +1324,65 @@ function debounce(fn, wait = 220) {
     t = setTimeout(() => fn.apply(this, args), wait);
   };
 }
+/* ============================================================
+   MATERIAL TYPE ICON SYSTEM
+   ------------------------------------------------------------
+   Single source of truth for mapping a material's `type` slug
+   (or its file extension) to a Font Awesome icon. Used by the
+   Live Activity dashboard and any future UI that needs a
+   per-material glyph.
+   ============================================================ */
+const MATERIAL_TYPE_ICONS = {
+  /* ---- Core types ---- */
+  'video':           'fa-video',
+  'notes':           'fa-file-lines',
+  'slides':          'fa-chalkboard',
+  'mid-pyq':         'fa-file-pdf',
+  'end-pyq':         'fa-file-pdf',
+  'class-test':      'fa-file-pen',
+  'mid-sol':         'fa-circle-check',
+  'end-sol':         'fa-circle-check',
+  'class-test-sol':  'fa-circle-check',
+  'lab-manual':      'fa-flask',
+  'lab-report':      'fa-clipboard-list',
+  'book':            'fa-book',
+  /* ---- Legacy types ---- */
+  'tutorial':        'fa-pen-ruler',
+  'pyq':             'fa-file-pdf',
+  'qa':              'fa-comments',
+  'other':           'fa-file'
+};
 
+/**
+ * Resolve the Font Awesome icon class for a material.
+ * Layered fallback: exact type slug → file extension → generic.
+ *
+ * @param {string} type       material type slug from the DB
+ * @param {string} [fileName] optional file name (used for sniffing)
+ * @param {string} [url]      optional URL (used for sniffing)
+ * @returns {string}          Font Awesome class WITHOUT the "fas " prefix
+ */
+function getMaterialIcon(type, fileName, url) {
+  /* ① Exact slug match (case/whitespace tolerant) */
+  const slug = String(type || '').trim().toLowerCase();
+  if (slug && MATERIAL_TYPE_ICONS[slug]) return MATERIAL_TYPE_ICONS[slug];
+
+  /* ② Sniff the extension */
+  const hay   = (String(fileName || '') + ' ' + String(url || '')).toLowerCase();
+  if (/\.pdf(\b|$|\?|#)/.test(hay))                                return 'fa-file-pdf';
+  if (/\.(mp4|webm|mov|avi|mkv)(\b|$|\?|#)/.test(hay))             return 'fa-video';
+  if (/\.(ppt|pptx)(\b|$|\?|#)/.test(hay))                         return 'fa-chalkboard';
+  if (/\.(doc|docx)(\b|$|\?|#)/.test(hay))                         return 'fa-file-lines';
+  if (/\.(xls|xlsx|csv)(\b|$|\?|#)/.test(hay))                     return 'fa-file-excel';
+  if (/\.(zip|rar|7z)(\b|$|\?|#)/.test(hay))                       return 'fa-file-zipper';
+  if (/\.(jpg|jpeg|png|webp|gif)(\b|$|\?|#)/.test(hay))            return 'fa-file-image';
+
+  /* ③ Page-context fallback (viewing-pdf → PDF icon, etc.) */
+  /*   Handled by the caller — returns generic here */
+
+  /* ④ Last resort */
+  return 'fa-book-open';
+}
 /* ============================================================
    HELPERS
    ============================================================ */
@@ -15085,32 +15143,28 @@ function renderLiveActivityData(data) {
     const aKind = isQuiz ? 'quiz' : u.actionKind;
     const aIcon = actionIcon[aKind] || 'fa-circle';
 
-    /* ⭐ Type-specific icon for the material being studied */
-    const MATERIAL_ICONS = {
-      'video':           'fa-video',
-      'notes':           'fa-file-lines',
-      'slides':          'fa-chalkboard',
-      'mid-pyq':         'fa-file-pdf',
-      'end-pyq':         'fa-file-pdf',
-      'class-test':      'fa-file-pen',
-      'mid-sol':         'fa-circle-check',
-      'end-sol':         'fa-circle-check',
-      'class-test-sol':  'fa-circle-check',
-      'lab-manual':      'fa-flask',
-      'lab-report':      'fa-clipboard-list',
-      'book':            'fa-book',
-      'tutorial':        'fa-pen-ruler',
-      'pyq':             'fa-file-pdf',
-      'other':           'fa-file'
-    };
-    const matIcon = MATERIAL_ICONS[u.materialType] || 'fa-book-open';
+    /* ⭐ Type-specific icon for the material being studied.
+       Layered fallback: DB type slug → file extension → generic. */
+    let matIcon = getMaterialIcon(u.materialType, u.materialFileName, u.materialUrl);
+
+    /* Page-context upgrade — if the DB type is unknown but we
+       KNOW the student is in the PDF viewer / video player,
+       at least show the right icon family. */
+    if (matIcon === 'fa-book-open') {
+      if (u.currentPage === 'viewing-pdf')   matIcon = 'fa-file-pdf';
+      if (u.currentPage === 'viewing-video') matIcon = 'fa-video';
+    }
 
     let activityHtml = `<span class="live-activity-label">${escapeHtml(PAGE_LABELS[u.currentPage] || u.currentPage)}</span>`;
     if (u.courseName) {
       activityHtml = `<strong>${escapeHtml(u.courseName)}</strong>`;
       if (u.courseCode) activityHtml += ` <span class="live-activity-code">· ${escapeHtml(u.courseCode)}</span>`;
       if (u.materialTitle) {
-        activityHtml += `<span class="live-activity-material"><i class="fas ${matIcon}"></i> ${escapeHtml(u.materialTitle)}</span>`;
+        activityHtml +=
+          `<span class="live-activity-material" title="${escapeHtml(u.materialType || 'material')}">` +
+            `<i class="fas ${matIcon}"></i>` +
+            `<span class="live-activity-material-text">${escapeHtml(u.materialTitle)}</span>` +
+          `</span>`;
       }
     }
 

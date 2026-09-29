@@ -8676,10 +8676,14 @@ async function flushOnlineUsage(entry) {
 }
 
 /* ------------------------------------------------------------
-   buildOnlineSnapshot — enriched payload with all new fields
-   ------------------------------------------------------------ */
-/* ------------------------------------------------------------
    buildOnlineSnapshot — enriched payload with material TYPE
+   ------------------------------------------------------------
+   v2 — bulletproof material lookup:
+     • Sends  materialType, materialFileName, materialUrl  so the
+       client can render the right icon even if `type` is missing.
+     • Uses String()-keyed lookup on BOTH sides to avoid
+       ObjectId-vs-string mismatches.
+     • Falls back to filename sniffing when `type` is unknown.
    ------------------------------------------------------------ */
 async function buildOnlineSnapshot() {
   const now = Date.now();
@@ -8689,13 +8693,15 @@ async function buildOnlineSnapshot() {
   }
   fresh.sort((a, b) => b.lastSeen - a.lastSeen);
 
+  /* ---- Gather every course / material ID we need to resolve ---- */
   const courseIdSet   = new Set();
   const materialIdSet = new Set();
+
   for (const u of fresh) {
     if (u.courseId)   courseIdSet.add(String(u.courseId));
     if (u.materialId) materialIdSet.add(String(u.materialId));
-    if (u.courseSeconds) for (const cid of Object.keys(u.courseSeconds)) courseIdSet.add(cid);
-    if (u.materialSeconds) for (const mid of Object.keys(u.materialSeconds)) materialIdSet.add(mid);
+    if (u.courseSeconds)   for (const cid of Object.keys(u.courseSeconds))   courseIdSet.add(String(cid));
+    if (u.materialSeconds) for (const mid of Object.keys(u.materialSeconds)) materialIdSet.add(String(mid));
   }
 
   const courseMap   = {};
@@ -8703,23 +8709,36 @@ async function buildOnlineSnapshot() {
 
   if (courseIdSet.size > 0 || materialIdSet.size > 0) {
     const or = [];
-    if (courseIdSet.size)   or.push({ _id: { $in: Array.from(courseIdSet) } });
+    if (courseIdSet.size)   or.push({ _id:             { $in: Array.from(courseIdSet) } });
     if (materialIdSet.size) or.push({ 'materials._id': { $in: Array.from(materialIdSet) } });
 
-    /* ⭐ Now also fetch material.type so we can show the right icon */
-    const courses = await Course.find({ $or: or })
-      .select('name code materials._id materials.title materials.type')
-      .lean();
+    try {
+      /* ⭐ Fetch every material field we might need for the icon */
+      const courses = await Course.find({ $or: or })
+        .select('name code materials._id materials.title materials.type materials.fileName materials.url')
+        .lean();
 
-    courses.forEach(c => {
-      courseMap[String(c._id)] = { name: c.name, code: c.code || '' };
-      (c.materials || []).forEach(m => {
-        materialMap[String(m._id)] = {
-          title: m.title || '',
-          type:  m.type  || 'other'
-        };
+      courses.forEach(c => {
+        courseMap[String(c._id)] = { name: c.name, code: c.code || '' };
+        (c.materials || []).forEach(m => {
+          const key = String(m._id);
+          materialMap[key] = {
+            title:    m.title    || '',
+            type:     String(m.type || '').trim().toLowerCase() || 'other',
+            fileName: m.fileName || '',
+            url:      m.url      || ''
+          };
+        });
       });
-    });
+
+      console.log(
+        `[live-snapshot] courses=${courses.length} ` +
+        `materialsIndexed=${Object.keys(materialMap).length} ` +
+        `looking for materialIds=[${Array.from(materialIdSet).join(', ')}]`
+      );
+    } catch (err) {
+      console.warn('[live-snapshot] course/material lookup failed:', err.message);
+    }
   }
 
   const topN = (obj, n) => {
@@ -8733,24 +8752,41 @@ async function buildOnlineSnapshot() {
   };
 
   const users = fresh.map(u => {
-    const action = classifyAction(u);
+    const action     = classifyAction(u);
     const engagement = computeEngagement(u);
-    const matInfo = u.materialId ? materialMap[u.materialId] : null;
+
+    /* ⭐ Resolve material — string-keyed, never null on a real hit */
+    const matKey  = u.materialId ? String(u.materialId) : null;
+    const matInfo = matKey ? (materialMap[matKey] || null) : null;
+
+    /* Debug: one line per user with an active material */
+    if (matKey && !matInfo) {
+      console.warn(
+        `[live-snapshot] ⚠️  materialId "${matKey}" for @${u.username} ` +
+        `not found in materialMap (have ${Object.keys(materialMap).length} entries)`
+      );
+    }
 
     return {
-      userId: u.userId,
+      userId:   u.userId,
       username: u.username,
       fullName: u.fullName,
-      role: u.role,
+      role:     u.role,
       currentPage: u.currentPage,
-      lastSeen: u.lastSeen,
+      lastSeen:  u.lastSeen,
       firstSeen: u.firstSeen,
-      courseId: u.courseId,
+      courseId:   u.courseId,
       materialId: u.materialId,
-      courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
-      courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
-      materialTitle: matInfo ? matInfo.title : null,
-      materialType:  matInfo ? matInfo.type  : null,   // ⭐ NEW
+
+      courseName:    u.courseId && courseMap[u.courseId] ? courseMap[u.courseId].name : null,
+      courseCode:    u.courseId && courseMap[u.courseId] ? courseMap[u.courseId].code : null,
+
+      /* ⭐ The three fields the client needs for the icon */
+      materialTitle:    matInfo ? matInfo.title    : null,
+      materialType:     matInfo ? matInfo.type     : null,
+      materialFileName: matInfo ? matInfo.fileName : null,
+      materialUrl:      matInfo ? matInfo.url      : null,
+
       sessionSeconds: u.sessionSeconds || 0,
       courseSeconds:  topN(u.courseSeconds, 5),
       device:   u.device   || 'desktop',
@@ -8765,7 +8801,7 @@ async function buildOnlineSnapshot() {
 
   const students = users.filter(u => u.role === 'student');
 
-  /* Course heatmap */
+  /* ---- Course heatmap (unchanged) ---- */
   const courseHeat = {};
   students.forEach(u => {
     const cs = u.courseSeconds || {};
@@ -8798,7 +8834,7 @@ async function buildOnlineSnapshot() {
     .sort((a, b) => b.totalSeconds - a.totalSeconds)
     .slice(0, 6);
 
-  /* Alerts */
+  /* ---- Alerts (unchanged) ---- */
   const alerts = [];
   students.forEach(u => {
     if (!u.materialId) return;
@@ -8838,7 +8874,7 @@ async function buildOnlineSnapshot() {
     return (order[a.severity] ?? 3) - (order[b.severity] ?? 3);
   }).slice(0, 8);
 
-  /* Activity sparkline buckets */
+  /* ---- Sparkline (unchanged) ---- */
   const buckets = new Array(60).fill(0);
   const oneHourAgo = now - 60 * 60 * 1000;
   for (const u of onlineUsers.values()) {
@@ -8848,7 +8884,7 @@ async function buildOnlineSnapshot() {
     }
   }
 
-  /* Device breakdown */
+  /* ---- Device breakdown (unchanged) ---- */
   const deviceCounts = { desktop: 0, mobile: 0, tablet: 0 };
   students.forEach(u => {
     deviceCounts[u.device] = (deviceCounts[u.device] || 0) + 1;
@@ -8874,6 +8910,7 @@ async function buildOnlineSnapshot() {
     fetchedAt: now
   };
 }
+
 async function broadcastOnlineNow() {
   if (sseClients.size === 0) return;
   try {

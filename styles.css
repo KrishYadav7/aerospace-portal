@@ -10281,38 +10281,71 @@ body:has(.modal-overlay.active) .mobile-bottom-nav {
   .live-user-meta { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; }
 }
 /* ============================================================
-   69. LIVE ACTIVITY — material highlight styling
+/* ============================================================
+   69. LIVE ACTIVITY — material highlight styling (v2)
    ============================================================ */
 .live-activity-material {
-  display: flex !important;
+  display: inline-flex !important;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 7px;
+  font-size: 12.5px;
   color: var(--brand-600) !important;
-  font-weight: 600;
-  margin-top: 4px;
-  padding: 3px 8px;
-  background: rgba(99,102,241,.06);
-  border-left: 2px solid var(--brand-500);
-  border-radius: 4px;
-  width: fit-content;
+  font-weight: 700;
+  margin-top: 6px;
+  padding: 4px 10px 4px 8px;
+  background: linear-gradient(135deg, rgba(99,102,241,.10), rgba(6,182,212,.04));
+  border-left: 3px solid var(--brand-500);
+  border-radius: 6px;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  width: fit-content;
+  line-height: 1.35;
+  box-shadow: 0 1px 3px rgba(99,102,241,.10);
+  transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+}
+.live-activity-material:hover {
+  transform: translateX(2px);
+  box-shadow: 0 3px 10px rgba(99,102,241,.18);
 }
 [data-theme="dark"] .live-activity-material,
 [data-theme="dim"]   .live-activity-material {
-  background: rgba(99,102,241,.14);
+  background: linear-gradient(135deg, rgba(99,102,241,.22), rgba(6,182,212,.08));
   color: var(--brand-300) !important;
 }
+
+/* The icon sits in a small coloured pill so the type is
+   instantly recognisable — PDF red, video blue, notes green… */
 .live-activity-material i {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
   font-size: 11px !important;
-  color: var(--brand-500) !important;
-  margin-right: 0 !important;
   flex-shrink: 0;
+  background: var(--brand-500);
+  color: #ffffff !important;
+  margin-right: 0 !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25);
 }
-[data-theme="dark"] .live-activity-material i,
-[data-theme="dim"]   .live-activity-material i {
-  color: var(--brand-400) !important;
+
+/* Type-specific icon tint */
+.live-activity-material i.fa-file-pdf       { background: linear-gradient(135deg, #ef4444, #b91c1c); }
+.live-activity-material i.fa-video          { background: linear-gradient(135deg, #3b82f6, #1d4ed8); }
+.live-activity-material i.fa-file-lines     { background: linear-gradient(135deg, #10b981, #047857); }
+.live-activity-material i.fa-chalkboard     { background: linear-gradient(135deg, #f59e0b, #b45309); }
+.live-activity-material i.fa-file-pen       { background: linear-gradient(135deg, #ec4899, #be185d); }
+.live-activity-material i.fa-circle-check   { background: linear-gradient(135deg, #06b6d4, #0e7490); }
+.live-activity-material i.fa-flask          { background: linear-gradient(135deg, #8b5cf6, #6d28d9); }
+.live-activity-material i.fa-clipboard-list { background: linear-gradient(135deg, #0ea5e9, #0369a1); }
+.live-activity-material i.fa-book           { background: linear-gradient(135deg, #d97706, #92400e); }
+.live-activity-material i.fa-pen-ruler      { background: linear-gradient(135deg, #14b8a6, #0f766e); }
+.live-activity-material i.fa-file           { background: linear-gradient(135deg, #64748b, #334155); }
+.live-activity-material i.fa-book-open      { background: linear-gradient(135deg, #6366f1, #4338ca); }
+
+.live-activity-material-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
