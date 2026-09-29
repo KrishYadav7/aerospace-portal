@@ -3923,16 +3923,6 @@ async function updateAdminPassword() {
    ------------------------------------------------------------ */
 let _overviewFetchGeneration = 0;
 
-/* ------------------------------------------------------------
-   Overview stat tiles — refreshes whenever the user roster
-   changes (SSE push) OR when the tab is (re-)entered.
-
-   The monotonic generation guard prevents a slow earlier fetch
-   from overwriting a faster later fetch's result, which would
-   otherwise leave a stale count on screen.
-   ------------------------------------------------------------ */
-let _overviewFetchGeneration = 0;
-
 async function renderAdminOverview() {
   const myGen = ++_overviewFetchGeneration;
 
