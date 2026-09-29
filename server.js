@@ -8554,21 +8554,25 @@ function parseDeviceInfo(ua) {
 function classifyAction(entry) {
   const p = String(entry.currentPage || '').toLowerCase();
 
-  /* ---- Admin-side pages (checked first — highest priority) ---- */
+  /* ---- Media viewers (highest priority) ---- */
+  if (p === 'viewing-pdf')   return { kind: 'reading', label: 'Reading PDF' };
+  if (p === 'viewing-video') return { kind: 'video',   label: 'Watching video' };
+
+  /* ---- Admin pages ---- */
   if (p === 'admin-quiz-editor')       return { kind: 'author',    label: 'Editing a quiz' };
   if (p.startsWith('admin-'))          return { kind: 'admin',     label: 'Admin work' };
 
-  /* ---- Analytics (exact) ---- */
+  /* ---- Analytics ---- */
   if (p === 'analytics' || p === 'student-analytics') {
     return { kind: 'analytics', label: 'Viewing analytics' };
   }
 
-  /* ---- AI Solver (exact match — NOT substring) ---- */
+  /* ---- AI Solver ---- */
   if (p === 'ai' || p === 'student-ai') {
     return { kind: 'ai', label: 'Using AI Solver' };
   }
 
-  /* ---- Course detail — MUST come before any generic checks ---- */
+  /* ---- Course detail ---- */
   if (p === 'course-detail' || entry.courseId) {
     if (entry.courseId && entry.materialId) {
       return { kind: 'reading', label: 'Studying material' };
@@ -8576,7 +8580,7 @@ function classifyAction(entry) {
     return { kind: 'reading', label: 'In a course' };
   }
 
-  /* ---- Browsing pages ---- */
+  /* ---- Browsing ---- */
   if (p === 'courses' || p === 'student-courses') {
     return { kind: 'browse', label: 'Browsing courses' };
   }
@@ -8674,6 +8678,9 @@ async function flushOnlineUsage(entry) {
 /* ------------------------------------------------------------
    buildOnlineSnapshot — enriched payload with all new fields
    ------------------------------------------------------------ */
+/* ------------------------------------------------------------
+   buildOnlineSnapshot — enriched payload with material TYPE
+   ------------------------------------------------------------ */
 async function buildOnlineSnapshot() {
   const now = Date.now();
   const fresh = [];
@@ -8693,16 +8700,25 @@ async function buildOnlineSnapshot() {
 
   const courseMap   = {};
   const materialMap = {};
+
   if (courseIdSet.size > 0 || materialIdSet.size > 0) {
     const or = [];
     if (courseIdSet.size)   or.push({ _id: { $in: Array.from(courseIdSet) } });
     if (materialIdSet.size) or.push({ 'materials._id': { $in: Array.from(materialIdSet) } });
+
+    /* ⭐ Now also fetch material.type so we can show the right icon */
     const courses = await Course.find({ $or: or })
-      .select('name code materials._id materials.title')
+      .select('name code materials._id materials.title materials.type')
       .lean();
+
     courses.forEach(c => {
       courseMap[String(c._id)] = { name: c.name, code: c.code || '' };
-      (c.materials || []).forEach(m => { materialMap[String(m._id)] = m.title; });
+      (c.materials || []).forEach(m => {
+        materialMap[String(m._id)] = {
+          title: m.title || '',
+          type:  m.type  || 'other'
+        };
+      });
     });
   }
 
@@ -8716,12 +8732,10 @@ async function buildOnlineSnapshot() {
     return out;
   };
 
-  /* ---- Build per-user enriched record ---- */
   const users = fresh.map(u => {
     const action = classifyAction(u);
     const engagement = computeEngagement(u);
-    const device = u.device || 'desktop';
-    const sessionSec = u.sessionSeconds || 0;
+    const matInfo = u.materialId ? materialMap[u.materialId] : null;
 
     return {
       userId: u.userId,
@@ -8735,14 +8749,14 @@ async function buildOnlineSnapshot() {
       materialId: u.materialId,
       courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
       courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
-      materialTitle: u.materialId && materialMap[u.materialId] ? materialMap[u.materialId]    : null,
-      sessionSeconds: sessionSec,
+      materialTitle: matInfo ? matInfo.title : null,
+      materialType:  matInfo ? matInfo.type  : null,   // ⭐ NEW
+      sessionSeconds: u.sessionSeconds || 0,
       courseSeconds:  topN(u.courseSeconds, 5),
-      /* ---- NEW enriched fields ---- */
-      device,
-      os: u.os || 'Unknown',
-      browser: u.browser || 'Unknown',
-      actionKind: action.kind,
+      device:   u.device   || 'desktop',
+      os:       u.os       || 'Unknown',
+      browser:  u.browser  || 'Unknown',
+      actionKind:  action.kind,
       actionLabel: action.label,
       engagement,
       recentActions: (u.recentActions || []).slice(-MAX_RECENT_ACTIONS)
@@ -8751,7 +8765,7 @@ async function buildOnlineSnapshot() {
 
   const students = users.filter(u => u.role === 'student');
 
-  /* ---- Course heatmap: aggregate seconds per course across ALL online students ---- */
+  /* Course heatmap */
   const courseHeat = {};
   students.forEach(u => {
     const cs = u.courseSeconds || {};
@@ -8784,64 +8798,47 @@ async function buildOnlineSnapshot() {
     .sort((a, b) => b.totalSeconds - a.totalSeconds)
     .slice(0, 6);
 
-  /* ---- Smart alerts ---- */
+  /* Alerts */
   const alerts = [];
-
-  /* (a) Stuck on the same material for >15 min */
   students.forEach(u => {
     if (!u.materialId) return;
     const matSec = (u.materialSeconds || {})[u.materialId] || 0;
     if (matSec > 15 * 60) {
       alerts.push({
-        type: 'stuck',
-        severity: 'info',
-        userId: u.userId,
-        username: u.username,
-        fullName: u.fullName,
+        type: 'stuck', severity: 'info',
+        userId: u.userId, username: u.username, fullName: u.fullName,
         message: `On "${u.materialTitle || 'a material'}" for ${Math.floor(matSec / 60)} min`,
-        courseId: u.courseId,
-        materialId: u.materialId
+        courseId: u.courseId, materialId: u.materialId
       });
     }
   });
-
-  /* (b) Idle on home for >5 min */
   students.forEach(u => {
     if (u.actionKind === 'idle' && u.sessionSeconds > 5 * 60) {
       const idleSec = Math.floor((now - u.lastSeen) / 1000);
       alerts.push({
-        type: 'idle',
-        severity: 'warn',
-        userId: u.userId,
-        username: u.username,
-        fullName: u.fullName,
+        type: 'idle', severity: 'warn',
+        userId: u.userId, username: u.username, fullName: u.fullName,
         message: `Idle for ${idleSec}s on "${u.actionLabel}"`,
         courseId: u.courseId
       });
     }
   });
-
-  /* (c) Long focused session >90 min — a heads-up */
   students.forEach(u => {
     if (u.materialId && u.sessionSeconds > 90 * 60) {
       alerts.push({
-        type: 'long-session',
-        severity: 'success',
-        userId: u.userId,
-        username: u.username,
-        fullName: u.fullName,
+        type: 'long-session', severity: 'success',
+        userId: u.userId, username: u.username, fullName: u.fullName,
         message: `Deep focus for ${Math.floor(u.sessionSeconds / 60)} min`,
         courseId: u.courseId
       });
     }
   });
-
   const alertsBySeverity = alerts.sort((a, b) => {
     const order = { warn: 0, info: 1, success: 2 };
     return (order[a.severity] ?? 3) - (order[b.severity] ?? 3);
   }).slice(0, 8);
 
-  /* ---- Activity by hour (last 60 min, 1-min buckets) ---- */
+  /* Activity sparkline buckets */
   const buckets = new Array(60).fill(0);
   const oneHourAgo = now - 60 * 60 * 1000;
   for (const u of onlineUsers.values()) {
@@ -8851,7 +8848,7 @@ async function buildOnlineSnapshot() {
     }
   }
 
-  /* ---- Device breakdown for this live snapshot ---- */
+  /* Device breakdown */
   const deviceCounts = { desktop: 0, mobile: 0, tablet: 0 };
   students.forEach(u => {
     deviceCounts[u.device] = (deviceCounts[u.device] || 0) + 1;

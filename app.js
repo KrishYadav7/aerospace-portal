@@ -10055,13 +10055,19 @@ async function viewFileOnline(courseId, materialId) {
    openMaterialVideo — PREMIUM GATED
    ============================================================ */
 async function openMaterialVideo(courseId, materialId) {
-  /* ① HARD GATE — before any network call */
   if (!assertMaterialUnlocked(courseId, materialId)) return;
 
   const course = findCourse(courseId);
   if (!course) return;
   const mat = (course.materials || []).find(m => m.id === materialId);
   if (!mat || !mat.url) return showToast('No video URL set for this material.', 'error');
+
+  /* ⭐ Store context so heartbeats know exactly what's playing */
+  window.__activeVideoContext = {
+    courseId,
+    materialId,
+    title: mat.title || ''
+  };
 
   try {
     const res = await fetch(
@@ -10074,8 +10080,8 @@ async function openMaterialVideo(courseId, materialId) {
     );
     const data = await res.json();
 
-    /* ② Server refused → stop right here, do NOT fall through */
     if (!data.success) {
+      window.__activeVideoContext = null;
       return showToast(data.message || 'Could not load video.', 'error');
     }
 
@@ -10091,9 +10097,11 @@ async function openMaterialVideo(courseId, materialId) {
     } else if (data.kind === 'direct' && data.directUrl) {
       window.VideoPlayer.open({ ...baseOpts, src: withAuthToken(data.directUrl) });
     } else {
+      window.__activeVideoContext = null;
       showToast('Unsupported video response from server.', 'error');
     }
   } catch (e) {
+    window.__activeVideoContext = null;
     showToast('Server error loading video.', 'error');
   }
 }
@@ -14401,12 +14409,40 @@ const ACTIVITY_HEARTBEAT_MS = 20000;
    computeActivityContext — what is the user doing RIGHT NOW?
    Safe: every lookup is wrapped; missing vars are ignored.
    ------------------------------------------------------------ */
+/* ------------------------------------------------------------
+   computeActivityContext — what is the user doing RIGHT NOW?
+   Priority:
+     1. PDF viewer open   → viewing-pdf  (has materialId)
+     2. Video player open → viewing-video (has materialId)
+     3. Quiz editor / admin pages
+     4. Course detail     → course-detail
+     5. Browsing / home
+   ------------------------------------------------------------ */
 function computeActivityContext() {
   let currentPage = 'home';
   let courseId = null;
   let materialId = null;
 
   try {
+    /* ⚡ Priority 1: PDF viewer open? */
+    if (window.PDFViewer && window.PDFViewer.active && window.PDFViewer.materialId) {
+      currentPage = 'viewing-pdf';
+      courseId    = window.PDFViewer.courseId || null;
+      materialId  = window.PDFViewer.materialId;
+      return { currentPage, courseId, materialId };
+    }
+
+    /* ⚡ Priority 2: Video player open? */
+    if (window.VideoPlayer && window.VideoPlayer.active) {
+      currentPage = 'viewing-video';
+      if (window.__activeVideoContext) {
+        courseId   = window.__activeVideoContext.courseId || null;
+        materialId = window.__activeVideoContext.materialId || null;
+      }
+      return { currentPage, courseId, materialId };
+    }
+
+    /* ⚡ Priority 3: admin & routing state */
     if (typeof quizEditingCourseId !== 'undefined' && quizEditingCourseId) {
       currentPage = 'admin-quiz-editor';
     } else if (typeof editingCourseId !== 'undefined' && editingCourseId) {
@@ -15049,12 +15085,32 @@ function renderLiveActivityData(data) {
     const aKind = isQuiz ? 'quiz' : u.actionKind;
     const aIcon = actionIcon[aKind] || 'fa-circle';
 
+    /* ⭐ Type-specific icon for the material being studied */
+    const MATERIAL_ICONS = {
+      'video':           'fa-video',
+      'notes':           'fa-file-lines',
+      'slides':          'fa-chalkboard',
+      'mid-pyq':         'fa-file-pdf',
+      'end-pyq':         'fa-file-pdf',
+      'class-test':      'fa-file-pen',
+      'mid-sol':         'fa-circle-check',
+      'end-sol':         'fa-circle-check',
+      'class-test-sol':  'fa-circle-check',
+      'lab-manual':      'fa-flask',
+      'lab-report':      'fa-clipboard-list',
+      'book':            'fa-book',
+      'tutorial':        'fa-pen-ruler',
+      'pyq':             'fa-file-pdf',
+      'other':           'fa-file'
+    };
+    const matIcon = MATERIAL_ICONS[u.materialType] || 'fa-book-open';
+
     let activityHtml = `<span class="live-activity-label">${escapeHtml(PAGE_LABELS[u.currentPage] || u.currentPage)}</span>`;
     if (u.courseName) {
       activityHtml = `<strong>${escapeHtml(u.courseName)}</strong>`;
       if (u.courseCode) activityHtml += ` <span class="live-activity-code">· ${escapeHtml(u.courseCode)}</span>`;
       if (u.materialTitle) {
-        activityHtml += `<span class="live-activity-material"><i class="fas fa-book-open"></i> ${escapeHtml(u.materialTitle)}</span>`;
+        activityHtml += `<span class="live-activity-material"><i class="fas ${matIcon}"></i> ${escapeHtml(u.materialTitle)}</span>`;
       }
     }
 
