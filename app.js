@@ -14657,7 +14657,6 @@ let _liveActivityTimer    = null;   // polling fallback only
 let _liveActivityData     = null;
 
 async function renderAdminLiveActivity() {
-  /* ---- Ensure the container exists ---- */
   let container = document.getElementById('adminTabLive');
   if (!container) {
     const adminView = document.getElementById('adminView');
@@ -14668,13 +14667,11 @@ async function renderAdminLiveActivity() {
     adminView.appendChild(container);
   }
 
-  /* ---- Ensure it's the active tab content ---- */
   if (!container.classList.contains('active')) {
     document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
     container.classList.add('active');
   }
 
-  /* ---- Header ---- */
   const titleEl = document.getElementById('adminPageTitle');
   if (titleEl) titleEl.innerHTML = '<i class="fas fa-signal"></i> Live Activity';
 
@@ -14689,7 +14686,6 @@ async function renderAdminLiveActivity() {
       '</button>';
   }
 
-  /* ---- Skeleton on first mount ---- */
   if (!container.querySelector('.live-activity-wrap')) {
     container.innerHTML = `
       <div class="live-activity-wrap">
@@ -14708,18 +14704,47 @@ async function renderAdminLiveActivity() {
             <p>Connecting to live stream…</p>
           </div>
         </div>
+
+        <div class="live-report-section">
+          <div class="live-report-header">
+            <div class="live-report-title">
+              <i class="fas fa-clipboard-list"></i>
+              <div>
+                <strong>Daily Report Card</strong>
+                <span>Total study time, top courses, and per-student breakdown</span>
+              </div>
+            </div>
+            <div class="live-report-controls">
+              <input type="date" id="liveReportDate" class="live-report-date" />
+              <button class="btn btn-primary btn-sm" onclick="loadDailyReport()">
+                <i class="fas fa-chart-simple"></i> Load Report
+              </button>
+            </div>
+          </div>
+          <div id="liveReportContent">
+            <div class="live-empty">
+              <i class="fas fa-clipboard-list"></i>
+              <p>Pick a date and click “Load Report”.</p>
+            </div>
+          </div>
+        </div>
       </div>`;
+
+    /* Default the date input to today (IST) */
+    const dateInput = document.getElementById('liveReportDate');
+    if (dateInput) {
+      const now = new Date();
+      const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+      dateInput.value = ist.toISOString().slice(0, 10);
+    }
   }
 
-  /* ---- Open SSE stream (server sends snapshot immediately) ---- */
   openLiveActivityStream();
 
-  /* ---- Safety net: if no data in 3s, do a one-shot fetch ---- */
   setTimeout(() => {
     if (!_liveActivityData) fetchAndRenderLiveActivity();
   }, 3000);
 }
-
 /* ---- SSE connection ---- */
 function openLiveActivityStream() {
   closeLiveActivityStream();
@@ -14889,6 +14914,16 @@ function renderLiveActivityData(data) {
     'admin-live':          'Admin · Live Activity'
   };
 
+  /* ── Formatting helpers ── */
+  const fmtDuration = (sec) => {
+    const s = Math.max(0, Math.floor(sec));
+    if (s < 60)   return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60)   return m + 'm ' + (s % 60) + 's';
+    const h = Math.floor(m / 60);
+    return h + 'h ' + (m % 60) + 'm';
+  };
+
   let html = '';
   students.forEach(u => {
     const initials = String(u.fullName || u.username || '?')
@@ -14901,6 +14936,7 @@ function renderLiveActivityData(data) {
       Math.round(secondsAgo / 60) + 'm ago';
 
     const isStudying = !!u.courseId;
+    const sessionSec = u.sessionSeconds || 0;
 
     let activityHtml = `<span class="live-activity-label">${escapeHtml(PAGE_LABELS[u.currentPage] || u.currentPage)}</span>`;
     if (u.courseName) {
@@ -14913,14 +14949,22 @@ function renderLiveActivityData(data) {
       }
     }
 
+    /* Session-time chip — the primary new data point */
+    const timeChip = sessionSec >= 10
+      ? `<span class="live-user-time" title="Session duration">⏱ ${fmtDuration(sessionSec)}</span>`
+      : '';
+
     html += `
-      <div class="live-user-row${isStudying ? ' studying' : ''}">
+      <div class="live-user-row${isStudying ? ' studying' : ''}"
+           onclick="openStudentUsageModal(${JSON.stringify(u.userId).replace(/"/g, '&quot;')}, ${JSON.stringify(u.username || '').replace(/"/g, '&quot;')})"
+           style="cursor:pointer;">
         <div class="live-user-avatar">${escapeHtml(initials)}</div>
         <div class="live-user-info">
           <div class="live-user-name">
             ${escapeHtml(u.fullName || u.username)}
             <span class="live-user-handle">@${escapeHtml(u.username)}</span>
             ${isStudying ? '<span class="live-user-badge"><i class="fas fa-fire"></i> Studying</span>' : ''}
+            ${timeChip}
           </div>
           <div class="live-user-activity">${activityHtml}</div>
         </div>
@@ -14930,21 +14974,33 @@ function renderLiveActivityData(data) {
   list.innerHTML = html;
 }
 
-/* ---- Re-tick the "Xs ago" labels every 5s so they stay fresh ---- */
-setInterval(() => {
-  const container = document.getElementById('adminTabLive');
-  if (!container || !container.classList.contains('active')) return;
-  const now = Date.now();
-  container.querySelectorAll('.live-user-seen[data-last-seen]').forEach(el => {
-    const lastSeen = parseInt(el.dataset.lastSeen, 10);
-    if (!lastSeen) return;
-    const s = Math.max(0, Math.round((now - lastSeen) / 1000));
-    el.textContent =
-      s < 15 ? 'just now' :
-      s < 60 ? s + 's ago' :
-      Math.round(s / 60) + 'm ago';
-  });
-}, 5000);
+/* ============================================================
+   Live "Xs ago" label ticker — installed ONCE at module scope.
+   ------------------------------------------------------------
+   ⚠️ Must live OUTSIDE renderLiveActivityData().
+   SSE pushes fire ~1/second; running setInterval inside the
+   render function would register a new timer on every push,
+   leaking memory and pegging the CPU within minutes.
+   ============================================================ */
+(function installLiveAgeTicker() {
+  if (window.__aeroLiveAgeTicker) return;
+  window.__aeroLiveAgeTicker = true;
+
+  setInterval(() => {
+    const container = document.getElementById('adminTabLive');
+    if (!container || !container.classList.contains('active')) return;
+    const now = Date.now();
+    container.querySelectorAll('.live-user-seen[data-last-seen]').forEach(el => {
+      const lastSeen = parseInt(el.dataset.lastSeen, 10);
+      if (!lastSeen) return;
+      const s = Math.max(0, Math.round((now - lastSeen) / 1000));
+      el.textContent =
+        s < 15 ? 'just now' :
+        s < 60 ? s + 's ago' :
+        Math.round(s / 60) + 'm ago';
+    });
+  }, 5000);
+})();
 
 /* ============================================================
    ROUTING WATCHER — MutationObserver on #adminTabLive
@@ -15076,5 +15132,258 @@ function updateMobileNavActive() {
     };
   }
 })();
+/* ============================================================
+   DAILY REPORT CARD — 24h activity summary for admin
+   ============================================================ */
+async function loadDailyReport() {
+  const host = document.getElementById('liveReportContent');
+  const dateInput = document.getElementById('liveReportDate');
+  if (!host) return;
+
+  const date = dateInput && dateInput.value
+    ? dateInput.value
+    : new Date().toISOString().slice(0, 10);
+
+  host.innerHTML = `
+    <div class="live-empty">
+      <i class="fas fa-spinner fa-spin"></i>
+      <p>Loading report…</p>
+    </div>`;
+
+  let data;
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(
+      `${API_BASE}/admin/usage/report-daily?date=${encodeURIComponent(date)}&_t=${Date.now()}`,
+      {
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+        cache: 'no-store'
+      }
+    );
+    data = await res.json();
+  } catch (e) {
+    host.innerHTML = `<div class="live-empty"><i class="fas fa-triangle-exclamation"></i><p>Network error: ${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+
+  if (!data || !data.success) {
+    host.innerHTML = `<div class="live-empty"><i class="fas fa-triangle-exclamation"></i><p>${escapeHtml(data?.message || 'Could not load report.')}</p></div>`;
+    return;
+  }
+
+  const fmtDur = (sec) => {
+    const s = Math.max(0, Math.floor(sec));
+    if (s < 60)   return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60)   return m + 'm';
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return h + 'h' + (rm > 0 ? ' ' + rm + 'm' : '');
+  };
+
+  const { summary, topCourses, topStudents } = data;
+
+  let html = `
+    <div class="report-summary-grid">
+      <div class="report-stat">
+        <div class="report-stat-icon tone-brand"><i class="fas fa-clock"></i></div>
+        <div class="report-stat-body">
+          <div class="report-stat-num">${fmtDur(summary.totalSeconds)}</div>
+          <div class="report-stat-lbl">Total Study Time</div>
+        </div>
+      </div>
+      <div class="report-stat">
+        <div class="report-stat-icon tone-emerald"><i class="fas fa-users"></i></div>
+        <div class="report-stat-body">
+          <div class="report-stat-num">${summary.activeStudents}</div>
+          <div class="report-stat-lbl">Active Students</div>
+        </div>
+      </div>
+      <div class="report-stat">
+        <div class="report-stat-icon tone-cyan"><i class="fas fa-user-check"></i></div>
+        <div class="report-stat-body">
+          <div class="report-stat-num">${summary.totalStudents}</div>
+          <div class="report-stat-lbl">Sessions Recorded</div>
+        </div>
+      </div>
+      <div class="report-stat">
+        <div class="report-stat-icon tone-gold"><i class="fas fa-hourglass-half"></i></div>
+        <div class="report-stat-body">
+          <div class="report-stat-num">${fmtDur(summary.avgSecondsPerStudent)}</div>
+          <div class="report-stat-lbl">Avg / Student</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  /* Top courses */
+  if (topCourses.length > 0) {
+    const maxSec = topCourses[0].seconds || 1;
+    html += `
+      <div class="report-block">
+        <div class="report-block-title">
+          <i class="fas fa-graduation-cap"></i> Top Courses Accessed
+        </div>
+        <div class="report-course-list">
+          ${topCourses.map(c => `
+            <div class="report-course-row">
+              <div class="report-course-info">
+                <strong>${escapeHtml(c.name)}</strong>
+                ${c.code ? `<span>${escapeHtml(c.code)}</span>` : ''}
+              </div>
+              <div class="report-course-bar">
+                <div class="report-course-fill" style="width:${Math.round((c.seconds / maxSec) * 100)}%"></div>
+              </div>
+              <div class="report-course-time">${fmtDur(c.seconds)}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>`;
+  }
+
+  /* Top students */
+  if (topStudents.length > 0) {
+    html += `
+      <div class="report-block">
+        <div class="report-block-title">
+          <i class="fas fa-user-graduate"></i> Student Breakdown (${topStudents.length})
+        </div>
+        <div class="report-student-list">
+          ${topStudents.map(s => `
+            <div class="report-student-row"
+                 onclick="openStudentUsageModal(${JSON.stringify(s.userId).replace(/"/g, '&quot;')}, ${JSON.stringify(s.username || '').replace(/"/g, '&quot;')})">
+              <div class="report-student-name">
+                <strong>${escapeHtml(s.fullName || s.username || '(unknown)')}</strong>
+                <span>@${escapeHtml(s.username || '—')}</span>
+              </div>
+              <div class="report-student-metrics">
+                <span class="metric-pill" title="Study time"><i class="fas fa-clock"></i> ${fmtDur(s.seconds)}</span>
+                <span class="metric-pill" title="Courses accessed"><i class="fas fa-book"></i> ${s.coursesCount}</span>
+                <span class="metric-pill" title="Materials opened"><i class="fas fa-file"></i> ${s.materialsCount}</span>
+                <span class="metric-pill" title="Materials completed"><i class="fas fa-check-circle"></i> ${s.materialsCompleted}</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>`;
+  } else {
+    html += `
+      <div class="live-empty" style="margin-top:16px;">
+        <i class="fas fa-inbox"></i>
+        <p>No activity recorded for this date.</p>
+      </div>`;
+  }
+
+  host.innerHTML = html;
+}
+
+/* ============================================================
+   Individual student usage modal — opens when a live row is clicked
+   ============================================================ */
+async function openStudentUsageModal(userId, username) {
+  const old = document.getElementById('studentUsageModal');
+  if (old) old.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'studentUsageModal';
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:720px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;">
+        <div>
+          <h3 style="margin:0;"><i class="fas fa-chart-line"></i> @${escapeHtml(username || 'student')}</h3>
+          <p class="modal-sub" style="margin:6px 0 0;">Last 7 days of study activity</p>
+        </div>
+        <button class="email-modal-close" onclick="document.getElementById('studentUsageModal').remove()" aria-label="Close">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div id="studentUsageBody">
+        <div class="live-empty"><i class="fas fa-spinner fa-spin"></i><p>Loading…</p></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(
+      `${API_BASE}/admin/usage/student/${encodeURIComponent(userId)}?days=7&_t=${Date.now()}`,
+      {
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+        cache: 'no-store'
+      }
+    );
+    const data = await res.json();
+
+    const body = document.getElementById('studentUsageBody');
+    if (!data || !data.success) {
+      body.innerHTML = `<div class="live-empty"><p>${escapeHtml(data?.message || 'Failed.')}</p></div>`;
+      return;
+    }
+
+    const fmtDur = (sec) => {
+      const s = Math.max(0, Math.floor(sec));
+      if (s < 60) return s + 's';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + 'm';
+      const h = Math.floor(m / 60);
+      return h + 'h ' + (m % 60) + 'm';
+    };
+
+    if (!data.days || data.days.length === 0) {
+      body.innerHTML = `<div class="live-empty"><i class="fas fa-inbox"></i><p>No activity recorded for this student yet.</p></div>`;
+      return;
+    }
+
+    body.innerHTML = `
+      <div class="student-usage-totals">
+        <div class="usage-total-item">
+          <div class="usage-total-num">${fmtDur(data.totals.totalSeconds)}</div>
+          <div class="usage-total-lbl">7-day total</div>
+        </div>
+        <div class="usage-total-item">
+          <div class="usage-total-num">${data.totals.daysWithActivity}</div>
+          <div class="usage-total-lbl">Active days</div>
+        </div>
+      </div>
+      <div class="usage-day-list">
+        ${data.days.map(d => `
+          <details class="usage-day-card" ${d.date === data.days[0].date ? 'open' : ''}>
+            <summary>
+              <div class="usage-day-head">
+                <strong>${d.date}</strong>
+                <span class="usage-day-time">${fmtDur(d.totalSeconds)}</span>
+              </div>
+            </summary>
+            <div class="usage-day-body">
+              <div class="usage-day-pills">
+                <span class="metric-pill"><i class="fas fa-book"></i> ${d.courses.length} courses</span>
+                <span class="metric-pill"><i class="fas fa-file"></i> ${d.materials.length} materials</span>
+                <span class="metric-pill"><i class="fas fa-check-circle"></i> ${d.materialsCompleted} done</span>
+                <span class="metric-pill"><i class="fas fa-question-circle"></i> ${d.quizzesTaken} quizzes</span>
+              </div>
+              ${d.courses.length > 0 ? `
+                <div class="usage-section-label">Courses</div>
+                <div class="usage-chips">
+                  ${d.courses.map(c => `<span class="usage-chip">${escapeHtml(c.name)} · ${fmtDur(c.seconds)}</span>`).join('')}
+                </div>` : ''}
+              ${d.materials.length > 0 ? `
+                <div class="usage-section-label">Materials viewed</div>
+                <div class="usage-chips">
+                  ${d.materials.slice(0, 12).map(m => `<span class="usage-chip small">${escapeHtml(m.title)} · ${fmtDur(m.seconds)}</span>`).join('')}
+                  ${d.materials.length > 12 ? `<span class="usage-chip small more">+${d.materials.length - 12} more</span>` : ''}
+                </div>` : ''}
+            </div>
+          </details>
+        `).join('')}
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('studentUsageBody').innerHTML =
+      `<div class="live-empty"><p>Network error: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
 
    initApp();
