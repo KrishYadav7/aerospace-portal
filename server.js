@@ -936,6 +936,31 @@ function classifyMutation(method, path) {
   if (/^\/admin\/feedback/.test(path))           return 'feedback';
   if (/^\/admin\/alumni|^\/admin\/friends/.test(path)) return 'community';
   if (/^\/admin\/subscription/.test(path))       return 'subscription';
+
+  /* ----- USER / STUDENT ROSTER MUTATIONS -----
+     Any change that adds or removes a student row from the database
+     must push a live-update event so every open admin dashboard
+     repaints its "Total Students" count without a manual refresh.
+
+     Note: inside app.use('/api/', …) Express strips the mount prefix,
+     so `path` here is e.g. "/register" (NOT "/api/register").        */
+
+  // Public signup form (POST /api/register)
+  if (method === 'POST' && /^\/register\/?$/.test(path))
+    return 'users:created';
+
+  // Admin manually registers a single student (POST /api/admin/create-student)
+  if (method === 'POST' && /^\/admin\/create-student\/?$/.test(path))
+    return 'users:created';
+
+  // Admin imports students from a CSV backup (POST /api/admin/students/import-csv)
+  if (method === 'POST' && /^\/admin\/students\/import-csv\/?$/.test(path))
+    return 'users:created';
+
+  // Admin deletes a student (DELETE /api/admin/students/:userId)
+  if (method === 'DELETE' && /^\/admin\/students\/[^/]+$/.test(path))
+    return 'users:deleted';
+
   return null;
 }
 

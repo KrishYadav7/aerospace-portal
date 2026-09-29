@@ -102,7 +102,33 @@ const API_BASE = '/api';
       return;
     }
 
-    /* Silent refetch */
+    /* ⭐ FAST PATH — student roster changed (register / admin-create /
+       CSV import / delete). Only the student counts need refreshing;
+       we deliberately skip the course & professor refetches because
+       they are expensive and unrelated to the change.               */
+    if (scope === 'users:created' || scope === 'users:deleted') {
+      if (currentUser && isAdmin(currentUser)) {
+        if (adminTab === 'overview' &&
+            typeof renderAdminOverview === 'function') {
+          Promise.resolve(renderAdminOverview()).catch(() => {});
+        }
+        if (adminTab === 'students' &&
+            typeof renderAdminStudents === 'function') {
+          Promise.resolve(renderAdminStudents()).catch(() => {});
+        }
+        if (!fromOtherTab && typeof showToast === 'function') {
+          showToast(
+            scope === 'users:created'
+              ? '👤 Student roster updated'
+              : '🗑️ Student roster updated',
+            'info'
+          );
+        }
+      }
+      return;
+    }
+
+    /* Silent refetch (existing behaviour for every other scope) */
     try { if (typeof fetchCoursesFromDB   === 'function') fetchCoursesFromDB(true).catch(() => {}); } catch (e) {}
     try { if (typeof fetchProfessorsFromDB === 'function') fetchProfessorsFromDB(true).catch(() => {}); } catch (e) {}
     try { if (typeof fetchOwnerProfile     === 'function') fetchOwnerProfile(true).catch(() => {}); } catch (e) {}
@@ -3887,20 +3913,72 @@ async function updateAdminPassword() {
   }
 }
 
+/* ------------------------------------------------------------
+   Overview stat tiles — refreshes whenever the user roster
+   changes (SSE push) OR when the tab is (re-)entered.
+
+   The monotonic generation guard prevents a slow earlier fetch
+   from overwriting a faster later fetch's result, which would
+   otherwise leave a stale count on screen.
+   ------------------------------------------------------------ */
+let _overviewFetchGeneration = 0;
+
+/* ------------------------------------------------------------
+   Overview stat tiles — refreshes whenever the user roster
+   changes (SSE push) OR when the tab is (re-)entered.
+
+   The monotonic generation guard prevents a slow earlier fetch
+   from overwriting a faster later fetch's result, which would
+   otherwise leave a stale count on screen.
+   ------------------------------------------------------------ */
+let _overviewFetchGeneration = 0;
+
 async function renderAdminOverview() {
-  const courses = getCourses();
+  const myGen = ++_overviewFetchGeneration;
+
+  const courses    = getCourses();
   const professors = getProfessors();
 
-  $('statCourses').textContent = courses.length;
-  $('statMaterials').textContent = courses.reduce((s, c) => s + (c.materials ? c.materials.length : 0), 0);
+  $('statCourses').textContent    = courses.length;
+  $('statMaterials').textContent  = courses.reduce(
+    (s, c) => s + (c.materials ? c.materials.length : 0), 0
+  );
   $('statProfessors').textContent = professors.length;
-  $('statStudents').textContent = '...';
+
+  // Show a placeholder while we fetch — but never leave it stuck.
+  $('statStudents').textContent = '…';
 
   try {
-    const res = await fetch('/api/students');
+    // ⭐ Cache-buster + no-store → guaranteed fresh network read.
+    //    Without these, some browsers serve a cached 200 within
+    //    the same tab session and the count looks frozen.
+    const res = await fetch(`/api/students?_t=${Date.now()}`, {
+      cache: 'no-store'
+    });
+
+    // A newer render started while we were waiting → drop this result.
+    if (myGen !== _overviewFetchGeneration) return;
+
+    if (!res.ok) {
+      $('statStudents').textContent = '—';
+      return;
+    }
+
     const data = await res.json();
-    if (data.success) $('statStudents').textContent = data.students.length;
-  } catch { $('statStudents').textContent = '—'; }
+
+    // Re-check in case a newer render started during the JSON parse.
+    if (myGen !== _overviewFetchGeneration) return;
+
+    if (data && data.success && Array.isArray(data.students)) {
+      $('statStudents').textContent = data.students.length;
+    } else {
+      $('statStudents').textContent = '—';
+    }
+  } catch (e) {
+    if (myGen !== _overviewFetchGeneration) return;
+    console.warn('[renderAdminOverview] student fetch failed:', e);
+    $('statStudents').textContent = '—';
+  }
 }
 
 /* ============================================================
