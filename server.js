@@ -8546,20 +8546,49 @@ function parseDeviceInfo(ua) {
 
 /* ------------------------------------------------------------
    classifyAction — human-friendly label from (currentPage, material)
+   ------------------------------------------------------------
+   IMPORTANT: Page slugs are matched with EXACT strings, not
+   `includes()`, because "course-detail" contains "ai" as a
+   substring and would falsely match the AI-Solver branch.
    ------------------------------------------------------------ */
 function classifyAction(entry) {
   const p = String(entry.currentPage || '').toLowerCase();
-  if (p.includes('quiz-editor'))  return { kind: 'author',   label: 'Editing a quiz' };
-  if (p.includes('admin'))        return { kind: 'admin',    label: 'Admin work' };
-  if (p.includes('analytics'))    return { kind: 'analytics', label: 'Viewing analytics' };
-  if (p.includes('ai'))           return { kind: 'ai',        label: 'Using AI Solver' };
-  if (p.includes('courses') && !entry.courseId) return { kind: 'browse', label: 'Browsing courses' };
-  if (p.includes('saved'))        return { kind: 'browse',    label: 'Checking saved' };
-  if (entry.courseId && entry.materialId) {
-    return { kind: 'reading', label: 'Studying material' };
+
+  /* ---- Admin-side pages (checked first — highest priority) ---- */
+  if (p === 'admin-quiz-editor')       return { kind: 'author',    label: 'Editing a quiz' };
+  if (p.startsWith('admin-'))          return { kind: 'admin',     label: 'Admin work' };
+
+  /* ---- Analytics (exact) ---- */
+  if (p === 'analytics' || p === 'student-analytics') {
+    return { kind: 'analytics', label: 'Viewing analytics' };
   }
-  if (entry.courseId)             return { kind: 'reading',   label: 'In a course' };
-  if (p === 'home' || p.includes('student-home')) return { kind: 'idle', label: 'Home' };
+
+  /* ---- AI Solver (exact match — NOT substring) ---- */
+  if (p === 'ai' || p === 'student-ai') {
+    return { kind: 'ai', label: 'Using AI Solver' };
+  }
+
+  /* ---- Course detail — MUST come before any generic checks ---- */
+  if (p === 'course-detail' || entry.courseId) {
+    if (entry.courseId && entry.materialId) {
+      return { kind: 'reading', label: 'Studying material' };
+    }
+    return { kind: 'reading', label: 'In a course' };
+  }
+
+  /* ---- Browsing pages ---- */
+  if (p === 'courses' || p === 'student-courses') {
+    return { kind: 'browse', label: 'Browsing courses' };
+  }
+  if (p === 'saved' || p === 'student-saved') {
+    return { kind: 'browse', label: 'Checking saved' };
+  }
+
+  /* ---- Home / idle ---- */
+  if (p === 'home' || p === 'student-home' || p === '') {
+    return { kind: 'idle', label: 'Home' };
+  }
+
   return { kind: 'idle', label: 'Idle' };
 }
 
