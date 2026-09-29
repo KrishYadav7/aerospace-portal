@@ -457,6 +457,7 @@ function withAuthToken(url) {
 
   const _originalFetch = window.fetch.bind(window);
 
+  /* Endpoints that should NOT trigger the stale-session handler */
   const AUTH_ENDPOINTS = [
     '/api/login',
     '/api/register',
@@ -472,9 +473,31 @@ function withAuthToken(url) {
     '/api/auth/session-check'
   ];
 
+  /* Endpoints that must NEVER receive an Authorization header.
+     Attaching a stale token here was breaking the login POST. */
+  const NO_AUTH_HEADER_ENDPOINTS = [
+    '/api/login',
+    '/api/register',
+    '/api/send-otp',
+    '/api/admin/login/verify-otp',
+    '/api/admin/login/resend-otp',
+    '/api/forgot-username/send-otp',
+    '/api/forgot-username/verify',
+    '/api/forgot-password/send-otp',
+    '/api/forgot-password/verify',
+    '/api/forgot-password/reset'
+  ];
+
   function isAuthEndpoint(url) {
     for (let i = 0; i < AUTH_ENDPOINTS.length; i++) {
       if (url.indexOf(AUTH_ENDPOINTS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function shouldSkipAuthHeader(url) {
+    for (let i = 0; i < NO_AUTH_HEADER_ENDPOINTS.length; i++) {
+      if (url.indexOf(NO_AUTH_HEADER_ENDPOINTS[i]) !== -1) return true;
     }
     return false;
   }
@@ -489,8 +512,8 @@ function withAuthToken(url) {
 
     const isApiCall = url && url.indexOf('/api/') !== -1;
 
-    // ── Attach Authorization header ──
-    if (isApiCall) {
+    /* ── Attach Authorization header, but SKIP on auth endpoints ── */
+    if (isApiCall && !shouldSkipAuthHeader(url)) {
       try {
         let token = null;
         try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
@@ -509,7 +532,7 @@ function withAuthToken(url) {
 
     const responsePromise = _originalFetch(input, init);
 
-    // ── Detect stale session (401 on a protected endpoint) ──
+    /* ── Detect stale session (401 on a protected endpoint) ── */
     if (isApiCall && !isAuthEndpoint(url)) {
       responsePromise.then(function (res) {
         if (res.status !== 401) return;
@@ -539,6 +562,8 @@ function withAuthToken(url) {
 
     return responsePromise;
   };
+
+  console.log('[fetch] auth interceptor installed (v3)');
 })();
 
 /* ============================================================

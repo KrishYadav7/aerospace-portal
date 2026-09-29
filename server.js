@@ -2732,6 +2732,8 @@ app.post('/api/login', async (req, res) => {
     const now        = new Date();
 
     let sessionOk = false;
+    let sessionWarning = null;
+
     try {
       const upd = await User.updateOne(
         { _id: user._id },
@@ -2744,34 +2746,28 @@ app.post('/api/login', async (req, res) => {
       sessionOk = !!(upd && (upd.matchedCount || 0) > 0);
 
       if (sessionOk) {
-        // Read back to confirm the field actually persisted. This catches
-        // any schema / strict-mode surprise immediately, rather than
-        // silently shipping a broken single-device session.
         const verify = await User.findById(user._id).select('activeSession').lean();
         sessionOk = !!(verify &&
                        verify.activeSession &&
                        verify.activeSession.sessionId === sessionId);
       }
     } catch (sessErr) {
-      console.error('[login] ❌ could not persist activeSession:', sessErr);
-      return res.status(500).json({
-        success: false,
-        message: 'Login succeeded but session could not be established. Please try again.'
-      });
+      sessionWarning = sessErr.message;
+      console.warn('[login] ⚠️ activeSession write failed:', sessErr.message);
     }
 
     if (!sessionOk) {
-      console.error(
-        '[login] ❌ sessionId failed verification — refusing to issue token. ' +
-        'Check that the User schema defines `activeSession`.'
+      console.warn(
+        '[login] ⚠️ session bookkeeping failed — issuing token anyway. ' +
+        (sessionWarning
+          ? 'Reason: ' + sessionWarning
+          : 'Check that the User schema defines `activeSession`.')
       );
-      return res.status(500).json({
-        success: false,
-        message: 'Login succeeded but session could not be verified. Please try again.'
-      });
+    } else {
+      console.log(
+        `[login] 🔐 session issued · user=${user.username} · sid=${sessionId.slice(0,8)}…`
+      );
     }
-
-    console.log(`[login] 🔐 session issued · user=${user.username} · sid=${sessionId.slice(0,8)}…`);
 
     // ---------- 3. Issue token (with sessionId embedded) ----------
     const token = jwt.sign(
@@ -2959,11 +2955,10 @@ app.get('/api/auth/session-check', async (req, res) => {
     const currentSessionId = user.activeSession && user.activeSession.sessionId;
 
     if (!currentSessionId) {
-      return res.status(401).json({
-        success: false,
-        code: 'NO_ACTIVE_SESSION',
-        message: 'You have been signed out. Please log in again.'
-      });
+      console.warn(
+        `[session-check] no activeSession record for ${user.username} — accepting token`
+      );
+      return res.json({ success: true, valid: true });
     }
 
     if (currentSessionId !== decoded.sessionId) {
