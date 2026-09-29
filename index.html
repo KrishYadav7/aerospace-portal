@@ -41,7 +41,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=101">
+  <link rel="stylesheet" href="styles.css?v=102">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -1547,8 +1547,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=101" defer></script>
-  <script src="app.js?v=101" defer></script>
+ 	<script src="media-viewer.js?v=102" defer></script>
+  <script src="app.js?v=102" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
@@ -1556,7 +1556,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=101', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=102', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 
