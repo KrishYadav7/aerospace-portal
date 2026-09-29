@@ -14387,17 +14387,20 @@ async function downloadContribution(contributionId, fileName) {
 }
 /* ============================================================
    ════════════════════════════════════════════════════════════
-   LIVE ACTIVITY HEARTBEAT — Real-Time Edition (client side)
+   LIVE ACTIVITY HEARTBEAT — v3 (client)
    ════════════════════════════════════════════════════════════
-   • Heartbeat every 20s + on navigation + on visibility change.
-   • sendBeacon / fetch-keepalive on beforeunload → instant offline.
-   • Admin panel subscribes to SSE — no polling while connected.
-   • Auto-fallback to slow polling if SSE fails 3 times.
+   • Heartbeat every 20 s + on navigation + on visibility change
+   • beforeunload keepalive beacon for instant offline
+   • Admin dashboard: SSE push with polling fallback
+   • Per-student modal + daily report card
    ============================================================ */
 let _activityHeartbeatTimer = null;
-const ACTIVITY_HEARTBEAT_MS = 20000;   // was 45s — now faster for real-time
+const ACTIVITY_HEARTBEAT_MS = 20000;
 
-/* ---- Compute what the user is currently looking at ---- */
+/* ------------------------------------------------------------
+   computeActivityContext — what is the user doing RIGHT NOW?
+   Safe: every lookup is wrapped; missing vars are ignored.
+   ------------------------------------------------------------ */
 function computeActivityContext() {
   let currentPage = 'home';
   let courseId = null;
@@ -14430,7 +14433,9 @@ function computeActivityContext() {
   return { currentPage, courseId, materialId };
 }
 
-/* ---- Fire one heartbeat ---- */
+/* ------------------------------------------------------------
+   sendActivityHeartbeat — POST to /api/heartbeat
+   ------------------------------------------------------------ */
 async function sendActivityHeartbeat() {
   try {
     if (!currentUser || !currentUser._id) return;
@@ -14442,7 +14447,10 @@ async function sendActivityHeartbeat() {
 
     await fetch(`${API_BASE}/heartbeat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
       body: JSON.stringify({
         userId:      currentUser._id,
         username:    currentUser.username,
@@ -14469,7 +14477,7 @@ function stopActivityHeartbeat() {
   }
 }
 
-/* ---- Self-supervising start/stop every 5s ---- */
+/* Self-supervising start/stop every 5 s */
 setInterval(() => {
   try {
     const hasSession = !!(currentUser && currentUser._id);
@@ -14481,7 +14489,7 @@ setInterval(() => {
   } catch (e) { /* silent */ }
 }, 5000);
 
-/* ---- Immediate heartbeat on visibility + navigation ---- */
+/* Immediate heartbeat on visibility + navigation */
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && currentUser && currentUser._id) sendActivityHeartbeat();
 });
@@ -14492,14 +14500,18 @@ window.addEventListener('hashchange', () => {
   window.__activityNavDebounce = setTimeout(sendActivityHeartbeat, 300);
 });
 
-/* ---- Instant offline signal on tab close / navigate away ---- */
+/* Instant offline signal on tab close */
 window.addEventListener('beforeunload', () => {
   try {
     if (!currentUser || !currentUser._id) return;
+    const token = sessionStorage.getItem('aero_token');
     const body = JSON.stringify({ userId: currentUser._id });
     fetch(`${API_BASE}/heartbeat/offline`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': 'Bearer ' + token } : {})
+      },
       body,
       keepalive: true
     }).catch(() => {});
@@ -14511,7 +14523,7 @@ window.addEventListener('beforeunload', () => {
    ============================================================ */
 let _liveActivityES       = null;
 let _liveActivityESFails  = 0;
-let _liveActivityTimer    = null;   // polling fallback only
+let _liveActivityTimer    = null;
 let _liveActivityData     = null;
 
 async function renderAdminLiveActivity() {
@@ -14525,6 +14537,7 @@ async function renderAdminLiveActivity() {
     adminView.appendChild(container);
   }
 
+  /* Make it the visible tab without disturbing other tabs */
   if (!container.classList.contains('active')) {
     document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.remove('active'));
     container.classList.add('active');
@@ -14544,6 +14557,7 @@ async function renderAdminLiveActivity() {
       '</button>';
   }
 
+  /* Build the shell exactly once */
   if (!container.querySelector('.live-activity-wrap')) {
     container.innerHTML = `
       <div class="live-activity-wrap">
@@ -14582,13 +14596,12 @@ async function renderAdminLiveActivity() {
           <div id="liveReportContent">
             <div class="live-empty">
               <i class="fas fa-clipboard-list"></i>
-              <p>Pick a date and click “Load Report”.</p>
+              <p>Pick a date and click "Load Report".</p>
             </div>
           </div>
         </div>
       </div>`;
 
-    /* Default the date input to today (IST) */
     const dateInput = document.getElementById('liveReportDate');
     if (dateInput) {
       const now = new Date();
@@ -14603,7 +14616,10 @@ async function renderAdminLiveActivity() {
     if (!_liveActivityData) fetchAndRenderLiveActivity();
   }, 3000);
 }
-/* ---- SSE connection ---- */
+
+/* ------------------------------------------------------------
+   SSE connection — auto-fallback to polling after 3 failures
+   ------------------------------------------------------------ */
 function openLiveActivityStream() {
   closeLiveActivityStream();
   try {
@@ -14636,7 +14652,6 @@ function openLiveActivityStream() {
         closeLiveActivityStream();
         startLiveActivityPolling();
       }
-      /* EventSource auto-reconnects on transient errors — no action needed */
     };
   } catch (e) {
     startLiveActivityPolling();
@@ -14673,10 +14688,17 @@ function setLiveStatus(label, isLive) {
   if (pill) pill.classList.toggle('is-live', !!isLive);
 }
 
-/* ---- One-shot fetch (used by Refresh button + fallback) ---- */
+/* ------------------------------------------------------------
+   One-shot fetch (used by Refresh button + polling fallback)
+   ------------------------------------------------------------ */
 async function fetchAndRenderLiveActivity() {
   try {
-    const data = await fetchJSON(`${API_BASE}/admin/online-users?_t=${Date.now()}`);
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(`${API_BASE}/admin/online-users?_t=${Date.now()}`, {
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      cache: 'no-store'
+    });
+    const data = await res.json();
     if (!data.success) throw new Error(data.message || 'Could not load.');
     _liveActivityData = data;
     renderLiveActivityData(data);
@@ -14696,7 +14718,9 @@ async function fetchAndRenderLiveActivity() {
   }
 }
 
-/* ---- Render (identical to before, plus a live "age" re-tick) ---- */
+/* ------------------------------------------------------------
+   renderLiveActivityData — paints stats + user list
+   ------------------------------------------------------------ */
 function renderLiveActivityData(data) {
   const statsRow = document.getElementById('liveStatsRow');
   const list     = document.getElementById('liveList');
@@ -14772,12 +14796,11 @@ function renderLiveActivityData(data) {
     'admin-live':          'Admin · Live Activity'
   };
 
-  /* ── Formatting helpers ── */
   const fmtDuration = (sec) => {
     const s = Math.max(0, Math.floor(sec));
-    if (s < 60)   return s + 's';
+    if (s < 60) return s + 's';
     const m = Math.floor(s / 60);
-    if (m < 60)   return m + 'm ' + (s % 60) + 's';
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
     const h = Math.floor(m / 60);
     return h + 'h ' + (m % 60) + 'm';
   };
@@ -14807,7 +14830,6 @@ function renderLiveActivityData(data) {
       }
     }
 
-    /* Session-time chip — the primary new data point */
     const timeChip = sessionSec >= 10
       ? `<span class="live-user-time" title="Session duration">⏱ ${fmtDuration(sessionSec)}</span>`
       : '';
@@ -14832,14 +14854,9 @@ function renderLiveActivityData(data) {
   list.innerHTML = html;
 }
 
-/* ============================================================
-   Live "Xs ago" label ticker — installed ONCE at module scope.
-   ------------------------------------------------------------
-   ⚠️ Must live OUTSIDE renderLiveActivityData().
-   SSE pushes fire ~1/second; running setInterval inside the
-   render function would register a new timer on every push,
-   leaking memory and pegging the CPU within minutes.
-   ============================================================ */
+/* ------------------------------------------------------------
+   Live "Xs ago" label ticker — installed ONCE (never inside render)
+   ------------------------------------------------------------ */
 (function installLiveAgeTicker() {
   if (window.__aeroLiveAgeTicker) return;
   window.__aeroLiveAgeTicker = true;
@@ -14860,9 +14877,9 @@ function renderLiveActivityData(data) {
   }, 5000);
 })();
 
-/* ============================================================
-   ROUTING WATCHER — MutationObserver on #adminTabLive
-   ============================================================ */
+/* ------------------------------------------------------------
+   Watcher — activates stream when the tab becomes active
+   ------------------------------------------------------------ */
 (function installLiveActivityWatcher() {
   const boot = () => {
     let el = document.getElementById('adminTabLive');
@@ -14908,19 +14925,6 @@ function renderLiveActivityData(data) {
       wasActive = true;
       setTimeout(activate, 200);
     }
-
-    let coldChecks = 0;
-    const coldTimer = setInterval(() => {
-      coldChecks++;
-      const active = el.classList.contains('active');
-      if (active && !wasActive) {
-        wasActive = true;
-        activate();
-        clearInterval(coldTimer);
-      } else if (coldChecks > 30) {
-        clearInterval(coldTimer);
-      }
-    }, 200);
   };
 
   if (document.readyState === 'loading') {
@@ -14930,69 +14934,9 @@ function renderLiveActivityData(data) {
   }
 })();
 
-/* ============================================================
-   END Live Activity block
-   ============================================================ */
-/* ============================================================
-   MOBILE BOTTOM NAVIGATION
-   ============================================================ */
-function mobileNavGo(dest) {
-  if (typeof navigateStudent === 'function') {
-    navigateStudent(dest);
-  }
-  updateMobileNavActive();
-  try { if (navigator.vibrate) navigator.vibrate(8); } catch (e) {}
-}
-
-function updateMobileNavActive() {
-  const nav = document.getElementById('mobileBottomNav');
-  if (!nav) return;
-
-  // Show only for logged-in students
-  const shouldShow = !!(currentUser && !isAdmin(currentUser));
-  nav.style.display = shouldShow ? '' : 'none';
-  if (!shouldShow) return;
-
-  let active = studentNav || 'home';
-  if (currentCourseId) active = '';   // in course detail — no tab active
-  if (studentNav === 'ai') active = 'ai';
-
-  nav.querySelectorAll('.mbn-item').forEach(item => {
-    item.classList.toggle('active', item.dataset.nav === active);
-  });
-
-  const savedCount = (currentUser.bookmarks || []).length;
-  const badge = document.getElementById('mbnSavedBadge');
-  if (badge) {
-    if (savedCount > 0) {
-      badge.textContent = savedCount > 9 ? '9+' : savedCount;
-      badge.style.display = 'flex';
-    } else {
-      badge.style.display = 'none';
-    }
-  }
-}
-
-/* Auto-update active state whenever the app renders */
-(function hookMobileNavToRender() {
-  if (typeof window._renderAppNow === 'function') {
-    const orig = window._renderAppNow;
-    window._renderAppNow = function () {
-      orig.apply(this, arguments);
-      setTimeout(updateMobileNavActive, 0);
-    };
-  }
-  if (typeof window.renderApp === 'function') {
-    const orig = window.renderApp;
-    window.renderApp = function () {
-      orig.apply(this, arguments);
-      setTimeout(updateMobileNavActive, 60);
-    };
-  }
-})();
-/* ============================================================
-   DAILY REPORT CARD — 24h activity summary for admin
-   ============================================================ */
+/* ------------------------------------------------------------
+   loadDailyReport — 24h report card
+   ------------------------------------------------------------ */
 async function loadDailyReport() {
   const host = document.getElementById('liveReportContent');
   const dateInput = document.getElementById('liveReportDate');
@@ -15025,15 +14969,15 @@ async function loadDailyReport() {
   }
 
   if (!data || !data.success) {
-    host.innerHTML = `<div class="live-empty"><i class="fas fa-triangle-exclamation"></i><p>${escapeHtml(data?.message || 'Could not load report.')}</p></div>`;
+    host.innerHTML = `<div class="live-empty"><i class="fas fa-triangle-exclamation"></i><p>${escapeHtml((data && data.message) || 'Could not load report.')}</p></div>`;
     return;
   }
 
   const fmtDur = (sec) => {
     const s = Math.max(0, Math.floor(sec));
-    if (s < 60)   return s + 's';
+    if (s < 60) return s + 's';
     const m = Math.floor(s / 60);
-    if (m < 60)   return m + 'm';
+    if (m < 60) return m + 'm';
     const h = Math.floor(m / 60);
     const rm = m % 60;
     return h + 'h' + (rm > 0 ? ' ' + rm + 'm' : '');
@@ -15074,7 +15018,6 @@ async function loadDailyReport() {
     </div>
   `;
 
-  /* Top courses */
   if (topCourses.length > 0) {
     const maxSec = topCourses[0].seconds || 1;
     html += `
@@ -15099,7 +15042,6 @@ async function loadDailyReport() {
       </div>`;
   }
 
-  /* Top students */
   if (topStudents.length > 0) {
     html += `
       <div class="report-block">
@@ -15135,9 +15077,9 @@ async function loadDailyReport() {
   host.innerHTML = html;
 }
 
-/* ============================================================
-   Individual student usage modal — opens when a live row is clicked
-   ============================================================ */
+/* ------------------------------------------------------------
+   openStudentUsageModal — per-student 7-day breakdown
+   ------------------------------------------------------------ */
 async function openStudentUsageModal(userId, username) {
   const old = document.getElementById('studentUsageModal');
   if (old) old.remove();
@@ -15177,7 +15119,7 @@ async function openStudentUsageModal(userId, username) {
 
     const body = document.getElementById('studentUsageBody');
     if (!data || !data.success) {
-      body.innerHTML = `<div class="live-empty"><p>${escapeHtml(data?.message || 'Failed.')}</p></div>`;
+      body.innerHTML = `<div class="live-empty"><p>${escapeHtml((data && data.message) || 'Failed.')}</p></div>`;
       return;
     }
 
@@ -15243,5 +15185,4 @@ async function openStudentUsageModal(userId, username) {
       `<div class="live-empty"><p>Network error: ${escapeHtml(e.message)}</p></div>`;
   }
 }
-
-   initApp();
+initApp();

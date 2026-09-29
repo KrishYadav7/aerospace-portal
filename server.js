@@ -8478,73 +8478,75 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
 });
 /* ============================================================
    ════════════════════════════════════════════════════════════
-   LIVE ACTIVITY TRACKING — Real-Time Edition (SSE)
+   /* ============================================================
    ════════════════════════════════════════════════════════════
-   • In-memory Map for online users (unchanged concept).
-   • SSE push stream so admins see updates instantly.
-   • Zero polling from the client while SSE is healthy.
-   • Broadcast is throttled to ~1 query per 800ms, and
-     short-circuits completely when no admin is listening.
-   • Client heartbeat fires on: interval, visibility change,
-     navigation, unload-beacon. All bounded and try/caught.
+   LIVE ACTIVITY TRACKING — v3 (Clean, Memory-Safe, Real-Time)
+   ════════════════════════════════════════════════════════════
+   Single source of truth for who's online, what they're doing,
+   how long they've been doing it, and durable daily rollups.
+
+   MEMORY DESIGN (hard limits):
+     • onlineUsers Map       — one entry per connected user, ~400 B
+     • sessionSeconds        — per entry, bounded accumulator
+     • courseSeconds         — per entry, top-30 courses only (trimmed)
+     • materialSeconds       — per entry, top-30 materials only (trimmed)
+     • DailyUsage            — 1 doc per (user, day), TTL 180 days
+     • SSE clients           — capped at 8 concurrent admin streams
+     • Broadcast throttle    — max 1 push per 800 ms across ALL clients
+
+   DATA FLOW:
+     client heartbeat (20 s) → /api/heartbeat
+       → onlineUsers Map (live)                    ← used by SSE
+       → flush every 5 min  → DailyUsage (durable) ← used by reports
+     client tab-close        → /api/heartbeat/offline
+       → immediate flush + delete from Map
    ============================================================ */
-/* ============================================================
-   ════════════════════════════════════════════════════════════
-   LIVE ACTIVITY TRACKING — Real-Time Edition (v2)
-   ════════════════════════════════════════════════════════════
-   Adds:
-     • Per-session time accumulation (in-memory, bounded)
-     • Per-course & per-material time accumulators
-     • Periodic flush to DailyUsage collection (durable, atomic)
-     • Same SSE push + polling fallback behaviour
-   Memory footprint:
-     • onlineUsers Map: bounded by concurrent students (~500 bytes each)
-     • DailyUsage: 1 doc per (user, day), TTL-deleted after 180 days
-   ============================================================ */
-const ONLINE_WINDOW_MS     = 90 * 1000;   // silent > 90s → offline
-const ONLINE_CLEANUP_MS    = 20 * 1000;   // sweep every 20s
-const BROADCAST_MIN_MS     = 800;         // burst coalescing window
-const MAX_SSE_CLIENTS      = 8;           // hard cap on concurrent streams
+const ONLINE_WINDOW_MS     = 90 * 1000;    // silent > 90 s → offline
+const ONLINE_CLEANUP_MS    = 20 * 1000;    // sweep every 20 s
+const BROADCAST_MIN_MS     = 800;          // SSE coalescing window
+const MAX_SSE_CLIENTS      = 8;
+const HEARTBEAT_MAX_DELTA  = 60;           // seconds — cap per ping
+const FLUSH_EVERY_SEC      = 300;          // flush to DB every 5 min
+const MAX_MAP_KEYS         = 30;           // trim course/material maps
 
-/* Heartbeat arrives every ~20s. Cap the credited delta at 60s so a
-   laptop sleep / network hiccup doesn't credit phantom hours. */
-const HEARTBEAT_MAX_DELTA_SEC = 60;
-
-/* Flush accumulated seconds to the DB every 5 minutes of credited
-   session time, so a long-running tab doesn't lose progress if the
-   server restarts mid-session. */
-const FLUSH_EVERY_SEC = 300;
-
-const onlineUsers = new Map();            // userId → entry
-const sseClients  = new Set();            // Set<res> — connected admins
-
-let _broadcastLocked = false;
-let _broadcastAgain  = false;
+const onlineUsers = new Map();   // userId → entry
+const sseClients  = new Set();   // Set<res>
+const sseClientsLock = { locked: false, again: false };
 
 /* ------------------------------------------------------------
-   flushOnlineUsage — durable write of accumulated time.
-   ------------------------------------------------------------
+   trimMap — keep the top N keys by value, drop the rest.
+   Called whenever an accumulator grows beyond MAX_MAP_KEYS.
+   Prevents a single user from growing an unbounded object.
+   ------------------------------------------------------------ */
+function trimMap(obj, maxKeys) {
+  const keys = Object.keys(obj);
+  if (keys.length <= maxKeys) return obj;
+  keys.sort((a, b) => (obj[b] || 0) - (obj[a] || 0));
+  const keep = {};
+  for (let i = 0; i < maxKeys; i++) keep[keys[i]] = obj[keys[i]];
+  return keep;
+}
+
+/* ------------------------------------------------------------
+   flushOnlineUsage — durable write of accumulated seconds.
    Only the DELTA since the last successful flush is written.
-   This keeps the DB write small (single $inc) and idempotent.
-   Failures are silent — the next heartbeat retries automatically.
    ------------------------------------------------------------ */
 async function flushOnlineUsage(entry) {
   if (!entry || !entry.userId) return;
+
   const totalDelta = (entry.sessionSeconds || 0) - (entry.flushedSeconds || 0);
-  if (totalDelta < 3) return;   // ignore trivial deltas
+  if (totalDelta < 3) return;
 
   const inc = { totalSeconds: totalDelta };
 
-  /* Per-course deltas */
-  const courseCur     = entry.courseSeconds || {};
+  const courseCur     = entry.courseSeconds   || {};
   const courseFlushed = entry.flushedCourseSeconds || {};
   for (const cid of Object.keys(courseCur)) {
     const d = (courseCur[cid] || 0) - (courseFlushed[cid] || 0);
     if (d > 0) inc[`courses.${cid}`] = d;
   }
 
-  /* Per-material deltas */
-  const matCur     = entry.materialSeconds || {};
+  const matCur     = entry.materialSeconds   || {};
   const matFlushed = entry.flushedMaterialSeconds || {};
   for (const mid of Object.keys(matCur)) {
     const d = (matCur[mid] || 0) - (matFlushed[mid] || 0);
@@ -8565,28 +8567,23 @@ async function flushOnlineUsage(entry) {
         },
         $setOnInsert: {
           firstSeenAt:  new Date(entry.firstSeen || Date.now()),
-          /* sessionCount = 1 is written only when the (userId, date)
-             document is first created — i.e. the student's FIRST
-             flush of the day. Subsequent flushes leave it untouched. */
           sessionCount: 1
         }
       },
       { upsert: true }
     );
 
-    /* Advance flush markers so the next call only sends new time */
     entry.flushedSeconds         = entry.sessionSeconds || 0;
-    entry.flushedCourseSeconds   = { ...(entry.courseSeconds  || {}) };
+    entry.flushedCourseSeconds   = { ...(entry.courseSeconds   || {}) };
     entry.flushedMaterialSeconds = { ...(entry.materialSeconds || {}) };
   } catch (e) {
-    /* Silent — retry on the next flush. Never break a heartbeat. */
     console.warn('[usage-flush] failed (will retry):', e.message);
   }
 }
 
 /* ------------------------------------------------------------
-   buildOnlineSnapshot — one DB query for name resolution,
-   then a compact JSON payload for SSE / REST.
+   buildOnlineSnapshot — one DB query to resolve course/material
+   names, then a compact JSON payload.
    ------------------------------------------------------------ */
 async function buildOnlineSnapshot() {
   const now = Date.now();
@@ -8596,34 +8593,50 @@ async function buildOnlineSnapshot() {
   }
   fresh.sort((a, b) => b.lastSeen - a.lastSeen);
 
-  const courseIds   = [...new Set(fresh.map(u => u.courseId).filter(Boolean))];
-  const materialIds = [...new Set(fresh.map(u => u.materialId).filter(Boolean))];
-
-  /* Also resolve names for every course a user has spent time in —
-     the report card and snapshot both benefit. */
+  /* Collect ALL course IDs (active + accumulated) in one pass */
+  const courseIdSet   = new Set();
+  const materialIdSet = new Set();
   for (const u of fresh) {
+    if (u.courseId)   courseIdSet.add(String(u.courseId));
+    if (u.materialId) materialIdSet.add(String(u.materialId));
     if (u.courseSeconds) {
-      for (const cid of Object.keys(u.courseSeconds)) courseIds.push(cid);
+      for (const cid of Object.keys(u.courseSeconds)) courseIdSet.add(cid);
+    }
+    if (u.materialSeconds) {
+      for (const mid of Object.keys(u.materialSeconds)) materialIdSet.add(mid);
     }
   }
 
   const courseMap   = {};
   const materialMap = {};
 
-  if (courseIds.length > 0 || materialIds.length > 0) {
+  if (courseIdSet.size > 0 || materialIdSet.size > 0) {
     const or = [];
-    if (courseIds.length)   or.push({ _id: { $in: [...new Set(courseIds)] } });
-    if (materialIds.length) or.push({ 'materials._id': { $in: materialIds } });
+    if (courseIdSet.size)   or.push({ _id: { $in: Array.from(courseIdSet) } });
+    if (materialIdSet.size) or.push({ 'materials._id': { $in: Array.from(materialIdSet) } });
+
     const courses = await Course.find({ $or: or })
       .select('name code materials._id materials.title')
       .lean();
+
     courses.forEach(c => {
-      courseMap[String(c._id)] = { name: c.name, code: c.code };
+      courseMap[String(c._id)] = { name: c.name, code: c.code || '' };
       (c.materials || []).forEach(m => {
         materialMap[String(m._id)] = m.title;
       });
     });
   }
+
+  /* Local helper — inline topN to keep this self-contained */
+  const topN = (obj, n) => {
+    if (!obj) return {};
+    const entries = Object.entries(obj);
+    if (entries.length <= n) return { ...obj };
+    entries.sort((a, b) => b[1] - a[1]);
+    const out = {};
+    for (let i = 0; i < n; i++) out[entries[i][0]] = entries[i][1];
+    return out;
+  };
 
   const users = fresh.map(u => ({
     userId:        u.userId,
@@ -8638,11 +8651,8 @@ async function buildOnlineSnapshot() {
     courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
     courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
     materialTitle: u.materialId && materialMap[u.materialId] ? materialMap[u.materialId]    : null,
-
-    /* ─── NEW: time metrics ─── */
     sessionSeconds: u.sessionSeconds || 0,
-    /* Trim to top 5 courses to keep the SSE payload tiny */
-    courseSeconds:  topNEntries(u.courseSeconds, 5)
+    courseSeconds:  topN(u.courseSeconds, 5)
   }));
 
   const students = users.filter(u => u.role === 'student');
@@ -8650,10 +8660,10 @@ async function buildOnlineSnapshot() {
   return {
     success: true,
     counts: {
-      total:     users.length,
-      students:  students.length,
-      admins:    users.length - students.length,
-      studying:  students.filter(u => u.courseId).length
+      total:    users.length,
+      students: students.length,
+      admins:   users.length - students.length,
+      studying: students.filter(u => u.courseId).length
     },
     users,
     fetchedAt: now
@@ -8669,36 +8679,31 @@ async function broadcastOnlineNow() {
       try { res.write(payload); }
       catch (e) { sseClients.delete(res); }
     }
-  } catch (e) { /* swallow */ }
+  } catch (e) { /* silent */ }
 }
 
 function scheduleBroadcast() {
   if (sseClients.size === 0) return;
-  if (_broadcastLocked) { _broadcastAgain = true; return; }
-  _broadcastLocked = true;
+  if (sseClientsLock.locked) { sseClientsLock.again = true; return; }
+  sseClientsLock.locked = true;
   broadcastOnlineNow().finally(() => {
     setTimeout(() => {
-      _broadcastLocked = false;
-      if (_broadcastAgain) {
-        _broadcastAgain = false;
+      sseClientsLock.locked = false;
+      if (sseClientsLock.again) {
+        sseClientsLock.again = false;
         scheduleBroadcast();
       }
     }, BROADCAST_MIN_MS);
   });
 }
 
-/* ------------------------------------------------------------
-   Background sweep — flushes + removes stale entries.
-   Flushing on eviction is what makes "closed tab" time durable
-   without waiting for the next 5-minute periodic flush.
-   ------------------------------------------------------------ */
-setInterval(() => {
+/* Background sweep — flush + remove stale entries */
+const _sweep = setInterval(() => {
   try {
     const now = Date.now();
     let removed = 0;
     for (const [id, entry] of onlineUsers.entries()) {
       if (now - entry.lastSeen > ONLINE_WINDOW_MS) {
-        /* Fire-and-forget final flush */
         flushOnlineUsage(entry).catch(() => {});
         onlineUsers.delete(id);
         removed++;
@@ -8706,7 +8711,8 @@ setInterval(() => {
     }
     if (removed > 0) scheduleBroadcast();
   } catch (e) { /* silent */ }
-}, ONLINE_CLEANUP_MS).unref?.();
+}, ONLINE_CLEANUP_MS);
+if (_sweep.unref) _sweep.unref();
 
 const heartbeatLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -8724,10 +8730,6 @@ const heartbeatLimiter = rateLimit({
 
 /* ============================================================
    POST /api/heartbeat
-   ------------------------------------------------------------
-   • Preserves session accumulators across heartbeats
-   • Credits only bounded deltas (max 60s) — no phantom time
-   • Triggers a durable flush every 5 minutes of credited time
    ============================================================ */
 app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
   try {
@@ -8738,11 +8740,10 @@ app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
     const now    = Date.now();
     const prev   = onlineUsers.get(userId);
 
-    /* Delta since the previous heartbeat, capped at 60s */
     let delta = 0;
     if (prev && prev.lastSeen) {
       const gap = Math.floor((now - prev.lastSeen) / 1000);
-      delta = Math.min(Math.max(0, gap), HEARTBEAT_MAX_DELTA_SEC);
+      delta = Math.min(Math.max(0, gap), HEARTBEAT_MAX_DELTA);
     }
 
     const entry = prev || {
@@ -8756,29 +8757,40 @@ app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
       flushedMaterialSeconds:  {}
     };
 
-    /* Refresh identity + routing context */
-    entry.username    = String(b.username || entry.username || '').slice(0, 60);
-    entry.fullName    = String(b.fullName || entry.fullName || b.username || '').slice(0, 80);
-    entry.role        = String(b.role || entry.role || 'student').slice(0, 20);
+    entry.username    = String(b.username    || entry.username    || '').slice(0, 60);
+    entry.fullName    = String(b.fullName    || entry.fullName    || b.username || '').slice(0, 80);
+    entry.role        = String(b.role        || entry.role        || 'student').slice(0, 20);
     entry.currentPage = String(b.currentPage || 'home').slice(0, 40);
     entry.courseId    = b.courseId   ? String(b.courseId).slice(0, 40)   : null;
     entry.materialId  = b.materialId ? String(b.materialId).slice(0, 40) : null;
     entry.lastSeen    = now;
 
-    /* Accumulate deltas — bounded by the cap above */
     if (delta > 0) {
       entry.sessionSeconds = (entry.sessionSeconds || 0) + delta;
+
       if (entry.courseId) {
-        entry.courseSeconds[entry.courseId] = (entry.courseSeconds[entry.courseId] || 0) + delta;
+        if (!entry.courseSeconds) entry.courseSeconds = {};
+        entry.courseSeconds[entry.courseId] =
+          (entry.courseSeconds[entry.courseId] || 0) + delta;
       }
       if (entry.materialId) {
-        entry.materialSeconds[entry.materialId] = (entry.materialSeconds[entry.materialId] || 0) + delta;
+        if (!entry.materialSeconds) entry.materialSeconds = {};
+        entry.materialSeconds[entry.materialId] =
+          (entry.materialSeconds[entry.materialId] || 0) + delta;
       }
+    }
+
+    /* Trim maps — hard bound on memory */
+    if (entry.courseSeconds && Object.keys(entry.courseSeconds).length > MAX_MAP_KEYS) {
+      entry.courseSeconds = trimMap(entry.courseSeconds, MAX_MAP_KEYS);
+    }
+    if (entry.materialSeconds && Object.keys(entry.materialSeconds).length > MAX_MAP_KEYS) {
+      entry.materialSeconds = trimMap(entry.materialSeconds, MAX_MAP_KEYS);
     }
 
     onlineUsers.set(userId, entry);
 
-    /* Periodic durable flush — non-blocking */
+    /* Periodic durable flush */
     if ((entry.sessionSeconds - (entry.flushedSeconds || 0)) >= FLUSH_EVERY_SEC) {
       flushOnlineUsage(entry).catch(() => {});
     }
@@ -8792,9 +8804,6 @@ app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
 
 /* ============================================================
    POST /api/heartbeat/offline
-   ------------------------------------------------------------
-   Fired on beforeunload with keepalive → instant offline signal
-   + final durable flush of the session's accumulated time.
    ============================================================ */
 app.post('/api/heartbeat/offline', (req, res) => {
   try {
@@ -8813,7 +8822,7 @@ app.post('/api/heartbeat/offline', (req, res) => {
 });
 
 /* ============================================================
-   GET /api/admin/online-users  — one-shot snapshot (fallback)
+   GET /api/admin/online-users — one-shot snapshot
    ============================================================ */
 app.get('/api/admin/online-users', requireAdminAuth, async (req, res) => {
   try {
@@ -8826,7 +8835,7 @@ app.get('/api/admin/online-users', requireAdminAuth, async (req, res) => {
 });
 
 /* ============================================================
-   GET /api/admin/online-users/stream  — SSE
+   GET /api/admin/online-users/stream — SSE
    ============================================================ */
 app.get('/api/admin/online-users/stream', async (req, res) => {
   try {
@@ -8845,6 +8854,7 @@ app.get('/api/admin/online-users/stream', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
+  /* Evict oldest if we're at capacity */
   if (sseClients.size >= MAX_SSE_CLIENTS) {
     const oldest = sseClients.values().next().value;
     if (oldest && oldest !== res) {
@@ -8855,6 +8865,7 @@ app.get('/api/admin/online-users/stream', async (req, res) => {
 
   sseClients.add(res);
 
+  /* Send an immediate snapshot so the admin sees data instantly */
   try {
     const snapshot = await buildOnlineSnapshot();
     res.write('data: ' + JSON.stringify(snapshot) + '\n\n');
@@ -8875,10 +8886,7 @@ app.get('/api/admin/online-users/stream', async (req, res) => {
 });
 
 /* ============================================================
-   GET /api/admin/usage/report-daily
-   ------------------------------------------------------------
-   Per-day aggregate: total study time, top courses, top students.
-   ?date=YYYY-MM-DD  (defaults to today in IST)
+   GET /api/admin/usage/report-daily?date=YYYY-MM-DD
    ============================================================ */
 app.get('/api/admin/usage/report-daily', requireAdminAuth, async (req, res) => {
   try {
@@ -8921,22 +8929,21 @@ app.get('/api/admin/usage/report-daily', requireAdminAuth, async (req, res) => {
       seconds: courseTotals[cid]
     }));
 
-    /* Top students (by study seconds today) */
     const topStudents = docs
       .sort((a, b) => (b.totalSeconds || 0) - (a.totalSeconds || 0))
       .slice(0, 30)
       .map(d => ({
-        userId:         d.userId,
-        username:       d.username,
-        fullName:       d.fullName,
-        seconds:        d.totalSeconds || 0,
-        coursesCount:   Object.keys(d.courses   || {}).length,
-        materialsCount: Object.keys(d.materials || {}).length,
+        userId:             d.userId,
+        username:           d.username,
+        fullName:           d.fullName,
+        seconds:            d.totalSeconds || 0,
+        coursesCount:       Object.keys(d.courses   || {}).length,
+        materialsCount:     Object.keys(d.materials || {}).length,
         views:              d.views || 0,
         quizzesTaken:       d.quizzesTaken || 0,
         materialsCompleted: d.materialsCompleted || 0,
-        firstSeenAt:    d.firstSeenAt,
-        lastSeenAt:     d.lastSeenAt
+        firstSeenAt:        d.firstSeenAt,
+        lastSeenAt:         d.lastSeenAt
       }));
 
     res.json({
@@ -8959,9 +8966,7 @@ app.get('/api/admin/usage/report-daily', requireAdminAuth, async (req, res) => {
 });
 
 /* ============================================================
-   GET /api/admin/usage/student/:userId
-   ------------------------------------------------------------
-   Per-student rollup across the last N days (default 7, max 30).
+   GET /api/admin/usage/student/:userId?days=7
    ============================================================ */
 app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) => {
   try {
@@ -8979,7 +8984,6 @@ app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) =
       .sort({ date: -1 })
       .lean();
 
-    /* Collect every course/material id touched, so we can resolve names in one query */
     const allCourseIds   = new Set();
     const allMaterialIds = new Set();
     docs.forEach(d => {
@@ -9006,11 +9010,11 @@ app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) =
     }
 
     const dayRows = docs.map(d => ({
-      date:           d.date,
-      totalSeconds:   d.totalSeconds || 0,
-      sessionCount:   d.sessionCount || 0,
-      firstSeenAt:    d.firstSeenAt,
-      lastSeenAt:     d.lastSeenAt,
+      date:               d.date,
+      totalSeconds:       d.totalSeconds || 0,
+      sessionCount:       d.sessionCount || 0,
+      firstSeenAt:        d.firstSeenAt,
+      lastSeenAt:         d.lastSeenAt,
       views:              d.views || 0,
       quizzesTaken:       d.quizzesTaken || 0,
       materialsCompleted: d.materialsCompleted || 0,
@@ -9032,7 +9036,7 @@ app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) =
       userId,
       days: dayRows,
       totals: {
-        totalSeconds:    docs.reduce((s, d) => s + (d.totalSeconds || 0), 0),
+        totalSeconds:     docs.reduce((s, d) => s + (d.totalSeconds || 0), 0),
         daysWithActivity: docs.filter(d => (d.totalSeconds || 0) > 60).length
       }
     });
@@ -9041,6 +9045,7 @@ app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) =
     res.status(500).json({ success: false, message: e.message });
   }
 });
+
 /* ============================================================
    LISTEN — start the HTTP server
    ------------------------------------------------------------
