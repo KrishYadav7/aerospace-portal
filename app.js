@@ -14432,7 +14432,20 @@ function computeActivityContext() {
 
   return { currentPage, courseId, materialId };
 }
-
+function computeLastActionLabel(ctx) {
+  try {
+    if (ctx.materialId && typeof findCourse === 'function' && ctx.courseId) {
+      const c = findCourse(ctx.courseId);
+      const m = c && (c.materials || []).find(x => x.id === ctx.materialId);
+      if (m) return 'Opened ' + m.title;
+    }
+    if (ctx.courseId && typeof findCourse === 'function') {
+      const c = findCourse(ctx.courseId);
+      if (c) return 'In ' + c.name;
+    }
+  } catch (e) {}
+  return ctx.currentPage || 'home';
+}
 /* ------------------------------------------------------------
    sendActivityHeartbeat — POST to /api/heartbeat
    ------------------------------------------------------------ */
@@ -14458,7 +14471,13 @@ async function sendActivityHeartbeat() {
         role:        currentUser.role,
         currentPage: ctx.currentPage,
         courseId:    ctx.courseId,
-        materialId:  ctx.materialId
+        materialId:  ctx.materialId,
+        device:      /Mobi|Android/i.test(navigator.userAgent) && !/iPad|Tablet/i.test(navigator.userAgent)
+                       ? 'mobile'
+                       : /iPad|Tablet/i.test(navigator.userAgent)
+                         ? 'tablet'
+                         : 'desktop',
+        lastAction:  computeLastActionLabel(ctx)
       })
     });
   } catch (e) { /* silent */ }
@@ -14570,6 +14589,12 @@ async function renderAdminLiveActivity() {
             </div>
           </div>
         </div>
+        <div class="live-insights-grid">
+          <div class="live-insights-panel" id="liveAlerts"></div>
+          <div class="live-insights-panel" id="liveHeatmap"></div>
+          <div class="live-insights-panel live-insights-wide" id="liveSparkline"></div>
+        </div>
+        <div class="live-controls" id="liveControls"></div>
         <div class="live-list" id="liveList">
           <div class="live-empty">
             <i class="fas fa-spinner fa-spin"></i>
@@ -14721,6 +14746,12 @@ async function fetchAndRenderLiveActivity() {
 /* ------------------------------------------------------------
    renderLiveActivityData — paints stats + user list
    ------------------------------------------------------------ */
+/* ------------------------------------------------------------
+   renderLiveActivityData — v2 (enriched, sortable, filterable)
+   ------------------------------------------------------------ */
+let _liveSortMode   = 'recent';   // recent | name | engagement | duration
+let _liveFilterMode = 'all';      // all | reading | quiz | idle | mobile
+
 function renderLiveActivityData(data) {
   const statsRow = document.getElementById('liveStatsRow');
   const list     = document.getElementById('liveList');
@@ -14729,11 +14760,15 @@ function renderLiveActivityData(data) {
   const c        = data.counts || {};
   const users    = data.users  || [];
   const students = users.filter(u => u.role === 'student');
+  const devices  = data.deviceCounts || { desktop: 0, mobile: 0, tablet: 0 };
 
   const clock = new Date().toLocaleTimeString('en-IN', {
     hour: '2-digit', minute: '2-digit', second: '2-digit'
   });
 
+  /* ============================================================
+     STAT CARDS
+     ============================================================ */
   statsRow.innerHTML = `
     <div class="live-stat-card">
       <div class="live-stat-icon tone-emerald"><i class="fas fa-signal"></i></div>
@@ -14743,21 +14778,35 @@ function renderLiveActivityData(data) {
       </div>
     </div>
     <div class="live-stat-card">
-      <div class="live-stat-icon tone-brand"><i class="fas fa-users"></i></div>
-      <div class="live-stat-body">
-        <div class="live-stat-num">${c.total || 0}</div>
-        <div class="live-stat-lbl">Total Sessions</div>
-      </div>
-    </div>
-    <div class="live-stat-card">
-      <div class="live-stat-icon tone-gold"><i class="fas fa-book-open-reader"></i></div>
+      <div class="live-stat-icon tone-brand"><i class="fas fa-book-open-reader"></i></div>
       <div class="live-stat-body">
         <div class="live-stat-num">${c.studying || 0}</div>
         <div class="live-stat-lbl">Actively Studying</div>
       </div>
     </div>
     <div class="live-stat-card">
-      <div class="live-stat-icon tone-cyan"><i class="fas fa-clock"></i></div>
+      <div class="live-stat-icon tone-gold"><i class="fas fa-file-pen"></i></div>
+      <div class="live-stat-body">
+        <div class="live-stat-num">${c.inQuiz || 0}</div>
+        <div class="live-stat-lbl">Taking a Quiz</div>
+      </div>
+    </div>
+    <div class="live-stat-card">
+      <div class="live-stat-icon tone-cyan"><i class="fas fa-robot"></i></div>
+      <div class="live-stat-body">
+        <div class="live-stat-num">${c.aiUsage || 0}</div>
+        <div class="live-stat-lbl">Using AI Solver</div>
+      </div>
+    </div>
+    <div class="live-stat-card">
+      <div class="live-stat-icon tone-rose"><i class="fas fa-mobile-screen"></i></div>
+      <div class="live-stat-body">
+        <div class="live-stat-num">${devices.mobile || 0} <span style="font-size:14px;color:var(--text-tertiary);">/ ${devices.tablet || 0} / ${devices.desktop || 0}</span></div>
+        <div class="live-stat-lbl">Mobile · Tablet · Desktop</div>
+      </div>
+    </div>
+    <div class="live-stat-card">
+      <div class="live-stat-icon tone-emerald"><i class="fas fa-clock"></i></div>
       <div class="live-stat-body">
         <div class="live-stat-num" style="font-size:18px;letter-spacing:0;">${clock}</div>
         <div class="live-stat-lbl">Last Updated</div>
@@ -14765,6 +14814,151 @@ function renderLiveActivityData(data) {
     </div>
   `;
 
+  /* ============================================================
+     ALERTS PANEL
+     ============================================================ */
+  const alertsHost = document.getElementById('liveAlerts');
+  if (alertsHost) {
+    const alerts = data.alerts || [];
+    if (alerts.length === 0) {
+      alertsHost.innerHTML = `
+        <div class="live-alerts-head">
+          <i class="fas fa-check-circle" style="color:var(--emerald-500);"></i>
+          <strong>No alerts</strong>
+          <span class="live-alerts-sub">Everything looks healthy</span>
+        </div>`;
+    } else {
+      const iconMap = {
+        stuck: 'fa-hourglass-half',
+        idle: 'fa-bed',
+        'long-session': 'fa-fire'
+      };
+      alertsHost.innerHTML = `
+        <div class="live-alerts-head">
+          <i class="fas fa-bell"></i>
+          <strong>${alerts.length} alert${alerts.length === 1 ? '' : 's'}</strong>
+          <span class="live-alerts-sub">Live monitoring</span>
+        </div>
+        <div class="live-alerts-list">
+          ${alerts.map(a => `
+            <div class="live-alert live-alert-${a.severity}"
+                 onclick="openStudentUsageModal(${JSON.stringify(a.userId).replace(/"/g, '&quot;')}, ${JSON.stringify(a.username || '').replace(/"/g, '&quot;')})">
+              <div class="live-alert-icon"><i class="fas ${iconMap[a.type] || 'fa-info-circle'}"></i></div>
+              <div class="live-alert-body">
+                <strong>${escapeHtml(a.fullName || a.username)}</strong>
+                <span>${escapeHtml(a.message)}</span>
+              </div>
+            </div>
+          `).join('')}
+        </div>`;
+    }
+  }
+
+  /* ============================================================
+     COURSE HEATMAP
+     ============================================================ */
+  const heatHost = document.getElementById('liveHeatmap');
+  if (heatHost) {
+    const courses = data.hotCourses || [];
+    if (courses.length === 0) {
+      heatHost.innerHTML = `
+        <div class="live-heatmap-head">
+          <i class="fas fa-temperature-half"></i>
+          <strong>Course Heatmap</strong>
+        </div>
+        <div class="live-empty-small"><p>No course activity right now.</p></div>`;
+    } else {
+      const maxSec = courses[0].totalSeconds || 1;
+      heatHost.innerHTML = `
+        <div class="live-heatmap-head">
+          <i class="fas fa-temperature-half"></i>
+          <strong>Course Heatmap</strong>
+          <span class="live-heatmap-sub">Hot right now</span>
+        </div>
+        <div class="live-heatmap-list">
+          ${courses.map(c => {
+            const pct = Math.round((c.totalSeconds / maxSec) * 100);
+            const heat = pct > 75 ? 'hot' : pct > 40 ? 'warm' : 'cool';
+            return `
+              <div class="live-heatmap-row">
+                <div class="live-heatmap-meta">
+                  <strong>${escapeHtml(c.name)}</strong>
+                  <span>${c.studentCount} student${c.studentCount === 1 ? '' : 's'} · ${Math.floor(c.totalSeconds / 60)}m total</span>
+                </div>
+                <div class="live-heatmap-bar">
+                  <div class="live-heatmap-fill heat-${heat}" style="width:${pct}%"></div>
+                </div>
+              </div>`;
+          }).join('')}
+        </div>`;
+    }
+  }
+
+  /* ============================================================
+     SPARKLINE (last 60 minutes)
+     ============================================================ */
+  const sparkHost = document.getElementById('liveSparkline');
+  if (sparkHost) {
+    const buckets = data.activityBuckets || [];
+    const max = Math.max(1, ...buckets);
+    sparkHost.innerHTML = `
+      <div class="live-spark-head">
+        <i class="fas fa-chart-area"></i>
+        <strong>Activity — Last 60 min</strong>
+        <span class="live-spark-sub">Students active per minute</span>
+      </div>
+      <div class="live-spark">
+        ${buckets.map((v, i) => {
+          const h = Math.round((v / max) * 100);
+          return `<div class="live-spark-bar" style="height:${h}%" title="Minute ${60 - i} ago · ${v} student${v === 1 ? '' : 's'}"></div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  /* ============================================================
+     SORT + FILTER BAR + STUDENT LIST
+     ============================================================ */
+  const controlsHost = document.getElementById('liveControls');
+  if (controlsHost) {
+    controlsHost.innerHTML = `
+      <div class="live-controls-left">
+        <span class="live-controls-count">${students.length} online</span>
+      </div>
+      <div class="live-controls-right">
+        <div class="live-segmented" role="tablist">
+          <button class="live-seg-btn ${_liveFilterMode === 'all' ? 'active' : ''}"
+                  onclick="setLiveFilter('all')">All</button>
+          <button class="live-seg-btn ${_liveFilterMode === 'reading' ? 'active' : ''}"
+                  onclick="setLiveFilter('reading')">Studying</button>
+          <button class="live-seg-btn ${_liveFilterMode === 'quiz' ? 'active' : ''}"
+                  onclick="setLiveFilter('quiz')">In Quiz</button>
+          <button class="live-seg-btn ${_liveFilterMode === 'mobile' ? 'active' : ''}"
+                  onclick="setLiveFilter('mobile')">Mobile</button>
+        </div>
+        <select class="live-sort-select" onchange="setLiveSort(this.value)">
+          <option value="recent"     ${_liveSortMode === 'recent' ? 'selected' : ''}>Most recent</option>
+          <option value="engagement" ${_liveSortMode === 'engagement' ? 'selected' : ''}>Highest engagement</option>
+          <option value="duration"   ${_liveSortMode === 'duration' ? 'selected' : ''}>Longest session</option>
+          <option value="name"       ${_liveSortMode === 'name' ? 'selected' : ''}>Name (A–Z)</option>
+        </select>
+      </div>`;
+  }
+
+  /* Apply filter */
+  let filtered = students.slice();
+  if (_liveFilterMode === 'reading') filtered = filtered.filter(u => u.actionKind === 'reading');
+  if (_liveFilterMode === 'quiz')    filtered = filtered.filter(u => (u.currentPage || '').includes('quiz'));
+  if (_liveFilterMode === 'mobile')  filtered = filtered.filter(u => u.device === 'mobile' || u.device === 'tablet');
+
+  /* Apply sort */
+  filtered.sort((a, b) => {
+    if (_liveSortMode === 'engagement') return (b.engagement || 0) - (a.engagement || 0);
+    if (_liveSortMode === 'duration')   return (b.sessionSeconds || 0) - (a.sessionSeconds || 0);
+    if (_liveSortMode === 'name')       return String(a.fullName || a.username).localeCompare(String(b.fullName || b.username));
+    return b.lastSeen - a.lastSeen;
+  });
+
+  /* Render */
   if (students.length === 0) {
     list.innerHTML = `
       <div class="live-empty">
@@ -14776,24 +14970,27 @@ function renderLiveActivityData(data) {
       </div>`;
     return;
   }
+  if (filtered.length === 0) {
+    list.innerHTML = `
+      <div class="live-empty">
+        <i class="fas fa-filter"></i>
+        <p>No students match this filter.</p>
+        <button class="btn btn-outline btn-sm" style="margin-top:12px;" onclick="setLiveFilter('all')">
+          <i class="fas fa-times"></i> Clear filter
+        </button>
+      </div>`;
+    return;
+  }
 
   const PAGE_LABELS = {
-    'home':                'Home',
-    'courses':             'Browsing courses',
-    'analytics':           'Analytics dashboard',
-    'saved':               'Saved courses',
-    'ai':                  'AI Doubt Solver',
-    'course-detail':       'Studying',
-    'student-home':        'Home',
-    'student-courses':     'Browsing courses',
-    'student-analytics':   'Analytics dashboard',
-    'student-saved':       'Saved courses',
-    'student-ai':          'AI Doubt Solver',
-    'admin-overview':      'Admin · Overview',
-    'admin-courses':       'Admin · Courses',
-    'admin-editor':        'Admin · Editing a course',
-    'admin-students':      'Admin · Students',
-    'admin-live':          'Admin · Live Activity'
+    'home': 'Home', 'courses': 'Browsing courses', 'analytics': 'Analytics',
+    'saved': 'Saved', 'ai': 'AI Doubt Solver', 'course-detail': 'Studying',
+    'student-home': 'Home', 'student-courses': 'Browsing courses',
+    'student-analytics': 'Analytics', 'student-saved': 'Saved',
+    'student-ai': 'AI Doubt Solver',
+    'admin-overview': 'Admin · Overview', 'admin-courses': 'Admin · Courses',
+    'admin-editor': 'Admin · Editing', 'admin-students': 'Admin · Students',
+    'admin-live': 'Admin · Live Activity'
   };
 
   const fmtDuration = (sec) => {
@@ -14805,8 +15002,25 @@ function renderLiveActivityData(data) {
     return h + 'h ' + (m % 60) + 'm';
   };
 
+  const deviceIcon = {
+    mobile:  'fa-mobile-screen',
+    tablet:  'fa-tablet-screen-button',
+    desktop: 'fa-desktop'
+  };
+  const actionIcon = {
+    reading:   'fa-book-open-reader',
+    quiz:      'fa-file-pen',
+    video:     'fa-video',
+    ai:        'fa-robot',
+    browse:    'fa-compass',
+    analytics: 'fa-chart-line',
+    author:    'fa-pen-fancy',
+    admin:     'fa-user-shield',
+    idle:      'fa-mug-hot'
+  };
+
   let html = '';
-  students.forEach(u => {
+  filtered.forEach(u => {
     const initials = String(u.fullName || u.username || '?')
       .split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
 
@@ -14816,44 +15030,88 @@ function renderLiveActivityData(data) {
       secondsAgo < 60 ? secondsAgo + 's ago' :
       Math.round(secondsAgo / 60) + 'm ago';
 
-    const isStudying = !!u.courseId;
     const sessionSec = u.sessionSeconds || 0;
+    const isStudying = u.actionKind === 'reading' || u.actionKind === 'video';
+    const isQuiz = (u.currentPage || '').includes('quiz');
+    const engagement = u.engagement || 0;
+
+    /* Session ring — 60 min = full circle */
+    const ringRadius = 22;
+    const ringCircum = 2 * Math.PI * ringRadius;
+    const ringPct = Math.min(100, (sessionSec / 3600) * 100);
+    const ringDash = (ringPct / 100) * ringCircum;
+
+    /* Engagement badge */
+    const engLevel = engagement >= 70 ? 'hot' : engagement >= 40 ? 'warm' : 'cool';
+    const engLabel = engagement >= 70 ? '🔥 Hot' : engagement >= 40 ? '⚡ Active' : '💤 Idle';
+
+    /* Action kind chip */
+    const aKind = isQuiz ? 'quiz' : u.actionKind;
+    const aIcon = actionIcon[aKind] || 'fa-circle';
 
     let activityHtml = `<span class="live-activity-label">${escapeHtml(PAGE_LABELS[u.currentPage] || u.currentPage)}</span>`;
     if (u.courseName) {
       activityHtml = `<strong>${escapeHtml(u.courseName)}</strong>`;
-      if (u.courseCode) {
-        activityHtml += ` <span class="live-activity-code">· ${escapeHtml(u.courseCode)}</span>`;
-      }
+      if (u.courseCode) activityHtml += ` <span class="live-activity-code">· ${escapeHtml(u.courseCode)}</span>`;
       if (u.materialTitle) {
         activityHtml += `<span class="live-activity-material"><i class="fas fa-book-open"></i> ${escapeHtml(u.materialTitle)}</span>`;
       }
     }
 
-    const timeChip = sessionSec >= 10
-      ? `<span class="live-user-time" title="Session duration">⏱ ${fmtDuration(sessionSec)}</span>`
-      : '';
-
     html += `
-      <div class="live-user-row${isStudying ? ' studying' : ''}"
-           onclick="openStudentUsageModal(${JSON.stringify(u.userId).replace(/"/g, '&quot;')}, ${JSON.stringify(u.username || '').replace(/"/g, '&quot;')})"
-           style="cursor:pointer;">
-        <div class="live-user-avatar">${escapeHtml(initials)}</div>
+      <div class="live-user-row live-user-row-v2${isStudying ? ' studying' : ''}${isQuiz ? ' in-quiz' : ''}"
+           onclick="openStudentUsageModal(${JSON.stringify(u.userId).replace(/"/g, '&quot;')}, ${JSON.stringify(u.username || '').replace(/"/g, '&quot;')})">
+        <div class="live-user-ring">
+          <svg width="54" height="54" viewBox="0 0 54 54">
+            <circle cx="27" cy="27" r="${ringRadius}" fill="none" stroke="rgba(148,163,184,.18)" stroke-width="3"/>
+            <circle cx="27" cy="27" r="${ringRadius}" fill="none"
+                    stroke="url(#ringGrad${u.userId.slice(-6)})" stroke-width="3" stroke-linecap="round"
+                    stroke-dasharray="${ringDash} ${ringCircum}"
+                    transform="rotate(-90 27 27)"/>
+            <defs>
+              <linearGradient id="ringGrad${u.userId.slice(-6)}" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#6366f1"/>
+                <stop offset="100%" stop-color="#06b6d4"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          <div class="live-user-avatar-inner">${escapeHtml(initials)}</div>
+        </div>
         <div class="live-user-info">
           <div class="live-user-name">
             ${escapeHtml(u.fullName || u.username)}
             <span class="live-user-handle">@${escapeHtml(u.username)}</span>
-            ${isStudying ? '<span class="live-user-badge"><i class="fas fa-fire"></i> Studying</span>' : ''}
-            ${timeChip}
+            <span class="live-action-chip kind-${aKind}">
+              <i class="fas ${aIcon}"></i> ${escapeHtml(u.actionLabel || 'Idle')}
+            </span>
+            <span class="live-eng-chip eng-${engLevel}">${engLabel}</span>
+            <span class="live-device-chip" title="${escapeHtml(u.os || '')} · ${escapeHtml(u.browser || '')}">
+              <i class="fas ${deviceIcon[u.device] || 'fa-desktop'}"></i>
+            </span>
           </div>
           <div class="live-user-activity">${activityHtml}</div>
         </div>
-        <div class="live-user-seen" data-last-seen="${u.lastSeen}">${sinceText}</div>
+        <div class="live-user-meta">
+          ${sessionSec >= 10
+            ? `<div class="live-session-time">⏱ ${fmtDuration(sessionSec)}</div>` : ''}
+          <div class="live-user-seen" data-last-seen="${u.lastSeen}">${sinceText}</div>
+        </div>
       </div>`;
   });
   list.innerHTML = html;
 }
 
+/* ------------------------------------------------------------
+   Sort + filter handlers
+   ------------------------------------------------------------ */
+function setLiveFilter(mode) {
+  _liveFilterMode = mode;
+  if (_liveActivityData) renderLiveActivityData(_liveActivityData);
+}
+function setLiveSort(mode) {
+  _liveSortMode = mode;
+  if (_liveActivityData) renderLiveActivityData(_liveActivityData);
+}
 /* ------------------------------------------------------------
    Live "Xs ago" label ticker — installed ONCE (never inside render)
    ------------------------------------------------------------ */

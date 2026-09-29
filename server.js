@@ -8501,23 +8501,96 @@ app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
      client tab-close        → /api/heartbeat/offline
        → immediate flush + delete from Map
    ============================================================ */
-const ONLINE_WINDOW_MS     = 90 * 1000;    // silent > 90 s → offline
-const ONLINE_CLEANUP_MS    = 20 * 1000;    // sweep every 20 s
-const BROADCAST_MIN_MS     = 800;          // SSE coalescing window
+/* ============================================================
+   LIVE ACTIVITY CONFIG
+   ============================================================ */
+const ONLINE_WINDOW_MS     = 90 * 1000;
+const ONLINE_CLEANUP_MS    = 20 * 1000;
+const BROADCAST_MIN_MS     = 800;
 const MAX_SSE_CLIENTS      = 8;
-const HEARTBEAT_MAX_DELTA  = 60;           // seconds — cap per ping
-const FLUSH_EVERY_SEC      = 300;          // flush to DB every 5 min
-const MAX_MAP_KEYS         = 30;           // trim course/material maps
+const HEARTBEAT_MAX_DELTA  = 60;
+const FLUSH_EVERY_SEC      = 300;
+const MAX_MAP_KEYS         = 30;
+const MAX_RECENT_ACTIONS   = 5;   // per online user — for the "recent" trail
 
-const onlineUsers = new Map();   // userId → entry
-const sseClients  = new Set();   // Set<res>
+const onlineUsers = new Map();
+const sseClients  = new Set();
 const sseClientsLock = { locked: false, again: false };
 
 /* ------------------------------------------------------------
-   trimMap — keep the top N keys by value, drop the rest.
-   Called whenever an accumulator grows beyond MAX_MAP_KEYS.
-   Prevents a single user from growing an unbounded object.
+   parseDeviceInfo — lightweight UA parser (no deps)
    ------------------------------------------------------------ */
+function parseDeviceInfo(ua) {
+  const s = String(ua || '').toLowerCase();
+  let device = 'desktop';
+  let os = 'Unknown';
+  let browser = 'Unknown';
+
+  if (/ipad|tablet|playbook|silk/.test(s) || (/android/.test(s) && !/mobile/.test(s))) device = 'tablet';
+  else if (/mobile|iphone|ipod|android.*mobile|windows phone|blackberry/.test(s)) device = 'mobile';
+
+  if (/iphone|ipad|ipod/.test(s)) os = 'iOS';
+  else if (/android/.test(s)) os = 'Android';
+  else if (/windows/.test(s)) os = 'Windows';
+  else if (/macintosh|mac os x/.test(s)) os = 'macOS';
+  else if (/linux/.test(s)) os = 'Linux';
+
+  if (/edg\//.test(s)) browser = 'Edge';
+  else if (/opr\/|opera/.test(s)) browser = 'Opera';
+  else if (/chrome/.test(s) && !/edg\//.test(s)) browser = 'Chrome';
+  else if (/firefox/.test(s)) browser = 'Firefox';
+  else if (/safari/.test(s) && !/chrome/.test(s)) browser = 'Safari';
+
+  return { device, os, browser };
+}
+
+/* ------------------------------------------------------------
+   classifyAction — human-friendly label from (currentPage, material)
+   ------------------------------------------------------------ */
+function classifyAction(entry) {
+  const p = String(entry.currentPage || '').toLowerCase();
+  if (p.includes('quiz-editor'))  return { kind: 'author',   label: 'Editing a quiz' };
+  if (p.includes('admin'))        return { kind: 'admin',    label: 'Admin work' };
+  if (p.includes('analytics'))    return { kind: 'analytics', label: 'Viewing analytics' };
+  if (p.includes('ai'))           return { kind: 'ai',        label: 'Using AI Solver' };
+  if (p.includes('courses') && !entry.courseId) return { kind: 'browse', label: 'Browsing courses' };
+  if (p.includes('saved'))        return { kind: 'browse',    label: 'Checking saved' };
+  if (entry.courseId && entry.materialId) {
+    return { kind: 'reading', label: 'Studying material' };
+  }
+  if (entry.courseId)             return { kind: 'reading',   label: 'In a course' };
+  if (p === 'home' || p.includes('student-home')) return { kind: 'idle', label: 'Home' };
+  return { kind: 'idle', label: 'Idle' };
+}
+
+/* ------------------------------------------------------------
+   computeEngagement — 0-100 heat score from live signals
+   ------------------------------------------------------------ */
+function computeEngagement(entry) {
+  let score = 0;
+  const sessionSec = entry.sessionSeconds || 0;
+  const lastSeenAgo = (Date.now() - (entry.lastSeen || 0)) / 1000;
+
+  // Time on platform (up to 40 points)
+  score += Math.min(40, Math.floor(sessionSec / 60) * 4);
+
+  // Current focus (up to 30 points)
+  if (entry.materialId) score += 30;
+  else if (entry.courseId) score += 20;
+  else if ((entry.currentPage || '').includes('quiz')) score += 25;
+
+  // Recency (up to 20 points)
+  if (lastSeenAgo < 30)      score += 20;
+  else if (lastSeenAgo < 60) score += 12;
+  else if (lastSeenAgo < 90) score += 5;
+
+  // Interaction intensity (up to 10 points)
+  const actionCount = (entry.recentActions || []).length;
+  score += Math.min(10, actionCount * 2);
+
+  return Math.min(100, Math.max(0, score));
+}
+
 function trimMap(obj, maxKeys) {
   const keys = Object.keys(obj);
   if (keys.length <= maxKeys) return obj;
@@ -8528,8 +8601,7 @@ function trimMap(obj, maxKeys) {
 }
 
 /* ------------------------------------------------------------
-   flushOnlineUsage — durable write of accumulated seconds.
-   Only the DELTA since the last successful flush is written.
+   flushOnlineUsage — durable write (unchanged logic)
    ------------------------------------------------------------ */
 async function flushOnlineUsage(entry) {
   if (!entry || !entry.userId) return;
@@ -8538,15 +8610,13 @@ async function flushOnlineUsage(entry) {
   if (totalDelta < 3) return;
 
   const inc = { totalSeconds: totalDelta };
-
-  const courseCur     = entry.courseSeconds   || {};
+  const courseCur = entry.courseSeconds || {};
   const courseFlushed = entry.flushedCourseSeconds || {};
   for (const cid of Object.keys(courseCur)) {
     const d = (courseCur[cid] || 0) - (courseFlushed[cid] || 0);
     if (d > 0) inc[`courses.${cid}`] = d;
   }
-
-  const matCur     = entry.materialSeconds   || {};
+  const matCur = entry.materialSeconds || {};
   const matFlushed = entry.flushedMaterialSeconds || {};
   for (const mid of Object.keys(matCur)) {
     const d = (matCur[mid] || 0) - (matFlushed[mid] || 0);
@@ -8554,27 +8624,18 @@ async function flushOnlineUsage(entry) {
   }
 
   const dateKey = istDateKey();
-
   try {
     await DailyUsage.updateOne(
       { userId: entry.userId, date: dateKey },
       {
         $inc: inc,
-        $set: {
-          username:   entry.username || '',
-          fullName:   entry.fullName || '',
-          lastSeenAt: new Date()
-        },
-        $setOnInsert: {
-          firstSeenAt:  new Date(entry.firstSeen || Date.now()),
-          sessionCount: 1
-        }
+        $set: { username: entry.username || '', fullName: entry.fullName || '', lastSeenAt: new Date() },
+        $setOnInsert: { firstSeenAt: new Date(entry.firstSeen || Date.now()), sessionCount: 1 }
       },
       { upsert: true }
     );
-
-    entry.flushedSeconds         = entry.sessionSeconds || 0;
-    entry.flushedCourseSeconds   = { ...(entry.courseSeconds   || {}) };
+    entry.flushedSeconds = entry.sessionSeconds || 0;
+    entry.flushedCourseSeconds = { ...(entry.courseSeconds || {}) };
     entry.flushedMaterialSeconds = { ...(entry.materialSeconds || {}) };
   } catch (e) {
     console.warn('[usage-flush] failed (will retry):', e.message);
@@ -8582,8 +8643,7 @@ async function flushOnlineUsage(entry) {
 }
 
 /* ------------------------------------------------------------
-   buildOnlineSnapshot — one DB query to resolve course/material
-   names, then a compact JSON payload.
+   buildOnlineSnapshot — enriched payload with all new fields
    ------------------------------------------------------------ */
 async function buildOnlineSnapshot() {
   const now = Date.now();
@@ -8593,41 +8653,30 @@ async function buildOnlineSnapshot() {
   }
   fresh.sort((a, b) => b.lastSeen - a.lastSeen);
 
-  /* Collect ALL course IDs (active + accumulated) in one pass */
   const courseIdSet   = new Set();
   const materialIdSet = new Set();
   for (const u of fresh) {
     if (u.courseId)   courseIdSet.add(String(u.courseId));
     if (u.materialId) materialIdSet.add(String(u.materialId));
-    if (u.courseSeconds) {
-      for (const cid of Object.keys(u.courseSeconds)) courseIdSet.add(cid);
-    }
-    if (u.materialSeconds) {
-      for (const mid of Object.keys(u.materialSeconds)) materialIdSet.add(mid);
-    }
+    if (u.courseSeconds) for (const cid of Object.keys(u.courseSeconds)) courseIdSet.add(cid);
+    if (u.materialSeconds) for (const mid of Object.keys(u.materialSeconds)) materialIdSet.add(mid);
   }
 
   const courseMap   = {};
   const materialMap = {};
-
   if (courseIdSet.size > 0 || materialIdSet.size > 0) {
     const or = [];
     if (courseIdSet.size)   or.push({ _id: { $in: Array.from(courseIdSet) } });
     if (materialIdSet.size) or.push({ 'materials._id': { $in: Array.from(materialIdSet) } });
-
     const courses = await Course.find({ $or: or })
       .select('name code materials._id materials.title')
       .lean();
-
     courses.forEach(c => {
       courseMap[String(c._id)] = { name: c.name, code: c.code || '' };
-      (c.materials || []).forEach(m => {
-        materialMap[String(m._id)] = m.title;
-      });
+      (c.materials || []).forEach(m => { materialMap[String(m._id)] = m.title; });
     });
   }
 
-  /* Local helper — inline topN to keep this self-contained */
   const topN = (obj, n) => {
     if (!obj) return {};
     const entries = Object.entries(obj);
@@ -8638,38 +8687,167 @@ async function buildOnlineSnapshot() {
     return out;
   };
 
-  const users = fresh.map(u => ({
-    userId:        u.userId,
-    username:      u.username,
-    fullName:      u.fullName,
-    role:          u.role,
-    currentPage:   u.currentPage,
-    lastSeen:      u.lastSeen,
-    firstSeen:     u.firstSeen,
-    courseId:      u.courseId,
-    materialId:    u.materialId,
-    courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
-    courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
-    materialTitle: u.materialId && materialMap[u.materialId] ? materialMap[u.materialId]    : null,
-    sessionSeconds: u.sessionSeconds || 0,
-    courseSeconds:  topN(u.courseSeconds, 5)
-  }));
+  /* ---- Build per-user enriched record ---- */
+  const users = fresh.map(u => {
+    const action = classifyAction(u);
+    const engagement = computeEngagement(u);
+    const device = u.device || 'desktop';
+    const sessionSec = u.sessionSeconds || 0;
+
+    return {
+      userId: u.userId,
+      username: u.username,
+      fullName: u.fullName,
+      role: u.role,
+      currentPage: u.currentPage,
+      lastSeen: u.lastSeen,
+      firstSeen: u.firstSeen,
+      courseId: u.courseId,
+      materialId: u.materialId,
+      courseName:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].name  : null,
+      courseCode:    u.courseId   && courseMap[u.courseId]     ? courseMap[u.courseId].code  : null,
+      materialTitle: u.materialId && materialMap[u.materialId] ? materialMap[u.materialId]    : null,
+      sessionSeconds: sessionSec,
+      courseSeconds:  topN(u.courseSeconds, 5),
+      /* ---- NEW enriched fields ---- */
+      device,
+      os: u.os || 'Unknown',
+      browser: u.browser || 'Unknown',
+      actionKind: action.kind,
+      actionLabel: action.label,
+      engagement,
+      recentActions: (u.recentActions || []).slice(-MAX_RECENT_ACTIONS)
+    };
+  });
 
   const students = users.filter(u => u.role === 'student');
+
+  /* ---- Course heatmap: aggregate seconds per course across ALL online students ---- */
+  const courseHeat = {};
+  students.forEach(u => {
+    const cs = u.courseSeconds || {};
+    for (const cid of Object.keys(cs)) {
+      if (!courseHeat[cid]) {
+        courseHeat[cid] = {
+          courseId: cid,
+          name: courseMap[cid]?.name || '(unknown)',
+          code: courseMap[cid]?.code || '',
+          totalSeconds: 0,
+          studentCount: 0
+        };
+      }
+      courseHeat[cid].totalSeconds += cs[cid] || 0;
+    }
+    if (u.courseId) {
+      if (!courseHeat[u.courseId]) {
+        courseHeat[u.courseId] = {
+          courseId: u.courseId,
+          name: u.courseName || '(unknown)',
+          code: u.courseCode || '',
+          totalSeconds: 0,
+          studentCount: 0
+        };
+      }
+      courseHeat[u.courseId].studentCount += 1;
+    }
+  });
+  const hotCourses = Object.values(courseHeat)
+    .sort((a, b) => b.totalSeconds - a.totalSeconds)
+    .slice(0, 6);
+
+  /* ---- Smart alerts ---- */
+  const alerts = [];
+
+  /* (a) Stuck on the same material for >15 min */
+  students.forEach(u => {
+    if (!u.materialId) return;
+    const matSec = (u.materialSeconds || {})[u.materialId] || 0;
+    if (matSec > 15 * 60) {
+      alerts.push({
+        type: 'stuck',
+        severity: 'info',
+        userId: u.userId,
+        username: u.username,
+        fullName: u.fullName,
+        message: `On "${u.materialTitle || 'a material'}" for ${Math.floor(matSec / 60)} min`,
+        courseId: u.courseId,
+        materialId: u.materialId
+      });
+    }
+  });
+
+  /* (b) Idle on home for >5 min */
+  students.forEach(u => {
+    if (u.actionKind === 'idle' && u.sessionSeconds > 5 * 60) {
+      const idleSec = Math.floor((now - u.lastSeen) / 1000);
+      alerts.push({
+        type: 'idle',
+        severity: 'warn',
+        userId: u.userId,
+        username: u.username,
+        fullName: u.fullName,
+        message: `Idle for ${idleSec}s on "${u.actionLabel}"`,
+        courseId: u.courseId
+      });
+    }
+  });
+
+  /* (c) Long focused session >90 min — a heads-up */
+  students.forEach(u => {
+    if (u.materialId && u.sessionSeconds > 90 * 60) {
+      alerts.push({
+        type: 'long-session',
+        severity: 'success',
+        userId: u.userId,
+        username: u.username,
+        fullName: u.fullName,
+        message: `Deep focus for ${Math.floor(u.sessionSeconds / 60)} min`,
+        courseId: u.courseId
+      });
+    }
+  });
+
+  const alertsBySeverity = alerts.sort((a, b) => {
+    const order = { warn: 0, info: 1, success: 2 };
+    return (order[a.severity] ?? 3) - (order[b.severity] ?? 3);
+  }).slice(0, 8);
+
+  /* ---- Activity by hour (last 60 min, 1-min buckets) ---- */
+  const buckets = new Array(60).fill(0);
+  const oneHourAgo = now - 60 * 60 * 1000;
+  for (const u of onlineUsers.values()) {
+    if (u.lastSeen >= oneHourAgo) {
+      const idx = Math.min(59, Math.floor((u.lastSeen - oneHourAgo) / 60000));
+      buckets[idx] += 1;
+    }
+  }
+
+  /* ---- Device breakdown for this live snapshot ---- */
+  const deviceCounts = { desktop: 0, mobile: 0, tablet: 0 };
+  students.forEach(u => {
+    deviceCounts[u.device] = (deviceCounts[u.device] || 0) + 1;
+  });
 
   return {
     success: true,
     counts: {
-      total:    users.length,
+      total: users.length,
       students: students.length,
-      admins:   users.length - students.length,
-      studying: students.filter(u => u.courseId).length
+      admins: users.length - students.length,
+      studying: students.filter(u => u.courseId).length,
+      reading:  students.filter(u => u.actionKind === 'reading').length,
+      watchingVideo: students.filter(u => u.actionKind === 'video').length,
+      inQuiz:   students.filter(u => (u.currentPage || '').includes('quiz')).length,
+      aiUsage:  students.filter(u => u.actionKind === 'ai').length
     },
+    deviceCounts,
     users,
+    hotCourses,
+    alerts: alertsBySeverity,
+    activityBuckets: buckets,
     fetchedAt: now
   };
 }
-
 async function broadcastOnlineNow() {
   if (sseClients.size === 0) return;
   try {
@@ -8754,10 +8932,31 @@ app.post('/api/heartbeat', heartbeatLimiter, (req, res) => {
       courseSeconds:           {},
       materialSeconds:         {},
       flushedCourseSeconds:    {},
-      flushedMaterialSeconds:  {}
+      flushedMaterialSeconds:  {},
+      recentActions:           []
     };
 
     entry.username    = String(b.username    || entry.username    || '').slice(0, 60);
+        /* ---- NEW enrichment ---- */
+    const uaInfo = parseDeviceInfo(req.headers['user-agent'] || '');
+    entry.device  = b.device  || uaInfo.device;
+    entry.os      = b.os      || uaInfo.os;
+    entry.browser = b.browser || uaInfo.browser;
+
+    /* recent actions trail */
+    if (!entry.recentActions) entry.recentActions = [];
+    if (b.lastAction && typeof b.lastAction === 'string') {
+      const last = entry.recentActions[entry.recentActions.length - 1];
+      if (!last || last.label !== b.lastAction) {
+        entry.recentActions.push({
+          label: String(b.lastAction).slice(0, 120),
+          at: Date.now()
+        });
+        if (entry.recentActions.length > MAX_RECENT_ACTIONS) {
+          entry.recentActions = entry.recentActions.slice(-MAX_RECENT_ACTIONS);
+        }
+      }
+    }
     entry.fullName    = String(b.fullName    || entry.fullName    || b.username || '').slice(0, 80);
     entry.role        = String(b.role        || entry.role        || 'student').slice(0, 20);
     entry.currentPage = String(b.currentPage || 'home').slice(0, 40);
