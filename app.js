@@ -3946,7 +3946,7 @@ async function updateAdminPassword() {
    from overwriting a faster later fetch's result, which would
    otherwise leave a stale count on screen.
    ------------------------------------------------------------ */
-let _overviewFetchGeneration = 0;
+var _overviewFetchGeneration = 0;
 
 async function renderAdminOverview() {
   const myGen = ++_overviewFetchGeneration;
