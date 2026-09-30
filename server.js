@@ -4081,7 +4081,9 @@ app.get('/api/courses', async (req, res) => {
                   _id: '$$m._id', title: '$$m.title', type: '$$m.type',
                   description: '$$m.description', url: '$$m.url',
                   fileName: '$$m.fileName', isPremium: '$$m.isPremium',
-                  price: '$$m.price', estimatedTime: '$$m.estimatedTime',
+                  price: '$$m.price',
+                  previewPercent: '$$m.previewPercent',
+                  estimatedTime: '$$m.estimatedTime',
                   tags: '$$m.tags', examConfig: '$$m.examConfig',
                   quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
                 }
@@ -4194,7 +4196,13 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
           diskFileExists,
           hasInlineData:  !!mat.fileData,
           hasFullAccess:  !!access.allowed,
-          previewPercent: access.canPreview ? access.previewPercent : 0
+          previewPercent: access.canPreview ? access.previewPercent : 0,
+          /* ⭐ NEW — lets the client show the correct message and CTA
+             instead of a generic "locked" card. */
+          reason:          access.reason || null,
+          requiresLogin:   !req.authUser,
+          isCoursePremium: !!(course.isPremium === true || course.isPremium === 'true'),
+          isMatPremium:    !!(mat.isPremium    === true || mat.isPremium    === 'true')
         });
       }
 

@@ -492,6 +492,7 @@
       this.courseId       = null;
       this.hasFullAccess  = false;
       this.previewPercent = 0;
+      this.lockReason     = null;
       /* ⭐ Reading-progress state */
       this._resumePage = 1;              // saved page to jump to on open
       this._saveProgressTimer = null;    // debounce handle for saves
@@ -562,6 +563,10 @@
         0,
         Math.min(100, Number(opts.previewPercent) || 0)
       );
+      /* ⭐ NEW — used by the blank paywall card and the CTA
+         handler to show the correct message and route the user
+         to either login or the payment modal. */
+      this.lockReason     = opts.lockReason || null;
 
       this._buildUI();
       this._loadHighlights();
@@ -1208,7 +1213,31 @@
        BLANK PAYWALL — used when previewPercent = 0 (no free pages).
        Called instead of returning an empty white screen.
        ============================================================ */
+        /* ============================================================
+       BLANK PAYWALL — used when previewPercent = 0 AND the user
+       has no full access. Shows a message tailored to the actual
+       reason (login vs purchase) instead of a generic "locked".
+       ============================================================ */
     _renderBlankPaywallCard(totalPages) {
+      const reason = this.lockReason;
+
+      let title    = 'This document is locked';
+      let subtitle = `All <strong>${totalPages}</strong> page${totalPages === 1 ? '' : 's'} require purchase or an active subscription.`;
+      let btnLabel = 'Unlock the full document';
+      let btnIcon  = 'fa-crown';
+
+      if (reason === 'login-required') {
+        title    = 'Sign in to read this document';
+        subtitle = `This is premium content. Log in or create a free account to access it.`;
+        btnLabel = 'Log in to continue';
+        btnIcon  = 'fa-right-to-bracket';
+      } else if (reason === 'course-premium') {
+        title    = 'This course is premium';
+        subtitle = `All <strong>${totalPages}</strong> page${totalPages === 1 ? '' : 's'} of this document, and every other material in this course, are locked behind the course purchase.`;
+        btnLabel = 'Unlock the whole course';
+        btnIcon  = 'fa-crown';
+      }
+
       const card = document.createElement('div');
       card.className = 'pdfv-paywall pdfv-paywall--blank';
       card.innerHTML = `
@@ -1216,12 +1245,10 @@
           <div class="pdfv-paywall-icon">
             <i class="fas fa-lock"></i>
           </div>
-          <h3 class="pdfv-paywall-title">This document is locked</h3>
-          <p class="pdfv-paywall-sub">
-            All <strong>${totalPages}</strong> page${totalPages === 1 ? '' : 's'} require purchase or an active subscription.
-          </p>
+          <h3 class="pdfv-paywall-title">${title}</h3>
+          <p class="pdfv-paywall-sub">${subtitle}</p>
           <button type="button" class="btn btn-accent btn-lg pdfv-paywall-btn">
-            <i class="fas fa-crown"></i> Unlock the full document
+            <i class="fas ${btnIcon}"></i> ${btnLabel}
           </button>
           <p class="pdfv-paywall-note">
             <i class="fas fa-shield-halved"></i>
@@ -1274,21 +1301,46 @@
     /* ============================================================
        PAYWALL — CTA handler. Closes viewer, opens payment modal.
        ============================================================ */
+       /* ============================================================
+       PAYWALL — CTA handler. Routes by reason:
+         • login-required → close + send user to the login screen
+         • everything else → close + open the payment modal
+       ============================================================ */
     _onPaywallClick() {
       const courseId   = this.courseId;
       const materialId = this.materialId;
+      const reason     = this.lockReason;
 
       this.close();
 
+      /* Login-required → route to the login screen. We do NOT
+         attempt to open the payment modal here — there is no
+         authenticated user to attach a payment to. */
+      if (reason === 'login-required') {
+        if (typeof showToast === 'function') {
+          showToast('Please log in to access this content.', 'info');
+        }
+        try {
+          if (location.hash !== '#/home') history.pushState(null, '', '#/home');
+          if (typeof renderApp === 'function') renderApp();
+        } catch (e) {
+          /* never let a routing convenience throw */
+        }
+        return;
+      }
+
+      /* Purchase-required → open the payment modal. */
       if (typeof window.showPaymentModal === 'function' && courseId) {
         setTimeout(() => {
           window.showPaymentModal(courseId, materialId);
         }, 300);
-      } else if (typeof userToast === 'function') {
+        return;
+      }
+
+      if (typeof userToast === 'function') {
         userToast('Payment is unavailable right now.', 'error');
       }
     }
-
     async _renderPage(n) {
       const page = await this.pdfDoc.getPage(n);
 

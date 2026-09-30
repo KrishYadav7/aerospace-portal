@@ -10713,6 +10713,25 @@ function assertMaterialUnlocked(courseId, materialId, opts) {
    Result: first page typically visible in < 1 s on broadband,
    and in < 2 s even on a slow 4G connection for a 20 MB PDF.
    ============================================================ */
+/* ============================================================
+   viewFileOnline — PREMIUM + PREVIEW GATED, STREAMING-FIRST
+   ------------------------------------------------------------
+   v3 — the SERVER is the single source of truth.
+
+   Bug fixed: the old version gated on `getMaterialAccessInfo()`
+   BEFORE fetching `?meta=1`. If the client's cached course list
+   lacked `previewPercent` (which it did — see the /api/courses
+   projection fix), `access.canPreview` was always false, so the
+   viewer either blocked or opened with previewPercent: 0 and
+   showed the blank "locked" card even when the server had a
+   real preview configured.
+
+   Now:
+     ① Fetch `?meta=1` FIRST.
+     ② Let the meta response decide open / block.
+     ③ Use meta's hasFullAccess + previewPercent in the viewer.
+     ④ Fall back to client-side access only if meta is unreachable.
+   ============================================================ */
 async function viewFileOnline(courseId, materialId) {
   const course = findCourse(courseId);
   if (!course) return showToast('Course not found.', 'error');
@@ -10720,46 +10739,65 @@ async function viewFileOnline(courseId, materialId) {
   const mat = (course.materials || []).find(m => m.id === materialId);
   if (!mat) return showToast('Material not found.', 'info');
 
-  /* ① Client-side preview/access gate — zero network cost.
-     We compute this BEFORE the login check, so guests on a
-     previewable material can still open the viewer. */
+  /* Client-side access is only used as a FALLBACK if meta fails. */
   const access = getMaterialAccessInfo(course, mat);
 
-  if (!currentUser && !access.canPreview) {
-    return showToast('Please log in to open this material.', 'error');
-  }
-  if (!access.hasFullAccess && !access.canPreview) {
-    if (access.isCoursePremium) {
-      return showToast('Purchase the course to access this material.', 'error');
-    }
-    return showToast('This content is locked. Purchase it to unlock.', 'error');
-  }
-
-  /* ② Kick off PDF.js load + meta fetch in PARALLEL */
+  /* ① Kick off PDF.js load + meta fetch in PARALLEL */
   const pdfJsPromise = window.loadPDFJS().catch(err => {
     console.warn('[viewFileOnline] PDF.js load failed:', err);
     throw err;
   });
 
   let meta = null;
+  let metaFailed = false;
   try {
     meta = await fetchJSON(
       `${API_BASE}/courses/${courseId}/materials/${materialId}/file?meta=1&_t=${Date.now()}`
     );
   } catch (err) {
-    // Older server without ?meta=1 → fall through to legacy path
     console.warn('[viewFileOnline] meta check failed:', err.message);
+    metaFailed = true;
     meta = null;
   }
 
-  /* If the meta call explicitly refused, surface the reason */
+  /* ② If meta explicitly refused, surface the reason */
   if (meta && meta.success === false) {
+    if (meta.code === 'login-required' || meta.requiresLogin) {
+      return showToast('Please log in to open this material.', 'error');
+    }
     if (meta.code === 'course-premium' || meta.code === 'material-premium') {
       return showToast(meta.message || 'This content is locked.', 'error');
     }
+    return showToast(meta.message || 'Could not open this material.', 'error');
   }
 
-  /* ③ Decide the best source */
+  /* ③ Resolve the final access state.
+     Prefer the server's numbers when available; fall back to the
+     client's local evaluation only if the meta call failed. */
+  const hasFullAccess  = meta
+    ? (meta.hasFullAccess === true)
+    : (access.hasFullAccess === true);
+
+  const previewPercent = meta
+    ? (meta.hasFullAccess ? 0 : (Number(meta.previewPercent) || 0))
+    : (access.hasFullAccess ? 0 : (Number(access.previewPercent) || 0));
+
+  const lockReason = meta ? (meta.reason || null) : null;
+
+  /* ④ If there is genuinely NO access at all (no full + no preview),
+     do NOT open the viewer — show a clear toast instead.
+     This avoids the "opens then immediately shows locked" jank. */
+  if (!hasFullAccess && previewPercent <= 0) {
+    if (!currentUser || (meta && meta.requiresLogin)) {
+      return showToast('Please log in to open this material.', 'error');
+    }
+    if (meta && meta.isCoursePremium) {
+      return showToast('Purchase the course to access this material.', 'error');
+    }
+    return showToast('This content is locked. Purchase it to unlock.', 'error');
+  }
+
+  /* ⑤ Choose the best source (streaming preferred) */
   const serverFileUrl = (meta && meta.fileUrl) ? String(meta.fileUrl).trim() : '';
   const fileName = mat.fileName || (meta && meta.fileName) || '';
   const isPdf = String(fileName).toLowerCase().endsWith('.pdf') ||
@@ -10772,27 +10810,14 @@ async function viewFileOnline(courseId, materialId) {
                         isExternalUrl
                       );
 
-  /* ③a STREAMING PATH — the fast one */
+  /* ⑤a STREAMING PATH — the fast one */
   if (canStream) {
     try { await pdfJsPromise; }
     catch { return showToast('Could not load PDF viewer.', 'error'); }
 
-    // If the server issued a signed URL, use it as-is (no ?auth= needed).
-    // Otherwise fall back to appending ?auth= (legacy path).
     const url = (meta && meta.signedUrl)
       ? serverFileUrl
       : (isDiskUrl ? withAuthToken(serverFileUrl) : serverFileUrl);
-
-    /* ⚡ REMOVED: 2 MB Range prefetch.
-       ------------------------------------------------------------
-       On a campus / corporate proxy every HTTP request goes
-       through an inspection layer that adds 150–400 ms. The
-       prefetch forced the browser to make TWO requests for the
-       same PDF (a Range probe, then the real download), which on
-       campus was strictly worse than one clean request. The viewer
-       now downloads the whole file in a single request — see
-       _buildPdfSource in media-viewer.js — so this prefetch is
-       no longer needed anywhere. */
 
     window.PDFViewer.open({
       url,
@@ -10802,18 +10827,19 @@ async function viewFileOnline(courseId, materialId) {
       username:       currentUser
                         ? (currentUser.fullName || currentUser.username || 'Guest')
                         : 'Guest · ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-      hasFullAccess:  meta ? (meta.hasFullAccess === true) : access.hasFullAccess,
-      previewPercent: meta ? (meta.previewPercent || 0) : access.previewPercent
+      hasFullAccess,
+      previewPercent,
+      lockReason
     });
     return;
   }
 
-  /* ③b Non-PDF but has a public URL → let the viewer decide */
+  /* ⑤b Non-PDF but has a public URL → not previewable */
   if (!isPdf && (isDiskUrl || isExternalUrl)) {
     return showToast('Preview is only available for PDFs.', 'error');
   }
 
-  /* ④ LEGACY BASE64 FALLBACK — only when streaming isn't possible */
+  /* ⑤c LEGACY BASE64 FALLBACK — only when streaming isn't possible */
   try { await pdfJsPromise; }
   catch { return showToast('Could not load PDF viewer.', 'error'); }
 
@@ -10823,7 +10849,9 @@ async function viewFileOnline(courseId, materialId) {
     );
 
     if (check && check.success === false &&
-        (check.code === 'course-premium' || check.code === 'material-premium')) {
+        (check.code === 'course-premium' ||
+         check.code === 'material-premium' ||
+         check.code === 'login-required')) {
       return showToast(check.message || 'This content is locked.', 'error');
     }
 
@@ -10838,7 +10866,8 @@ async function viewFileOnline(courseId, materialId) {
                           ? (currentUser.fullName || currentUser.username || 'Guest')
                           : 'Guest · ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
         hasFullAccess:  check.hasFullAccess === true,
-        previewPercent: check.previewPercent || 0
+        previewPercent: check.previewPercent || 0,
+        lockReason
       };
 
       if (String(fd).startsWith('data:')) {
@@ -10846,16 +10875,14 @@ async function viewFileOnline(courseId, materialId) {
       } else if (/^https?:\/\//i.test(fd) || fd.startsWith('/uploads/')) {
         viewerOpts.url = withAuthToken(fd);
       } else {
-        // Raw base64 string without a data: prefix
         viewerOpts.data = fd;
       }
-      // (No prefetch here — the file is already fully inlined as base64.)
       window.PDFViewer.open(viewerOpts);
       return;
     }
   } catch (e) {
     console.warn('[viewFileOnline] legacy fallback failed:', e.message);
-    if (/locked|premium|subscription|purchase/i.test(e.message || '')) {
+    if (/locked|premium|subscription|purchase|login/i.test(e.message || '')) {
       return showToast(e.message, 'error');
     }
   }
