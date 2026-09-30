@@ -855,6 +855,15 @@ app.get('/app.js',          (req, res) => sendImmutableAsset(res, 'app.js'));
 app.get('/styles.css',      (req, res) => sendImmutableAsset(res, 'styles.css'));
 app.get('/media-viewer.js', (req, res) => sendImmutableAsset(res, 'media-viewer.js'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
+
+/* ⭐ PDF.js — self-hosted so campus / corporate proxies that
+   block third-party CDNs cannot slow or break the PDF reader.
+   Both files are served from the same origin as the app, so the
+   browser reuses the existing TCP socket, avoids a CORS
+   preflight on every request, and — thanks to the immutable
+   1-year cache below — downloads them exactly ONCE per device. */
+app.get('/vendor/pdfjs/pdf.min.js',        (req, res) => sendImmutableAsset(res, 'vendor/pdfjs/pdf.min.js'));
+app.get('/vendor/pdfjs/pdf.worker.min.js', (req, res) => sendImmutableAsset(res, 'vendor/pdfjs/pdf.worker.min.js'));
 /* ---- Logo / PWA icons ---- */
 app.get('/favicon-16.png',       (req, res) => sendCached(res, 'favicon-16.png', 604800));
 app.get('/favicon-32.png',       (req, res) => sendCached(res, 'favicon-32.png', 604800));

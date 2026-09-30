@@ -19,14 +19,16 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 
-  <!-- PDF.js warm-up: start the byte transfer for the library + worker
-       immediately at page load so the first PDF open never has to wait
-       for them. The worker uses as="worker" so the browser fetches it
-       on the worker connection pool (parallel to the main thread). -->
-  <link rel="preload" as="script" crossorigin
-        href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js">
-  <link rel="preload" as="worker" crossorigin
-        href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js">
+  <!-- PDF.js — self-hosted (vendor/pdfjs/). Only the WORKER is
+       preloaded here: it is the file PDF.js actually needs the
+       moment a student opens a PDF, and it is large enough (1.1 MB)
+       that having it already in flight saves ~1 second on the first
+       open. The library itself is NOT preloaded because
+       preloadPDFOnIntent() (app.js) already starts it the moment
+       the user hovers a material card — preloading it here would
+       waste 300 KB on every login page that never opens a PDF. -->
+  <link rel="preload" as="script"
+        href="/vendor/pdfjs/pdf.worker.min.js">
 
 
   <!-- Google Fonts — non-blocking -->
@@ -1686,21 +1688,32 @@
       });
     };
 
-    /* PDF.js — loads when user opens a PDF */
+    /* PDF.js — loads when user opens a PDF (or hovers a card).
+       ------------------------------------------------------------
+       Self-hosted from /vendor/pdfjs/, same origin as the app.
+       On a campus / corporate proxy this is dramatically faster
+       than the CDN because:
+         • No third-party DNS lookup (cdnjs.cloudflare.com is
+           often rate-limited or throttled on campus networks).
+         • No CORS preflight — same-origin requests skip it.
+         • The TCP connection is already warm from the app itself.
+       Both files are served with a 1-year immutable cache, so
+       they are downloaded once per device and reused forever. */
+    const PDFJS_LIB_URL    = '/vendor/pdfjs/pdf.min.js';
+    const PDFJS_WORKER_URL = '/vendor/pdfjs/pdf.worker.min.js';
+
     window.loadPDFJS = function () {
       return new Promise((resolve, reject) => {
         if (window.pdfjsLib) {
           if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
           }
           return resolve();
         }
         const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        s.src = PDFJS_LIB_URL;
         s.onload = () => {
-          window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
           resolve();
         };
         s.onerror = reject;
@@ -1756,8 +1769,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=110" defer></script>
-  <script src="app.js?v=110" defer></script>
+ 	<script src="media-viewer.js?v=111" defer></script>
+  <script src="app.js?v=111" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {

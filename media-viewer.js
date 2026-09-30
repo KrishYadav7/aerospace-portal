@@ -512,8 +512,10 @@
       }
       try {
         if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-          pdfjsLib.GlobalWorkerOptions.workerSrc =
-            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          /* Same-origin worker — see index.html loadPDFJS().
+             Kept here as a defensive fallback in case the viewer
+             is somehow opened before that file has run. */
+          pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js';
         }
       } catch (e) {}
 
