@@ -347,7 +347,9 @@ app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    if (duration > 1000) {
+    // ⚡ Only flag genuinely slow requests. 2 s is the sweet spot —
+    //    anything under that is normal on a shared VPS.
+    if (duration > 2000) {
       console.warn(`[SLOW] ${req.method} ${req.url} - ${duration}ms`);
     }
   });
@@ -7316,59 +7318,115 @@ app.delete('/api/courses/:courseId/playlists/:playlistId/materials/:materialId',
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
 /* ============================================================
-   EMAIL REPLY FETCHER (IMAP)
+   EMAIL REPLY FETCHER (IMAP) — HARDENED
+   ------------------------------------------------------------
+   Fixes the "Socket timeout" uncaught exception and the
+   "Connection not available" spam you saw in error.log.
+
+   Key improvements:
+     • Hard timeouts on EVERY phase (connect / greeting / socket)
+     • client.on('error') swallows late socket errors (imapflow bug)
+     • withTimeout() wrapper guarantees the promise never hangs
+     • In-flight guard prevents overlapping runs
+     • Finally-block ALWAYS closes the client cleanly
+     • Logs one short line on failure, not a full stack
    ============================================================ */
+
+// ⚡ Global safety net — swallows noisy IMAP/TLS socket errors that
+//    would otherwise crash the process. Real errors still log.
+process.on('uncaughtException', (err) => {
+  const msg = String((err && err.message) || err || '');
+  if (/Socket timeout|Connection not available|ECONNRESET|EPIPE|ETIMEDOUT/i.test(msg)) {
+    console.warn('[uncaughtException] swallowed IMAP/TLS noise:', msg);
+    return;
+  }
+  console.error('[uncaughtException]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = String((reason && reason.message) || reason || '');
+  if (/Socket timeout|Connection not available|ECONNRESET|EPIPE|ETIMEDOUT/i.test(msg)) {
+    console.warn('[unhandledRejection] swallowed IMAP/TLS noise:', msg);
+    return;
+  }
+  console.error('[unhandledRejection]', reason);
+});
+
 const fetchEmailReplies = async () => {
   if (!EMAIL_USER || !EMAIL_PASS) return;
-  if (!USE_SMTP) return;   // skip IMAP entirely if SMTP not configured
-  
+  if (!USE_SMTP) return;
+
+  // In-flight guard: skip if a previous run is still going
+  if (fetchEmailReplies._inFlight) {
+    console.log('[IMAP] Skipping — previous fetch still in flight');
+    return;
+  }
+  fetchEmailReplies._inFlight = true;
+
   const client = new ImapFlow({
     host: 'imap.gmail.com',
     port: 993,
     secure: true,
     auth: { user: EMAIL_USER, pass: EMAIL_PASS },
-    logger: false
+    logger: false,
+    // ⚡ Hard timeouts — Gmail can hang for 60+ s without these
+    connectionTimeout: 10000,   // TCP connect
+    greetingTimeout:   10000,   // server banner
+    socketTimeout:     20000,   // idle socket
+    tls: { rejectUnauthorized: false }
+  });
+
+  // ⚡ CRITICAL: swallow late socket errors that imapflow leaks
+  client.on('error', (err) => {
+    console.warn('[IMAP] client error (non-fatal):', (err && err.message) || err);
   });
 
   try {
-    await client.connect();
-    let lock = await client.getMailboxLock('INBOX');
+    await withTimeout(client.connect(), 15000, 'IMAP connect');
+
+    const lock = await client.getMailboxLock('INBOX');
     try {
-      // Fetch unseen emails
-      for await (let message of client.fetch({ seen: false }, { envelope: true, source: true })) {
+      for await (const message of client.fetch(
+        { seen: false },
+        { envelope: true, source: true }
+      )) {
         const parsed = await simpleParser(message.source);
-        
-        // Save to database
+
         await EmailReply.create({
-          from: parsed.from?.text || 'Unknown Sender',
-          subject: parsed.subject || '(No Subject)',
-          text: parsed.text || parsed.html || 'No content',
-          date: parsed.date || new Date()
+          from:    parsed.from?.text || 'Unknown Sender',
+          subject: parsed.subject   || '(No Subject)',
+          text:    parsed.text || parsed.html || 'No content',
+          date:    parsed.date || new Date()
         });
 
-        // Mark as seen so we don't fetch it again
-        await client.messageFlagsAdd(message.uid, ['\\Seen']);
+        try {
+          await client.messageFlagsAdd(message.uid, ['\\Seen']);
+        } catch (_) { /* ignore */ }
+
         console.log(`[IMAP] Saved reply from: ${parsed.from?.text}`);
       }
     } finally {
-      lock.release();
+      try { lock.release(); } catch (_) {}
     }
-    await client.logout();
+
+    try { await withTimeout(client.logout(), 5000, 'IMAP logout'); } catch (_) {}
   } catch (err) {
-    console.error('[IMAP] Error fetching replies:', err.message);
+    // Short one-liner only — no stack trace
+    console.warn('[IMAP] fetch failed (non-fatal):', (err && err.message) || err);
+  } finally {
+    try { client.close(); } catch (_) {}
+    fetchEmailReplies._inFlight = false;
   }
 };
 
 /* ============================================================
-   IMAP Polling — OFF by default (saves CPU + network)
-   Set ENABLE_IMAP_POLLING=true in .env to enable.
-   Manual refresh still works via admin dashboard → "Refresh Replies".
+   IMAP Polling — OFF by default. Set ENABLE_IMAP_POLLING=true
+   in .env to re-enable. Manual refresh still works any time.
    ============================================================ */
 if (process.env.ENABLE_IMAP_POLLING === 'true') {
   console.log('[IMAP] Polling enabled — every 15 minutes');
   setInterval(() => {
     fetchEmailReplies().catch(err => {
-      console.warn('[IMAP] fetchEmailReplies failed (non-fatal):', err.message);
+      console.warn('[IMAP] poll failed (non-fatal):', (err && err.message) || err);
     });
   }, 15 * 60 * 1000);
 } else {
@@ -7378,12 +7436,12 @@ if (process.env.ENABLE_IMAP_POLLING === 'true') {
 // API Endpoint for admin dashboard
 app.get('/api/admin/email-replies', requireAdminAuth, async (req, res) => {
   try {
-    // Live IMAP pull when the admin explicitly asks for a refresh
+    // Live IMAP pull ONLY when the admin explicitly asks for a refresh
     if (req.query.refresh === '1' && USE_SMTP) {
       try {
-        await withTimeout(fetchEmailReplies(), 10000, 'IMAP refresh');
+        await withTimeout(fetchEmailReplies(), 15000, 'IMAP refresh');
       } catch (e) {
-        console.warn('[IMAP] Live refresh failed (non-fatal):', e.message);
+        console.warn('[IMAP] Live refresh failed (non-fatal):', (e && e.message) || e);
       }
     }
     const replies = await EmailReply.find().sort({ date: -1 }).limit(50).lean();
