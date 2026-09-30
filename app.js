@@ -16341,3 +16341,94 @@ async function openStudentUsageModal(userId, username) {
   }
 }
 initApp();
+
+/* ============================================================
+   FULL-WIDTH UX PASS — additive helpers
+   ------------------------------------------------------------
+   Nothing above this line was modified. Everything here is new,
+   self-contained, and defensive: if it fails it only removes a
+   convenience, it can never break the app.
+
+   1. aiHomeUsePrompt() — the wide-screen "Try asking" chips on the
+      AI home pre-fill the composer instead of making the student
+      retype the question.
+   2. Reading-progress bar + back-to-top button — created in JS so
+      no HTML contract changes, and they simply never appear if this
+      block does not run.
+   ============================================================ */
+function aiHomeUsePrompt(btn) {
+  try {
+    const text = (btn && btn.textContent ? btn.textContent : '').replace(/\s+/g, ' ').trim();
+    if (!text) return;
+    /* Reuse the existing composer helper when it is available. */
+    if (typeof suggestAIPrompt === 'function') { suggestAIPrompt(text); return; }
+    const input = document.getElementById('aiHomeInput');
+    if (!input) return;
+    input.value = text;
+    if (typeof aiHomeAutoGrow === 'function') aiHomeAutoGrow(input);
+    input.focus();
+  } catch (_) {
+    /* a convenience chip must never surface an error */
+  }
+}
+
+(function aeroScrollChrome() {
+  if (window.__aeroScrollChromeReady) return;
+  window.__aeroScrollChromeReady = true;
+
+  function mount() {
+    try {
+      if (!document.body) return;
+
+      let bar = document.getElementById('aeroScrollProgress');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'aeroScrollProgress';
+        bar.className = 'aero-scroll-progress';
+        bar.setAttribute('aria-hidden', 'true');
+        document.body.appendChild(bar);
+      }
+
+      let btn = document.getElementById('aeroToTop');
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.id = 'aeroToTop';
+        btn.type = 'button';
+        btn.className = 'aero-to-top';
+        btn.setAttribute('aria-label', 'Back to top');
+        btn.setAttribute('title', 'Back to top');
+        btn.innerHTML = '<i class="fas fa-arrow-up" aria-hidden="true"></i>';
+        btn.addEventListener('click', function () {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+        document.body.appendChild(btn);
+      }
+
+      let raf = 0;
+      function paint() {
+        raf = 0;
+        const doc = document.documentElement;
+        const max = doc.scrollHeight - window.innerHeight;
+        const y = window.scrollY || doc.scrollTop || 0;
+        const pct = max > 40 ? Math.min(100, Math.max(0, (y / max) * 100)) : 0;
+        bar.style.width = pct.toFixed(2) + '%';
+        /* The bar only earns its place once the page actually scrolls. */
+        bar.style.opacity = pct > 0.5 ? '1' : '0';
+        btn.classList.toggle('is-visible', y > 420);
+      }
+      function onScroll() { if (!raf) raf = requestAnimationFrame(paint); }
+
+      window.addEventListener('scroll', onScroll, { passive: true });
+      window.addEventListener('resize', onScroll, { passive: true });
+      paint();
+    } catch (_) {
+      /* purely additive — never break the page */
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mount, { once: true });
+  } else {
+    mount();
+  }
+})();

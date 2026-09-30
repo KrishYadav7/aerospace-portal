@@ -7,13 +7,13 @@
   <meta name="description" content="AeroGyan Education — Your complete hub for engineering excellence. Video lectures, notes, PYQs, tutorials, slides, and an AI doubt solver. Built for IIT Kharagpur students.">
   <link rel="manifest" href="manifest.json">
 
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=107">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=107">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=107">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=107">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=107">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=107">
-  <link rel="shortcut icon" href="/favicon-32.png?v=107">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=108">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=108">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=108">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=108">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=108">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=108">
+  <link rel="shortcut icon" href="/favicon-32.png?v=108">
 
   <title>AeroGyan Education — Your Complete Hub for Engineering Excellence</title>
 
@@ -31,7 +31,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- Same global stylesheet → 100% theme continuity with the app -->
-  <link rel="stylesheet" href="styles.css?v=107">
+  <link rel="stylesheet" href="styles.css?v=108">
 
   <style>
     /* ============================================================
@@ -1969,6 +1969,117 @@
   .landing-install-pill i { font-size: 13px; }
 }
 </style>
+
+<!-- ============================================================
+     FLUID FULL-WIDTH LAYOUT PASS  (append-only override layer)
+     ------------------------------------------------------------
+     This block sits AFTER both style blocks above, so every rule
+     wins on equal specificity. Not one line above was edited or
+     deleted.
+
+     WHAT IT FIXES
+       * the 1240px content cap. Every section and the navbar sat
+         inside `max-width: 1240px; margin: 0 auto`, which is what
+         produced the empty band down each side — 100px at 1440,
+         340px at 1920 and 660px at 2560 wide.
+       * the vertical waste. All 13 sections were `min-height: 100vh`
+         and vertically centred, so the page ran to ~13,500px at
+         1440px wide — roughly 15 screens, most of it empty. Only
+         the hero keeps the full-window moment now; every other
+         section sizes to its content with a fluid rhythm.
+       * finger-thin columns on ultrawide. Past 1600px the card
+         grids raise their track minimums so a wide monitor shows
+         fewer, better-proportioned cards rather than a thin comb.
+     Reading measures (section headings, hero headline, FAQ, CTA)
+     keep their existing caps on purpose — those are typographic
+     limits, not layout gaps.
+     ============================================================ -->
+<style id="lp-fluid-layout">
+  :root {
+    --lp-gutter:    clamp(20px, 2.5vw, 88px); /* page gutter      */
+    --lp-max:       min(2320px, 100%);        /* ultrawide guard  */
+    --lp-section-y: clamp(56px, 5.2vw, 118px);
+  }
+
+  /* --- the navbar aligns with the content column, edge to edge --- */
+  .landing-nav,
+  .landing-nav.scrolled { padding-inline: var(--lp-gutter); }
+  .landing-nav-inner {
+    max-width: var(--lp-max);
+    margin-inline: auto;
+  }
+
+  /* Three-zone navbar: brand left, links optically centred in the
+     window, actions right. Without this the links drift towards the
+     brand once the bar is wider than the old 1240px cap.
+
+     It only switches on from 1280px. That is the measured point at
+     which the two `1fr` side tracks can actually be equal — below
+     it the brand + actions already need nearly all the room, the
+     tracks stop matching, and "optical centring" would push the
+     links OFF centre by 30–110px. Under 1280px the original
+     `space-between` flex row is left exactly as it was. */
+  @media (min-width: 1280px) {
+    .landing-nav-inner {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 20px;
+    }
+    .landing-logo      { justify-self: start; }
+    .landing-links     { justify-self: center; }
+    .landing-nav-right { justify-self: end; }
+  }
+
+  /* --- one fluid content column, no hard cap --- */
+  .landing-container {
+    max-width: var(--lp-max);
+    margin-inline: auto;
+  }
+
+  /* --- sections size to their content again --- */
+  .landing-full {
+    min-height: 0;
+    padding: var(--lp-section-y) var(--lp-gutter);
+  }
+
+  /* --- the hero keeps the full-window moment --- */
+  .landing-hero {
+    min-height: 100vh;
+    min-height: 100svh;
+    padding-block: clamp(112px, 13vh, 180px);
+  }
+
+  /* --- footer spans the window like everything else --- */
+  .landing-footer { padding-inline: var(--lp-gutter); }
+  .landing-footer-inner,
+  .landing-footer-bottom { max-width: var(--lp-max); }
+
+  /* --- blocks that had their own hard caps --- */
+  .lp-apps-grid { max-width: none; }        /* was capped at 1280px */
+  .landing-instructor-card,
+  .landing-reviews-placeholder,
+  .landing-cta-inner { margin-inline: auto; }
+
+  /* --- ultrawide: fewer, better-proportioned columns --- */
+  @media (min-width: 1600px) {
+    .landing-features-grid   { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 26px; }
+    .landing-stats-grid      { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 34px; }
+    .landing-curriculum-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .landing-how-steps       { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .lp-apps-grid            { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  }
+
+  /* The old 900px rule already dropped `min-height: 100vh` on small
+     screens; that is now the behaviour everywhere, so this only has
+     to keep the mobile rhythm in step with the gutters. The hero
+     deliberately keeps `min-height: 100vh` and inherits the section
+     padding, so it never grows past one screen. */
+  @media (max-width: 900px) {
+    .landing-full { padding: clamp(52px, 9vw, 72px) var(--lp-gutter); }
+    .landing-hero { min-height: 100vh; }
+  }
+</style>
 </head>
 <body>
 
@@ -3851,6 +3962,46 @@
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) check();
   });
+})();
+</script>
+
+<!-- Reading-progress bar for the long public page.
+     The landing page already owns a back-to-top FAB (.lp-btt), so
+     this adds ONLY the 3px progress line — no duplicate control.
+     The matching .aero-scroll-progress styles live in styles.css §70.9. -->
+<script>
+(function () {
+  function mount() {
+    try {
+      if (!document.body || document.getElementById('aeroScrollProgress')) return;
+      var bar = document.createElement('div');
+      bar.id = 'aeroScrollProgress';
+      bar.className = 'aero-scroll-progress';
+      bar.setAttribute('aria-hidden', 'true');
+      bar.style.opacity = '0';
+      document.body.appendChild(bar);
+
+      var raf = 0;
+      function paint() {
+        raf = 0;
+        var doc = document.documentElement;
+        var max = doc.scrollHeight - window.innerHeight;
+        var y = window.scrollY || doc.scrollTop || 0;
+        var pct = max > 40 ? Math.min(100, Math.max(0, (y / max) * 100)) : 0;
+        bar.style.width = pct.toFixed(2) + '%';
+        bar.style.opacity = pct > 0.5 ? '1' : '0';
+      }
+      function onScroll() { if (!raf) raf = requestAnimationFrame(paint); }
+      window.addEventListener('scroll', onScroll, { passive: true });
+      window.addEventListener('resize', onScroll, { passive: true });
+      paint();
+    } catch (e) { /* purely additive */ }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mount, { once: true });
+  } else {
+    mount();
+  }
 })();
 </script>
 </body>

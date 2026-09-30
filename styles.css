@@ -11201,3 +11201,437 @@ img, video, svg, canvas, iframe, table, pre { max-width: 100%; }
     max-width: none;
   }
 }
+
+/* ============================================================
+   70. FULL-WIDTH LAYOUT SYSTEM  (v2)
+   ------------------------------------------------------------
+   WHY THIS EXISTS
+   ---------------
+   The shell used to be `#app { max-width: 1280px; margin: 0 auto }`,
+   so on a 1440 / 1920 / 2560 monitor the app showed 80 / 320 / 640
+   pixels of dead gutter on each side. A naive "just make everything
+   100% wide" pass fixes the gutters but destroys readability: a lone
+   card, a form, or the AI chat panel becomes an unreadable slab.
+
+   So this pass separates three ideas that were previously conflated:
+
+     * THE SHELL is genuinely edge-to-edge. The header, the page
+       canvas and the footer always cover the full window, with one
+       shared fluid inset so they stay perfectly aligned.
+
+     * STRUCTURE (card grids, tables, dashboards) is fluid and grows
+       with the window. Grids add COLUMNS instead of stretching
+       individual cards, so a wide screen shows more content rather
+       than emptier content.
+
+     * PROSE AND TOOLS (running text, a single panel, the chat
+       column) keep a readable cap and are centred on the canvas.
+
+   Every rule below is ADDITIVE. Nothing above line 11204 is deleted,
+   no markup contract is changed, and no JavaScript is required for
+   any of it. The two optional JS helpers (scroll chrome) are guarded
+   and degrade to nothing if they never run.
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   70.1  ONE PLACE FOR THE WHOLE WIDTH SYSTEM
+   ------------------------------------------------------------ */
+:root {
+  /* Page gutter — grows with the viewport, never smaller than 16px */
+  --shell-pad:   clamp(16px, 2.1vw, 64px);
+
+  /* The content column. This is the single number that decides how
+     much of the window the app actually uses. 2048px means every
+     screen up to ~2170px wide is used edge-to-edge with nothing but
+     the gutter, and only a true ultrawide sees margins. The previous
+     value was 1280px, which is where the dead side bands came from. */
+  --content-max: min(2048px, 100%);
+
+  /* Percentage padding resolves against the PARENT inline size, so
+     every direct child of #app computes an IDENTICAL inset and the
+     header, the content column and the footer line up pixel-perfect
+     at every width. */
+  --shell-inset: max(var(--shell-pad), calc((100% - var(--content-max)) / 2));
+
+  /* Running prose measure. */
+  --read-max:    82ch;
+
+  /* Systematic vertical rhythm + one separator colour. */
+  --section-y:   clamp(22px, 2.4vw, 38px);
+  --rule:        1px solid var(--border-subtle);
+
+  /* Systematic elevation scale (cards already use the shadows). */
+  --elev-1: var(--shadow-xs);
+  --elev-2: var(--shadow-sm);
+  --elev-3: var(--shadow-md);
+}
+
+/* Anchor jumps must not land under the sticky header. */
+html { scroll-padding-top: 88px; }
+
+/* ------------------------------------------------------------
+   70.2  EDGE-TO-EDGE SHELL + LAYERED SURFACES
+   The shell keeps `--bg-surface` as its base colour (so nothing
+   that sits on it loses contrast) and gains the same soft brand
+   wash the page already uses, which turns the former dead side
+   band into a designed canvas.
+   ------------------------------------------------------------ */
+#app {
+  max-width: 100%;
+  margin: 0;
+  border-left: 0;
+  border-right: 0;
+  box-shadow: none;
+  background:
+    radial-gradient(1400px 620px at 8% -12%, var(--bg-page-accent-1), transparent 62%),
+    radial-gradient(1150px 520px at 100% 0%,  var(--bg-page-accent-2), transparent 62%),
+    var(--bg-surface);
+  background-repeat: no-repeat;
+}
+
+/* ------------------------------------------------------------
+   70.3  ONE FLUID INSET FOR HEADER / CONTENT / FOOTER
+
+   Below 1025px the app was ALREADY edge-to-edge (see §64.2) and
+   its phone/tablet paddings are hand-tuned, so this block is
+   scoped to desktop and up: on a phone or a tablet nothing here
+   changes a single pixel.
+
+   Above 1024px the header, the content column and the footer are
+   given the SAME inset, which is what makes the brand line up
+   exactly with the cards instead of drifting 20px to its left.
+
+   Note: the header's own rule is declared `!important` at two
+   places further up the file (a previous fix that must keep
+   working), so the inline inset has to match that weight to be
+   able to align it.
+   ------------------------------------------------------------ */
+@media (min-width: 1025px) {
+  #appHeader,
+  .main-content,
+  .app-footer {
+    padding-inline: var(--shell-inset);
+  }
+  #appHeader { padding-inline: var(--shell-inset) !important; }
+
+  /* The content column only needs its vertical rhythm now. */
+  .main-content {
+    padding-block:
+      clamp(20px, 2.2vw, 34px)
+      clamp(36px, 3.6vw, 66px);
+  }
+}
+
+/* The footer keeps its own colours and vertical padding. */
+.app-footer { width: 100%; }
+
+/* The old "floating card" look is gone at every width. */
+@media (max-width: 1024px) {
+  #app { max-width: 100%; }
+}
+
+/* ------------------------------------------------------------
+   70.4  STRUCTURE FILLS THE WINDOW
+   The grids all use `auto-fill` with a sensible track minimum, so
+   they add COLUMNS as the window grows instead of stretching the
+   cards. They need no cap of their own any more: the shared
+   `--shell-inset` above already bounds them, and the 1680px
+   tuning in §70.11 keeps the column count sane on an ultrawide.
+   ------------------------------------------------------------ */
+.stats-grid,
+.quick-actions-grid,
+.live-stats-row { width: 100%; }
+
+/* ------------------------------------------------------------
+   70.5  PROSE STAYS READABLE
+   Body copy keeps a measure so a wide card does not go left-heavy.
+   ------------------------------------------------------------ */
+.section-card > p,
+.editor-section > p,
+.empty-state > p,
+.ai-home-title-block > p,
+.checkout-note {
+  max-width: var(--read-max);
+}
+
+/* ------------------------------------------------------------
+   70.6  THE AI CONSOLE
+   The hero and the chat panel span the whole content column (so on
+   a laptop the console uses the entire window). Past 1400px only
+   the CONVERSATION is given a measure — the panel stays wide, the
+   answer text stays readable. This is the same pattern every chat
+   product uses, and it keeps `auto-fill` suggestion chips from
+   turning into a comb.
+   ------------------------------------------------------------ */
+@media (min-width: 1400px) {
+  .ai-chat-messages { padding-inline: clamp(26px, 4vw, 64px); }
+  .ai-msg,
+  .ai-welcome { max-width: 1120px; margin-inline: auto; }
+  .ai-welcome { max-width: 1120px; }
+}
+
+/* ------------------------------------------------------------
+   70.7  SYSTEMATIC SECTION HEADERS
+   Every "section title" pattern in the app now shares one hairline
+   separator, so long pages scan as a clear outline.
+   ------------------------------------------------------------ */
+.section-card > h2,
+.section-card > .section-header-row,
+.tab-toolbar,
+.dash-header {
+  padding-bottom: 14px;
+  border-bottom: var(--rule);
+}
+.section-card > .section-header-row > h2 {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.section-card > h2 { margin-bottom: 20px; }
+.tab-toolbar,
+.dash-header     { margin-bottom: 20px; }
+
+/* ------------------------------------------------------------
+   70.8  WIDE-SCREEN HERO LAYOUTS
+   The student hero and the AI hero are full-width banners. Below
+   1200px they are exactly what they were; from 1200px up they
+   become a balanced multi-column banner so the banner fills its
+   own width instead of leaving a hole in the middle.
+   ------------------------------------------------------------ */
+
+/* The extra column only exists on wide screens. */
+.hero-side,
+.ai-home-side { display: none; }
+
+@media (min-width: 1200px) {
+  /* --- Student home hero: copy | chips | rocket ---
+     Explicit placement because the markup order is
+     content, image, side (the side block is appended last so
+     that below 1200px it is simply `display:none`). */
+  .hero-section {
+    display: grid;
+    grid-template-columns: minmax(320px, 620px) minmax(0, max-content) auto;
+    align-items: center;
+    justify-content: space-between;
+    column-gap: clamp(24px, 3vw, 72px);
+  }
+  .hero-content { grid-column: 1; grid-row: 1; max-width: 620px; }
+  .hero-side    { grid-column: 2; grid-row: 1; display: block; }
+  .hero-image   { grid-column: 3; grid-row: 1; width: 180px; height: 180px; font-size: 80px; }
+
+  /* --- AI home hero: brand | example prompts --- */
+  .ai-home-hero {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 0.9fr);
+    align-items: center;
+    column-gap: clamp(24px, 3.2vw, 80px);
+  }
+  .ai-home-side { display: block; }
+}
+
+.hero-side-title,
+.ai-home-side-title {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 800;
+  letter-spacing: 1.1px; text-transform: uppercase;
+  color: rgba(255,255,255,.62);
+  margin-bottom: 14px;
+}
+
+.hero-chips {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  max-width: 520px;
+}
+.hero-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 600;
+  padding: 9px 15px; border-radius: 999px;
+  color: rgba(255,255,255,.92);
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.16);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  white-space: nowrap;
+  transition: background .2s var(--ease), border-color .2s var(--ease), transform .2s var(--ease);
+}
+.hero-chip i { font-size: 12px; color: var(--gold-300); }
+.hero-chip:hover {
+  background: rgba(255,255,255,.15);
+  border-color: rgba(255,255,255,.3);
+  transform: translateY(-2px);
+}
+
+/* Example prompts: real buttons that pre-fill the composer. */
+.ai-prompt-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+.ai-prompt-chip {
+  display: flex; align-items: flex-start; gap: 10px;
+  text-align: left;
+  font: inherit; font-size: 12.75px; font-weight: 500;
+  line-height: 1.45;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  color: rgba(255,255,255,.9);
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.14);
+  cursor: pointer;
+  transition: background .2s var(--ease), border-color .2s var(--ease), transform .2s var(--ease);
+}
+.ai-prompt-chip i { color: var(--accent-300); margin-top: 2px; flex-shrink: 0; }
+.ai-prompt-chip:hover {
+  background: rgba(255,255,255,.14);
+  border-color: rgba(99,102,241,.55);
+  transform: translateY(-2px);
+}
+.ai-prompt-chip:focus-visible { outline: 2px solid var(--brand-300); outline-offset: 2px; }
+
+/* ------------------------------------------------------------
+   70.9  SCROLL CHROME — reading progress + back-to-top
+   Both nodes are created by JS and are purely additive.
+   ------------------------------------------------------------ */
+.aero-scroll-progress {
+  position: fixed;
+  top: 0; left: 0;
+  width: 0;
+  height: 3px;
+  z-index: 3000;
+  pointer-events: none;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(90deg, var(--brand-500), var(--accent-500), var(--emerald-500));
+  box-shadow: 0 0 12px rgba(99,102,241,.5);
+  transition: width .08s linear;
+}
+
+.aero-to-top {
+  position: fixed;
+  right: clamp(14px, 2vw, 30px);
+  bottom: clamp(14px, 2vw, 30px);
+  width: 46px;                    /* 44px+ touch target */
+  height: 46px;
+  min-width: 46px;
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 15px;
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  z-index: 1400;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(12px) scale(.92);
+  transition: opacity .25s var(--ease),
+              transform .3s var(--ease-spring),
+              visibility .25s,
+              background .2s var(--ease),
+              border-color .2s var(--ease),
+              color .2s var(--ease);
+}
+.aero-to-top.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+}
+.aero-to-top:hover {
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-600), var(--brand-500));
+  border-color: var(--brand-500);
+  transform: translateY(-3px) scale(1);
+}
+.aero-to-top:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 3px; }
+
+/* Keep the button clear of the mobile bottom navigation bar. */
+@media (max-width: 640px) {
+  .aero-to-top {
+    bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Stand down while a full-screen experience owns the viewport —
+   the exact guard the mobile bottom nav already uses. */
+body:has(.quiz-exam-shell[aria-hidden="false"]) .aero-to-top,
+body:has(.video-player-modal.active) .aero-to-top,
+body:has(.pdf-viewer-modal.active) .aero-to-top,
+body:has(.modal-overlay.active) .aero-to-top {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+body:has(.quiz-exam-shell[aria-hidden="false"]) .aero-scroll-progress,
+body:has(.video-player-modal.active) .aero-scroll-progress,
+body:has(.pdf-viewer-modal.active) .aero-scroll-progress {
+  opacity: 0;
+}
+
+/* ------------------------------------------------------------
+   70.10  SURFACE POLISH — selection + scrollbars
+   ------------------------------------------------------------ */
+::selection {
+  background: rgba(99,102,241,.26);
+  color: var(--text-primary);
+}
+[data-theme="dark"] ::selection,
+[data-theme="dim"]  ::selection {
+  background: rgba(129,140,248,.34);
+  color: #fff;
+}
+
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-500);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ------------------------------------------------------------
+   70.11  ULTRAWIDE TUNING
+   Past ~1680px the browser would otherwise keep adding skinny
+   columns. Bumping the track minimums produces fewer, better
+   proportioned cards that still fill the window.
+   ------------------------------------------------------------ */
+@media (min-width: 1680px) {
+  :root {
+    --card-min-course: 340px;
+    --card-min-professor: 290px;
+    --card-min-testimonial: 300px;
+    --card-min-student: 320px;
+    --gap-grid: 24px;
+  }
+  .ai-home-hero { padding: 52px 52px; }
+  .hero-section { padding: 56px 60px; }
+  .section-card { padding: 34px 40px; }
+}
+
+/* ------------------------------------------------------------
+   70.12  SAFETY
+   ------------------------------------------------------------ */
+@media print {
+  .aero-scroll-progress,
+  .aero-to-top { display: none !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aero-scroll-progress { transition: none; }
+  .aero-to-top { transition: opacity .01ms linear, visibility .01ms linear; }
+  .aero-to-top:hover { transform: none; }
+  .hero-chip:hover,
+  .ai-prompt-chip:hover { transform: none; }
+}

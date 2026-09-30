@@ -6,13 +6,13 @@
   <meta name="theme-color" content="#0b1226">
 <link rel="manifest" href="manifest.json">
   <!-- Logo / Favicon -->
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=107">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=107">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=107">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=107">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=107">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=107">
-  <link rel="shortcut icon" href="/favicon-32.png?v=107">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=108">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=108">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=108">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=108">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=108">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=108">
+  <link rel="shortcut icon" href="/favicon-32.png?v=108">
   <title>AeroGyan Education – Course Portal</title>
 
   <!-- Critical preconnects (only 3 — extra ones waste time) -->
@@ -42,7 +42,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=107">
+  <link rel="stylesheet" href="styles.css?v=108">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -245,6 +245,28 @@
               <p>Ask anything about your aerospace courses — get step-by-step solutions, clear explanations, and real-world context in seconds.</p>
             </div>
           </div>
+
+          <!-- Wide-screen only (CSS reveals it from 1200px up).
+               Each chip pre-fills the composer via aiHomeUsePrompt(),
+               so the extra width carries real functionality instead
+               of being decoration. -->
+          <div class="ai-home-side">
+            <span class="ai-home-side-title"><i class="fas fa-lightbulb"></i> Try asking</span>
+            <div class="ai-prompt-list">
+              <button type="button" class="ai-prompt-chip" onclick="aiHomeUsePrompt(this)">
+                <i class="fas fa-wind"></i> What does the Reynolds number physically mean?
+              </button>
+              <button type="button" class="ai-prompt-chip" onclick="aiHomeUsePrompt(this)">
+                <i class="fas fa-fire"></i> Compare a ramjet and a scramjet engine
+              </button>
+              <button type="button" class="ai-prompt-chip" onclick="aiHomeUsePrompt(this)">
+                <i class="fas fa-circle-nodes"></i> Potential flow past a cylinder, step by step
+              </button>
+              <button type="button" class="ai-prompt-chip" onclick="aiHomeUsePrompt(this)">
+                <i class="fas fa-compass-drafting"></i> Static vs dynamic stability in aircraft
+              </button>
+            </div>
+          </div>
         </div>
 
         <div class="ai-chat-shell">
@@ -293,6 +315,21 @@
             </a>
           </div>
           <div class="hero-image"><i class="fas fa-rocket"></i></div>
+
+          <!-- Wide-screen only (CSS reveals it from 1200px up).
+               Purely presentational: no id, no JS contract, and it
+               stays hidden on every narrower viewport, so the mobile
+               and tablet hero is byte-for-byte the same as before. -->
+          <div class="hero-side">
+            <span class="hero-side-title"><i class="fas fa-layer-group"></i> What&rsquo;s inside</span>
+            <div class="hero-chips">
+              <span class="hero-chip"><i class="fas fa-video"></i> Video Lectures</span>
+              <span class="hero-chip"><i class="fas fa-file-lines"></i> Lecture Notes</span>
+              <span class="hero-chip"><i class="fas fa-file-pdf"></i> PYQs</span>
+              <span class="hero-chip"><i class="fas fa-pen-ruler"></i> Tutorials</span>
+              <span class="hero-chip"><i class="fas fa-chalkboard"></i> Slides</span>
+            </div>
+          </div>
         </div>
 
       <!-- LOCATE AND REPLACE THE "ABOUT THE FOUNDER" SECTION IN index.html -->
@@ -1719,8 +1756,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=107" defer></script>
-  <script src="app.js?v=107" defer></script>
+ 	<script src="media-viewer.js?v=108" defer></script>
+  <script src="app.js?v=108" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
@@ -1728,7 +1765,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=107', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=108', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 
