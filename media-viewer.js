@@ -685,10 +685,25 @@
            the main thread and blocked PDF.js from rendering.
        ============================================================ */
     async _buildPdfSource(url) {
-      const SIZE_THRESHOLD = 80 * 1024 * 1024;   // 80 MB
-      const RANGE_CHUNK    = 4 * 1024 * 1024;    // 4 MB
+      /* ------------------------------------------------------------
+         Two-tier strategy.
 
-      /* Single GET — no HEAD probe. */
+         TIER 1 — Range streaming (default for anything over ~1.5 MB).
+           PDF.js issues "Range: bytes=N-M" requests and renders
+           page 1 as soon as the first chunk arrives. On a campus
+           proxy this is the difference between "wait 40 seconds for
+           the download bar" and "page 1 appears in 3 seconds".
+
+         TIER 2 — Single-shot buffered download (tiny files only).
+           Below ~1.5 MB, buffering in one request is genuinely
+           faster because PDF.js doesn't have to open a second
+           connection for the range chunks.
+         ------------------------------------------------------------ */
+
+      const SMALL_PDF_THRESHOLD = 1.5 * 1024 * 1024;   // 1.5 MB
+      const RANGE_CHUNK         = 2 * 1024 * 1024;     // 2 MB
+
+      /* Single GET — no HEAD probe (an extra round trip we don't need). */
       let res;
       try {
         res = await fetch(url, {
@@ -707,18 +722,25 @@
       }
 
       const len = parseInt(res.headers.get('content-length') || '0', 10);
+      const acceptsRanges = (res.headers.get('accept-ranges') || '')
+                              .toLowerCase()
+                              .includes('bytes');
 
-      /* Huge PDF → hand the URL to PDF.js and let it stream with
-         big chunks. Cancel the buffered request we just started. */
-      if (len > SIZE_THRESHOLD) {
+      /* TIER 1 — range streaming path.
+         A missing Content-Length (some proxies strip it) is NOT a
+         reason to skip streaming — Range still works, we just can't
+         show a percentage in the loader. */
+      if (acceptsRanges && (len === 0 || len > SMALL_PDF_THRESHOLD)) {
         try { if (res.body && res.body.cancel) res.body.cancel(); } catch (_) {}
         console.log(
-          `[PDFViewer] Large file (${(len / 1048576).toFixed(1)} MB) — streaming with 4 MB chunks`
+          '[PDFViewer] Streaming ' +
+          (len ? (len / 1048576).toFixed(1) + ' MB' : '(unknown size)') +
+          ' with ' + (RANGE_CHUNK / 1048576) + ' MB chunks'
         );
         return { url, rangeChunkSize: RANGE_CHUNK };
       }
 
-      /* Single-shot download — one request, whole file in RAM. */
+      /* TIER 2 — small file, buffer in one shot. */
       if (res.body && typeof res.body.getReader === 'function') {
         const reader  = res.body.getReader();
         const chunks  = [];
@@ -731,17 +753,17 @@
           chunks.push(value);
           received += value.length;
 
-          /* ⭐ Throttle the UI update to 4× / second max.
-             Without this, a 5 MB download triggers ~150 layout
-             passes and locks the main thread for the duration of
-             the transfer — which is exactly what makes the viewer
-             feel "frozen" on a slow campus link. */
+          /* Throttle the UI update to 4× / second max — the old
+             version ran this on every ~32 KB chunk and starved the
+             main thread. */
           const now = Date.now();
           if (now - lastTick > 250) {
             lastTick = now;
             const label = len > 0
-              ? `Downloading document… ${Math.min(100, Math.round((received / len) * 100))}%`
-              : `Downloading document… ${(received / 1048576).toFixed(1)} MB`;
+              ? 'Downloading document… ' +
+                Math.min(100, Math.round((received / len) * 100)) + '%'
+              : 'Downloading document… ' +
+                (received / 1048576).toFixed(1) + ' MB';
             this._setLoaderText(label);
           }
         }
@@ -751,17 +773,17 @@
         for (const c of chunks) { merged.set(c, off); off += c.length; }
 
         console.log(
-          `[PDFViewer] Single-shot download complete ` +
-          `(${(received / 1048576).toFixed(2)} MB, 1 request)`
+          '[PDFViewer] Buffered small PDF (' +
+          (received / 1048576).toFixed(2) + ' MB)'
         );
         return { data: merged };
       }
 
-      /* Streams unavailable → one big buffer. Still one request. */
+      /* Last resort — one big buffer. */
       const buf = await res.arrayBuffer();
       console.log(
-        `[PDFViewer] Single-shot download complete ` +
-        `(${(buf.byteLength / 1048576).toFixed(2)} MB, buffered)`
+        '[PDFViewer] Buffered PDF (' +
+        (buf.byteLength / 1048576).toFixed(2) + ' MB)'
       );
       return { data: new Uint8Array(buf) };
     }

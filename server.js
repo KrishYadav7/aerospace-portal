@@ -2347,6 +2347,10 @@ async function serveUploadFile(filename, req, res) {
        to answer Range requests with 206 Partial Content instead of
        stripping the header through the accel path. */
     res.setHeader('Accept-Ranges', 'bytes');
+    /* ⭐ Advertise the byte count too — Nginx preserves whatever
+       Content-Length Node sets here, and PDF.js refuses to start
+       progressive rendering without it. */
+    res.setHeader('Content-Length', String(stat.size));
     if (MIME_MAP[ext]) {
       res.setHeader('Content-Type', MIME_MAP[ext]);
     }
@@ -2367,25 +2371,33 @@ async function serveUploadFile(filename, req, res) {
 
   res.setHeader('ETag', etag);
   res.setHeader('Last-Modified', stat.mtime.toUTCString());
-  res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
-  /* ⭐ Force Content-Length on media files.
-     Some campus / corporate proxy chains strip a Content-Length
-     header that is set only at the last hop. When that happens the
-     client can't tell the file size up-front and falls back into
-     PDF.js range-request streaming — dozens of tiny requests over
-     a high-latency proxy. Setting it here, immediately before
-     res.sendFile() re-affirms the value, guarantees the header is
-     on the wire. */
-  if (isMedia) {
-    res.setHeader('Content-Length', String(stat.size));
-  }
+  /* ⭐ ADVERTISE RANGE SUPPORT EXPLICITLY — on EVERY file, not
+     just media. PDF.js only starts progressive rendering when the
+     server's first response carries Accept-Ranges: bytes. Without
+     this header on the initial HEAD/GET probe, PDF.js falls back
+     to "download the whole file, then render", which is what made
+     PDFs take 20–60 s on the campus network. */
+  res.setHeader('Accept-Ranges', 'bytes');
 
+  /* ⭐ CONTENT-LENGTH — set on every file, not just media. Some
+     proxy chains (Hostinger, some campus NATs) strip a
+     Content-Length that is only set at the final hop. Without it,
+     the browser can't compute valid byte ranges and falls back to
+     a single full GET, defeating streaming entirely. */
+  res.setHeader('Content-Length', String(stat.size));
+
+  /* ⭐ CACHE-CONTROL — "immutable" tells the browser "this exact
+     URL will never change content". Combined with the 30-day
+     max-age this means the SECOND time a student opens the same
+     PDF, the browser serves it from disk with zero network I/O.
+     Upload filenames are timestamp + random, so a given URL can
+     genuinely never point at different bytes. */
   res.setHeader(
     'Cache-Control',
     isMedia
-      ? 'private, max-age=2592000, immutable'   /* 30 days — PDFs never change */
+      ? 'private, max-age=2592000, immutable'
       : 'private, max-age=3600'
   );
 
