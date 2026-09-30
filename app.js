@@ -10742,11 +10742,30 @@ async function viewFileOnline(courseId, materialId) {
   /* Client-side access is only used as a FALLBACK if meta fails. */
   const access = getMaterialAccessInfo(course, mat);
 
-  /* ① Kick off PDF.js load + meta fetch in PARALLEL */
+  /* ① Kick off PDF.js load + meta fetch in PARALLEL.
+     We ALSO warm the /uploads/ connection with a tiny HEAD so the
+     campus proxy has already negotiated the TCP + TLS handshake
+     by the time the real GET fires. Fire-and-forget — never blocks. */
   const pdfJsPromise = window.loadPDFJS().catch(err => {
     console.warn('[viewFileOnline] PDF.js load failed:', err);
     throw err;
   });
+
+  /* ⭐ Non-blocking warm-up of the uploads route. */
+  try {
+    const warmUrl = (mat.url && String(mat.url).startsWith('/uploads/'))
+      ? String(mat.url)
+      : null;
+    if (warmUrl) {
+      fetch(warmUrl, {
+        method: 'HEAD',
+        credentials: 'same-origin',
+        cache: 'default',
+        priority: 'low',
+        keepalive: true
+      }).catch(() => {});
+    }
+  } catch (_) { /* purely an optimisation — never break the flow */ }
 
   let meta = null;
   let metaFailed = false;
@@ -10815,9 +10834,22 @@ async function viewFileOnline(courseId, materialId) {
     try { await pdfJsPromise; }
     catch { return showToast('Could not load PDF viewer.', 'error'); }
 
+    /* ⭐ For preview-only users, request the TRUNCATED preview PDF
+       (already generated server-side at upload time). It contains
+       only the free pages, so it is 5–10× smaller than the full
+       document — a major win on a slow campus link. */
+    let effectiveUrl = serverFileUrl;
+    if (!hasFullAccess && previewPercent > 0 && isDiskUrl) {
+      // Swap the filename for its `.preview` sibling, keeping query.
+      const [pathPart, queryPart] = effectiveUrl.split('?');
+      if (!pathPart.endsWith('.preview')) {
+        effectiveUrl = pathPart + '.preview' + (queryPart ? '?' + queryPart : '');
+      }
+    }
+
     const url = (meta && meta.signedUrl)
-      ? serverFileUrl
-      : (isDiskUrl ? withAuthToken(serverFileUrl) : serverFileUrl);
+      ? effectiveUrl
+      : (isDiskUrl ? withAuthToken(effectiveUrl) : effectiveUrl);
 
     window.PDFViewer.open({
       url,

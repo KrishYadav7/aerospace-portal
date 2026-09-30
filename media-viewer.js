@@ -662,118 +662,109 @@
          4. If the single-shot GET itself fails, fall back to the
             old streaming path as a last resort.
        ============================================================ */
+       /* ============================================================
+       Smart PDF source loader — v3 (campus-network optimised)
+       ------------------------------------------------------------
+       KEY CHANGES vs v2:
+
+         • HEAD probe REMOVED. Every HEAD costs a full round trip
+           (~150-400 ms on a campus proxy) before the download
+           even begins. We now go straight for the GET and read
+           Content-Length from the response headers.
+
+         • Bigger range chunk (4 MB instead of 1 MB) for the
+           fallback streaming path. Halves the number of Range
+           requests on huge PDFs.
+
+         • `priority: 'high'` on the fetch tells Chrome/Edge/Safari
+           to schedule it sooner, ahead of background prefetches.
+
+         • Loader text updates THROTTLED to 4× per second. The
+           old version ran `_setLoaderText()` on every ~32 KB
+           chunk — 150+ DOM writes for a 5 MB PDF — which starved
+           the main thread and blocked PDF.js from rendering.
+       ============================================================ */
     async _buildPdfSource(url) {
-      /* Anything under this gets downloaded in one request. Raised
-         from 25 MB → 60 MB because on a proxy-latent network a
-         single 60 MB transfer is dramatically faster than the ~940
-         small range requests PDF.js would otherwise fire. */
-      const SIZE_THRESHOLD = 60 * 1024 * 1024;
+      const SIZE_THRESHOLD = 80 * 1024 * 1024;   // 80 MB
+      const RANGE_CHUNK    = 4 * 1024 * 1024;    // 4 MB
 
-      const fetchOpts = {
-        credentials: 'same-origin',
-        cache: 'default'
-      };
-
-      /* ---- 1. Best-effort HEAD probe ------------------------------
-         A HEAD failure is NOT a reason to abandon the single-shot
-         path — it just means we don't know the size up front. The
-         GET below will still succeed on any sane proxy. */
-      let knownSize = 0;
+      /* Single GET — no HEAD probe. */
+      let res;
       try {
-        /* ⭐ Hard 3-second cap. Campus and corporate proxies sometimes
-           stall on HEAD requests (they treat them as suspicious), and
-           without a timeout the viewer sat idle for 30+ seconds
-           BEFORE the single-shot download even began.
-
-           3 s is the sweet spot: on a healthy network HEAD returns in
-           under 200 ms, so this never fires; on a broken proxy we
-           fail fast and fall straight through to the single-shot
-           download path below. */
-        const headCtrl  = new AbortController();
-        const headTimer = setTimeout(() => headCtrl.abort(), 3000);
-        const headRes = await fetch(url, {
-          ...fetchOpts,
-          method: 'HEAD',
-          signal: headCtrl.signal
+        res = await fetch(url, {
+          credentials: 'same-origin',
+          cache: 'default',
+          priority: 'high'
         });
-        clearTimeout(headTimer);
-        if (headRes.ok) {
-          const h = headRes.headers.get('content-length');
-          if (h) knownSize = parseInt(h, 10) || 0;
-        }
       } catch (e) {
-        console.warn('[PDFViewer] HEAD probe failed or timed out — continuing with single-shot:', e.message);
+        console.warn('[PDFViewer] fetch failed, streaming fallback:', e.message);
+        return { url, rangeChunkSize: RANGE_CHUNK };
       }
 
-      /* ---- 2. Only genuinely huge PDFs stream --------------------- */
-      if (knownSize > SIZE_THRESHOLD) {
+      if (!res.ok) {
+        console.warn('[PDFViewer] HTTP', res.status, '— streaming fallback');
+        return { url, rangeChunkSize: RANGE_CHUNK };
+      }
+
+      const len = parseInt(res.headers.get('content-length') || '0', 10);
+
+      /* Huge PDF → hand the URL to PDF.js and let it stream with
+         big chunks. Cancel the buffered request we just started. */
+      if (len > SIZE_THRESHOLD) {
+        try { if (res.body && res.body.cancel) res.body.cancel(); } catch (_) {}
         console.log(
-          `[PDFViewer] Large file (${(knownSize / 1048576).toFixed(1)} MB) — streaming with 1 MB chunks`
+          `[PDFViewer] Large file (${(len / 1048576).toFixed(1)} MB) — streaming with 4 MB chunks`
         );
-        return {
-          url,
-          rangeChunkSize: 1024 * 1024,   // 16× the PDF.js default (64 KB)
-          disableAutoFetch: false,
-          disableStream: false,
-          withCredentials: false
-        };
+        return { url, rangeChunkSize: RANGE_CHUNK };
       }
 
-      /* ---- 3. SINGLE-SHOT DOWNLOAD — the fast path --------------- */
-      try {
-        const res = await fetch(url, fetchOpts);
-        if (!res.ok) throw new Error('GET returned ' + res.status);
+      /* Single-shot download — one request, whole file in RAM. */
+      if (res.body && typeof res.body.getReader === 'function') {
+        const reader  = res.body.getReader();
+        const chunks  = [];
+        let received  = 0;
+        let lastTick  = 0;
 
-        const totalLen = parseInt(res.headers.get('content-length') || '0', 10);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
 
-        /* Streaming reader → live progress %, then hand the whole
-           buffer to PDF.js. After this the viewer makes NO HTTP
-           requests at all — every page comes straight from RAM. */
-        if (res.body && typeof res.body.getReader === 'function') {
-          const reader = res.body.getReader();
-          const chunks = [];
-          let received = 0;
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            chunks.push(value);
-            received += value.length;
-
-            const label = totalLen > 0
-              ? `Downloading document… ${Math.min(100, Math.round((received / totalLen) * 100))}%`
+          /* ⭐ Throttle the UI update to 4× / second max.
+             Without this, a 5 MB download triggers ~150 layout
+             passes and locks the main thread for the duration of
+             the transfer — which is exactly what makes the viewer
+             feel "frozen" on a slow campus link. */
+          const now = Date.now();
+          if (now - lastTick > 250) {
+            lastTick = now;
+            const label = len > 0
+              ? `Downloading document… ${Math.min(100, Math.round((received / len) * 100))}%`
               : `Downloading document… ${(received / 1048576).toFixed(1)} MB`;
             this._setLoaderText(label);
           }
-
-          const merged = new Uint8Array(received);
-          let offset = 0;
-          for (const c of chunks) { merged.set(c, offset); offset += c.length; }
-
-          console.log(
-            `[PDFViewer] Single-shot download complete ` +
-            `(${(received / 1048576).toFixed(2)} MB, 1 request)`
-          );
-          return { data: merged };
         }
 
-        /* Streams unavailable → one big buffer. Still one request. */
-        const buf = await res.arrayBuffer();
+        const merged = new Uint8Array(received);
+        let off = 0;
+        for (const c of chunks) { merged.set(c, off); off += c.length; }
+
         console.log(
           `[PDFViewer] Single-shot download complete ` +
-          `(${(buf.byteLength / 1048576).toFixed(2)} MB, buffered)`
+          `(${(received / 1048576).toFixed(2)} MB, 1 request)`
         );
-        return { data: new Uint8Array(buf) };
-      } catch (e) {
-        /* ---- 4. Last resort — hand the URL to PDF.js and stream --- */
-        console.warn('[PDFViewer] Single-shot failed, falling back to streaming:', e.message);
-        return {
-          url,
-          rangeChunkSize: 1024 * 1024
-        };
+        return { data: merged };
       }
+
+      /* Streams unavailable → one big buffer. Still one request. */
+      const buf = await res.arrayBuffer();
+      console.log(
+        `[PDFViewer] Single-shot download complete ` +
+        `(${(buf.byteLength / 1048576).toFixed(2)} MB, buffered)`
+      );
+      return { data: new Uint8Array(buf) };
     }
-   
     _buildUI() {
       const old = document.getElementById('pdfViewerModal');
       if (old) old.remove();

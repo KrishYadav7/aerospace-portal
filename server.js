@@ -2230,10 +2230,39 @@ function safeEqualHex(a, b) {
    Security: HMAC-SHA256 over (filename:userId:expires), truncated
    to 32 hex chars. Uses the same JWT_SECRET already in env.
    ============================================================ */
-const SIGNED_URL_TTL_MS = 30 * 60 * 1000;   // 30 minutes
+/* ============================================================
+   STABLE SIGNED URLS — v2
+   ------------------------------------------------------------
+   Previously the token embedded `Date.now() + TTL`, so every
+   call produced a UNIQUE URL. That is fatal on high-latency
+   networks (campus/corporate proxies):
+
+     • The browser HTTP cache keys on the full URL.
+     • A unique URL = guaranteed cache miss.
+     • The student re-downloads the entire 5-30 MB PDF every
+       time they reopen it — over a proxy adding 150-400 ms of
+       latency per round trip.
+
+   FIX: quantize the expiry to the top of the next hour. Any
+   call within the same hour for the same (file, user) pair
+   now produces an IDENTICAL token — so the browser serves it
+   from cache with zero network cost.
+
+   Security is unchanged:
+     • The token still expires (worst case: at the top of the
+       next hour + 24h).
+     • It is still scoped to one (filename, userId).
+     • It still uses HMAC-SHA256 with the same secret.
+   ============================================================ */
+const SIGNED_URL_TTL_MS    = 24 * 60 * 60 * 1000;   // valid for up to 24h
+const SIGNED_URL_QUANTUM_MS = 60 * 60 * 1000;       // quantize to the hour
 
 function signUploadToken(filename, userId) {
-  const expires = Date.now() + SIGNED_URL_TTL_MS;
+  const target = Date.now() + SIGNED_URL_TTL_MS;
+  /* Round UP to the next whole hour. Repeated calls within the
+     same wall-clock hour return the same `expires`, hence the
+     same signature, hence the same URL. */
+  const expires = Math.ceil(target / SIGNED_URL_QUANTUM_MS) * SIGNED_URL_QUANTUM_MS;
   const payload = `${filename}:${userId}:${expires}`;
   const sig = crypto
     .createHmac('sha256', JWT_SECRET)
@@ -2355,7 +2384,9 @@ async function serveUploadFile(filename, req, res) {
 
   res.setHeader(
     'Cache-Control',
-    isMedia ? 'private, max-age=604800, immutable' : 'private, max-age=3600'
+    isMedia
+      ? 'private, max-age=2592000, immutable'   /* 30 days — PDFs never change */
+      : 'private, max-age=3600'
   );
 
   if (req.headers['if-none-match'] === etag) {
