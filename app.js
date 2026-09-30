@@ -10762,12 +10762,16 @@ async function viewFileOnline(courseId, materialId) {
       ? serverFileUrl
       : (isDiskUrl ? withAuthToken(serverFileUrl) : serverFileUrl);
 
-    /* ⚡ Prefetch the first 2 MB into the browser cache so PDF.js's
-       very first range request hits disk instead of waiting for the
-       network. Saves 300–800 ms on cold opens. Fire-and-forget. */
-    try {
-      fetch(url, { headers: { 'Range': 'bytes=0-1048575' } }).catch(() => {});
-    } catch (e) {}
+    /* ⚡ REMOVED: 2 MB Range prefetch.
+       ------------------------------------------------------------
+       On a campus / corporate proxy every HTTP request goes
+       through an inspection layer that adds 150–400 ms. The
+       prefetch forced the browser to make TWO requests for the
+       same PDF (a Range probe, then the real download), which on
+       campus was strictly worse than one clean request. The viewer
+       now downloads the whole file in a single request — see
+       _buildPdfSource in media-viewer.js — so this prefetch is
+       no longer needed anywhere. */
 
     window.PDFViewer.open({
       url,

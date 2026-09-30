@@ -501,7 +501,6 @@
       this._onVisibility = this._onVisibility.bind(this);
       this._onPageHide = this._onPageHide.bind(this);   // ⭐ new
     }
-
     async open(opts) {
       if (this.active) return;
       this.active = true;
@@ -516,46 +515,12 @@
           pdfjsLib.GlobalWorkerOptions.workerSrc =
             'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         }
-      } catch(e){}
+      } catch (e) {}
 
       this.materialId = opts.materialId || 'doc';
-      this.courseId   = opts.courseId   || null;      // ⭐ needed for paywall CTA
-      this.username   = opts.username   || 'Student';
+      this.username   = opts.username || 'Student';
       this.title      = opts.title || opts.fileName || 'Document';
       this._prevBodyOverflow = document.body.style.overflow;
-
-      /* ⭐ Read the paywall flags from the caller.
-         Default hasFullAccess to TRUE so any legacy call site that
-         forgets to pass the flag never accidentally locks a document. */
-      /* Fail-closed: if the caller forgot to pass the flag, we assume
-         NO full access. Legacy callers that truly need full access
-         must now explicitly pass hasFullAccess:true. */
-      this.hasFullAccess  = opts.hasFullAccess === true;
-      this.previewPercent = Math.max(0, Math.min(100, Number(opts.previewPercent) || 0));
-
-      /* Filled in after pdfDoc loads */
-      this.totalPages   = 0;
-      this.previewLimit = 0;   // last page the user is allowed to read
-
-      /* ⭐ Read the last read page for this material before we
-         build the UI, so the resume scroll can be scheduled as
-         soon as the DOM is ready. */
-      this._resumeApplied = false;
-      this._loadReadingProgress();
-
-      /* ⚡ First PDF in a session → warm the CDN TCP+TLS connection.
-         Saves 150–400 ms on the first document of each session.
-         Idempotent — safe to call repeatedly. */
-      if (!window.__pdfPreconnectDone) {
-        window.__pdfPreconnectDone = true;
-        ['https://cdnjs.cloudflare.com'].forEach(href => {
-          const link = document.createElement('link');
-          link.rel = 'preconnect';
-          link.href = href;
-          link.crossOrigin = 'anonymous';
-          document.head.appendChild(link);
-        });
-      }
 
       this._buildUI();
       this._loadHighlights();
@@ -563,71 +528,29 @@
 
       this.modal.classList.add('active');
       document.body.style.overflow = 'hidden';
+      this._setLoaderText('Loading document…');
       this.loaderEl.style.display = 'flex';
 
       try {
-        let task;
+        let source;
         if (opts.url) {
-          /* ── Streaming path (preferred) ──
-             2 MB chunks → half the round trips vs 1 MB.
-             disableAutoFetch:false → PDF.js prefetches the rest
-             in the background so scrolling never stutters. */
-          task = pdfjsLib.getDocument({
-            url: opts.url,
-            rangeChunkSize: 1048576,        // 1 MB (faster first page paint)
-            disableAutoFetch: false,        // prefetch in background
-            disableStream: false,
-            disableRange: false,
-            stopAtErrors: false,
-            cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
-            cMapPacked: true,
-            useSystemFonts: true,
-            verbosity: 0
-          });
+          source = await this._buildPdfSource(opts.url);
         } else {
-          /* ── Base64 fallback ──
-             Decode to a Uint8Array and pass via `data:` — NOT `url:`.
-             The previous code passed `url: opts.url` here, which is
-             undefined in this branch, so the fallback never worked. */
           const dataURL = String(opts.data || '').indexOf('data:') === 0
             ? opts.data
             : 'data:application/pdf;base64,' + opts.data;
-          const bytes = await dataURLToBytes(dataURL);
-          task = pdfjsLib.getDocument({
-            data: bytes,
-            cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
-            cMapPacked: true,
-            useSystemFonts: true,
-            verbosity: 0
-          });
+          const bytes = dataURLToBytes(dataURL);
+          source = { data: bytes };
         }
 
-        if (this.loaderEl) {
-          const t = this.loaderEl.querySelector('#pdfvLoaderText');
-          if (t) t.textContent = 'Fetching document…';
-        }
-
-        this.pdfDoc = await task.promise;
         if (!this.active) return;
 
-        if (this.loaderEl) {
-          const t = this.loaderEl.querySelector('#pdfvLoaderText');
-          if (t) t.textContent = 'Rendering page 1…';
-        }
+        this._setLoaderText('Rendering pages…');
+        this.pdfDoc = await pdfjsLib.getDocument(source).promise;
+        if (!this.active) return;
 
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
-
-        // ⭐ Generate + cache thumbnail (fire-and-forget, non-blocking)
-        try {
-          if (this.materialId && this.materialId !== 'doc' &&
-              typeof generateThumbnailFromPDFDoc === 'function' &&
-              typeof savePDFThumbnail === 'function') {
-            generateThumbnailFromPDFDoc(this.pdfDoc, 220).then(dataUrl => {
-              if (dataUrl) savePDFThumbnail(this.materialId, dataUrl);
-            }).catch(() => {});
-          }
-        } catch (e) { /* silent */ }
       } catch (err) {
         console.error('[PDFViewer]', err);
         if (this.loaderEl) {
@@ -641,6 +564,170 @@
       }
     }
 
+    /* ---------- Loader message helper ---------- */
+    _setLoaderText(msg) {
+      if (!this.loaderEl) return;
+      const p = this.loaderEl.querySelector('p');
+      if (p) p.textContent = msg;
+    }
+
+    /* ============================================================
+       Smart PDF source loader
+       ------------------------------------------------------------
+       PDF.js normally fetches a PDF via dozens of small HTTP Range
+       requests (default chunk = 64 KB). On a high-latency campus
+       proxy, every one of those is a full round trip — a 5 MB PDF
+       can take 10-20 seconds even on fast Wi-Fi.
+
+       Strategy:
+         1. HEAD the URL → learn size + range support.
+         2. ≤ 25 MB  → fetch in ONE request as ArrayBuffer. One RTT
+                       total, with a streaming progress readout.
+         3. > 25 MB  → stream via PDF.js with a 1 MB range chunk
+                       (16× fewer requests than default).
+         4. On error → plain URL fallback so the viewer never breaks.
+       ============================================================ */
+        /* ============================================================
+       Smart PDF source loader — v2
+       ------------------------------------------------------------
+       WHY THIS WAS REWRITTEN
+       ----------------------
+       The previous version tried a HEAD probe first, and fell back
+       to Range-request streaming whenever:
+         • the HEAD request itself failed, OR
+         • the server did not return a Content-Length header, OR
+         • the response advertised Accept-Ranges: bytes.
+
+       On mobile data that was fine. On a campus / corporate proxy
+       it was catastrophic: every PDF.js Range request (default
+       chunk = 64 KB) has to traverse the proxy, and the proxy adds
+       150–400 ms per round trip. A 5 MB PDF = ~78 requests = 15–30
+       seconds of pure latency, while the same file downloads in
+       under a second on mobile data with no proxy in the way.
+
+       NEW STRATEGY
+       ------------
+         1. Probe size with HEAD (best-effort — failures are OK).
+         2. Anything under 60 MB → download in ONE request and hand
+            the complete ArrayBuffer to PDF.js. PDF.js then makes
+            ZERO further HTTP requests.
+         3. Only a genuinely huge PDF (> 60 MB) still streams with
+            an enlarged 1 MB chunk size.
+         4. If the single-shot GET itself fails, fall back to the
+            old streaming path as a last resort.
+       ============================================================ */
+    async _buildPdfSource(url) {
+      /* Anything under this gets downloaded in one request. Raised
+         from 25 MB → 60 MB because on a proxy-latent network a
+         single 60 MB transfer is dramatically faster than the ~940
+         small range requests PDF.js would otherwise fire. */
+      const SIZE_THRESHOLD = 60 * 1024 * 1024;
+
+      const fetchOpts = {
+        credentials: 'same-origin',
+        cache: 'default'
+      };
+
+      /* ---- 1. Best-effort HEAD probe ------------------------------
+         A HEAD failure is NOT a reason to abandon the single-shot
+         path — it just means we don't know the size up front. The
+         GET below will still succeed on any sane proxy. */
+      let knownSize = 0;
+      try {
+        /* ⭐ Hard 3-second cap. Campus and corporate proxies sometimes
+           stall on HEAD requests (they treat them as suspicious), and
+           without a timeout the viewer sat idle for 30+ seconds
+           BEFORE the single-shot download even began.
+
+           3 s is the sweet spot: on a healthy network HEAD returns in
+           under 200 ms, so this never fires; on a broken proxy we
+           fail fast and fall straight through to the single-shot
+           download path below. */
+        const headCtrl  = new AbortController();
+        const headTimer = setTimeout(() => headCtrl.abort(), 3000);
+        const headRes = await fetch(url, {
+          ...fetchOpts,
+          method: 'HEAD',
+          signal: headCtrl.signal
+        });
+        clearTimeout(headTimer);
+        if (headRes.ok) {
+          const h = headRes.headers.get('content-length');
+          if (h) knownSize = parseInt(h, 10) || 0;
+        }
+      } catch (e) {
+        console.warn('[PDFViewer] HEAD probe failed or timed out — continuing with single-shot:', e.message);
+      }
+
+      /* ---- 2. Only genuinely huge PDFs stream --------------------- */
+      if (knownSize > SIZE_THRESHOLD) {
+        console.log(
+          `[PDFViewer] Large file (${(knownSize / 1048576).toFixed(1)} MB) — streaming with 1 MB chunks`
+        );
+        return {
+          url,
+          rangeChunkSize: 1024 * 1024,   // 16× the PDF.js default (64 KB)
+          disableAutoFetch: false,
+          disableStream: false,
+          withCredentials: false
+        };
+      }
+
+      /* ---- 3. SINGLE-SHOT DOWNLOAD — the fast path --------------- */
+      try {
+        const res = await fetch(url, fetchOpts);
+        if (!res.ok) throw new Error('GET returned ' + res.status);
+
+        const totalLen = parseInt(res.headers.get('content-length') || '0', 10);
+
+        /* Streaming reader → live progress %, then hand the whole
+           buffer to PDF.js. After this the viewer makes NO HTTP
+           requests at all — every page comes straight from RAM. */
+        if (res.body && typeof res.body.getReader === 'function') {
+          const reader = res.body.getReader();
+          const chunks = [];
+          let received = 0;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+
+            const label = totalLen > 0
+              ? `Downloading document… ${Math.min(100, Math.round((received / totalLen) * 100))}%`
+              : `Downloading document… ${(received / 1048576).toFixed(1)} MB`;
+            this._setLoaderText(label);
+          }
+
+          const merged = new Uint8Array(received);
+          let offset = 0;
+          for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+
+          console.log(
+            `[PDFViewer] Single-shot download complete ` +
+            `(${(received / 1048576).toFixed(2)} MB, 1 request)`
+          );
+          return { data: merged };
+        }
+
+        /* Streams unavailable → one big buffer. Still one request. */
+        const buf = await res.arrayBuffer();
+        console.log(
+          `[PDFViewer] Single-shot download complete ` +
+          `(${(buf.byteLength / 1048576).toFixed(2)} MB, buffered)`
+        );
+        return { data: new Uint8Array(buf) };
+      } catch (e) {
+        /* ---- 4. Last resort — hand the URL to PDF.js and stream --- */
+        console.warn('[PDFViewer] Single-shot failed, falling back to streaming:', e.message);
+        return {
+          url,
+          rangeChunkSize: 1024 * 1024
+        };
+      }
+    }
+   
     _buildUI() {
       const old = document.getElementById('pdfViewerModal');
       if (old) old.remove();

@@ -45,6 +45,34 @@ const UPLOAD_DIR = process.env.UPLOAD_DIR
   ? path.resolve(process.env.UPLOAD_DIR)
   : path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+/* ---------- Explicit MIME map for /uploads/ responses ---------- */
+const MIME_BY_EXT = {
+  '.pdf':  'application/pdf',
+  '.doc':  'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.ppt':  'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xls':  'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.txt':  'text/plain; charset=utf-8',
+  '.zip':  'application/zip',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png':  'image/png',
+  '.webp': 'image/webp',
+  '.gif':  'image/gif',
+  '.mp4':  'video/mp4',
+  '.webm': 'video/webm',
+  '.mov':  'video/quicktime',
+  '.mp3':  'audio/mpeg',
+  '.wav':  'audio/wav',
+  '.ogg':  'audio/ogg'
+};
+function mimeForFile(filename) {
+  const ext = path.extname(filename || '').toLowerCase();
+  return MIME_BY_EXT[ext] || 'application/octet-stream';
+}
 /* ============================================================
    PREVIEW PDF GENERATOR
    ------------------------------------------------------------
@@ -2277,6 +2305,10 @@ async function serveUploadFile(filename, req, res) {
      ============================================================ */
   if (process.env.USE_NGINX_ACCEL === 'true') {
     res.setHeader('X-Accel-Redirect', '/protected-uploads/' + filename);
+    /* ⭐ Advertise range support explicitly so Nginx is guaranteed
+       to answer Range requests with 206 Partial Content instead of
+       stripping the header through the accel path. */
+    res.setHeader('Accept-Ranges', 'bytes');
     if (MIME_MAP[ext]) {
       res.setHeader('Content-Type', MIME_MAP[ext]);
     }
@@ -2299,6 +2331,19 @@ async function serveUploadFile(filename, req, res) {
   res.setHeader('Last-Modified', stat.mtime.toUTCString());
   res.setHeader('Accept-Ranges', 'bytes');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  /* ⭐ Force Content-Length on media files.
+     Some campus / corporate proxy chains strip a Content-Length
+     header that is set only at the last hop. When that happens the
+     client can't tell the file size up-front and falls back into
+     PDF.js range-request streaming — dozens of tiny requests over
+     a high-latency proxy. Setting it here, immediately before
+     res.sendFile() re-affirms the value, guarantees the header is
+     on the wire. */
+  if (isMedia) {
+    res.setHeader('Content-Length', String(stat.size));
+  }
+
   res.setHeader(
     'Cache-Control',
     isMedia ? 'private, max-age=604800, immutable' : 'private, max-age=3600'
