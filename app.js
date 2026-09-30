@@ -889,20 +889,15 @@ let _coursePagination = { page: 1, hasMore: false, total: 0 };
 async function fetchCoursesFromDB(force = false, page = 1) {
   const isAdmin = currentUser && currentUser.role === 'admin';
 
+  // Fast path: fresh cache + first page + no admin force-refresh
   if (!force && !isAdmin && page === 1 && liveCourses.length > 0
       && (Date.now() - _courseCacheAt) < COURSE_CACHE_MS) {
     renderApp();
     return;
   }
 
-  // ⭐ Generation guard — bumped ONLY on the first page of a fresh
-  //    chain. Any page-1 call racing against an existing chain will
-  //    invalidate that older chain so it stops writing state.
-  let myGeneration = _coursesFetchGeneration;
   if (page === 1) {
-    myGeneration = ++_coursesFetchGeneration;
-    _startCoursesLoading();
-
+    _coursesLoading = true;
     if (currentUser) {
       const isAdminUser = String(currentUser.role || '').toLowerCase() === 'admin';
       if (isAdminUser && adminTab === 'courses') {
@@ -915,52 +910,62 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     }
   }
 
-  let pageFailed = false;
+  const normalize = (course) => ({
+    ...course,
+    id: course._id,
+    materials: (course.materials || []).map(m => ({ ...m, id: m._id })),
+    playlists: course.playlists || []
+  });
 
   try {
     const PER_PAGE = 80;
-    const data = await fetchJSON(
-      `${API_BASE}/courses?limit=${PER_PAGE}&page=${page}&_t=${Date.now()}`
-    );
 
-    // ⭐ Stale-response bail-out. If a newer chain started while we
-    //    were awaiting the network, drop this response completely —
-    //    do NOT overwrite liveCourses, do NOT touch pagination.
-    if (myGeneration !== _coursesFetchGeneration) {
-      console.log(
-        `[courses] stale response (gen ${myGeneration} ≠ ${_coursesFetchGeneration}) — dropped`
-      );
-      return;
-    }
+    // ⚡ NO _t= cache-buster on normal fetches → browser HTTP cache
+    //    + server in-memory cache both work. Force-refresh (admin
+    //    button, after mutations) still bypasses everything.
+    const baseUrl = `${API_BASE}/courses?limit=${PER_PAGE}&page=${page}`;
+    const url     = force ? `${baseUrl}&_t=${Date.now()}` : baseUrl;
+    const opts    = force ? { cache: 'no-store' } : {};
 
-    const list = Array.isArray(data) ? data : (data.courses || []);
+    const data = await fetchJSON(url, opts);
+
+    const list       = Array.isArray(data) ? data : (data.courses || []);
     const pagination = data.pagination || { page, hasMore: false, total: list.length };
 
-    const normalized = list.map(course => ({
-      ...course,
-      id: course._id,
-      materials: (course.materials || []).map(m => ({ ...m, id: m._id })),
-      playlists: course.playlists || []
-    }));
-
     if (page === 1) {
-      liveCourses = normalized;
+      liveCourses = list.map(normalize);
     } else {
-      liveCourses = [...liveCourses, ...normalized];
+      liveCourses = [...liveCourses, ...list.map(normalize)];
     }
 
     _coursePagination = pagination;
     _courseCacheAt = Date.now();
 
-    console.log(
-      `[courses] page ${page}: fetched ${list.length}, total ${pagination.total}, hasMore=${pagination.hasMore}`
-    );
+    // ⚡ PARALLEL page fetch — replaces the sequential recursion.
+    //    Only runs when there are actually more pages to load.
+    if (page === 1 && pagination.hasMore && pagination.totalPages > 1) {
+      const lastPage = Math.min(pagination.totalPages, 10); // safety cap
+      const pagesToFetch = [];
+      for (let p = 2; p <= lastPage; p++) pagesToFetch.push(p);
 
-    if (pagination.hasMore && page < 20) {
-      return await fetchCoursesFromDB(force, page + 1);
+      if (pagesToFetch.length > 0) {
+        const results = await Promise.allSettled(
+          pagesToFetch.map(p => {
+            const u = `${API_BASE}/courses?limit=${PER_PAGE}&page=${p}`;
+            const finalUrl = force ? `${u}&_t=${Date.now()}` : u;
+            return fetchJSON(finalUrl, opts);
+          })
+        );
+
+        results.forEach(r => {
+          if (r.status !== 'fulfilled') return;
+          const d = r.value;
+          const l = Array.isArray(d) ? d : (d.courses || []);
+          liveCourses.push(...l.map(normalize));
+        });
+      }
     }
   } catch (error) {
-    pageFailed = true;
     console.error('Error fetching courses:', error);
     if (page === 1) {
       const errHtml = `
@@ -982,20 +987,11 @@ async function fetchCoursesFromDB(force = false, page = 1) {
       }
     }
   } finally {
-    // Clear the loading flag whenever the chain terminates — but ONLY
-    // if this chain is still the latest generation. The watchdog set
-    // by _startCoursesLoading is our ultimate safety net.
-    if (pageFailed || !_coursePagination.hasMore || page >= 20) {
-      if (myGeneration === _coursesFetchGeneration) {
-        _stopCoursesLoading();
-      }
-    }
-    // Always repaint after any fetch terminal — even a stale one,
-    // because the UI might be sitting on a skeleton right now.
-    try { renderApp(); } catch (e) {}
+    _coursesLoading = false;
   }
-}
 
+  renderApp();
+}
 // Naya helper — on-demand full course (with all data)
 async function fetchSingleCourse(courseId) {
   try {
@@ -2604,13 +2600,16 @@ async function handleLogin(e) {
     }
   };
 
-  const attemptLogin = async (retries = 2) => {
+  // ⚡ SPEED FIX:
+  //   • 25 s timeout (was 60 s)
+  //   • Retry ONLY on timeout / network failure / 5xx cold start
+  //   • NEVER retry on wrong-credentials 400 → fails instantly
+  //   • 1.5 s gap between retries (was 5 s)
+  const attemptLogin = async (retries = 1, timeoutMs = 25000) => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      console.log('[login] POST /api/login', { username, role: loginRole });
-
       const response = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2624,27 +2623,22 @@ async function handleLogin(e) {
       try {
         data = rawText ? JSON.parse(rawText) : {};
       } catch (parseErr) {
-        console.error('[login] non-JSON response:', response.status, rawText.slice(0, 300));
-        if (response.status === 502 || response.status === 504) {
-          if (retries > 0) {
-            showToast(`Server is starting up... Retrying (${3 - retries}/2)`, 'info');
-            await new Promise(r => setTimeout(r, 5000));
-            return attemptLogin(retries - 1);
-          }
-          showToast('Server is not responding yet. Please wait a moment and try again.', 'error');
-        } else {
-          showToast(
-            `Server returned HTTP ${response.status}. ` +
-            (rawText.startsWith('<') ? 'Backend route may be missing.' : 'Unexpected response.'),
-            'error'
-          );
+        // Non-JSON reply (cold-start proxy page) — retry once
+        if ((response.status === 502 || response.status === 504) && retries > 0) {
+          showToast('Server is starting up… retrying', 'info');
+          await new Promise(r => setTimeout(r, 1500));
+          return attemptLogin(retries - 1, 30000); // give cold start more room
         }
+        showToast(
+          `Server returned HTTP ${response.status}. ` +
+          (rawText.startsWith('<') ? 'Backend route may be missing.' : 'Unexpected response.'),
+          'error'
+        );
         resetBtn();
         return;
       }
 
-      console.log('[login] response:', data);
-
+      // ─── 2FA path ───
       if (data.requires2FA && data.pendingToken) {
         _adminPendingToken = data.pendingToken;
         openOtpModal({
@@ -2658,6 +2652,7 @@ async function handleLogin(e) {
         return;
       }
 
+      // ─── Success ───
       if (data.success && data.user) {
         currentUser = data.user;
         saveSession(data.user, data.token);
@@ -2673,12 +2668,8 @@ async function handleLogin(e) {
         quizEditingCourseId = null;
         quizEditingMaterialId = null;
 
-        // Normalize role (trim + lowercase) so "Admin" / " admin " still
-        // route correctly — this defends against legacy DB values.
         const serverRole = String(data.user.role || '').trim().toLowerCase();
 
-        // If the user explicitly clicked the Admin tab but the server
-        // returned a student, surface that clearly (self-diagnosis).
         if (loginRole === 'admin' && serverRole !== 'admin') {
           showToast(
             'This account is a student account. Logging you in as a student.',
@@ -2686,7 +2677,6 @@ async function handleLogin(e) {
           );
         }
 
-        // Route STRICTLY by the role the server returned.
         if (serverRole === 'admin') {
           adminTab = 'overview';
           studentNav = 'home';
@@ -2695,84 +2685,40 @@ async function handleLogin(e) {
         } else {
           studentNav = 'home';
           adminTab = 'overview';
-          try { ensureStudentAIHomeView(); } catch (e) {}   // ✅ ensure DOM
           try { history.replaceState(null, '', '#/home'); }
           catch (e) { location.hash = '#/home'; }
-
-          // 🎯 Landing intent — route new registrations to free content
-          const _landingIntent = sessionStorage.getItem('aero_landing_intent');
-          if (_landingIntent === 'register') {
-            sessionStorage.removeItem('aero_landing_intent');
-            setTimeout(() => {
-              showToast('🎉 Welcome! Your free PYQs are ready — pick a subject.', 'success');
-              navigateStudent('courses');
-              setTimeout(() => {
-                const pf = document.getElementById('filterPrice');
-                if (pf) { pf.value = 'free'; renderStudentCourses(); }
-              }, 400);
-            }, 1400);
-          }
         }
-
-        // ⭐ Force-fresh course list on every login — kills stale premium flags
-        _courseCacheAt = 0;
-        liveCourses = [];
-        _coursesLoading = false;                 // ⭐ reset so skeleton logic works
-        try { _coursePagination = { page: 1, hasMore: false, total: 0 }; } catch (e) {}
 
         showToast(data.message || 'Login successful!', 'success');
         _sessionKilled = false;
         startSessionHeartbeat();
-
-        // ⭐ FIX: fetch ALL critical data in parallel — same set initApp uses.
-        //    Previously only courses were fetched, so professors, owner
-        //    profile and subscription settings were missing until refresh.
-        const _initialDataPromise = Promise.allSettled([
-          fetchCoursesFromDB(true),
-          fetchProfessorsFromDB(),
-          fetchSubscriptionSettings(),
-          fetchOwnerProfile()
-        ]);
-
-        // Immediate first paint (skeleton / dashboard).
         renderApp();
-
-        // ⭐ FIX: guaranteed second render AFTER all data has settled.
-        //    This is the render that finally shows the real course list.
-        _initialDataPromise.then(() => {
-          console.log('[login] ✅ initial data loaded — final render');
-          renderApp();
-        }).catch(err => {
-          console.warn('[login] initial data fetch issue:', err);
-          renderApp();
-        });
-
         return;
       }
 
+      // ─── Real server reply, definitive failure (bad credentials, etc.) ───
+      // Do NOT retry — this is intentional.
       showToast(data.message || 'Login failed. Please try again.', 'error');
       resetBtn();
 
     } catch (err) {
       clearTimeout(timeoutId);
-      console.error('[login] fetch error:', err);
+
+      const isNetworkish =
+        err.name === 'AbortError' ||
+        err.name === 'TypeError' ||
+        /Failed to fetch|NetworkError|Load failed/i.test(err.message || '');
+
+      if (isNetworkish && retries > 0) {
+        showToast('Server is waking up… retrying', 'info');
+        await new Promise(r => setTimeout(r, 1500));
+        return attemptLogin(retries - 1, 30000); // longer timeout on retry
+      }
 
       if (err.name === 'AbortError') {
-        showToast('Request timed out. The server may be cold-starting — retrying…', 'error');
-        if (retries > 0) {
-          await new Promise(r => setTimeout(r, 5000));
-          return attemptLogin(retries - 1);
-        }
-      } else if (
-        err.name === 'TypeError' ||
-        /Failed to fetch|NetworkError|Load failed/i.test(err.message || '')
-      ) {
-        if (retries > 0) {
-          showToast(`Server is waking up... Retrying (${3 - retries}/2)`, 'info');
-          await new Promise(r => setTimeout(r, 5000));
-          return attemptLogin(retries - 1);
-        }
-        showToast('Server is taking too long to respond. Please try again.', 'error');
+        showToast('Request timed out. Please try again.', 'error');
+      } else if (isNetworkish) {
+        showToast('Could not reach the server. Please check your connection.', 'error');
       } else {
         showToast('Login failed: ' + (err.message || 'Unknown error'), 'error');
       }
@@ -2782,7 +2728,6 @@ async function handleLogin(e) {
 
   await attemptLogin();
 }
-
 
 function logout() {
   // Fire-and-forget server-side logout — clears activeSession on the server
@@ -11506,73 +11451,49 @@ function showToast(message, type = 'info') {
 /* ============================================================
    INIT
    ============================================================ */
-async function initApp() {
-  // MathJax preload now happens once at the top of app.js
-  // (see preloadMathJaxOnce IIFE). Nothing to do here.
-
+function initApp() {
   const savedUser = loadSessionUser();
   if (savedUser) {
-    // ── Guard: a valid session needs BOTH a user AND a token ──
-    // If a previous session left the user behind but the token is
-    // gone, every /api/ call would silently 401. Catch it here and
-    // clear the partial session so the login view shows cleanly.
-    let token = null;
-    try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
-
-    if (!token) {
-      console.warn('[initApp] User present but no auth token — clearing partial session.');
-      clearSession();
-      currentUser = null;
-      try { sessionStorage.removeItem('aero_user'); } catch (e) {}
-    } else {
-      currentUser = savedUser;
-      if (currentUser.role === 'admin') adminTab = 'overview';
-      _sessionKilled = false;
-      startSessionHeartbeat();
-    }
+    currentUser = savedUser;
+    if (currentUser.role === 'admin') adminTab = 'overview';
+    // Restart heartbeat immediately if we already have a live session
+    _sessionKilled = false;
+    startSessionHeartbeat();
   }
   updateThemeIcon();
   syncHashToState();
 
-  /* ---- Make sure the AI home section exists before first paint ---- */
+  // Make sure the AI home section exists (idempotent — returns early if already injected)
   if (currentUser && String(currentUser.role || '').toLowerCase() === 'student') {
     try { ensureStudentAIHomeView(); } catch (e) {}
   }
 
-  /* ---- Single first paint ---- */
+  /* ---- INSTANT FIRST PAINT — no network wait ---- */
   renderApp();
 
-  /* ---- Kick off critical fetches in parallel ---- */
-  const criticalFetches = [
+  /* ---- Fire all critical fetches in parallel, then re-render once ---- */
+  Promise.allSettled([
     fetchCoursesFromDB(),
     fetchProfessorsFromDB(),
     fetchSubscriptionSettings(),
     fetchOwnerProfile()
-  ];
-
-  if (savedUser && savedUser._id) {
-    // ⭐ FIX: Fetch fresh user data IMMEDIATELY (no 400ms delay) and
-    // RE-RENDER once it lands. This is the actual fix for the
-    // "course shows locked after refresh" bug — previously
-    // refreshUserData() updated currentUser but the UI was never
-    // repainted, so the stale sessionStorage snapshot stayed visible.
-    refreshUserData()
-      .then(() => {
-        try { renderApp(); } catch (e) { /* non-fatal */ }
-      })
-      .catch(() => { /* offline — sessionStorage copy stays as fallback */ });
-
-    loadNotifications().catch(() => {});
-  }
-
-  // Await and log failures only (renderApp already scheduled above)
-  const results = await Promise.allSettled(criticalFetches);
-  results.forEach((r, i) => {
-    if (r.status === 'rejected') console.warn('[initApp] fetch #' + i + ' failed:', r.reason);
+  ]).then(results => {
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        console.warn('[initApp] fetch #' + i + ' failed:', r.reason);
+      }
+    });
+    // Consolidated repaint after all data has landed
+    renderApp();
   });
 
-  // One more paint after data lands
-  renderApp();
+  /* ---- User-scoped data deferred so it doesn't compete for bandwidth ---- */
+  if (savedUser && savedUser._id) {
+    setTimeout(() => {
+      refreshUserData().catch(() => {});
+      loadNotifications().catch(() => {});
+    }, 800);
+  }
 }
 /* ============================================================
    STUDENT ANALYTICS DASHBOARD

@@ -3989,7 +3989,9 @@ app.get('/api/courses', async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
+      // ⚡ Let the browser reuse this for 30s → instant repeat navigations.
+      // stale-while-revalidate keeps UX snappy while we refresh in bg.
+      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=180');
       return res.json(cached);
     }
 
@@ -4003,35 +4005,20 @@ app.get('/api/courses', async (req, res) => {
             name: 1, code: 1, semester: 1, instructor: 1, description: 1,
             category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
             learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
-            isPremium: 1, price: 1,
+            isPremium: 1, price: 1, announcements: 1, playlists: 1,
             createdAt: 1, updatedAt: 1,
-
-            /* Cheap counts — no full array transfer */
-            doubtsCount:   { $size: { $ifNull: ['$doubts',    []] } },
-            playlistCount: { $size: { $ifNull: ['$playlists', []] } },
-
-            /* Lightweight materials — only what the CARD view needs.
-               announcements / playlists / examConfig / tags / estimatedTime
-               stripped (never used in list view; inflate JSON 40-70%). */
+            doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
             materials: {
               $map: {
                 input: { $ifNull: ['$materials', []] },
                 as: 'm',
                 in: {
-                  _id:            '$$m._id',
-                  title:          '$$m.title',
-                  type:           '$$m.type',
-                  description:    '$$m.description',
-                  url:            '$$m.url',
-                  fileName:       '$$m.fileName',
-                  diskName:       '$$m.diskName',
-                  cloudUrl:       '$$m.cloudUrl',
-                  isPremium:      '$$m.isPremium',
-                  price:          '$$m.price',
-                  previewPercent: '$$m.previewPercent',
-                  estimatedTime:  '$$m.estimatedTime',
-                  tags:           '$$m.tags',
-                  quizCount:      { $size: { $ifNull: ['$$m.quiz', []] } }
+                  _id: '$$m._id', title: '$$m.title', type: '$$m.type',
+                  description: '$$m.description', url: '$$m.url',
+                  fileName: '$$m.fileName', isPremium: '$$m.isPremium',
+                  price: '$$m.price', estimatedTime: '$$m.estimatedTime',
+                  tags: '$$m.tags', examConfig: '$$m.examConfig',
+                  quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
                 }
               }
             }
@@ -4053,7 +4040,8 @@ app.get('/api/courses', async (req, res) => {
 
     cacheSet(cacheKey, payload, 60000);
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
+    // ⚡ Browser-side 30s cache — repeat visits need zero network round trip.
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=180');
     res.json(payload);
   } catch (e) {
     console.error('[GET /api/courses]', e);
