@@ -11,3 +11,9 @@ node_modules/
 uploads/
 *.pre-*
 *.bak
+
+# Go edge service (Phase-1 backend migration) — build artefacts only
+edge/bin/
+edge/dist/
+edge/*.exe
+edge/coverage.out
