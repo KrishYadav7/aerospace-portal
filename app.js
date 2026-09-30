@@ -2064,45 +2064,273 @@ async function copyToClipboard(text) {
 }
 
 /* ============================================================
-   THEME — three-way cycle: light → dim → dark
-   ============================================================ */
-const THEME_CYCLE = ['light', 'dim', 'dark'];
-const THEME_ICONS = {
-  light: { icon: 'fa-sun',                label: 'Light mode — click for dim' },
-  dim:   { icon: 'fa-circle-half-stroke', label: 'Dim mode — click for dark' },
-  dark:  { icon: 'fa-moon',               label: 'Dark mode — click for light' }
-};
+   ⭐ CENTRALIZED THEME CONFIGURATION
+   ------------------------------------------------------------
+   Single source of truth for every theme in the app.
 
+     id       → the value written to <html data-theme="...">
+     family   → 'light' | 'dark'  (drives the Night Mode switch)
+     label    → user-facing name
+     icon     → Font Awesome class for the header button
+     palette  → human description shown in Settings
+     next     → what the header quick-cycle button moves to
+
+   Adding a theme later = one entry here + one [data-theme="x"]
+   CSS variable block. Nothing else in the codebase changes.
+   ============================================================ */
+const THEME_CONFIG = {
+  order: ['light', 'dim', 'dark'],
+  themes: {
+    light: {
+      id: 'light', family: 'light', label: 'Light', icon: 'fa-sun',
+      palette: 'warm, bright, high contrast', next: 'dim',
+      ariaLabel: 'Light mode — click for Dim'
+    },
+    dim: {
+      id: 'dim', family: 'dark', label: 'Dim', icon: 'fa-circle-half-stroke',
+      palette: 'soft dark grey, low glare', next: 'dark',
+      ariaLabel: 'Dim mode — click for Night'
+    },
+    dark: {
+      id: 'dark', family: 'dark', label: 'Night', icon: 'fa-moon',
+      palette: 'dark grey surfaces with off-white text', next: 'light',
+      ariaLabel: 'Night mode — click for Light'
+    }
+  }
+};
+const THEME_CYCLE = THEME_CONFIG.order;
+
+function getThemeMeta(theme) {
+  return THEME_CONFIG.themes[theme] || THEME_CONFIG.themes.light;
+}
 function getCurrentTheme() {
-  return document.documentElement.getAttribute('data-theme') || 'light';
+  const t = document.documentElement.getAttribute('data-theme') || 'light';
+  return THEME_CONFIG.themes[t] ? t : 'light';
 }
+function isNightMode() {
+  return getThemeMeta(getCurrentTheme()).family === 'dark';
+}
+
+/* ------------------------------------------------------------
+   ⭐ 0.3s EASE COLOUR TRANSITION around every theme change.
+   `aero-theme-anim` is added to <html> for ~320ms so the whole
+   UI cross-fades, then removed so no component's own animation
+   is permanently overridden.
+   ------------------------------------------------------------ */
+const THEME_ANIM_CLASS = 'aero-theme-anim';
+const THEME_ANIM_MS = 320;              // slightly > the .3s CSS duration
+let _themeAnimTimer = null;
+
+function _prefersReducedMotion() {
+  try {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  } catch (e) { return false; }
+}
+
+function _withThemeTransition(mutate) {
+  const root = document.documentElement;
+  if (!_prefersReducedMotion()) root.classList.add(THEME_ANIM_CLASS);
+  try {
+    mutate();
+  } finally {
+    if (_themeAnimTimer) clearTimeout(_themeAnimTimer);
+    _themeAnimTimer = setTimeout(() => {
+      root.classList.remove(THEME_ANIM_CLASS);
+      _themeAnimTimer = null;
+    }, THEME_ANIM_MS);
+  }
+}
+
 function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  try { localStorage.setItem('aero_theme', theme); } catch {}
+  const id = THEME_CONFIG.themes[theme] ? theme : 'light';
+
+  _withThemeTransition(() => {
+    document.documentElement.setAttribute('data-theme', id);
+  });
+
+  try { localStorage.setItem('aero_theme', id); } catch (e) {}
   updateThemeIcon();
+  renderSettingsThemeUI();
 }
+
 function cycleTheme() {
-  const cur = getCurrentTheme();
-  const idx = THEME_CYCLE.indexOf(cur);
-  const next = THEME_CYCLE[(idx + 1) % THEME_CYCLE.length];
-  applyTheme(next);
+  applyTheme(getThemeMeta(getCurrentTheme()).next);
 }
+
 function updateThemeIcon() {
   const btn = document.getElementById('themeToggle');
   if (!btn) return;
-  const t = getCurrentTheme();
-  const meta = THEME_ICONS[t] || THEME_ICONS.light;
+  const meta = getThemeMeta(getCurrentTheme());
   btn.innerHTML = `<i class="fas ${meta.icon}" aria-hidden="true"></i>`;
-  btn.setAttribute('aria-label', meta.label);
-  btn.setAttribute('title', meta.label);
+  btn.setAttribute('aria-label', meta.ariaLabel);
+  btn.setAttribute('title', meta.ariaLabel);
+}
+
+/* ============================================================
+   ⭐ SETTINGS PANEL — Night Mode + reading preferences
+   ============================================================ */
+function closeUserDropdown() {
+  const wrap = document.getElementById('userProfileWrap');
+  if (wrap) wrap.classList.remove('open');
+}
+
+function renderSettingsThemeUI() {
+  const theme = getCurrentTheme();
+  const meta = getThemeMeta(theme);
+  const night = meta.family === 'dark';
+
+  const nightSwitch = document.getElementById('nightModeSwitch');
+  if (nightSwitch) nightSwitch.setAttribute('aria-checked', night ? 'true' : 'false');
+
+  /* The "Dim instead of Night" row only matters while Night mode is on */
+  const dimRow = document.getElementById('dimModeRow');
+  if (dimRow) dimRow.hidden = !night;
+
+  const dimSwitch = document.getElementById('dimModeSwitch');
+  if (dimSwitch) dimSwitch.setAttribute('aria-checked', theme === 'dim' ? 'true' : 'false');
+
+  document.querySelectorAll('[data-theme-choice]').forEach(btn => {
+    const on = btn.getAttribute('data-theme-choice') === theme;
+    btn.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+
+  const hint = document.getElementById('nightModeHint');
+  if (hint) {
+    hint.textContent = night
+      ? `${meta.label} theme active — ${meta.palette}.`
+      : 'Dark grey background with off-white text — easier on the eyes at night.';
+  }
+}
+
+function openSettingsModal() {
+  renderSettingsThemeUI();
+  renderExpandBiosUI();
+  openModal('settingsModal');
+}
+
+/* Header switch: OFF → Light, ON → Night. Never lands on Dim by accident. */
+function toggleNightMode() {
+  applyTheme(isNightMode() ? 'light' : 'dark');
+}
+
+/* Sub-option of Night mode */
+function toggleDimMode() {
+  applyTheme(getCurrentTheme() === 'dim' ? 'dark' : 'dim');
+}
+
+function setThemeFromSettings(theme) {
+  applyTheme(theme);
+}
+
+/* ------------------------------------------------------------
+   ⭐ "Always expand biographies" preference
+   ------------------------------------------------------------ */
+const EXPAND_BIOS_KEY = 'aero_expand_bios';
+
+function prefersExpandedBios() {
+  try { return localStorage.getItem(EXPAND_BIOS_KEY) === '1'; } catch (e) { return false; }
+}
+function renderExpandBiosUI() {
+  const sw = document.getElementById('expandBiosSwitch');
+  if (sw) sw.setAttribute('aria-checked', prefersExpandedBios() ? 'true' : 'false');
+}
+function toggleExpandBios() {
+  const next = !prefersExpandedBios();
+  try { localStorage.setItem(EXPAND_BIOS_KEY, next ? '1' : '0'); } catch (e) {}
+  renderExpandBiosUI();
+  if (prefersExpandedBios()) expandAllBios(); else collapseAllBios();
+}
+
+/* ------------------------------------------------------------
+   ⭐ BIO "READ MORE / SHOW LESS"
+   ------------------------------------------------------------
+   Bios are clamped to 4 lines by CSS (clean cards, no overlap).
+   The toggle only appears when the text genuinely overflows its
+   clamp, so short bios never show a pointless button.
+   ------------------------------------------------------------ */
+const BIO_MORE_HTML = '<i class="fas fa-chevron-down"></i> Read more';
+const BIO_LESS_HTML = '<i class="fas fa-chevron-up"></i> Show less';
+
+/* Markup for one biography: clamped text + its toggle button.
+   The button is a SIBLING of the text node and sits IMMEDIATELY
+   after it, because toggleBio() walks to previousElementSibling.
+   `tag` lets the same helper serve <p> (team cards) and
+   <div> (community admin rows). */
+function bioMarkup(text, extraClass, tag) {
+  const safe = escapeHtml(text || '');
+  if (!safe) return '';
+  const el = tag || 'p';
+  const cls = 'bio-text' + (extraClass ? ' ' + extraClass : '');
+  return `<${el} class="${cls}">${safe}</${el}>` +
+         `<button type="button" class="bio-toggle" hidden aria-expanded="false" ` +
+         `onclick="toggleBio(this)">${BIO_MORE_HTML}</button>`;
+}
+
+function toggleBio(btn) {
+  if (!btn) return;
+  const text = btn.previousElementSibling;
+  if (!text) return;
+
+  const expanded = text.classList.toggle('is-expanded');
+  btn.classList.toggle('is-open', expanded);
+  btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  btn.innerHTML = expanded ? BIO_LESS_HTML : BIO_MORE_HTML;
+}
+
+function expandAllBios() {
+  document.querySelectorAll('.bio-toggle').forEach(btn => {
+    const text = btn.previousElementSibling;
+    if (text) text.classList.add('is-expanded');
+    btn.hidden = true;              // the control is redundant when forced open
+    btn.classList.remove('is-open');
+  });
+}
+
+function collapseAllBios() {
+  document.querySelectorAll('.bio-toggle').forEach(btn => {
+    const text = btn.previousElementSibling;
+    if (text) text.classList.remove('is-expanded');
+    btn.classList.remove('is-open');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.innerHTML = BIO_MORE_HTML;
+  });
+  revealOverflowingBios();
+}
+
+/* Reveals a toggle only where the clamped bio actually overflows. */
+function revealOverflowingBios() {
+  document.querySelectorAll('.bio-toggle').forEach(btn => {
+    if (prefersExpandedBios()) { btn.hidden = true; return; }
+    const text = btn.previousElementSibling;
+    if (!text) { btn.hidden = true; return; }
+    /* ⚠️ A bio the user has already expanded must KEEP its "Show less"
+       control — an expanded bio no longer overflows, so the overflow test
+       below would otherwise hide the button and trap the user in the
+       expanded state. */
+    if (text.classList.contains('is-expanded')) { btn.hidden = false; return; }
+    btn.hidden = text.scrollHeight <= text.clientHeight + 2;
+  });
+}
+
+/* Call after rendering any grid that contains biographies. */
+function initBioToggles() {
+  if (prefersExpandedBios()) { expandAllBios(); return; }
+  revealOverflowingBios();
+  /* Re-measure once webfonts settle — clamp height can shift slightly. */
+  if (document.fonts && document.fonts.ready && !initBioToggles._wired) {
+    initBioToggles._wired = true;
+    document.fonts.ready.then(() => { try { revealOverflowingBios(); } catch (e) {} });
+  }
 }
 
 (function initTheme() {
   let saved = null;
-  try { saved = localStorage.getItem('aero_theme'); } catch {}
-  const valid = ['light', 'dim', 'dark'];
+  try { saved = localStorage.getItem('aero_theme'); } catch (e) {}
+  const valid = THEME_CONFIG.order;                       // ⭐ centralized list
   const prefers = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  const initial = valid.includes(saved) ? saved : (prefers ? 'dark' : 'light');
+  const fallback = prefers ? 'dark' : 'light';
+  const initial = valid.includes(saved) ? saved : fallback;
+  /* Set before first paint — no transition, no flash. */
   document.documentElement.setAttribute('data-theme', initial);
 })();
 
@@ -3233,7 +3461,7 @@ function previewProfPhoto(input) {
   const reader = new FileReader();
   reader.onload = (e) => {
     const preview = $('newProfPhotoPreview');
-    if (preview) preview.outerHTML = `<img src="${e.target.result}" class="thumbnail-preview" id="newProfPhotoPreview" alt="Preview">`;
+    if (preview) preview.outerHTML = `<img src="${e.target.result}" class="thumbnail-preview" id="newProfPhotoPreview" alt="Preview" decoding="async">`;
   };
   reader.readAsDataURL(file);
 }
@@ -4288,7 +4516,7 @@ async function renderAdminCourses() {
         </button>
       </div>` : '';
 
-    const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy"></div>` : '';
+    const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy" decoding="async"></div>` : '';
 
     html += `
       <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}">
@@ -4344,7 +4572,7 @@ function renderAdminProfessors() {
   professors.forEach(p => {
     const isVisible = p.visible !== false;   // legacy docs without field => visible
     const photoHtml = p.photo
-      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" loading="lazy">`
+      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" loading="lazy" decoding="async">`
       : `<div class="avatar-placeholder"><i class="fas fa-user-tie"></i></div>`;
 
     let contactHtml = '';
@@ -5613,7 +5841,7 @@ function renderAdminOrganizationTab() {
 
   const o = liveOwnerProfile || {};
   const preview = o.photo
-    ? `<img src="${o.photo}" class="owner-preview-img" alt="Preview" id="ownerPhotoPreview">`
+    ? `<img src="${o.photo}" class="owner-preview-img" alt="Preview" id="ownerPhotoPreview" decoding="async">`
     : `<div class="owner-preview-fallback" id="ownerPhotoPreview">${escapeHtml(getInitials(o.name || '?'))}</div>`;
 
   const isVisible = o.visible !== false;
@@ -6009,7 +6237,7 @@ function renderEditorDetails(course) {
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-image"></i> Thumbnail</h3>
       <div class="thumbnail-editor">
-        ${course.thumbnail ? `<img src="${course.thumbnail}" class="thumbnail-preview" alt="" loading="lazy">` : '<div class="thumbnail-preview-empty"><i class="fas fa-image"></i><span>No thumbnail</span></div>'}
+        ${course.thumbnail ? `<img src="${course.thumbnail}" class="thumbnail-preview" alt="" loading="lazy" decoding="async">` : '<div class="thumbnail-preview-empty"><i class="fas fa-image"></i><span>No thumbnail</span></div>'}
         <div class="thumbnail-actions">
           <input type="file" id="edThumbnailFile" accept="image/*" style="display:none;" onchange="handleThumbnailUpload(this)">
           <button class="btn btn-outline btn-sm" onclick="document.getElementById('edThumbnailFile').click()"><i class="fas fa-upload"></i> Upload</button>
@@ -7004,7 +7232,7 @@ function renderOwnerProfile() {
   }
 
   const avatarHtml = o.photo
-    ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy">`
+    ? `<img src="${o.photo}" alt="${escapeHtml(o.name)}" class="owner-avatar-img" loading="lazy" decoding="async">`
     : `<div class="owner-avatar-fallback">${escapeHtml(getInitials(o.name))}</div>`;
 
   const contactHtml = [];
@@ -7168,7 +7396,7 @@ function renderProfessorsGrid() {
   let html = '';
   professors.forEach(p => {
     const photoHtml = p.photo
-      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy">`
+      ? `<img src="${p.photo}" alt="${escapeHtml(p.name)}" class="team-avatar" loading="lazy" decoding="async">`
       : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(p.name))}</div>`;
 
     const contactButtons = [];
@@ -7191,12 +7419,13 @@ function renderProfessorsGrid() {
         ${photoHtml}
         <h3>${escapeHtml(p.name)}</h3>
         <div class="prof-title">${escapeHtml(p.title)}</div>
-        <p>${escapeHtml(p.description) || ''}</p>
+        ${bioMarkup(p.description)}
         ${contactButtons.length ? `<div class="team-contact-row">${contactButtons.join('')}</div>` : ''}
       </div>`;
   });
 
   grid.innerHTML = html;
+  initBioToggles();          /* ⭐ reveal Read more only where needed */
 }
 
 function renderStreakCard() {
@@ -7644,7 +7873,7 @@ function renderStudentCourseCard(c) {
     badge = `<span class="premium-badge"><i class="fas fa-crown"></i> Premium</span>${statusBadge}`;
   }
 
-  const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy"></div>` : '';
+  const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy" decoding="async"></div>` : '';
   const plCount = c.playlistCount != null ? c.playlistCount : (c.playlists || []).length;
 
   return `
@@ -7735,7 +7964,7 @@ function renderCourseDetail(courseId) {
 
   let html = `
     <div class="course-detail-header" style="${acc}">
-      ${course.thumbnail ? `<img src="${course.thumbnail}" class="cd-thumb" alt="" loading="lazy">` : ''}
+      ${course.thumbnail ? `<img src="${course.thumbnail}" class="cd-thumb" alt="" loading="lazy" decoding="async">` : ''}
       <div class="cd-content">
         <h2>${escapeHtml(course.name)} ${isPremiumCourse
   ? (isPurchased || isSubscribed
@@ -10359,7 +10588,7 @@ function renderResultDetail(q, r) {
       ${uploads.length > 0 ? `
         <div class="subjective-result-thumbs">
           ${uploads.map(u => `<a href="${escapeHtml(u.url)}" target="_blank" rel="noopener">
-            <img src="${escapeHtml(u.url)}" alt="answer" loading="lazy">
+            <img src="${escapeHtml(u.url)}" alt="answer" loading="lazy" decoding="async">
           </a>`).join('')}
         </div>` : '<div class="quiz-answer-row"><em>No photos uploaded.</em></div>'}
       <div class="quiz-answer-row subjective-pending-note">
@@ -11839,7 +12068,7 @@ async function renderAlumniSection() {
   let html = '';
   list.forEach(a => {
     const avatar = a.photo
-      ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy">`
+      ? `<img src="${escapeHtml(a.photo)}" alt="${escapeHtml(a.name)}" class="alumni-avatar-img" loading="lazy" decoding="async">`
       : `<div class="alumni-avatar-fallback">${escapeHtml(getInitials(a.name))}</div>`;
 
     const metaParts = [];
@@ -11863,12 +12092,13 @@ async function renderAlumniSection() {
           <h3>${escapeHtml(a.name)}</h3>
           ${workParts.length ? `<div class="alumni-work">${workParts.join(' ')}</div>` : ''}
           ${metaParts.length ? `<div class="alumni-meta">${metaParts.join(' · ')}</div>` : ''}
-          ${a.bio ? `<p class="alumni-bio">${escapeHtml(a.bio)}</p>` : ''}
+          ${a.bio ? bioMarkup(a.bio, 'alumni-bio') : ''}
           ${contactBtns.length ? `<div class="alumni-contact">${contactBtns.join('')}</div>` : ''}
         </div>
       </div>`;
   });
   grid.innerHTML = html;
+  initBioToggles();          /* ⭐ reveal Read more only where needed */
 }
 
 /* ---------- Student: Friends section (cached) ---------- */
@@ -11896,7 +12126,7 @@ async function renderFriendsSection() {
   let html = '';
   list.forEach(f => {
     const photoHtml = f.photo
-      ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy">`
+      ? `<img src="${escapeHtml(f.photo)}" alt="${escapeHtml(f.name)}" class="team-avatar" loading="lazy" decoding="async">`
       : `<div class="team-avatar team-avatar-fallback">${escapeHtml(getInitials(f.name))}</div>`;
 
     const contactBtns = [];
@@ -11904,9 +12134,10 @@ async function renderFriendsSection() {
       contactBtns.push(`<a href="${escapeHtml(f.linkedin)}" target="_blank" rel="noopener noreferrer" class="contact-chip contact-chip-email" style="text-decoration:none;"><i class="fab fa-linkedin"></i> LinkedIn</a>`);
     }
 
-    html += `<div class="professor-card friend-card">${photoHtml}<h3>${escapeHtml(f.name)}</h3><div class="prof-title">${escapeHtml(f.role || 'Supporter')}</div><p>${escapeHtml(f.bio || '')}</p>${contactBtns.length ? `<div class="team-contact-row">${contactBtns.join('')}</div>` : ''}</div>`;
+    html += `<div class="professor-card friend-card">${photoHtml}<h3>${escapeHtml(f.name)}</h3><div class="prof-title">${escapeHtml(f.role || 'Supporter')}</div>${bioMarkup(f.bio)}${contactBtns.length ? `<div class="team-contact-row">${contactBtns.join('')}</div>` : ''}</div>`;
   });
   grid.innerHTML = html;
+  initBioToggles();          /* ⭐ reveal Read more only where needed */
 }
 
 /* ---------- Submit modals ---------- */
@@ -12130,6 +12361,7 @@ async function renderAdminCommunity() {
     `;
 
     container.innerHTML = html;
+    initBioToggles();        /* ⭐ reveal Read more only where needed */
   } catch (e) {
     console.error('[admin/community]', e);
     container.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">Error loading community: ${escapeHtml(e.message || 'unknown')}</p></div>`;
@@ -12145,7 +12377,7 @@ function renderCommunityList(type, items, title, status) {
   html += `<div class="community-list">`;
   items.forEach(x => {
     const photoHtml = x.photo
-      ? `<img src="${escapeHtml(x.photo)}" alt="" class="community-avatar-img" loading="lazy">`
+      ? `<img src="${escapeHtml(x.photo)}" alt="" class="community-avatar-img" loading="lazy" decoding="async">`
       : `<div class="community-avatar-fallback">${escapeHtml(getInitials(x.name))}</div>`;
 
     const meta = [];
@@ -12177,7 +12409,7 @@ function renderCommunityList(type, items, title, status) {
         <div class="community-info">
           <h4>${escapeHtml(x.name)}</h4>
           <div class="community-meta">${meta.join(' · ') || '—'}</div>
-          ${x.bio ? `<div class="community-bio">${escapeHtml(x.bio.slice(0, 200))}${x.bio.length > 200 ? '…' : ''}</div>` : ''}
+          ${x.bio ? bioMarkup(x.bio, 'community-bio', 'div') : ''}
           ${x.email ? `<div class="community-contact"><i class="fas fa-envelope"></i> ${escapeHtml(x.email)}</div>` : ''}
         </div>
         <div class="community-actions">${actions}</div>
@@ -14930,7 +15162,7 @@ function renderSubjectiveUpload(u, qi, idx) {
   }
   return `
     <div class="subjective-upload-tile">
-      <img src="${escapeHtml(u.url)}" alt="Solution" loading="lazy">
+      <img src="${escapeHtml(u.url)}" alt="Solution" loading="lazy" decoding="async">
       <div class="subjective-upload-name">${escapeHtml(u.fileName || '')}</div>
       <button type="button" class="subjective-upload-remove" onclick="removeSubjectiveUpload(${qi}, ${idx})" title="Remove">
         <i class="fas fa-times"></i>

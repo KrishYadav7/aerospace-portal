@@ -6,13 +6,13 @@
   <meta name="theme-color" content="#0b1226">
 <link rel="manifest" href="manifest.json">
   <!-- Logo / Favicon -->
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=106">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=106">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=106">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=106">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=106">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=106">
-  <link rel="shortcut icon" href="/favicon-32.png?v=106">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=107">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=107">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=107">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=107">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=107">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=107">
+  <link rel="shortcut icon" href="/favicon-32.png?v=107">
   <title>AeroGyan Education – Course Portal</title>
 
   <!-- Critical preconnects (only 3 — extra ones waste time) -->
@@ -42,7 +42,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=106">
+  <link rel="stylesheet" href="styles.css?v=107">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -132,6 +132,12 @@
           </div>
         </div>
 
+        <!-- ⭐ Settings (contains the Night Mode toggle) -->
+        <button class="icon-btn" id="settingsBtn" aria-label="Open settings" title="Settings"
+                onclick="openSettingsModal()">
+          <i class="fas fa-gear"></i>
+        </button>
+
         <button class="icon-btn theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
           <i class="fas fa-moon"></i>
         </button>
@@ -157,6 +163,9 @@
               </div>
             </div>
             <div class="user-dropdown-divider"></div>
+            <button class="user-dropdown-item" onclick="closeUserDropdown(); openSettingsModal();">
+              <i class="fas fa-gear"></i> Settings
+            </button>
             <button class="user-dropdown-item logout" onclick="logout()">
               <i class="fas fa-sign-out-alt"></i> Logout
             </button>
@@ -1003,6 +1012,82 @@
     </div>
   </div>
 
+  <!-- ============ ⭐ SETTINGS MODAL — APPEARANCE / NIGHT MODE ============ -->
+  <div class="modal-overlay" id="settingsModal">
+    <div class="modal-box" style="max-width:520px;">
+      <h3><i class="fas fa-gear"></i> Settings</h3>
+      <p class="modal-sub">Personalise how AeroGyan looks on this device. Your choice is remembered.</p>
+
+      <div class="settings-section">
+        <h4><i class="fas fa-palette"></i> Appearance</h4>
+
+        <!-- Primary Night Mode switch -->
+        <div class="settings-row">
+          <div class="settings-row-text">
+            <strong>Night mode</strong>
+            <span id="nightModeHint">Dark grey background with off-white text — easier on the eyes at night.</span>
+          </div>
+          <button type="button" class="switch" id="nightModeSwitch" role="switch"
+                  aria-checked="false" aria-label="Toggle Night mode"
+                  onclick="toggleNightMode()">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </button>
+        </div>
+
+        <!-- Sub-option: softer "Dim" dark theme (only when Night mode is on) -->
+        <div class="settings-row" id="dimModeRow" hidden>
+          <div class="settings-row-text">
+            <strong>Dim instead of Night</strong>
+            <span>Softer, lower-contrast grey — good for dim rooms and OLED screens.</span>
+          </div>
+          <button type="button" class="switch" id="dimModeSwitch" role="switch"
+                  aria-checked="false" aria-label="Use the softer Dim theme"
+                  onclick="toggleDimMode()">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </button>
+        </div>
+
+        <!-- Full three-way picker (Light / Dim / Night) -->
+        <div class="theme-choices" id="themeChoices" role="radiogroup" aria-label="Theme">
+          <button type="button" class="theme-choice" data-theme-choice="light" role="radio"
+                  aria-checked="false" onclick="setThemeFromSettings('light')">
+            <i class="fas fa-sun"></i> Light
+          </button>
+          <button type="button" class="theme-choice" data-theme-choice="dim" role="radio"
+                  aria-checked="false" onclick="setThemeFromSettings('dim')">
+            <i class="fas fa-circle-half-stroke"></i> Dim
+          </button>
+          <button type="button" class="theme-choice" data-theme-choice="dark" role="radio"
+                  aria-checked="false" onclick="setThemeFromSettings('dark')">
+            <i class="fas fa-moon"></i> Night
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h4><i class="fas fa-mobile-screen-button"></i> Reading</h4>
+
+        <div class="settings-row">
+          <div class="settings-row-text">
+            <strong>Always expand biographies</strong>
+            <span>Show full team, alumni and supporter bios without a “Read more” tap.</span>
+          </div>
+          <button type="button" class="switch" id="expandBiosSwitch" role="switch"
+                  aria-checked="false" aria-label="Always expand biographies"
+                  onclick="toggleExpandBios()">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" onclick="closeModal('settingsModal')">
+          <i class="fas fa-check"></i> Done
+        </button>
+      </div>
+    </div>
+  </div>
+
 
   <!-- ============================================================
        FULL-PAGE PROCTORED EXAM SHELL
@@ -1634,8 +1719,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=106" defer></script>
-  <script src="app.js?v=106" defer></script>
+ 	<script src="media-viewer.js?v=107" defer></script>
+  <script src="app.js?v=107" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
@@ -1643,7 +1728,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=104', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=107', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 

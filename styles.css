@@ -91,33 +91,35 @@
   --header-border: rgba(129,140,248,.28);
 }
 
-/* ─── DARK THEME — "Midnight Launch" (deep space blue-violet) ─── */
+/* ─── NIGHT THEME ("dark") — neutral dark grey · off-white text ·
+       softer accents. Kept under the data-theme="dark" id so every
+       existing [data-theme="dark"] component override keeps working. ─── */
 [data-theme="dark"] {
-  --bg-page: #05060e;
-  --bg-page-accent-1: rgba(99,102,241,.16);
-  --bg-page-accent-2: rgba(6,182,212,.10);
-  --bg-surface: #0c1020;
-  --bg-surface-2: #131832;
-  --bg-surface-3: #1c2246;
-  --bg-elevated: #131832;
+  --bg-page: #101216;          /* page = darkest layer */
+  --bg-page-accent-1: rgba(99,102,241,.10);   /* softened glows */
+  --bg-page-accent-2: rgba(6,182,212,.06);
+  --bg-surface: #181b20;       /* cards / app shell */
+  --bg-surface-2: #1f2329;
+  --bg-surface-3: #272c33;
+  --bg-elevated: #1f2329;
 
-  --border-subtle: #1a2142;
-  --border-default: #262f5a;
-  --border-strong: #3b4781;
+  --border-subtle: #262b32;
+  --border-default: #333a43;
+  --border-strong: #47505c;
 
-  --text-primary: #eef0f6;
-  --text-secondary: #b8bdd1;
-  --text-tertiary: #7b82a3;
-  --text-inverse: #05060e;
+  --text-primary: #eceef1;     /* off-white, ~13:1 on --bg-surface */
+  --text-secondary: #b6bac1;
+  --text-tertiary: #868c96;
+  --text-inverse: #101216;
 
-  --shadow-xs: 0 1px 2px rgba(0,0,0,.6);
-  --shadow-sm: 0 1px 3px rgba(0,0,0,.7);
-  --shadow-md: 0 8px 20px rgba(0,0,0,.65);
-  --shadow-lg: 0 20px 48px rgba(0,0,0,.7);
-  --shadow-xl: 0 32px 72px rgba(0,0,0,.8);
+  --shadow-xs: 0 1px 2px rgba(0,0,0,.50);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.60);
+  --shadow-md: 0 8px 20px rgba(0,0,0,.55);
+  --shadow-lg: 0 20px 48px rgba(0,0,0,.60);
+  --shadow-xl: 0 32px 72px rgba(0,0,0,.70);
 
-  --header-bg: linear-gradient(135deg, #02030a 0%, #080d24 50%, #14093a 100%);
-  --header-border: rgba(129,140,248,.35);
+  --header-bg: linear-gradient(135deg, #0c0e12 0%, #15181e 55%, #1d2129 100%);
+  --header-border: rgba(255,255,255,.10);
 }
 
 /* ============================================================
@@ -168,7 +170,7 @@ input, textarea, select { font-family: inherit; }
   position: sticky; top: 0; z-index: 200;
 }
 [data-theme="dark"] #appHeader {
-  background: rgba(5,6,14,.72);
+  background: rgba(16,18,22,.72);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   border-bottom: 1px solid rgba(129,140,248,.18);
@@ -1326,7 +1328,7 @@ input, textarea, select { font-family: inherit; }
   position: relative; overflow: hidden; isolation: isolate;
 }
 [data-theme="dark"] .hero-section {
-  background: linear-gradient(135deg, #02030a 0%, #0a0f30 50%, #1a0b4a 100%);
+  background: linear-gradient(135deg, #14171c 0%, #1b1f26 50%, #242a3a 100%);
   box-shadow: var(--shadow-xl), 0 0 0 1px rgba(129,140,248,.15);
 }
 .hero-orb { position: absolute; border-radius: 50%; filter: blur(60px); pointer-events: none; z-index: -1; }
@@ -2020,7 +2022,7 @@ input, textarea, select { font-family: inherit; }
    ============================================================ */
 .pdf-viewer-modal {
   position: fixed; inset: 0;
-  background: rgba(5,6,14,.96);
+  background: rgba(16,18,22,.96);
   z-index: 2000;
   display: none;
   backdrop-filter: blur(10px);
@@ -2669,7 +2671,7 @@ input, textarea, select { font-family: inherit; }
    ============================================================ */
 .global-search-overlay {
   position: fixed; inset: 0;
-  background: rgba(5,6,14,.72);
+  background: rgba(16,18,22,.72);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   z-index: 2500;
@@ -5027,7 +5029,7 @@ body.hide-latex-previews .latex-preview { display: none; }
    53. NAV — AI SOLVER BUTTON
    ============================================================ */
 [data-theme="dark"] .ai-home-hero {
-  background: linear-gradient(135deg, #02030a 0%, #0a0f30 55%, #1a0b4a 100%);
+  background: linear-gradient(135deg, #14171c 0%, #1b1f26 55%, #242a3a 100%);
   box-shadow: 0 24px 60px rgba(0, 0, 0, .6), 0 0 0 1px rgba(129, 140, 248, .25);
 }
 
@@ -5697,7 +5699,7 @@ body.hide-latex-previews .latex-preview { display: none; }
   z-index: 0;
 }
 [data-theme="dark"] .ai-home-hero {
-  background: linear-gradient(135deg, #02030a 0%, #0a0f30 55%, #1a0b4a 100%);
+  background: linear-gradient(135deg, #14171c 0%, #1b1f26 55%, #242a3a 100%);
   box-shadow: 0 24px 60px rgba(0,0,0,.6), 0 0 0 1px rgba(129,140,248,.25);
 }
 
@@ -9264,7 +9266,7 @@ body:has(.modal-overlay.active) .mobile-bottom-nav {
 [data-theme="dark"] .pdfv-paywall-inner {
   background:
     radial-gradient(500px 260px at 50% 0%, rgba(99, 102, 241, 0.22), transparent 70%),
-    var(--bg-surface, #0c1020);
+    var(--bg-surface, #181b20);
   border-color: rgba(99, 102, 241, 0.5);
   box-shadow:
     0 24px 60px rgba(0, 0, 0, 0.6),
@@ -10617,4 +10619,585 @@ body:has(.modal-overlay.active) .mobile-bottom-nav {
   flex: 1 1 100%;
   justify-content: center;
   font-weight: 700;
+}
+
+/* ============================================================
+   64. UI/UX HARDENING PASS
+   ------------------------------------------------------------
+   Centralized theme transitions · Night Mode palette polish ·
+   community image constraints · bio Read-More/Show-Less ·
+   full-screen app shell · 44x44 touch targets · fluid
+   responsive spacing.
+   Every rule here is ADDITIVE — nothing above is deleted.
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   64.1  CENTRALIZED THEME TRANSITION CONTRACT
+   One place to tune the Light <-> Night colour animation.
+   `aero-theme-anim` is applied to <html> for ~320ms around a
+   theme change so the colour fade is smooth without
+   permanently overriding any component's own transitions.
+   ------------------------------------------------------------ */
+:root {
+  --theme-dur: .3s;
+  --theme-ease: ease;
+  --theme-transition:
+    background-color var(--theme-dur) var(--theme-ease),
+    border-color     var(--theme-dur) var(--theme-ease),
+    color            var(--theme-dur) var(--theme-ease),
+    box-shadow       var(--theme-dur) var(--theme-ease);
+}
+
+html.aero-theme-anim,
+html.aero-theme-anim *,
+html.aero-theme-anim *::before,
+html.aero-theme-anim *::after {
+  transition:
+    background-color var(--theme-dur) var(--theme-ease),
+    border-color     var(--theme-dur) var(--theme-ease),
+    color            var(--theme-dur) var(--theme-ease),
+    fill             var(--theme-dur) var(--theme-ease),
+    stroke           var(--theme-dur) var(--theme-ease),
+    box-shadow       var(--theme-dur) var(--theme-ease) !important;
+  transition-delay: 0s !important;
+}
+
+/* The always-on shell surfaces use the same contract */
+body { transition: var(--theme-transition); }
+#app { transition: var(--theme-transition); }
+
+/* Softer accent glow in Night mode */
+[data-theme="dark"] .btn-primary {
+  box-shadow: 0 0 0 1px rgba(129,140,248,.18), 0 6px 18px rgba(99,102,241,.22);
+}
+[data-theme="dark"] .btn-accent {
+  box-shadow: 0 0 0 1px rgba(34,211,238,.20), 0 6px 18px rgba(6,182,212,.22);
+}
+[data-theme="dark"] .premium-badge { box-shadow: 0 3px 10px rgba(245,158,11,.18); }
+
+/* ------------------------------------------------------------
+   64.2  FULL-SCREEN POST-LOGIN SHELL
+   The dashboard always fills the viewport height, and on
+   tablets/phones the desktop "floating card" side gutters are
+   removed so the app is genuinely edge-to-edge.
+   ------------------------------------------------------------ */
+#app {
+  min-height: 100vh;
+  min-height: 100dvh;          /* correct height with mobile browser chrome */
+}
+.main-content { flex: 1 1 auto; min-width: 0; }
+.app-footer   { margin-top: auto; }
+.view         { min-width: 0; }
+
+@media (max-width: 1024px) {
+  #app {
+    max-width: 100%;
+    box-shadow: none;
+    border-left: 0;
+    border-right: 0;
+  }
+}
+
+@media (max-width: 860px) {
+  /* background-attachment:fixed is janky on iOS — pin it to scroll */
+  body { background-attachment: scroll; }
+}
+
+/* ------------------------------------------------------------
+   64.3  COMMUNITY SECTION — complete styling.
+   The .community-* block had NO rules at all, so uploaded
+   photos rendered at their natural size and dominated the
+   screen (especially on mobile). Images are now locked into a
+   square, cover-cropped avatar box.
+   ------------------------------------------------------------ */
+.community-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 22px 0 12px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.community-group-head::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 4px;
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--brand-500), var(--accent-500));
+}
+.community-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface-3);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 800;
+}
+.community-empty {
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  background: var(--bg-surface-2);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-md);
+}
+.community-list {
+  display: grid;
+  /* min() keeps the track from ever exceeding the viewport */
+  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.community-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+}
+.community-item:hover {
+  border-color: var(--brand-300);
+  box-shadow: var(--shadow-sm);
+}
+[data-theme="dark"] .community-item:hover,
+[data-theme="dim"]  .community-item:hover { border-color: var(--brand-500); }
+
+/* ⭐ Community image constraint — square box + cover crop */
+.community-avatar {
+  flex: 0 0 auto;
+  width: 52px;
+  height: 52px;
+  max-width: 52px;
+  max-height: 52px;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--bg-surface-3);
+  border: 2px solid var(--brand-500);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.community-avatar-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: cover;
+  object-position: center 25%;
+  border-radius: 50%;
+}
+.community-avatar-fallback {
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--brand-500);
+  letter-spacing: -.5px;
+}
+
+.community-info { flex: 1 1 auto; min-width: 0; }
+.community-info h4 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.community-meta {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+.community-bio {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.community-contact {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
+}
+.community-contact i { margin-right: 4px; color: var(--brand-500); }
+.community-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.community-actions .btn { white-space: nowrap; }
+
+@media (max-width: 640px) {
+  .community-list { grid-template-columns: 1fr; }
+  .community-item { flex-wrap: wrap; gap: 12px; padding: 13px 14px; }
+  .community-avatar { width: 46px; height: 46px; max-width: 46px; max-height: 46px; }
+  .community-info { flex: 1 1 calc(100% - 60px); }
+  .community-actions {
+    flex: 1 1 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .community-actions .btn { flex: 1 1 auto; min-width: 92px; }
+}
+
+/* ------------------------------------------------------------
+   64.4  TEAM / ALUMNI BIOS — Read More / Show Less
+   The 4-line clamp stays as the COLLAPSED state (clean UI);
+   `.is-expanded` lifts it so the full text is readable.
+   Long unbroken words can never overflow (white-space: normal
+   + overflow-wrap: anywhere).
+   ------------------------------------------------------------ */
+.professor-card p.bio-text,
+.alumni-card  .alumni-bio.bio-text,
+.friend-card  p.bio-text {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 4 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  line-height: 1.55 !important;
+  flex: 1 1 auto !important;
+}
+.professor-card p.bio-text.is-expanded,
+.alumni-card  .alumni-bio.bio-text.is-expanded,
+.friend-card  p.bio-text.is-expanded {
+  display: block !important;
+  -webkit-line-clamp: unset !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+.bio-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 44px;          /* ⭐ 44px touch target */
+  min-width: 44px;
+  margin: 2px auto 10px;
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  color: var(--brand-600);
+  background: transparent;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: background .2s var(--ease), color .2s var(--ease), border-color .2s var(--ease);
+}
+.bio-toggle:hover { background: rgba(99,102,241,.10); border-color: var(--brand-400); }
+.bio-toggle i { transition: transform .3s var(--ease); }
+.bio-toggle.is-open i { transform: rotate(180deg); }
+[data-theme="dark"] .bio-toggle,
+[data-theme="dim"]  .bio-toggle { color: var(--brand-300); }
+.bio-toggle[hidden] { display: none !important; }
+
+/* ------------------------------------------------------------
+   64.5  TOUCH TARGETS — 44x44 minimum
+   Dense media-player internals (zoom/scrub/crayon controls) are
+   deliberately excluded: inflating them breaks the player.
+   ------------------------------------------------------------ */
+.icon-btn,
+.nav-toggle {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* The header theme button is the primary Night Mode switch —
+   it must never disappear on small phones. */
+@media (max-width: 380px) {
+  .theme-toggle { display: inline-flex !important; }
+}
+
+@media (pointer: coarse), (max-width: 640px) {
+  .btn,
+  .contact-chip,
+  .admin-tab,
+  .main-nav a,
+  .user-dropdown-item,
+  .user-profile-btn,
+  .link-inline,
+  .notif-mark-all,
+  .selection-master-checkbox,
+  .bio-toggle,
+  .theme-choice,
+  .settings-row,
+  .section-card a.link-inline,
+  .app-footer a {
+    min-height: 44px;
+  }
+  .btn-sm { padding: 10px 14px; }
+  .admin-tab { display: inline-flex; align-items: center; }
+  .user-dropdown-item { display: flex; align-items: center; }
+  .main-nav a { display: flex; align-items: center; }
+}
+
+/* ------------------------------------------------------------
+   64.6  FLUID RESPONSIVE SPACING & TYPE
+   Margins/padding scale with the viewport BEFORE the layout
+   has to stack, so nothing feels cramped or oversized.
+   ------------------------------------------------------------ */
+.main-content {
+  padding:
+    clamp(14px, 2.2vw, 28px)
+    clamp(12px, 2.4vw, 32px)
+    clamp(28px, 4vw, 56px);
+}
+.section-card {
+  padding:
+    clamp(16px, 2vw, 26px)
+    clamp(14px, 2vw, 24px);
+}
+.section-card h2 { font-size: clamp(16px, 2.2vw, 20px); }
+.dash-header h2 { font-size: clamp(16px, 2.2vw, 19px); }
+.admin-tab { font-size: clamp(11.5px, 1.4vw, 12.5px); }
+
+/* Nothing may create a horizontal scrollbar */
+img, video, svg, canvas, iframe, table, pre { max-width: 100%; }
+.section-card, .modal-box, .admin-tab-content { min-width: 0; }
+
+/* Long words / URLs wrap instead of overflowing their card */
+.community-bio, .community-meta, .community-contact,
+.alumni-bio, .alumni-work, .alumni-meta,
+.professor-card p, .friend-card p,
+.settings-row-text span { overflow-wrap: anywhere; }
+
+@media (max-width: 480px) {
+  .community-group-head { font-size: 12px; }
+  .section-card h2 { font-size: 16px; }
+}
+
+/* ------------------------------------------------------------
+   64.7  SETTINGS PANEL (Night Mode control)
+   ------------------------------------------------------------ */
+.settings-section { margin-bottom: 22px; }
+.settings-section:last-of-type { margin-bottom: 6px; }
+.settings-section > h4 {
+  margin-bottom: 10px;
+  font-size: 11.5px;
+  font-weight: 800;
+  letter-spacing: .7px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 44px;
+  padding: 12px 14px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+.settings-row + .settings-row,
+.settings-row + .theme-choices { margin-top: 8px; }
+.settings-row-text { flex: 1 1 auto; min-width: 0; }
+.settings-row-text strong {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.settings-row-text span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+.settings-row[hidden] { display: none !important; }
+
+/* On/off switch — 60x44 hit area, 30px visual track */
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 60px;
+  height: 44px;
+  min-width: 60px;
+  min-height: 44px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.switch-track {
+  position: relative;
+  width: 54px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background var(--theme-dur) var(--theme-ease);
+}
+.switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0,0,0,.35);
+  transition: transform var(--theme-dur) var(--theme-ease);
+}
+.switch[aria-checked="true"] .switch-track {
+  background: linear-gradient(135deg, var(--brand-600), var(--brand-500));
+}
+.switch[aria-checked="true"] .switch-thumb { transform: translateX(24px); }
+.switch:focus-visible .switch-track { outline: 2px solid var(--brand-500); outline-offset: 3px; }
+
+/* 3-way theme picker (Light / Dim / Night) */
+.theme-choices { display: flex; gap: 8px; flex-wrap: wrap; }
+.theme-choice {
+  flex: 1 1 84px;
+  min-width: 84px;
+  min-height: 44px;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 2px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color .2s var(--ease), background .2s var(--ease),
+              color .2s var(--ease), box-shadow .2s var(--ease);
+}
+.theme-choice i { font-size: 14px; }
+.theme-choice:hover { border-color: var(--brand-400); color: var(--text-primary); }
+.theme-choice[aria-checked="true"] {
+  border-color: var(--brand-500);
+  background: rgba(99,102,241,.12);
+  color: var(--brand-600);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.12);
+}
+[data-theme="dark"] .theme-choice[aria-checked="true"],
+[data-theme="dim"]  .theme-choice[aria-checked="true"] { color: var(--brand-200); }
+.theme-choice[hidden] { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  html.aero-theme-anim,
+  html.aero-theme-anim *,
+  html.aero-theme-anim *::before,
+  html.aero-theme-anim *::after { transition: none !important; }
+  .switch-track, .switch-thumb { transition: none !important; }
+}
+
+/* ------------------------------------------------------------
+   64.8  BIO / ALUMNI BODY LAYOUT DETERMINISM
+   .alumni-body had no rules, so it shrink-wrapped its content
+   instead of filling the card. Making it an explicit flex
+   column keeps the bio + toggle full width and lets the
+   existing `margin-top:auto` on .alumni-contact actually pin
+   the contact row to the bottom of the card.
+   ------------------------------------------------------------ */
+.alumni-body {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* Bios always fill their card so line-clamp wrapping is predictable */
+.professor-card .bio-text,
+.friend-card    .bio-text,
+.alumni-card    .bio-text { width: 100%; }
+
+/* The toggle sits centred under the bio */
+.professor-card .bio-toggle,
+.friend-card    .bio-toggle,
+.alumni-card    .bio-toggle { align-self: center; }
+
+/* Community cards must never be squashed by a wide neighbour */
+.community-info, .community-bio { min-width: 0; }
+
+/* ------------------------------------------------------------
+   64.9  COMMUNITY ROW BIOS — clamp + Read More
+   The admin community list used to hard-slice bios at 200
+   characters. It now renders the full text, clamped to 3 lines,
+   with the same Read More / Show Less control as team cards.
+   ------------------------------------------------------------ */
+.community-bio.bio-text {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 3 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+.community-bio.bio-text.is-expanded {
+  display: block !important;
+  -webkit-line-clamp: unset !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+.community-info .bio-toggle {
+  align-self: flex-start;
+  margin: 6px 0 0;
+}
+
+/* ------------------------------------------------------------
+   64.10  MOBILE HORIZONTAL-OVERFLOW FIX (notifications dropdown)
+   ------------------------------------------------------------
+   Pre-existing bug: `.notif-wrap` is `position: relative`, so the
+   dropdown's containing block was that 44px-wide wrapper. The
+   ≤640px rule `left: 8px; right: 8px` then produced a 360px-wide
+   box starting at the button (right edge ~463px on a 390px
+   screen) — a horizontal overflow of ~73px.
+   Dropping the wrapper's positioning context lets the dropdown
+   anchor to #appHeader (position: sticky) and span the viewport.
+   Safe because the unread badge is positioned by `.notif-btn`
+   (`position: relative`), not by `.notif-wrap`.
+   ------------------------------------------------------------ */
+@media (max-width: 640px) {
+  .notif-wrap { position: static; }
+  .user-info  { position: static; }
+  .notif-dropdown {
+    top: calc(100% + 6px);
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+  }
 }
