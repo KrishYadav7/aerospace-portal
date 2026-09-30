@@ -6,12 +6,13 @@
   <meta name="theme-color" content="#0b1226">
 <link rel="manifest" href="manifest.json">
   <!-- Logo / Favicon -->
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=49">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=49">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=49">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=49">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=49">
-  <link rel="shortcut icon" href="/favicon-32.png?v=49">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=106">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=106">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=106">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=106">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=106">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=106">
+  <link rel="shortcut icon" href="/favicon-32.png?v=106">
   <title>AeroGyan Education – Course Portal</title>
 
   <!-- Critical preconnects (only 3 — extra ones waste time) -->
@@ -41,7 +42,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=104">
+  <link rel="stylesheet" href="styles.css?v=106">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -558,6 +559,47 @@
             </button>
           </div>
 
+          <!-- ⭐ FEATURE: Premium Access Control — search & filter students -->
+          <div class="student-filter-bar">
+            <div class="student-search-wrap">
+              <i class="fas fa-search"></i>
+              <input type="text"
+                     id="studentSearchInput"
+                     class="student-search-input"
+                     placeholder="Search student by name, username or email…"
+                     autocomplete="off"
+                     spellcheck="false"
+                     oninput="setStudentSearchFilter(this.value)">
+              <button type="button" class="student-search-clear" id="studentSearchClear"
+                      title="Clear search" hidden onclick="clearStudentSearch()">
+                <i class="fas fa-times"></i>
+              </button>
+            </div>
+
+            <select id="studentPremiumFilter" class="student-filter-select"
+                    title="Filter by premium access"
+                    onchange="setStudentPremiumFilter(this.value)">
+              <option value="all">All access levels</option>
+              <option value="premium">Premium access only</option>
+              <option value="free">No premium access</option>
+            </select>
+
+            <select id="studentSortSelect" class="student-filter-select"
+                    title="Sort students"
+                    onchange="setStudentSort(this.value)">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="name">Name (A–Z)</option>
+            </select>
+
+            <button class="btn btn-outline btn-sm" id="studentFilterClearBtn"
+                    title="Clear search &amp; filters" onclick="clearStudentFilters()">
+              <i class="fas fa-filter-circle-xmark"></i> Clear
+            </button>
+          </div>
+
+          <div class="student-filter-summary" id="studentFilterSummary" hidden></div>
+
           <div class="student-selection-bar" id="adminStudentSelectionBar"></div>
 
           <div id="adminStudentList"></div>
@@ -911,6 +953,51 @@
         </button>
         <button type="button" class="btn btn-primary" onclick="closeModal('credentialsModal')">
           <i class="fas fa-check"></i> Done
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ GRANT PREMIUM ACCESS MODAL (Admin → Students) ============ -->
+  <div class="modal-overlay" id="grantPremiumModal">
+    <div class="modal-box" style="max-width:520px;">
+      <h3><i class="fas fa-crown"></i> Grant Premium Access</h3>
+      <p class="modal-sub">
+        Unlock every premium course, material and quiz for
+        <strong id="grantPremiumStudentName">this student</strong>.
+      </p>
+
+      <div class="form-group">
+        <label>Access duration</label>
+        <select id="grantPremiumDuration" onchange="onGrantPremiumDurationChange()">
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="180">180 days</option>
+          <option value="365" selected>1 year (365 days)</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </div>
+
+      <div class="form-group" id="grantPremiumCustomWrap" hidden>
+        <label>Custom duration (days)</label>
+        <input type="number" id="grantPremiumCustomDays" min="1" max="3650" step="1"
+               value="365" oninput="updateGrantPremiumSummary()">
+      </div>
+
+      <div class="form-group">
+        <label>Note <span style="font-weight:400;color:var(--text-tertiary);">(optional — stored in the grant history)</span></label>
+        <input type="text" id="grantPremiumNote" maxlength="140"
+               placeholder="e.g. Scholarship grant, support resolution…">
+      </div>
+
+      <div class="grant-premium-summary" id="grantPremiumSummary"></div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="closeModal('grantPremiumModal')">
+          Cancel
+        </button>
+        <button type="button" class="btn btn-success" id="grantPremiumSubmitBtn" onclick="submitGrantPremium()">
+          <i class="fas fa-crown"></i> Grant Premium
         </button>
       </div>
     </div>
@@ -1547,8 +1634,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=105" defer></script>
-  <script src="app.js?v=105" defer></script>
+ 	<script src="media-viewer.js?v=106" defer></script>
+  <script src="app.js?v=106" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {

@@ -836,6 +836,7 @@ app.get('/icon-256.png',         (req, res) => sendCached(res, 'icon-256.png', 6
 app.get('/icon-384.png',         (req, res) => sendCached(res, 'icon-384.png', 604800));
 app.get('/icon-512.png',         (req, res) => sendCached(res, 'icon-512.png', 604800));
 app.get('/logo.svg',             (req, res) => sendCached(res, 'logo.svg', 604800));
+app.get('/favicon.svg',          (req, res) => sendCached(res, 'favicon.svg', 604800));
 app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json', 86400));
 app.get('/sw.js',           (req, res) => {
   res.setHeader('Cache-Control', 'no-cache'); // SW को हमेशा fresh चाहिए
@@ -7103,10 +7104,38 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
        activityLog / quizResults / notifications cuts the payload
        from tens of MB down to a few hundred KB. */
     const students = await User.find({ role: 'student' })
-      .select('username fullName email phone role createdAt')
+      .select('username fullName email phone role createdAt subscription')
       .sort({ createdAt: -1 })
       .lean();
-    res.json({ success: true, students });
+
+    /* ⭐ PREMIUM-ACCESS FLAGS (admin Students tab search/filter).
+       Computed here so the client never has to interpret raw
+       subscription state, and so the payload stays small — the
+       subscription history array is deliberately NOT shipped. */
+    const now = Date.now();
+    const studentsOut = students.map(s => {
+      const sub = s.subscription || {};
+      const expiresMs = sub.expiresAt ? new Date(sub.expiresAt).getTime() : null;
+      const premiumActive = !!(sub.active === true && sub.status === 'active' &&
+        (expiresMs === null || expiresMs > now));
+      return {
+        _id: s._id,
+        username: s.username,
+        fullName: s.fullName,
+        email: s.email,
+        phone: s.phone,
+        role: s.role,
+        createdAt: s.createdAt,
+        premium: {
+          active: premiumActive,
+          status: sub.status || 'none',
+          expiresAt: sub.expiresAt || null,
+          daysLeft: expiresMs === null ? null : Math.ceil((expiresMs - now) / 86400000)
+        }
+      };
+    });
+
+    res.json({ success: true, students: studentsOut });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
 /* ============================================================

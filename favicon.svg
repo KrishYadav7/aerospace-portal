@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="AeroGyan Education">
+  <title>AeroGyan Education</title>
+
+  <defs>
+    <!-- Annulus that clips the tricolour bands into a ring -->
+    <mask id="agRingMask">
+      <circle cx="256" cy="256" r="172" fill="none" stroke="#ffffff" stroke-width="40"/>
+    </mask>
+
+    <!-- Soft saffron / green wash behind the aircraft -->
+    <linearGradient id="agWash" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0"    stop-color="#FF9933" stop-opacity="0.20"/>
+      <stop offset="0.40" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="0.60" stop-color="#FFFFFF" stop-opacity="0"/>
+      <stop offset="1"    stop-color="#138808" stop-opacity="0.20"/>
+    </linearGradient>
+    <clipPath id="agInnerClip"><circle cx="256" cy="256" r="150"/></clipPath>
+  </defs>
+
+  <!-- 1 · Outer white disc + navy border -->
+  <circle cx="256" cy="256" r="254" fill="#ffffff"/>
+  <circle cx="256" cy="256" r="251" fill="none" stroke="#000080" stroke-width="6"/>
+
+  <!-- 2 · Indian tricolour ring -->
+  <g mask="url(#agRingMask)">
+    <rect x="0" y="0"       width="512" height="198.67" fill="#FF9933"/>
+    <rect x="0" y="198.67"  width="512" height="114.66" fill="#ffffff"/>
+    <rect x="0" y="313.33"  width="512" height="198.67" fill="#138808"/>
+  </g>
+  <circle cx="256" cy="256" r="192" fill="none" stroke="#000080" stroke-width="4"/>
+  <circle cx="256" cy="256" r="152" fill="none" stroke="#000080" stroke-width="4"/>
+
+  <!-- 3 · Inner disc -->
+  <circle cx="256" cy="256" r="150" fill="#ffffff"/>
+  <rect x="100" y="100" width="312" height="312" fill="url(#agWash)" clip-path="url(#agInnerClip)"/>
+
+  <!-- 4 · Aircraft silhouette (nose up) -->
+  <g fill="#000080" transform="translate(256 256) scale(1.08) translate(-256 -256)">
+    <path d="M256 148 C272 176 280 216 280 262 L280 350 C280 366 270 376 256 376 C242 376 232 366 232 350 L232 262 C232 216 240 176 256 148 Z"/>
+    <path d="M272 236 L372 298 L374 314 L276 290 Z"/>
+    <path d="M240 236 L140 298 L138 314 L236 290 Z"/>
+    <path d="M270 320 L316 348 L316 360 L268 348 Z"/>
+    <path d="M242 320 L196 348 L196 360 L244 348 Z"/>
+  </g>
+
+  <!-- 5 · Curved brand text wrapping the border -->
+  <g fill="#000080" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+     font-weight="700" font-size="50" letter-spacing="5.8">
+    <path id="agTopArc" d="M107.4 122.2 A200 200 0 0 1 404.6 122.2" fill="none"/>
+    <text><textPath href="#agTopArc" xlink:href="#agTopArc" startOffset="50%" text-anchor="middle">AEROGYAN</textPath></text>
+  </g>
+  <g fill="#000080" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+     font-weight="700" font-size="50" letter-spacing="3.6">
+    <path id="agBottomArc" d="M104.3 436.8 A236 236 0 0 0 407.7 436.8" fill="none"/>
+    <text><textPath href="#agBottomArc" xlink:href="#agBottomArc" startOffset="50%" text-anchor="middle">EDUCATION</textPath></text>
+  </g>
+
+  <!-- 6 · Side accents -->
+  <g fill="#000080">
+    <path d="M36 245 L46 256 L36 267 L26 256 Z"/>
+    <path d="M476 245 L486 256 L476 267 L466 256 Z"/>
+  </g>
+</svg>

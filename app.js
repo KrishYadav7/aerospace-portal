@@ -1069,6 +1069,9 @@ function startSessionHeartbeat() {
   _sessionKilled = false;
   _lastSessionCheck = 0;
 
+  /* ⭐ Start the 10-minute inactivity auto-logout with the session */
+  try { startInactivityWatch(); } catch (e) { console.error('[inactivity] start failed:', e); }
+
   // First check shortly after login, so any immediate device clash is caught
   setTimeout(() => {
     if (!_sessionKilled) checkSessionAlive(true);
@@ -1099,6 +1102,8 @@ function stopSessionHeartbeat() {
     clearTimeout(_sessionHeartbeatTimer);
     _sessionHeartbeatTimer = null;
   }
+  /* ⭐ Never leave the inactivity countdown running after logout */
+  try { stopInactivityWatch(); } catch (e) {}
 }
 
 async function checkSessionAlive(force) {
@@ -1179,6 +1184,170 @@ let _lastInteractionCheck = 0;
 window.addEventListener('online', () => {
   if (currentUser && !_sessionKilled) checkSessionAlive(true);
 });
+
+/* ============================================================
+   ⭐ 10-MINUTE INACTIVITY AUTO-LOGOUT
+   ------------------------------------------------------------
+   Behaviour
+     • Genuine user activity (mouse / keyboard / touch / scroll /
+       wheel / returning to the tab) keeps the session alive.
+     • After 9 minutes of silence an on-screen warning appears
+       with a live 60-second countdown.
+     • Any activity — or the "Stay Signed In" button — dismisses
+       the warning and restarts the full 10-minute window.
+     • After the full 10 minutes the user is logged out cleanly
+       through the existing logout() path and told why.
+
+   Live-safety notes
+     • Started and stopped together with the session heartbeat,
+       so it can only ever run for a logged-in user.
+     • The tick re-checks `currentUser` and stops itself if the
+       session ended by any other route.
+     • Activity resets are throttled to once per second so
+       mousemove can never flood the timer machinery.
+
+   Tuning: change INACTIVITY_LIMIT_MS (hard logout) and
+           INACTIVITY_WARN_MS (warning lead time).
+   ============================================================ */
+const INACTIVITY_LIMIT_MS = 10 * 60 * 1000;   // 10 minutes → logout
+const INACTIVITY_WARN_MS  = 60 * 1000;        // warning shows 60s before
+
+let _inactivityWarnTimer  = null;
+let _inactivityOutTimer   = null;
+let _inactivityCountdown  = null;   // 1s interval that drives the counter
+let _inactivityRunning    = false;
+let _inactivityLoggingOut = false;
+let _lastActivityReset    = 0;
+
+function startInactivityWatch() {
+  stopInactivityWatch();
+  if (!currentUser) return;
+  _inactivityRunning = true;
+  _inactivityLoggingOut = false;
+  _lastActivityReset = Date.now();
+  _armInactivityTimers();
+}
+
+function stopInactivityWatch() {
+  _inactivityRunning = false;
+  _inactivityLoggingOut = false;
+  if (_inactivityWarnTimer) { clearTimeout(_inactivityWarnTimer); _inactivityWarnTimer = null; }
+  if (_inactivityOutTimer)  { clearTimeout(_inactivityOutTimer);  _inactivityOutTimer  = null; }
+  hideInactivityWarning();
+}
+
+function _armInactivityTimers() {
+  if (_inactivityWarnTimer) { clearTimeout(_inactivityWarnTimer); _inactivityWarnTimer = null; }
+  if (_inactivityOutTimer)  { clearTimeout(_inactivityOutTimer);  _inactivityOutTimer  = null; }
+
+  /* ① Warning at 9 minutes */
+  _inactivityWarnTimer = setTimeout(() => {
+    _inactivityWarnTimer = null;
+    if (!_inactivityRunning || !currentUser || _inactivityLoggingOut) return;
+    showInactivityWarning();
+  }, INACTIVITY_LIMIT_MS - INACTIVITY_WARN_MS);
+
+  /* ② Hard logout at 10 minutes */
+  _inactivityOutTimer = setTimeout(() => {
+    _inactivityOutTimer = null;
+    if (!_inactivityRunning || !currentUser || _inactivityLoggingOut) return;
+
+    _inactivityLoggingOut = true;
+    stopInactivityWatch();
+
+    try {
+      logout();                     // existing, well-tested logout path
+    } catch (e) {
+      console.error('[inactivity] logout threw:', e);
+    }
+
+    if (typeof showToast === 'function') {
+      showToast('You were signed out after 10 minutes of inactivity.', 'info');
+    }
+  }, INACTIVITY_LIMIT_MS);
+}
+
+/* Any real user action resets the clock (throttled to 1/second). */
+function _noteUserActivity() {
+  if (!_inactivityRunning || !currentUser || _inactivityLoggingOut) return;
+
+  const now = Date.now();
+  if (now - _lastActivityReset < 1000) return;
+  _lastActivityReset = now;
+
+  if (document.getElementById('inactivityWarning')) hideInactivityWarning();
+  _armInactivityTimers();
+}
+
+['mousedown', 'mousemove', 'click', 'keydown', 'scroll', 'wheel',
+ 'touchstart', 'touchmove', 'pointerdown'].forEach(evt => {
+  document.addEventListener(evt, _noteUserActivity, { passive: true, capture: true });
+});
+
+/* Returning to the tab / window counts as activity too */
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) _noteUserActivity();
+});
+window.addEventListener('focus', _noteUserActivity);
+
+/* ---- On-screen warning overlay (built in JS — no markup dependency) ---- */
+function showInactivityWarning() {
+  if (document.getElementById('inactivityWarning')) return;
+
+  const totalSeconds = Math.round(INACTIVITY_WARN_MS / 1000);
+
+  const el = document.createElement('div');
+  el.id = 'inactivityWarning';
+  el.className = 'inactivity-overlay';
+  el.setAttribute('role', 'alertdialog');
+  el.setAttribute('aria-live', 'assertive');
+  el.innerHTML = `
+    <div class="inactivity-card">
+      <div class="inactivity-icon"><i class="fas fa-hourglass-half"></i></div>
+      <h3>Are you still there?</h3>
+      <p>You&rsquo;ve been inactive for a while. For your security you&rsquo;ll be signed out in</p>
+      <div class="inactivity-count" id="inactivityCount">${totalSeconds}</div>
+      <p class="inactivity-hint">Move the mouse, tap the screen, or press any key to stay signed in.</p>
+      <div class="inactivity-actions">
+        <button type="button" class="btn btn-primary" onclick="staySignedIn()">
+          <i class="fas fa-hand"></i> Stay Signed In
+        </button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(el);
+
+  let remaining = totalSeconds;
+  const countEl = el.querySelector('#inactivityCount');
+  if (countEl) countEl.textContent = String(remaining);
+
+  if (_inactivityCountdown) { clearInterval(_inactivityCountdown); _inactivityCountdown = null; }
+  _inactivityCountdown = setInterval(() => {
+    remaining -= 1;
+    const c = document.getElementById('inactivityCount');
+    if (c) c.textContent = String(Math.max(remaining, 0));
+    if (remaining <= 0) {
+      clearInterval(_inactivityCountdown);
+      _inactivityCountdown = null;
+    }
+  }, 1000);
+}
+
+function hideInactivityWarning() {
+  if (_inactivityCountdown) { clearInterval(_inactivityCountdown); _inactivityCountdown = null; }
+  const el = document.getElementById('inactivityWarning');
+  if (el) el.remove();
+}
+
+/* Explicit "Stay Signed In" button — also counts as activity. */
+function staySignedIn() {
+  _lastActivityReset = 0;     // bypass the 1-second throttle
+  _noteUserActivity();
+  if (typeof showToast === 'function') {
+    showToast('Welcome back — your session has been extended.', 'success');
+  }
+}
+
 /* ============================================================
    STALE SESSION HANDLER
    Called by the fetch interceptor when a protected /api/ call
@@ -4261,6 +4430,248 @@ async function toggleProfessorVisibility(professorId, newVisible) {
   }
 }
 
+/* ============================================================
+   ⭐ PREMIUM ACCESS CONTROL — Admin → Students
+   ------------------------------------------------------------
+   Search / filter the student roster, then grant premium
+   (subscription) access straight from the matching card.
+
+   Live-safety design:
+     • /api/students is called ONCE per refresh. Typing in the
+       search box only re-renders from the local cache, so the
+       server is never spammed while the admin searches.
+     • Purely additive — with no search/filter active the list
+       renders exactly as it did before.
+   ============================================================ */
+let _allStudentsCache = [];        // last full roster from /api/students
+let _studentSearch = '';           // free-text query
+let _studentPremiumFilter = 'all'; // all | premium | free
+let _studentSort = 'newest';       // newest | oldest | name
+
+function _studentHasPremium(s) {
+  return !!(s && s.premium && s.premium.active);
+}
+
+function _studentMatchesSearch(s, q) {
+  if (!q) return true;
+  const hay = `${s.fullName || ''} ${s.username || ''} ${s.email || ''} ${s.phone || ''}`.toLowerCase();
+  // Every whitespace-separated token must match → "rahul sharma" also finds "Sharma Rahul"
+  return q.split(/\s+/).filter(Boolean).every(tok => hay.includes(tok));
+}
+
+function _getFilteredStudents() {
+  let list = _allStudentsCache.slice();
+
+  list = list.filter(s => _studentMatchesSearch(s, _studentSearch.trim().toLowerCase()));
+
+  if (_studentPremiumFilter === 'premium')   list = list.filter(_studentHasPremium);
+  else if (_studentPremiumFilter === 'free') list = list.filter(s => !_studentHasPremium(s));
+
+  if (_studentSort === 'name') {
+    list.sort((a, b) => String(a.fullName || a.username || '')
+      .localeCompare(String(b.fullName || b.username || ''), 'en', { sensitivity: 'base' }));
+  } else if (_studentSort === 'oldest') {
+    list.sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0));
+  } else {
+    list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  }
+  return list;
+}
+
+/* ---- Event handlers wired from index.html ---- */
+function setStudentSearchFilter(value) {
+  _studentSearch = String(value == null ? '' : value);
+  /* Keep the static input in sync if we were called programmatically
+     (guarded so normal typing never has its caret disturbed). */
+  const inp = $('studentSearchInput');
+  if (inp && inp.value !== _studentSearch) inp.value = _studentSearch;
+  const clearBtn = $('studentSearchClear');
+  if (clearBtn) clearBtn.hidden = _studentSearch.length === 0;
+  renderStudentListFromCache();
+}
+
+function clearStudentSearch() {
+  _studentSearch = '';
+  const inp = $('studentSearchInput');
+  if (inp) { inp.value = ''; try { inp.focus(); } catch (e) {} }
+  const clearBtn = $('studentSearchClear');
+  if (clearBtn) clearBtn.hidden = true;
+  renderStudentListFromCache();
+}
+
+function setStudentPremiumFilter(value) {
+  _studentPremiumFilter = (value === 'premium' || value === 'free') ? value : 'all';
+  const sel = $('studentPremiumFilter');
+  if (sel && sel.value !== _studentPremiumFilter) sel.value = _studentPremiumFilter;
+  renderStudentListFromCache();
+}
+
+function setStudentSort(value) {
+  _studentSort = (value === 'oldest' || value === 'name') ? value : 'newest';
+  const srt = $('studentSortSelect');
+  if (srt && srt.value !== _studentSort) srt.value = _studentSort;
+  renderStudentListFromCache();
+}
+
+function clearStudentFilters() {
+  _studentSearch = '';
+  _studentPremiumFilter = 'all';
+  _studentSort = 'newest';
+  const inp = $('studentSearchInput');   if (inp) inp.value = '';
+  const sel = $('studentPremiumFilter'); if (sel) sel.value = 'all';
+  const srt = $('studentSortSelect');    if (srt) srt.value = 'newest';
+  const clearBtn = $('studentSearchClear'); if (clearBtn) clearBtn.hidden = true;
+  renderStudentListFromCache();
+}
+
+/* Renders the roster from cache applying search / filter / sort.
+   NEVER hits the network — safe to call on every keystroke. */
+function renderStudentListFromCache() {
+  const container = $('adminStudentList');
+  if (!container) return;
+
+  const total = _allStudentsCache.length;
+  const list = _getFilteredStudents();
+  const query = _studentSearch.trim();
+  const filtersActive = !!query || _studentPremiumFilter !== 'all';
+
+  const countEl = $('studentCountLabel');
+  if (countEl) {
+    countEl.textContent = filtersActive
+      ? `${list.length} of ${total} student${total === 1 ? '' : 's'}`
+      : `${total} student${total === 1 ? '' : 's'}`;
+  }
+
+  /* ---- Filter summary strip ---- */
+  const summary = $('studentFilterSummary');
+  if (summary) {
+    if (filtersActive) {
+      const bits = [];
+      if (query) bits.push(`matching “${escapeHtml(query)}”`);
+      if (_studentPremiumFilter === 'premium') bits.push('with premium access');
+      if (_studentPremiumFilter === 'free')    bits.push('without premium access');
+      summary.hidden = false;
+      summary.innerHTML = `<i class="fas fa-filter"></i> Showing <strong>${list.length}</strong> of <strong>${total}</strong> students ${bits.join(' ')}`;
+    } else {
+      summary.hidden = true;
+      summary.innerHTML = '';
+    }
+  }
+
+  /* Drop selections for students that no longer exist */
+  const validIds = new Set(_allStudentsCache.map(s => String(s._id)));
+  Array.from(_emailSelectedIds).forEach(id => {
+    if (!validIds.has(id)) _emailSelectedIds.delete(id);
+  });
+
+  renderStudentSelectionBar(
+    _emailSelectedIds.size,
+    list.filter(s => s.email && s.email.trim()).length
+  );
+
+  if (total === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-user-graduate"></i>
+        <p>No students registered yet.</p>
+        <button class="btn btn-success" style="margin-top:16px;" onclick="openStudentRegModal()">
+          <i class="fas fa-user-plus"></i> Register First Student
+        </button>
+      </div>`;
+    return;
+  }
+
+  if (list.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i class="fas fa-magnifying-glass"></i>
+        <p>No students match your search.</p>
+        <p style="margin-top:6px;font-size:13px;color:var(--text-tertiary);">Try a different name, username or email.</p>
+        <button class="btn btn-outline" style="margin-top:16px;" onclick="clearStudentFilters()">
+          <i class="fas fa-filter-circle-xmark"></i> Clear Filters
+        </button>
+      </div>`;
+    return;
+  }
+
+  let html = `<div class="student-grid">`;
+  list.forEach(s => {
+    const sid = String(s._id);
+    const selected = _emailSelectedIds.has(sid);
+    const hasEmail = !!(s.email && s.email.trim());
+    const name = s.fullName || s.username || 'Student';
+    const initials = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+    const created = s.createdAt
+      ? new Date(s.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+      : '—';
+
+    /* ⭐ Premium-access badge */
+    const prem = s.premium || {};
+    const hasPremium = !!prem.active;
+    let premiumBadge;
+    if (hasPremium) {
+      const until = prem.expiresAt
+        ? new Date(prem.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+        : null;
+      premiumBadge = `<span class="student-premium-badge active" title="Premium access active">
+          <i class="fas fa-crown"></i> Premium${until ? ' · till ' + escapeHtml(until) : ''}
+        </span>`;
+    } else {
+      premiumBadge = `<span class="student-premium-badge" title="No active premium access">
+          <i class="fas fa-lock"></i> Free
+        </span>`;
+    }
+
+    html += `
+      <div class="student-card ${selected ? 'selected' : ''} ${!hasEmail ? 'no-email' : ''}" data-student-id="${sid}">
+        <label class="student-select-checkbox" title="${hasEmail ? 'Select for email' : 'No email on file'}" onclick="event.stopPropagation();">
+          <input type="checkbox"
+                 ${selected ? 'checked' : ''}
+                 ${!hasEmail ? 'disabled' : ''}
+                 onchange="toggleStudentEmailSelection('${sid}', this.checked)">
+          <span class="student-select-box"></span>
+        </label>
+        <div class="student-card-header">
+          <div class="student-avatar">${initials}</div>
+          <div class="student-card-info">
+            <h4>${escapeHtml(s.fullName || s.username)}</h4>
+            <div class="student-username">@${escapeHtml(s.username)}</div>
+          </div>
+        </div>
+        <div class="student-card-body">
+          <div class="student-meta-row">
+            <i class="fas fa-envelope"></i>
+            <span>${hasEmail
+              ? escapeHtml(s.email)
+              : '<em style="color:var(--text-tertiary);">No email — can\'t receive bulk mail</em>'}</span>
+          </div>
+          <div class="student-meta-row">
+            <i class="fas fa-calendar-plus"></i>
+            <span>Joined ${created}</span>
+          </div>
+          <div class="student-meta-row">
+            ${premiumBadge}
+          </div>
+        </div>
+        <div class="student-card-actions">
+          <button class="btn ${hasPremium ? 'btn-outline' : 'btn-success'} btn-sm student-grant-btn"
+                  onclick="openGrantPremiumModal('${sid}')"
+                  title="${hasPremium ? 'Extend or renew premium access' : 'Grant access to all premium courses'}">
+            <i class="fas fa-crown"></i> ${hasPremium ? 'Extend Premium' : 'Grant Premium'}
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${sid}', ${jsStr(name)})">
+            <i class="fas fa-key"></i> Reset Password
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="deleteStudent('${sid}', ${jsStr(name)})">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>`;
+  });
+  html += `</div>`;
+  container.innerHTML = html;
+}
+
 async function renderAdminStudents() {
   const container = $('adminStudentList');
   if (!container) return;
@@ -4269,86 +4680,18 @@ async function renderAdminStudents() {
   try {
     // fetchJSON → interceptor attaches token + surfaces clean errors
     const data = await fetchJSON(`${API_BASE}/students?_t=${Date.now()}`);
-    const countEl = $('studentCountLabel');
 
     if (!data.success) throw new Error(data.message || 'Failed to load students');
 
-    if (countEl) countEl.textContent = `${data.students.length} student${data.students.length === 1 ? '' : 's'}`;
+    /* ⭐ Keep the module query in sync with the static search input
+       (the input survives re-renders; this state is the source of truth). */
+    const inp = $('studentSearchInput');
+    if (inp && inp.value !== _studentSearch) _studentSearch = inp.value;
+    const clearBtn = $('studentSearchClear');
+    if (clearBtn) clearBtn.hidden = !_studentSearch;
 
-    if (data.students.length === 0) {
-      renderStudentSelectionBar(0, 0);
-      container.innerHTML = `
-        <div class="empty-state">
-          <i class="fas fa-user-graduate"></i>
-          <p>No students registered yet.</p>
-          <button class="btn btn-success" style="margin-top:16px;" onclick="openStudentRegModal()">
-            <i class="fas fa-user-plus"></i> Register First Student
-          </button>
-        </div>`;
-
-      return;
-    }
-
-    const validIds = new Set(data.students.map(s => String(s._id)));
-    Array.from(_emailSelectedIds).forEach(id => {
-      if (!validIds.has(id)) _emailSelectedIds.delete(id);
-    });
-
-    const withEmail = data.students.filter(s => s.email && s.email.trim()).length;
-
-    renderStudentSelectionBar(_emailSelectedIds.size, withEmail);
-
-    let html = `<div class="student-grid">`;
-    data.students.forEach(s => {
-      const sid = String(s._id);
-      const selected = _emailSelectedIds.has(sid);
-      const hasEmail = !!(s.email && s.email.trim());
-      const initials = (s.fullName || s.username || '?')
-        .split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
-      const created = s.createdAt
-        ? new Date(s.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-        : '—';
-
-      html += `
-        <div class="student-card ${selected ? 'selected' : ''} ${!hasEmail ? 'no-email' : ''}" data-student-id="${sid}">
-          <label class="student-select-checkbox" title="${hasEmail ? 'Select for email' : 'No email on file'}" onclick="event.stopPropagation();">
-            <input type="checkbox"
-                   ${selected ? 'checked' : ''}
-                   ${!hasEmail ? 'disabled' : ''}
-                   onchange="toggleStudentEmailSelection('${sid}', this.checked)">
-            <span class="student-select-box"></span>
-          </label>
-          <div class="student-card-header">
-            <div class="student-avatar">${initials}</div>
-            <div class="student-card-info">
-              <h4>${escapeHtml(s.fullName || s.username)}</h4>
-              <div class="student-username">@${escapeHtml(s.username)}</div>
-            </div>
-          </div>
-          <div class="student-card-body">
-            <div class="student-meta-row">
-              <i class="fas fa-envelope"></i>
-              <span>${hasEmail
-                ? escapeHtml(s.email)
-                : '<em style="color:var(--text-tertiary);">No email — can\'t receive bulk mail</em>'}</span>
-            </div>
-            <div class="student-meta-row">
-              <i class="fas fa-calendar-plus"></i>
-              <span>Joined ${created}</span>
-            </div>
-          </div>
-          <div class="student-card-actions">
-            <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${sid}', ${jsStr(s.fullName || s.username)})">
-              <i class="fas fa-key"></i> Reset Password
-            </button>
-            <button class="btn btn-danger btn-sm" onclick="deleteStudent('${sid}', ${jsStr(s.fullName || s.username)})">
-              <i class="fas fa-trash"></i>
-            </button>
-          </div>
-        </div>`;
-    });
-    html += `</div>`;
-    container.innerHTML = html;
+    _allStudentsCache = Array.isArray(data.students) ? data.students : [];
+    renderStudentListFromCache();
   } catch (err) {
     console.error('renderAdminStudents:', err);
     renderStudentSelectionBar(0, 0);
@@ -4622,6 +4965,121 @@ async function adminRevokeSubscription(userId) {
     else showToast(data.message || 'Failed.', 'error');
   } catch (err) { showToast(err.message || 'Server error.', 'error'); }
 }
+
+/* ============================================================
+   ⭐ GRANT PREMIUM ACCESS — modal opened from the Students tab.
+   Reuses the existing, battle-tested admin grant endpoint:
+       POST /api/admin/subscription/:userId/grant
+   Nothing new is introduced server-side for this flow.
+   ============================================================ */
+let _grantPremiumUserId = null;
+
+function openGrantPremiumModal(userId) {
+  const sid = String(userId);
+  const student = _allStudentsCache.find(s => String(s._id) === sid);
+  if (!student) {
+    return showToast('Student not found in the current list. Refresh and try again.', 'error');
+  }
+
+  _grantPremiumUserId = sid;
+
+  const nameEl = $('grantPremiumStudentName');
+  if (nameEl) nameEl.textContent = student.fullName || student.username || 'this student';
+
+  const durEl = $('grantPremiumDuration');
+  if (durEl) durEl.value = '365';
+
+  const customWrap = $('grantPremiumCustomWrap');
+  if (customWrap) customWrap.hidden = true;
+  const customEl = $('grantPremiumCustomDays');
+  if (customEl) customEl.value = '365';
+
+  const noteEl = $('grantPremiumNote');
+  if (noteEl) noteEl.value = '';
+
+  const btn = $('grantPremiumSubmitBtn');
+  if (btn) btn.disabled = false;
+
+  updateGrantPremiumSummary();
+  openModal('grantPremiumModal');
+}
+
+function onGrantPremiumDurationChange() {
+  const durEl = $('grantPremiumDuration');
+  const customWrap = $('grantPremiumCustomWrap');
+  const isCustom = !!durEl && durEl.value === 'custom';
+  if (customWrap) customWrap.hidden = !isCustom;
+  updateGrantPremiumSummary();
+}
+
+function _grantPremiumDays() {
+  const durEl = $('grantPremiumDuration');
+  if (!durEl) return 0;
+
+  if (durEl.value === 'custom') {
+    const customEl = $('grantPremiumCustomDays');
+    const n = parseInt(customEl ? customEl.value : '', 10);
+    return (Number.isFinite(n) && n > 0) ? Math.min(n, 3650) : 0;
+  }
+
+  const n = parseInt(durEl.value, 10);
+  return (Number.isFinite(n) && n > 0) ? n : 0;
+}
+
+function updateGrantPremiumSummary() {
+  const el = $('grantPremiumSummary');
+  if (!el) return;
+
+  const days = _grantPremiumDays();
+  if (!days) {
+    el.classList.add('warn');
+    el.innerHTML = `<i class="fas fa-triangle-exclamation"></i> Enter a valid number of days (1–3650).`;
+    return;
+  }
+
+  el.classList.remove('warn');
+  const until = new Date(Date.now() + days * 86400000)
+    .toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  el.innerHTML = `<i class="fas fa-circle-info"></i> Premium access for <strong>${days} day${days === 1 ? '' : 's'}</strong> — until <strong>${until}</strong>.`;
+}
+
+async function submitGrantPremium() {
+  if (!_grantPremiumUserId) return showToast('No student selected.', 'error');
+
+  const days = _grantPremiumDays();
+  if (!days) return showToast('Enter a valid number of days (1–3650).', 'error');
+
+  const noteEl = $('grantPremiumNote');
+  const note = noteEl ? noteEl.value.trim() : '';
+  const btn = $('grantPremiumSubmitBtn');
+  if (btn) btn.disabled = true;
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/subscription/${_grantPremiumUserId}/grant`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        days,
+        note: note || `Admin granted ${days} day(s) from Students tab`
+      })
+    });
+
+    if (!data || !data.success) {
+      if (btn) btn.disabled = false;
+      return showToast((data && data.message) || 'Could not grant premium access.', 'error');
+    }
+
+    closeModal('grantPremiumModal');
+    showToast(`👑 Premium access granted for ${days} day${days === 1 ? '' : 's'}.`, 'success');
+
+    /* Refresh the roster so the new badge + expiry show immediately */
+    await renderAdminStudents();
+  } catch (err) {
+    if (btn) btn.disabled = false;
+    showToast(err.message || 'Server error while granting premium access.', 'error');
+  }
+}
+
 /* ---- Selection helpers ---- */
 function renderStudentSelectionBar(selectedCount, withEmailCount) {
   const bar = $('adminStudentSelectionBar');
@@ -4704,13 +5162,17 @@ function openEmailStudentsModal() {
   const modal = $('emailStudentsModal');
   if (!modal) return showToast('Email modal missing.', 'error');
 
-  const selectedCards = Array.from(_emailSelectedIds)
-    .map(id => document.querySelector(`.student-card[data-student-id="${id}"]`))
-    .filter(Boolean);
+  /* ⭐ Search/filter-safe: a selected student may currently be hidden
+     by the Students-tab filter, so fall back to the cached roster for
+     the display name instead of dropping them from the preview. */
+  const _nameById = new Map(
+    _allStudentsCache.map(s => [String(s._id), s.fullName || s.username || 'Student'])
+  );
 
-  const names = selectedCards.map(card => {
-    const h4 = card.querySelector('.student-card-info h4');
-    return h4 ? h4.textContent.trim() : 'Student';
+  const names = Array.from(_emailSelectedIds).map(id => {
+    const card = document.querySelector(`.student-card[data-student-id="${id}"]`);
+    const h4 = card ? card.querySelector('.student-card-info h4') : null;
+    return (h4 && h4.textContent.trim()) || _nameById.get(String(id)) || 'Student';
   });
 
   const preview = $('emailRecipientPreview');

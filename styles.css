@@ -10349,3 +10349,272 @@ body:has(.modal-overlay.active) .mobile-bottom-nav {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ============================================================
+   ⭐ PREMIUM ACCESS CONTROL — Students tab search / filter bar,
+      premium badge and grant-premium modal.
+      Additive only: no existing selector is modified.
+   ============================================================ */
+.student-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.student-search-wrap {
+  position: relative;
+  flex: 1 1 320px;
+  min-width: 220px;
+  display: flex;
+  align-items: center;
+}
+
+.student-search-wrap > i.fa-search {
+  position: absolute;
+  left: 13px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+  transition: color .2s var(--ease);
+}
+.student-search-wrap:focus-within > i.fa-search { color: var(--brand-500); }
+
+.student-search-input {
+  width: 100%;
+  padding: 10px 38px 10px 36px;
+  font-size: 13.5px;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: .2s var(--ease);
+}
+.student-search-input::placeholder { color: var(--text-tertiary); }
+.student-search-input:focus {
+  border-color: var(--brand-500);
+  background: var(--bg-surface);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+}
+
+.student-search-clear {
+  position: absolute;
+  right: 8px;
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-surface-3);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: .18s var(--ease);
+}
+.student-search-clear:hover { background: var(--rose-500); color: #fff; }
+
+.student-filter-select {
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  outline: none;
+  transition: .2s var(--ease);
+}
+.student-filter-select:focus {
+  border-color: var(--brand-500);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+}
+
+.student-filter-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: linear-gradient(135deg, rgba(99,102,241,.08), rgba(6,182,212,.05));
+  border: 1px solid rgba(99,102,241,.2);
+  border-radius: var(--radius-sm);
+}
+.student-filter-summary i { color: var(--brand-500); }
+.student-filter-summary strong { color: var(--brand-600); font-weight: 800; }
+[data-theme="dark"] .student-filter-summary strong,
+[data-theme="dim"] .student-filter-summary strong { color: var(--brand-300); }
+
+/* ---- Premium / free badge on the student card ---- */
+.student-premium-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  border-radius: var(--radius-pill);
+  color: var(--text-tertiary);
+  background: var(--bg-surface-3);
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.student-premium-badge.active {
+  color: #7c4a03;
+  background: linear-gradient(135deg, rgba(251,191,36,.22), rgba(245,158,11,.14));
+  border-color: rgba(245,158,11,.45);
+}
+[data-theme="dark"] .student-premium-badge.active,
+[data-theme="dim"] .student-premium-badge.active { color: var(--gold-300); }
+
+/* ---- Grant-premium modal summary line ---- */
+.grant-premium-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0 14px;
+  padding: 10px 13px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--brand-500);
+  border-radius: var(--radius-sm);
+}
+.grant-premium-summary i { color: var(--brand-500); margin-top: 2px; flex-shrink: 0; }
+.grant-premium-summary strong { color: var(--text-primary); font-weight: 700; }
+.grant-premium-summary.warn {
+  border-left-color: var(--gold-500);
+  color: var(--gold-600);
+}
+.grant-premium-summary.warn i { color: var(--gold-500); }
+
+@media (max-width: 640px) {
+  .student-search-wrap { flex: 1 1 100%; }
+  .student-filter-select { flex: 1 1 auto; }
+}
+
+/* ============================================================
+   ⭐ 10-MINUTE INACTIVITY WARNING OVERLAY
+   Sits above every modal (max modal z-index is 3000) but below
+   the toast stack (9999), so the "signed out" toast is visible.
+   ============================================================ */
+.inactivity-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(7,11,26,.62);
+  backdrop-filter: blur(7px);
+  -webkit-backdrop-filter: blur(7px);
+  animation: inactivityFadeIn .22s var(--ease-out) both;
+}
+@keyframes inactivityFadeIn { from { opacity: 0 } to { opacity: 1 } }
+
+.inactivity-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 30px 26px 26px;
+  text-align: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  animation: inactivityPop .3s var(--ease-spring) both;
+}
+@keyframes inactivityPop {
+  from { opacity: 0; transform: translateY(14px) scale(.96) }
+  to   { opacity: 1; transform: translateY(0)    scale(1)   }
+}
+
+.inactivity-icon {
+  width: 62px; height: 62px;
+  margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 25px;
+  color: #fff;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--gold-400), var(--gold-600));
+  box-shadow: 0 10px 26px rgba(245,158,11,.38);
+  animation: inactivityPulse 1.9s var(--ease) infinite;
+}
+@keyframes inactivityPulse {
+  0%, 100% { transform: scale(1);    box-shadow: 0 10px 26px rgba(245,158,11,.38) }
+  50%      { transform: scale(1.07); box-shadow: 0 14px 34px rgba(245,158,11,.55) }
+}
+
+.inactivity-card h3 {
+  font-size: 18.5px;
+  font-weight: 800;
+  letter-spacing: -.3px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+.inactivity-card p {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.inactivity-count {
+  margin: 14px auto;
+  font-size: 46px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -2px;
+  font-variant-numeric: tabular-nums;
+  color: var(--gold-500);
+  text-shadow: 0 2px 18px rgba(245,158,11,.35);
+}
+[data-theme="dark"] .inactivity-count,
+[data-theme="dim"]  .inactivity-count { color: var(--gold-400); }
+
+.inactivity-hint {
+  font-size: 12.5px !important;
+  color: var(--text-tertiary) !important;
+  margin-bottom: 20px;
+}
+.inactivity-actions { display: flex; justify-content: center; }
+.inactivity-actions .btn { min-width: 190px; justify-content: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .inactivity-overlay,
+  .inactivity-card,
+  .inactivity-icon { animation: none; }
+}
+
+/* ------------------------------------------------------------
+   ⭐ Premium Access Control — layout corrections
+   `[hidden]` must win over the `display` set on these rules,
+   and the card action row needs to wrap now that it carries a
+   third (full-width) "Grant / Extend Premium" button.
+   ------------------------------------------------------------ */
+.student-search-clear[hidden],
+.student-filter-summary[hidden] { display: none !important; }
+
+.student-grid .student-card-actions { flex-wrap: wrap; row-gap: 6px; }
+.student-grid .student-card-actions .student-grant-btn {
+  flex: 1 1 100%;
+  justify-content: center;
+  font-weight: 700;
+}
