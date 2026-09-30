@@ -487,6 +487,11 @@
       this._prevBodyOverflow = '';
       this._selTimer = null;
       this._blurTimer = null;
+      /* ⭐ Premium-access fields — must be reset between opens so a
+         previous session's state can never leak into the next PDF. */
+      this.courseId       = null;
+      this.hasFullAccess  = false;
+      this.previewPercent = 0;
       /* ⭐ Reading-progress state */
       this._resumePage = 1;              // saved page to jump to on open
       this._saveProgressTimer = null;    // debounce handle for saves
@@ -523,6 +528,40 @@
       this.username   = opts.username || 'Student';
       this.title      = opts.title || opts.fileName || 'Document';
       this._prevBodyOverflow = document.body.style.overflow;
+
+      /* ⭐ CRITICAL — Premium-access fields.
+         ------------------------------------------------------------
+         app.js viewFileOnline() passes THREE extra fields that the
+         paywall logic in _renderAllPages() depends on:
+
+             opts.courseId        → used by _onPaywallClick()
+             opts.hasFullAccess   → decides if ANY page is locked
+             opts.previewPercent  → decides how many pages are free
+
+         All three were previously IGNORED — this method never
+         copied them onto `this`. As a result:
+
+           • this.hasFullAccess  was always undefined (falsy)
+           • this.previewPercent was always undefined (falsy)
+           • renderLimit always resolved to 0
+           • EVERY paid student saw "All pages require purchase"
+           • Even a document configured with 20 % free preview
+             rendered as a fully-locked document.
+           • The "Unlock the full document" button closed the viewer
+             but never opened the payment modal, because this.courseId
+             was also never set.
+
+         Assigning them here restores:
+           ✓ preview pages actually render
+           ✓ the correct "You can read the first N of M pages" card
+           ✓ the Unlock button opens showPaymentModal()
+           ✓ fully-paid users get every page. */
+      this.courseId       = opts.courseId || null;
+      this.hasFullAccess  = opts.hasFullAccess === true;
+      this.previewPercent = Math.max(
+        0,
+        Math.min(100, Number(opts.previewPercent) || 0)
+      );
 
       this._buildUI();
       this._loadHighlights();
