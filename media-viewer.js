@@ -177,286 +177,1128 @@
      the shell.
      ------------------------------------------------------------ */
 
-  /* ============================================================
-     VIDEO PLAYER
-     ============================================================ */
-  class VideoPlayer {
-    constructor() {
-      this.active = false;
-      this.modal = null;
-      this.videoArea = null;
-      this.titleEl = null;
-      this.playlistPanel = null;
-      this.playlistItemsEl = null;
-      this.watermarkEl = null;
-      this.playlist = [];
-      this.playlistIndex = 0;
-      this.playlistTitle = '';
-      this.username = '';
-      this._onKeyDown = this._onKeyDown.bind(this);
-    }
+/* ============================================================
+   VIDEO PLAYER v6 — Advanced Custom Controls
+   ------------------------------------------------------------
+   Blocks every YouTube redirect surface and replaces the
+   YouTube chrome with a rich, native-feeling control bar.
+   PDFViewer and the helpers above are untouched.
+   ============================================================ */
+class VideoPlayer {
+  constructor() {
+    this.active = false;
+    this.modal = null;
+    this.videoArea = null;
+    this.titleEl = null;
+    this.playlistPanel = null;
+    this.playlistItemsEl = null;
+    this.watermarkEl = null;
+    this.playlist = [];
+    this.playlistIndex = 0;
+    this.playlistTitle = '';
+    this.username = '';
 
-    open(opts) {
-      if (this.active) this.close();
-      this.active = true;
-      this.username = opts.username || 'Student';
-      this.playlist = opts.playlist || [];
-      this.playlistIndex = opts.playlistIndex || 0;
-      this.playlistTitle = opts.playlistTitle || '';
+    /* Player state */
+    this.playerKind = null;        // 'youtube' | 'direct'
+    this.ytPlayer = null;          // YT.Player instance
+    this.videoEl = null;           // HTMLVideoElement (direct)
+    this.videoId = null;           // YT ID or direct URL (identity key)
+    this.duration = 0;
+    this.isPlaying = false;
+    this.volume = 1;
+    this.isMuted = false;
+    this.playbackRate = 1;
+    this.looping = false;
+    this.captionsOn = false;
+    this.theater = false;
 
-      this._buildUI();
-      this._renderWatermark();
+    /* UI state */
+    this.controlsVisible = true;
+    this.controlsTimer = null;
+    this.rafId = null;
+    this.ytReady = false;
+    this._ytApiPromise = null;
 
-      if (this.playlist.length > 0) {
-        this._loadPlaylistItem(this.playlistIndex);
-        this._renderPlaylist();
-      } else {
-        this._loadSingleVideo(opts);
-      }
+    /* Persistence */
+    this.bookmarks = [];
+    this._resumePos = 0;
 
-      this.modal.classList.add('active');
-      document.body.style.overflow = 'hidden';
-      document.addEventListener('keydown', this._onKeyDown);
-    }
+    /* Bound listeners */
+    this._onKeyDown     = this._onKeyDown.bind(this);
+    this._onMouseMove   = this._onMouseMove.bind(this);
+    this._onMouseLeave  = this._onMouseLeave.bind(this);
+    this._tick          = this._tick.bind(this);
+  }
 
-    /* ---------- FIXED YouTube iframe builder ----------
-       Root cause of the previous failure:
-         • The `origin` query param was appended AFTER enablejsapi=1.
-           If it didn't exactly match the window origin (e.g. served
-           from GitHub Pages behind a proxy), YouTube refused to load
-           the player inside the iframe.
-         • `iframe.allowFullscreen = true` sometimes fails silently
-           on some browsers — needs the attribute set explicitly.
-         • `modestbranding` + no `playsinline` broke mobile Safari.
+  /* ------------------------------------------------------------
+     Public API
+     ------------------------------------------------------------ */
+  async open(opts) {
+    if (this.active) this.close();
+    this.active = true;
 
-       New approach:
-         • Drop `origin` and `enablejsapi` (unused anyway)
-         • Use youtube-nocookie.com (more lenient referrer checks)
-         • Force attributes via setAttribute
-         • Add `playsinline=1` for iOS
-         • Add `iv_load_policy=3` to hide annotation overlays        */
-    _createYouTubeIframe(videoId) {
-      if (!videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
-        console.error('[VideoPlayer] invalid YouTube ID:', videoId);
-        const err = document.createElement('div');
-        err.style.cssText = 'color:#fff;padding:24px;text-align:center;font-size:15px;';
-        err.innerHTML = '<i class="fas fa-triangle-exclamation" style="color:#f59e0b;font-size:36px;display:block;margin-bottom:12px;"></i>' +
-                        'Invalid YouTube video ID.';
-        return err;
-      }
+    this.username = opts.username || 'Student';
+    this.playlist = opts.playlist || [];
+    this.playlistIndex = opts.playlistIndex || 0;
+    this.playlistTitle = opts.playlistTitle || '';
+    this.videoId = opts.videoId || opts.materialId || opts.title || 'video';
 
-      const iframe = document.createElement('iframe');
-      iframe.className = 'vp-iframe';
-      /* `allow` below already includes `fullscreen`, so we skip the
-         redundant `allowfullscreen` attributes — they trigger a
-         harmless but noisy Chrome console warning. */
-      iframe.setAttribute(
-        'allow',
-        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen'
-      );
-      iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
-      iframe.setAttribute('frameborder', '0');
-      iframe.setAttribute('loading', 'eager');
+    this._buildUI();
+    this._renderWatermark();
+    this._loadBookmarks();
+    this._bindGlobalEvents();
 
-      const params = new URLSearchParams({
-        autoplay:        '1',
-        rel:             '0',
-        modestbranding:  '1',
-        playsinline:     '1',
-        iv_load_policy:  '3',
-        fs:              '1',
-        color:           'white'
-      });
-
-      iframe.src = `https://www.youtube-nocookie.com/embed/${videoId}?${params.toString()}`;
-
-      // If YouTube fails to load (network / CSP), show a friendly message
-      iframe.addEventListener('error', () => {
-        console.warn('[VideoPlayer] iframe load error for', videoId);
-      });
-
-      return iframe;
-    }
-
-    _loadSingleVideo(opts) {
-      this.titleEl.textContent = opts.title || 'Video';
-      this.videoArea.innerHTML = '';
-
-      if (opts.videoId) {
-        this.videoArea.appendChild(this._createYouTubeIframe(opts.videoId));
-      } else if (opts.src) {
-        const video = document.createElement('video');
-        video.src = opts.src;
-        video.controls = true;
-        video.autoplay = true;
-        video.playsInline = true;
-        video.setAttribute('controlsList', 'nodownload noplaybackrate');
-        video.setAttribute('disablePictureInPicture', 'true');
-        video.addEventListener('contextmenu', e => e.preventDefault());
-        this.videoArea.appendChild(video);
-      } else {
-        this.videoArea.innerHTML =
-          '<div style="color:#fff;padding:24px;text-align:center;">No video source provided.</div>';
-      }
-    }
-
-    _loadPlaylistItem(index) {
-      if (index < 0 || index >= this.playlist.length) return;
-      this.playlistIndex = index;
-      const item = this.playlist[index];
-      this.titleEl.textContent = item.title || 'Video';
-      this.videoArea.innerHTML = '';
-
-      if (item.kind === 'youtube' && item.videoId) {
-        this.videoArea.appendChild(this._createYouTubeIframe(item.videoId));
-      } else if (item.kind === 'direct' && item.directUrl) {
-        const video = document.createElement('video');
-        video.src = item.directUrl;
-        video.controls = true;
-        video.autoplay = true;
-        video.playsInline = true;
-        video.setAttribute('controlsList', 'nodownload noplaybackrate');
-        video.setAttribute('disablePictureInPicture', 'true');
-        video.addEventListener('contextmenu', e => e.preventDefault());
-        this.videoArea.appendChild(video);
-      }
+    if (this.playlist.length > 0) {
       this._renderPlaylist();
+      this.modal.querySelector('#vpPlaylistToggle').style.display = 'inline-flex';
+      this.modal.querySelector('#vpPlaylistTitle').textContent = this.playlistTitle || 'Playlist';
+      await this._loadPlaylistItem(this.playlistIndex);
+    } else {
+      await this._loadSingle(opts);
     }
 
-    _buildUI() {
-      const old = document.getElementById('videoPlayerModal');
-      if (old) old.remove();
+    this.modal.classList.add('active');
+    document.body.style.overflow = 'hidden';
 
-      const el = document.createElement('div');
-      el.id = 'videoPlayerModal';
-      el.className = 'video-player-modal';
-      el.innerHTML = `
-        <div class="vp-shell" id="vpShell">
-          <button class="vp-back-btn" id="vpBackBtn"><i class="fas fa-arrow-left"></i> <span>Back</span></button>
-          <button class="vp-playlist-toggle" id="vpPlaylistToggle" style="display:none;"><i class="fas fa-list"></i> <span>Playlist</span></button>
-          <div class="vp-video-area" id="vpVideoArea"></div>
+    this._renderSpeedMenu();
+    this._startTick();
+    this._scheduleControlsHide();
+    this._showToast('Tip: press ? for keyboard shortcuts');
+  }
+
+  close() {
+    if (!this.active) return;
+    this.active = false;
+
+    this._saveResume();
+    this._stopTick();
+    clearTimeout(this.controlsTimer);
+
+    if (this.ytPlayer) {
+      try { this.ytPlayer.destroy(); } catch (e) {}
+      this.ytPlayer = null;
+    }
+    if (this.videoEl) {
+      try { this.videoEl.pause(); this.videoEl.removeAttribute('src'); this.videoEl.load(); } catch (e) {}
+      this.videoEl = null;
+    }
+
+    document.removeEventListener('keydown', this._onKeyDown, true);
+    document.removeEventListener('mousemove', this._onMouseMove);
+    document.removeEventListener('mousemove', this._onMouseLeave);
+    document.removeEventListener('fullscreenchange', this._onFsChange);
+    document.removeEventListener('webkitfullscreenchange', this._onFsChange);
+    document.body.style.overflow = '';
+
+    const m = this.modal;
+    if (m) {
+      m.classList.remove('active');
+      setTimeout(() => { try { m.remove(); } catch (e) {} }, 240);
+    }
+    this.modal = null;
+    this.playlist = [];
+    this.playlistIndex = 0;
+  }
+
+  /* ------------------------------------------------------------
+     UI construction
+     ------------------------------------------------------------ */
+  _buildUI() {
+    const old = document.getElementById('videoPlayerModal');
+    if (old) old.remove();
+
+    const el = document.createElement('div');
+    el.id = 'videoPlayerModal';
+    el.className = 'video-player-modal';
+    el.innerHTML = `
+      <div class="vp-shell" id="vpShell">
+        <button class="vp-back-btn" id="vpBackBtn" title="Back (Esc)">
+          <i class="fas fa-arrow-left"></i> <span>Back</span>
+        </button>
+        <button class="vp-playlist-toggle" id="vpPlaylistToggle" style="display:none;" title="Playlist">
+          <i class="fas fa-list"></i> <span>Playlist</span>
+        </button>
+        <div class="vp-title" id="vpTitle"></div>
+
+        <div class="vp-video-area" id="vpVideoArea">
           <div class="vp-watermark" id="vpWatermark"></div>
-          <div class="vp-title" id="vpTitle"></div>
-          <div class="vp-playlist-panel" id="vpPlaylistPanel">
-             <div class="vp-playlist-header">
-               <h4 id="vpPlaylistTitle"><i class="fas fa-list"></i> Playlist</h4>
-               <button class="vp-playlist-close" id="vpPlaylistClose"><i class="fas fa-times"></i></button>
-             </div>
-             <div class="vp-playlist-items" id="vpPlaylistItems"></div>
+          <div class="vp-click-capture" id="vpClickCapture" tabindex="0" aria-label="Video surface"></div>
+          <button class="vp-big-play" id="vpBigPlay" type="button" aria-label="Play"><i class="fas fa-play"></i></button>
+        </div>
+
+        <div class="vp-playlist-panel" id="vpPlaylistPanel">
+          <div class="vp-playlist-header">
+            <h4 id="vpPlaylistTitle"><i class="fas fa-list"></i> Playlist</h4>
+            <button class="vp-playlist-close" id="vpPlaylistClose" aria-label="Close playlist"><i class="fas fa-times"></i></button>
           </div>
-        </div>`;
+          <div class="vp-playlist-items" id="vpPlaylistItems"></div>
+        </div>
 
-      document.body.appendChild(el);
-      this.modal = el;
-      this.videoArea = el.querySelector('#vpVideoArea');
-      this.titleEl = el.querySelector('#vpTitle');
-      this.watermarkEl = el.querySelector('#vpWatermark');
-      this.playlistPanel = el.querySelector('#vpPlaylistPanel');
-      this.playlistItemsEl = el.querySelector('#vpPlaylistItems');
+        <div class="vp-controls" id="vpControls">
+          <div class="vp-progress-row" id="vpProgressRow">
+            <div class="vp-progress-bg"></div>
+            <div class="vp-progress-buffered" id="vpProgressBuffered"></div>
+            <div class="vp-progress-filled" id="vpProgressFilled"></div>
+            <div class="vp-thumb" id="vpProgressThumb"></div>
+            <div class="vp-tooltip" id="vpProgressTooltip"></div>
+          </div>
+          <div class="vp-buttons">
+            <button class="vp-btn" id="vpPlayBtn" title="Play/Pause (Space)"><i class="fas fa-play"></i></button>
+            <button class="vp-btn" id="vpPrevBtn" title="Previous (P)"><i class="fas fa-backward-step"></i></button>
+            <button class="vp-btn" id="vpNextBtn" title="Next (N)"><i class="fas fa-forward-step"></i></button>
+            <button class="vp-btn" id="vpBack10Btn" title="Back 10s (J)"><i class="fas fa-rotate-left"></i></button>
+            <button class="vp-btn" id="vpFwd10Btn" title="Forward 10s (L)"><i class="fas fa-rotate-right"></i></button>
 
-      el.querySelector('#vpBackBtn').addEventListener('click', () => this.close());
-      el.querySelector('#vpPlaylistClose').addEventListener('click', () => this._togglePlaylist(false));
+            <div class="vp-volume-wrap">
+              <button class="vp-btn" id="vpMuteBtn" title="Mute (M)"><i class="fas fa-volume-high"></i></button>
+              <div class="vp-volume">
+                <input type="range" id="vpVolumeRange" min="0" max="100" value="100" aria-label="Volume">
+              </div>
+            </div>
 
-      const toggleBtn = el.querySelector('#vpPlaylistToggle');
-      toggleBtn.addEventListener('click', () => this._togglePlaylist());
-      if (this.playlist.length > 0) {
-        toggleBtn.style.display = 'inline-flex';
-        el.querySelector('#vpPlaylistTitle').textContent = this.playlistTitle || 'Playlist';
-      }
-    }
+            <span class="vp-time" id="vpTime">0:00 / 0:00</span>
+            <span class="vp-spacer"></span>
 
-    _togglePlaylist(forceState) {
-      if (!this.playlistPanel) return;
-      const isOpen = typeof forceState === 'boolean'
-        ? forceState
-        : !this.playlistPanel.classList.contains('open');
-      this.playlistPanel.classList.toggle('open', isOpen);
-      this.modal.querySelector('.vp-shell').classList.toggle('playlist-open', isOpen);
-    }
+            <div class="vp-menu-wrap">
+              <button class="vp-btn" id="vpBmBtn" title="Bookmarks (B)"><i class="fas fa-bookmark"></i></button>
+              <div class="vp-menu" id="vpBookmarkMenu">
+                <div class="vp-menu-head"><i class="fas fa-bookmark"></i> Bookmarks</div>
+                <div class="vp-menu-list" id="vpBookmarkList"></div>
+                <button class="vp-menu-add" id="vpBmAddBtn"><i class="fas fa-plus"></i> Save current time</button>
+              </div>
+            </div>
 
-    _renderPlaylist() {
-      if (!this.playlistItemsEl) return;
-      this.playlistItemsEl.innerHTML = this.playlist.map((item, i) => `
-        <div class="vp-playlist-item ${i === this.playlistIndex ? 'current' : ''}" data-index="${i}">
-          <div class="vp-playlist-item-num">${i + 1}</div>
-          <div class="vp-playlist-item-title">${_escHtml(item.title)}</div>
-          ${i === this.playlistIndex ? '<i class="fas fa-volume-up vp-playlist-item-playing"></i>' : ''}
-        </div>`).join('');
+            <button class="vp-btn" id="vpLoopBtn" title="Loop (R)"><i class="fas fa-repeat"></i></button>
+            <button class="vp-btn" id="vpCaptionsBtn" title="Captions (C)" style="display:none;"><i class="fas fa-closed-captioning"></i></button>
 
-      this.playlistItemsEl.querySelectorAll('.vp-playlist-item').forEach(el => {
-        el.addEventListener('click', () => {
-          const idx = parseInt(el.dataset.index, 10);
-          if (idx !== this.playlistIndex) this._loadPlaylistItem(idx);
-        });
-      });
-    }
+            <div class="vp-menu-wrap">
+              <button class="vp-btn" id="vpQualityBtn" title="Quality" style="display:none;"><i class="fas fa-gauge-high"></i></button>
+              <div class="vp-menu" id="vpQualityMenu">
+                <div class="vp-menu-head"><i class="fas fa-gauge-high"></i> Quality</div>
+                <div class="vp-menu-list" id="vpQualityList"></div>
+              </div>
+            </div>
 
-    _renderWatermark() {
-      if (!this.watermarkEl) return;
-      const now = new Date();
-      const stamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      const text = this.username + ' · ' + stamp;
-      this.watermarkEl.style.backgroundImage = makeWatermarkUrl(text, {
-        size: 14, angle: -25, tile: 700, dark: true
-      });
-      this.watermarkEl.style.opacity = '0.18';
-    }
+            <div class="vp-speed-wrap">
+              <button class="vp-speed-btn" id="vpSpeedBtn" title="Playback speed (&lt; / &gt;)">1x</button>
+              <div class="vp-speed-menu" id="vpSpeedMenu"></div>
+            </div>
 
-    _onKeyDown(e) {
-      if (!this.active) return;
-      if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) return;
+            <button class="vp-btn" id="vpPipBtn" title="Picture-in-Picture (I)"><i class="fas fa-clone"></i></button>
+            <button class="vp-btn" id="vpTheaterBtn" title="Theater mode (T)"><i class="fas fa-rectangle-wide"></i></button>
+            <button class="vp-btn" id="vpFullscreenBtn" title="Fullscreen (F)"><i class="fas fa-expand"></i></button>
+          </div>
+        </div>
 
-      if (e.key === 'PrintScreen' || e.keyCode === 44) {
-        e.preventDefault();
-        this._flashBlur();
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText('Screenshots disabled.');
-        }
-        userToast('Screenshots are disabled.', 'error');
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3','4','5','s','S'].includes(e.key)) {
-        e.preventDefault(); e.stopPropagation();
-        this._flashBlur();
-        userToast('Screenshots are disabled.', 'error');
-        return;
-      }
-      if (e.key === 'F12' ||
-          ((e.ctrlKey || e.metaKey) && e.shiftKey && ['I','J','C','i','j','c'].includes(e.key))) {
-        e.preventDefault(); e.stopPropagation();
-      }
-    }
+        <div class="vp-toast" id="vpToast"></div>
+        <div class="vp-shortcuts" id="vpShortcuts">
+          <div class="vp-shortcuts-card">
+            <h5><i class="fas fa-keyboard"></i> Keyboard shortcuts</h5>
+            <div class="vp-shortcuts-grid">
+              <span><kbd>Space</kbd>/<kbd>K</kbd></span><span>Play / Pause</span>
+              <span><kbd>←</kbd>/<kbd>→</kbd></span><span>Seek −5s / +5s</span>
+              <span><kbd>J</kbd>/<kbd>L</kbd></span><span>Seek −10s / +10s</span>
+              <span><kbd>↑</kbd>/<kbd>↓</kbd></span><span>Volume up / down</span>
+              <span><kbd>0</kbd>–<kbd>9</kbd></span><span>Jump to 0% – 90%</span>
+              <span><kbd>M</kbd></span><span>Mute</span>
+              <span><kbd>F</kbd></span><span>Fullscreen</span>
+              <span><kbd>T</kbd></span><span>Theater mode</span>
+              <span><kbd>I</kbd></span><span>Picture-in-Picture</span>
+              <span><kbd>&lt;</kbd>/<kbd>&gt;</kbd></span><span>Slower / Faster</span>
+              <span><kbd>R</kbd></span><span>Toggle loop</span>
+              <span><kbd>B</kbd></span><span>Save bookmark</span>
+              <span><kbd>C</kbd></span><span>Toggle captions</span>
+              <span><kbd>N</kbd>/<kbd>P</kbd></span><span>Next / Previous</span>
+              <span><kbd>Esc</kbd></span><span>Close</span>
+            </div>
+            <p class="vp-shortcuts-hint">Click anywhere or press any key to dismiss</p>
+          </div>
+        </div>
+      </div>
+    `;
 
-    _flashBlur() {
-      if (!this.modal) return;
-      const shell = this.modal.querySelector('.vp-shell');
-      if (!shell) return;
-      shell.style.transition = 'filter .12s';
-      shell.style.filter = 'blur(40px) grayscale(100%)';
-      setTimeout(() => { if (shell) shell.style.filter = ''; }, 1800);
-    }
+    document.body.appendChild(el);
+    this.modal = el;
+    this.videoArea = el.querySelector('#vpVideoArea');
+    this.titleEl = el.querySelector('#vpTitle');
+    this.watermarkEl = el.querySelector('#vpWatermark');
+    this.playlistPanel = el.querySelector('#vpPlaylistPanel');
+    this.playlistItemsEl = el.querySelector('#vpPlaylistItems');
 
-    close() {
-      if (!this.active) return;
-      this.active = false;
-      document.removeEventListener('keydown', this._onKeyDown);
-      document.body.style.overflow = '';
-      const m = this.modal;
-      if (m) {
-        m.classList.remove('active');
-        setTimeout(() => { try { m.remove(); } catch(e){} }, 240);
-      }
-      this.playlist = [];
-      this.playlistIndex = 0;
-      this.modal = null;
-      this.videoArea = null;
-      this.titleEl = null;
-      this.playlistPanel = null;
-      this.playlistItemsEl = null;
-      this.watermarkEl = null;
+    this._bindControls();
+  }
+
+  _bindControls() {
+    const $ = (s) => this.modal.querySelector(s);
+    const click = (sel, fn) => {
+      const el = $(sel);
+      if (el) el.addEventListener('click', fn);
+    };
+
+    click('#vpBackBtn', () => this.close());
+    click('#vpPlaylistClose', () => this._togglePlaylist(false));
+    click('#vpPlaylistToggle', () => this._togglePlaylist());
+
+    click('#vpPlayBtn', () => this._togglePlay());
+    click('#vpPrevBtn', () => this._prevPlaylist());
+    click('#vpNextBtn', () => this._nextPlaylist());
+    click('#vpBack10Btn', () => this._seekBy(-10));
+    click('#vpFwd10Btn', () => this._seekBy(10));
+    click('#vpMuteBtn', () => this._toggleMute());
+    click('#vpLoopBtn', () => this._toggleLoop());
+    click('#vpCaptionsBtn', () => this._toggleCaptions());
+    click('#vpPipBtn', () => this._togglePiP());
+    click('#vpTheaterBtn', () => this._toggleTheater());
+    click('#vpFullscreenBtn', () => this._toggleFullscreen());
+    click('#vpBmBtn', (e) => { e.stopPropagation(); this._toggleMenu('#vpBookmarkMenu'); });
+    click('#vpBmAddBtn', () => this._saveBookmark());
+    click('#vpQualityBtn', (e) => { e.stopPropagation(); this._toggleMenu('#vpQualityMenu'); });
+    click('#vpSpeedBtn', (e) => { e.stopPropagation(); this._toggleSpeedMenu(); });
+
+    /* Video surface */
+    const capture = this.modal.querySelector('#vpClickCapture');
+    capture.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._togglePlay();
+      this._showControls();
+      this._scheduleControlsHide();
+    });
+    capture.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      this._toggleFullscreen();
+    });
+
+    /* Volume slider */
+    const vol = this.modal.querySelector('#vpVolumeRange');
+    vol.addEventListener('input', () => {
+      const v = parseInt(vol.value, 10) / 100;
+      this._setVolume(v);
+      if (v > 0 && this._isMuted()) this._setMuted(false);
+    });
+
+    /* Progress bar scrubbing */
+    const row = this.modal.querySelector('#vpProgressRow');
+    let scrubbing = false;
+    const onScrub = (e) => {
+      const rect = row.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      this._seekTo(this.duration * pct);
+      this._updateProgressUI(this.duration * pct);
+    };
+    const startScrub = (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      scrubbing = true;
+      e.preventDefault();
+      onScrub(e);
+      this.modal.querySelector('#vpProgressRow').classList.add('scrubbing');
+    };
+    const moveScrub = (e) => { if (scrubbing) onScrub(e); };
+    const endScrub = () => {
+      if (!scrubbing) return;
+      scrubbing = false;
+      this.modal.querySelector('#vpProgressRow').classList.remove('scrubbing');
+    };
+    row.addEventListener('mousedown', startScrub);
+    document.addEventListener('mousemove', moveScrub);
+    document.addEventListener('mouseup', endScrub);
+
+    /* Hover preview */
+    row.addEventListener('mousemove', (e) => {
+      if (scrubbing) return;
+      const rect = row.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const tt = this.modal.querySelector('#vpProgressTooltip');
+      tt.style.left = (pct * 100) + '%';
+      tt.textContent = this._fmt(this.duration * pct);
+    });
+
+    /* Close menus when clicking elsewhere */
+    this.modal.addEventListener('click', () => {
+      this._closeAllMenus();
+      this._hideShortcuts();
+    });
+  }
+
+  _bindGlobalEvents() {
+    document.addEventListener('keydown', this._onKeyDown, true);
+    document.addEventListener('mousemove', this._onMouseMove, { passive: true });
+    this.modal.addEventListener('mouseleave', this._onMouseLeave);
+    this._onFsChange = () => {
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      const btn = this.modal && this.modal.querySelector('#vpFullscreenBtn i');
+      if (btn) btn.className = isFs ? 'fas fa-compress' : 'fas fa-expand';
+    };
+    document.addEventListener('fullscreenchange', this._onFsChange);
+    document.addEventListener('webkitfullscreenchange', this._onFsChange);
+  }
+
+  /* ------------------------------------------------------------
+     Loading videos
+     ------------------------------------------------------------ */
+  async _loadSingle(opts) {
+    this.titleEl.textContent = opts.title || 'Video';
+    if (opts.videoId) {
+      await this._createYouTubePlayer(opts.videoId);
+    } else if (opts.src) {
+      this._createDirectVideo(opts.src);
+    } else {
+      this.videoArea.insertAdjacentHTML('beforeend',
+        '<div style="color:#fff;padding:24px;text-align:center;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">No video source provided.</div>');
     }
   }
+
+  async _loadPlaylistItem(idx) {
+    if (idx < 0 || idx >= this.playlist.length) return;
+    this.playlistIndex = idx;
+    const item = this.playlist[idx];
+    this.titleEl.textContent = item.title || 'Video';
+    this.videoId = item.videoId || item.materialId || item.title || ('item-' + idx);
+
+    /* Clear previous player but keep overlay/watermark */
+    if (this.ytPlayer) { try { this.ytPlayer.destroy(); } catch (e) {} this.ytPlayer = null; }
+    if (this.videoEl) { try { this.videoEl.pause(); } catch (e) {} this.videoEl.remove(); this.videoEl = null; }
+    const oldFrame = this.videoArea.querySelector('iframe');
+    if (oldFrame) oldFrame.remove();
+
+    if (item.kind === 'youtube' && item.videoId) {
+      await this._createYouTubePlayer(item.videoId);
+    } else if (item.kind === 'direct' && item.directUrl) {
+      this._createDirectVideo(item.directUrl);
+    }
+
+    this._loadBookmarks();
+    this._renderPlaylist();
+  }
+
+  /* ------------------------------------------------------------
+     YouTube IFrame API
+     ------------------------------------------------------------ */
+  _loadYouTubeApi() {
+    if (window.YT && window.YT.Player) return Promise.resolve();
+    if (this._ytApiPromise) return this._ytApiPromise;
+
+    this._ytApiPromise = new Promise((resolve, reject) => {
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        if (typeof prev === 'function') try { prev(); } catch (e) {}
+        resolve();
+      };
+      const s = document.createElement('script');
+      s.src = 'https://www.youtube.com/iframe_api';
+      s.async = true;
+      s.onerror = () => reject(new Error('Could not reach YouTube IFrame API'));
+      document.head.appendChild(s);
+    });
+    return this._ytApiPromise;
+  }
+
+  async _createYouTubePlayer(videoId) {
+    try {
+      await this._loadYouTubeApi();
+    } catch (e) {
+      this._showError('YouTube is unreachable right now.');
+      return;
+    }
+
+    /* A container div that YT replaces with the iframe */
+    const containerId = 'vp-yt-' + Date.now();
+    const holder = document.createElement('div');
+    holder.id = containerId;
+    holder.style.cssText = 'position:absolute;inset:0;';
+    this.videoArea.insertBefore(holder, this.videoArea.firstChild);
+
+    this.playerKind = 'youtube';
+    this.ytReady = false;
+
+    this.ytPlayer = new window.YT.Player(containerId, {
+      host: 'https://www.youtube-nocookie.com',
+      videoId,
+      playerVars: {
+        /* 🔒 The block-everything stack */
+        controls: 0,          // no YouTube chrome at all
+        disablekb: 1,         // we handle the keyboard
+        fs: 0,                // no YT fullscreen button
+        iv_load_policy: 3,    // no annotations
+        modestbranding: 1,    // minimise branding
+        rel: 0,               // no cross-channel related videos
+        showinfo: 0,          // legacy but harmless
+        cc_load_policy: 0,
+        playsinline: 1,
+        autoplay: 1,
+        origin: window.location.origin,
+        enablejsapi: 1,
+        color: 'white'
+      },
+      events: {
+        onReady: (e) => this._onYTReady(e),
+        onStateChange: (e) => this._onYTStateChange(e),
+        onError: (e) => this._onYTError(e)
+      }
+    });
+  }
+
+  _onYTReady(e) {
+    this.ytReady = true;
+    try {
+      this.duration = this.ytPlayer.getDuration() || 0;
+      this.ytPlayer.setVolume(Math.round(this.volume * 100));
+      if (this.playbackRate !== 1) this.ytPlayer.setPlaybackRate(this.playbackRate);
+      if (this.looping) this.ytPlayer.setLoop(true);
+      this.ytPlayer.playVideo();
+    } catch (err) {}
+
+    this._maybeResumeFromSaved();
+    this._renderQualityMenu();
+    this._updatePlayButton();
+    this._updateTimeDisplay();
+
+    /* Show quality + captions controls only for YouTube */
+    const q = this.modal.querySelector('#vpQualityBtn');
+    const c = this.modal.querySelector('#vpCaptionsBtn');
+    if (q) q.style.display = 'inline-flex';
+    if (c) c.style.display = 'inline-flex';
+  }
+
+  _onYTStateChange(e) {
+    const S = window.YT.PlayerState;
+    this.isPlaying = (e.data === S.PLAYING);
+    this.duration = this.ytPlayer.getDuration() || this.duration;
+    this._updatePlayButton();
+
+    if (e.data === S.ENDED) this._onVideoEnded();
+    if (e.data === S.PLAYING) this._scheduleControlsHide();
+  }
+
+  _onYTError() {
+    this._showError('This video could not be played.');
+  }
+
+  /* ------------------------------------------------------------
+     Direct HTML5 video
+     ------------------------------------------------------------ */
+  _createDirectVideo(src) {
+    this.playerKind = 'direct';
+    const v = document.createElement('video');
+    v.src = src;
+    v.autoplay = true;
+    v.playsInline = true;
+    v.setAttribute('controlsList', 'nodownload noplaybackrate noremoteplayback');
+    v.setAttribute('disablePictureInPicture', '');
+    v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;';
+    v.addEventListener('contextmenu', (e) => e.preventDefault());
+    this.videoArea.insertBefore(v, this.videoArea.firstChild);
+    this.videoEl = v;
+
+    v.addEventListener('loadedmetadata', () => {
+      this.duration = v.duration || 0;
+      this._updateTimeDisplay();
+      this._maybeResumeFromSaved();
+    });
+    v.addEventListener('play', () => { this.isPlaying = true; this._updatePlayButton(); this._scheduleControlsHide(); });
+    v.addEventListener('pause', () => { this.isPlaying = false; this._updatePlayButton(); });
+    v.addEventListener('ended', () => this._onVideoEnded());
+    v.addEventListener('timeupdate', () => this._updateProgressUI());
+    v.addEventListener('progress', () => this._updateBuffered());
+    v.addEventListener('volumechange', () => this._syncVolumeUI());
+    v.addEventListener('ratechange', () => { this.playbackRate = v.playbackRate; this._updateSpeedUI(); });
+  }
+
+  /* ------------------------------------------------------------
+     Abstraction layer
+     ------------------------------------------------------------ */
+  _getCurrentTime() {
+    if (this.playerKind === 'youtube') return (this.ytPlayer && this.ytPlayer.getCurrentTime && this.ytPlayer.getCurrentTime()) || 0;
+    return (this.videoEl && this.videoEl.currentTime) || 0;
+  }
+  _getDuration() {
+    if (this.playerKind === 'youtube') return (this.ytPlayer && this.ytPlayer.getDuration && this.ytPlayer.getDuration()) || this.duration || 0;
+    return (this.videoEl && this.videoEl.duration) || this.duration || 0;
+  }
+  _play() {
+    if (this.playerKind === 'youtube' && this.ytPlayer) { try { this.ytPlayer.playVideo(); } catch (e) {} }
+    else if (this.videoEl) { this.videoEl.play().catch(() => {}); }
+  }
+  _pause() {
+    if (this.playerKind === 'youtube' && this.ytPlayer) { try { this.ytPlayer.pauseVideo(); } catch (e) {} }
+    else if (this.videoEl) { this.videoEl.pause(); }
+  }
+  _togglePlay() { this.isPlaying ? this._pause() : this._play(); }
+  _seekTo(sec) {
+    sec = Math.max(0, Math.min(this._getDuration(), sec));
+    if (this.playerKind === 'youtube' && this.ytPlayer) { try { this.ytPlayer.seekTo(sec, true); } catch (e) {} }
+    else if (this.videoEl) { this.videoEl.currentTime = sec; }
+  }
+  _seekBy(d) { this._seekTo(this._getCurrentTime() + d); }
+
+  _setVolume(v) {
+    this.volume = Math.max(0, Math.min(1, v));
+    if (this.playerKind === 'youtube' && this.ytPlayer) { try { this.ytPlayer.setVolume(Math.round(this.volume * 100)); } catch (e) {} }
+    else if (this.videoEl) { this.videoEl.volume = this.volume; }
+    this._syncVolumeUI();
+  }
+  _setMuted(m) {
+    this.isMuted = !!m;
+    if (this.playerKind === 'youtube' && this.ytPlayer) {
+      try { this.isMuted ? this.ytPlayer.mute() : this.ytPlayer.unMute(); } catch (e) {}
+    } else if (this.videoEl) { this.videoEl.muted = this.isMuted; }
+    this._syncVolumeUI();
+  }
+  _isMuted() {
+    if (this.playerKind === 'youtube' && this.ytPlayer && this.ytPlayer.isMuted) {
+      try { return this.ytPlayer.isMuted(); } catch (e) {}
+    }
+    return this.isMuted;
+  }
+  _toggleMute() { this._setMuted(!this._isMuted()); }
+
+  _setRate(r) {
+    this.playbackRate = Math.max(0.25, Math.min(3, r));
+    if (this.playerKind === 'youtube' && this.ytPlayer) { try { this.ytPlayer.setPlaybackRate(this.playbackRate); } catch (e) {} }
+    else if (this.videoEl) { this.videoEl.playbackRate = this.playbackRate; }
+    this._updateSpeedUI();
+  }
+
+  _toggleLoop() {
+    this.looping = !this.looping;
+    if (this.playerKind === 'youtube' && this.ytPlayer) { try { this.ytPlayer.setLoop(this.looping); } catch (e) {} }
+    else if (this.videoEl) { this.videoEl.loop = this.looping; }
+    const btn = this.modal.querySelector('#vpLoopBtn');
+    if (btn) btn.classList.toggle('active', this.looping);
+    this._showToast(this.looping ? 'Loop on' : 'Loop off');
+  }
+
+  _toggleCaptions() {
+    if (this.playerKind !== 'youtube' || !this.ytPlayer) return;
+    try {
+      const cur = this.ytPlayer.getOptions ? this.ytPlayer.getOptions() : [];
+      /* The IFrame API offers loadModule('captions').toggle() */
+      const captions = this.ytPlayer.getOptions && this.ytPlayer.getOptions('captions');
+      if (captions && captions.toggle) {
+        captions.toggle();
+        this.captionsOn = !this.captionsOn;
+        const btn = this.modal.querySelector('#vpCaptionsBtn');
+        btn.classList.toggle('active', this.captionsOn);
+      } else {
+        this._showToast('Captions not available for this video');
+      }
+    } catch (e) {}
+  }
+
+  _getBufferedFraction() {
+    if (this.playerKind === 'youtube' && this.ytPlayer && this.ytPlayer.getVideoLoadedFraction) {
+      try { return this.ytPlayer.getVideoLoadedFraction() || 0; } catch (e) { return 0; }
+    }
+    if (this.videoEl && this.videoEl.buffered && this.videoEl.duration) {
+      const b = this.videoEl.buffered;
+      if (b.length > 0) return b.end(b.length - 1) / this.videoEl.duration;
+    }
+    return 0;
+  }
+
+  /* ------------------------------------------------------------
+     Tick loop
+     ------------------------------------------------------------ */
+  _startTick() {
+    this._stopTick();
+    const loop = () => {
+      if (!this.active) return;
+      this._tick();
+      this.rafId = requestAnimationFrame(loop);
+    };
+    this.rafId = requestAnimationFrame(loop);
+  }
+  _stopTick() { if (this.rafId) cancelAnimationFrame(this.rafId); this.rafId = null; }
+
+  _tick() {
+    this._updateProgressUI();
+    this._updateTimeDisplay();
+    /* Save resume position every ~5 s */
+    const now = Date.now();
+    if (!this._lastResumeSave || now - this._lastResumeSave > 5000) {
+      this._lastResumeSave = now;
+      this._saveResume();
+    }
+  }
+
+  /* ------------------------------------------------------------
+     UI updates
+     ------------------------------------------------------------ */
+  _updatePlayButton() {
+    const btn = this.modal && this.modal.querySelector('#vpPlayBtn i');
+    if (btn) btn.className = this.isPlaying ? 'fas fa-pause' : 'fas fa-play';
+    const big = this.modal && this.modal.querySelector('#vpBigPlay');
+    if (big) big.classList.toggle('visible', !this.isPlaying);
+  }
+
+  _updateProgressUI(overrideTime) {
+    const now = (typeof overrideTime === 'number') ? overrideTime : this._getCurrentTime();
+    const dur = this._getDuration() || 1;
+    const pct = Math.max(0, Math.min(1, now / dur)) * 100;
+
+    const filled = this.modal && this.modal.querySelector('#vpProgressFilled');
+    const thumb  = this.modal && this.modal.querySelector('#vpProgressThumb');
+    if (filled) filled.style.width = pct + '%';
+    if (thumb)  thumb.style.left  = pct + '%';
+  }
+
+  _updateBuffered() {
+    const pct = this._getBufferedFraction() * 100;
+    const el = this.modal && this.modal.querySelector('#vpProgressBuffered');
+    if (el) el.style.width = pct + '%';
+  }
+
+  _updateTimeDisplay() {
+    const el = this.modal && this.modal.querySelector('#vpTime');
+    if (!el) return;
+    el.textContent = this._fmt(this._getCurrentTime()) + ' / ' + this._fmt(this._getDuration());
+  }
+
+  _syncVolumeUI() {
+    const slider = this.modal && this.modal.querySelector('#vpVolumeRange');
+    const icon = this.modal && this.modal.querySelector('#vpMuteBtn i');
+    const muted = this._isMuted();
+    const v = this.volume;
+    if (slider) slider.value = muted ? 0 : Math.round(v * 100);
+    if (icon) {
+      icon.className = muted || v === 0 ? 'fas fa-volume-xmark'
+                    : v < 0.33        ? 'fas fa-volume-low'
+                    : v < 0.66        ? 'fas fa-volume-low'
+                    :                   'fas fa-volume-high';
+    }
+  }
+
+  _updateSpeedUI() {
+    const btn = this.modal && this.modal.querySelector('#vpSpeedBtn');
+    if (btn) btn.textContent = this.playbackRate + 'x';
+    const menu = this.modal && this.modal.querySelector('#vpSpeedMenu');
+    if (menu) {
+      menu.querySelectorAll('button').forEach(b => {
+        b.classList.toggle('active', parseFloat(b.dataset.rate) === this.playbackRate);
+      });
+    }
+  }
+
+  /* ------------------------------------------------------------
+     Controls visibility
+     ------------------------------------------------------------ */
+  _showControls() {
+    if (!this.modal) return;
+    this.modal.querySelector('#vpControls').classList.remove('hidden');
+    this.modal.querySelector('#vpTitle').classList.remove('hidden');
+    this.controlsVisible = true;
+  }
+  _hideControls() {
+    if (!this.modal) return;
+    if (!this.isPlaying) return;   // keep controls visible while paused
+    this.modal.querySelector('#vpControls').classList.add('hidden');
+    this.modal.querySelector('#vpTitle').classList.add('hidden');
+    this.controlsVisible = false;
+    this._closeAllMenus();
+  }
+  _scheduleControlsHide() {
+    clearTimeout(this.controlsTimer);
+    this._showControls();
+    if (this.isPlaying) {
+      this.controlsTimer = setTimeout(() => this._hideControls(), 3000);
+    }
+  }
+  _onMouseMove() { if (this.active) this._scheduleControlsHide(); }
+  _onMouseLeave() { if (this.active && this.isPlaying) this._hideControls(); }
+
+  /* ------------------------------------------------------------
+     Menus
+     ------------------------------------------------------------ */
+  _closeAllMenus() {
+    this.modal && this.modal.querySelectorAll('.vp-menu, .vp-speed-menu, .vp-shortcuts').forEach(m => m.classList.remove('open'));
+  }
+  _toggleMenu(sel) {
+    const el = this.modal && this.modal.querySelector(sel);
+    if (!el) return;
+    const wasOpen = el.classList.contains('open');
+    this._closeAllMenus();
+    if (!wasOpen) el.classList.add('open');
+  }
+  _toggleSpeedMenu() {
+    const el = this.modal && this.modal.querySelector('#vpSpeedMenu');
+    if (!el) return;
+    const wasOpen = el.classList.contains('open');
+    this._closeAllMenus();
+    if (!wasOpen) el.classList.add('open');
+  }
+  _showShortcuts() {
+    const el = this.modal && this.modal.querySelector('#vpShortcuts');
+    if (el) el.classList.add('open');
+  }
+  _hideShortcuts() {
+    const el = this.modal && this.modal.querySelector('#vpShortcuts');
+    if (el) el.classList.remove('open');
+  }
+
+  _renderSpeedMenu() {
+    const el = this.modal && this.modal.querySelector('#vpSpeedMenu');
+    if (!el) return;
+    const rates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+    el.innerHTML = rates.map(r =>
+      `<button data-rate="${r}"${r === this.playbackRate ? ' class="active"' : ''}>${r}x${r === 1 ? ' (normal)' : ''}</button>`
+    ).join('');
+    el.querySelectorAll('button').forEach(b => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._setRate(parseFloat(b.dataset.rate));
+        this._closeAllMenus();
+        this._showToast('Speed: ' + this.playbackRate + 'x');
+      });
+    });
+  }
+
+  _renderQualityMenu() {
+    if (this.playerKind !== 'youtube' || !this.ytPlayer) return;
+    const el = this.modal && this.modal.querySelector('#vpQualityList');
+    if (!el) return;
+    let levels = [];
+    try { levels = this.ytPlayer.getAvailableQualityLevels() || []; } catch (e) {}
+
+    const labels = {
+      highres:  '4320p (8K)',
+      hd2160:   '2160p (4K)',
+      hd1440:   '1440p',
+      hd1080:   '1080p',
+      hd720:    '720p',
+      large:    '480p',
+      medium:   '360p',
+      small:    '240p',
+      tiny:     '144p',
+      auto:     'Auto'
+    };
+
+    const items = ['auto', ...levels.filter(l => l !== 'auto')];
+    el.innerHTML = items.map(q =>
+      `<button data-q="${q}">${labels[q] || q}</button>`
+    ).join('');
+
+    el.querySelectorAll('button').forEach(b => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        try { this.ytPlayer.setPlaybackQuality(b.dataset.q); } catch (err) {}
+        el.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        this._closeAllMenus();
+        this._showToast('Quality: ' + (labels[b.dataset.q] || b.dataset.q));
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------
+     Playlist
+     ------------------------------------------------------------ */
+  _togglePlaylist(forceState) {
+    if (!this.playlistPanel) return;
+    const isOpen = typeof forceState === 'boolean'
+      ? forceState
+      : !this.playlistPanel.classList.contains('open');
+    this.playlistPanel.classList.toggle('open', isOpen);
+    this.modal.querySelector('.vp-shell').classList.toggle('playlist-open', isOpen);
+  }
+
+  _renderPlaylist() {
+    if (!this.playlistItemsEl) return;
+    this.playlistItemsEl.innerHTML = this.playlist.map((item, i) => `
+      <div class="vp-playlist-item ${i === this.playlistIndex ? 'current' : ''}" data-index="${i}">
+        <div class="vp-playlist-item-num">${i + 1}</div>
+        <div class="vp-playlist-item-title">${_escHtml(item.title)}</div>
+        ${i === this.playlistIndex ? '<i class="fas fa-volume-up vp-playlist-item-playing"></i>' : ''}
+      </div>`).join('');
+    this.playlistItemsEl.querySelectorAll('.vp-playlist-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const idx = parseInt(el.dataset.index, 10);
+        if (idx !== this.playlistIndex) this._loadPlaylistItem(idx);
+      });
+    });
+  }
+
+  _nextPlaylist() {
+    if (this.playlist.length === 0) return;
+    const next = (this.playlistIndex + 1) % this.playlist.length;
+    this._loadPlaylistItem(next);
+  }
+  _prevPlaylist() {
+    if (this.playlist.length === 0) return;
+    const prev = (this.playlistIndex - 1 + this.playlist.length) % this.playlist.length;
+    this._loadPlaylistItem(prev);
+  }
+
+  _onVideoEnded() {
+    if (this.looping) { this._play(); return; }
+    if (this.playlist.length > 1 && this.playlistIndex < this.playlist.length - 1) {
+      this._showToast('Next up: ' + (this.playlist[this.playlistIndex + 1].title || ''));
+      setTimeout(() => this._loadPlaylistItem(this.playlistIndex + 1), 800);
+    }
+  }
+
+  /* ------------------------------------------------------------
+     Bookmarks
+     ------------------------------------------------------------ */
+  _bmKey() { return 'aero_vp_bm_' + this.videoId; }
+  _loadBookmarks() {
+    try {
+      const raw = localStorage.getItem(this._bmKey());
+      this.bookmarks = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(this.bookmarks)) this.bookmarks = [];
+    } catch (e) { this.bookmarks = []; }
+    this._renderBookmarkMenu();
+  }
+  _saveBookmarks() {
+    try { localStorage.setItem(this._bmKey(), JSON.stringify(this.bookmarks)); } catch (e) {}
+    this._renderBookmarkMenu();
+  }
+  _saveBookmark() {
+    const t = this._getCurrentTime();
+    if (!t || t < 1) { this._showToast('Cannot bookmark at 0:00'); return; }
+    const label = prompt('Label for this bookmark (optional):', 'Bookmark at ' + this._fmt(t));
+    if (label === null) return;
+    this.bookmarks.push({ t, label: label || this._fmt(t), created: Date.now() });
+    this.bookmarks.sort((a, b) => a.t - b.t);
+    this._saveBookmarks();
+    this._showToast('Bookmark saved at ' + this._fmt(t));
+    this._closeAllMenus();
+  }
+  _deleteBookmark(idx) {
+    this.bookmarks.splice(idx, 1);
+    this._saveBookmarks();
+  }
+  _renderBookmarkMenu() {
+    const el = this.modal && this.modal.querySelector('#vpBookmarkList');
+    if (!el) return;
+    if (this.bookmarks.length === 0) {
+      el.innerHTML = '<div class="vp-menu-empty">No bookmarks yet</div>';
+      return;
+    }
+    el.innerHTML = this.bookmarks.map((b, i) => `
+      <div class="vp-bookmark-item" data-idx="${i}">
+        <button class="vp-bookmark-jump" data-t="${b.t}">
+          <i class="fas fa-play"></i> <span class="vp-bookmark-time">${this._fmt(b.t)}</span>
+          <span class="vp-bookmark-label">${_escHtml(b.label)}</span>
+        </button>
+        <button class="vp-bookmark-del" title="Delete"><i class="fas fa-times"></i></button>
+      </div>`).join('');
+
+    el.querySelectorAll('.vp-bookmark-jump').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._seekTo(parseFloat(btn.dataset.t));
+        this._play();
+        this._closeAllMenus();
+      });
+    });
+    el.querySelectorAll('.vp-bookmark-del').forEach((btn, i) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._deleteBookmark(i);
+      });
+    });
+  }
+
+  /* ------------------------------------------------------------
+     Resume
+     ------------------------------------------------------------ */
+  _resumeKey() { return 'aero_vp_pos_' + this.videoId; }
+  _saveResume() {
+    const t = this._getCurrentTime();
+    const dur = this._getDuration();
+    if (!t || t < 5 || !dur || dur < 30) return;
+    if (t > dur - 15) { try { localStorage.removeItem(this._resumeKey()); } catch (e) {} return; }
+    try {
+      localStorage.setItem(this._resumeKey(), JSON.stringify({ t, dur, at: Date.now() }));
+    } catch (e) {}
+  }
+  _maybeResumeFromSaved() {
+    let saved;
+    try { saved = JSON.parse(localStorage.getItem(this._resumeKey())); } catch (e) {}
+    if (!saved || !saved.t || saved.t < 10) return;
+    const dur = this._getDuration();
+    if (dur && saved.t > dur - 15) return;
+    /* Only offer if the save is fresh (< 30 days) */
+    if (saved.at && Date.now() - saved.at > 30 * 86400000) return;
+
+    this._resumePos = saved.t;
+    this._seekTo(saved.t);
+    this._showToast('📖 Resuming from ' + this._fmt(saved.t));
+  }
+
+  /* ------------------------------------------------------------
+     Fullscreen / theater / PiP
+     ------------------------------------------------------------ */
+  _toggleFullscreen() {
+    const shell = this.modal.querySelector('.vp-shell');
+    const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (isFs) {
+      (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+    } else {
+      const req = shell.requestFullscreen || shell.webkitRequestFullscreen || shell.msRequestFullscreen;
+      if (req) req.call(shell).catch(() => {});
+    }
+  }
+
+  _toggleTheater() {
+    this.theater = !this.theater;
+    this.modal.querySelector('.vp-shell').classList.toggle('vp-theater', this.theater);
+    this.modal.querySelector('#vpTheaterBtn').classList.toggle('active', this.theater);
+    this._showToast(this.theater ? 'Theater mode on' : 'Theater mode off');
+  }
+
+  async _togglePiP() {
+    try {
+      if (this.videoEl && document.pictureInPictureEnabled) {
+        if (document.pictureInPictureElement) {
+          await document.exitPictureInPicture();
+        } else {
+          await this.videoEl.requestPictureInPicture();
+        }
+      } else {
+        this._showToast('Picture-in-Picture is not available for YouTube videos');
+      }
+    } catch (e) {
+      this._showToast('Picture-in-Picture failed: ' + (e.message || ''));
+    }
+  }
+
+  /* ------------------------------------------------------------
+     Keyboard
+     ------------------------------------------------------------ */
+  _onKeyDown(e) {
+    if (!this.active) return;
+
+    /* Ignore modifier-only or browser shortcuts */
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      if (e.shiftKey && e.key === '/') {
+        e.preventDefault();
+        this._showShortcuts();
+      }
+      return;
+    }
+
+    const inField = e.target && e.target.matches && e.target.matches('input, textarea, [contenteditable="true"]');
+    const key = e.key;
+
+    /* Screenshot protection (kept from v5) */
+    if (key === 'PrintScreen' || e.keyCode === 44) {
+      e.preventDefault();
+      try { navigator.clipboard.writeText('Screenshots disabled.'); } catch (_) {}
+      this._flashBlur();
+      this._showToast('Screenshots are disabled for this video.');
+      return;
+    }
+
+    if (key === '?' || (e.shiftKey && key === '/')) {
+      e.preventDefault();
+      this._showShortcuts();
+      return;
+    }
+
+    if (inField) return;
+
+    /* Dismiss shortcuts on any key */
+    this._hideShortcuts();
+    this._scheduleControlsHide();
+
+    switch (key) {
+      case ' ': case 'k': case 'K':
+        e.preventDefault(); this._togglePlay(); break;
+
+      case 'ArrowLeft':  e.preventDefault(); this._seekBy(-5); this._showToast('⏪ 5s'); break;
+      case 'ArrowRight': e.preventDefault(); this._seekBy(5);  this._showToast('⏩ 5s'); break;
+      case 'j': case 'J': e.preventDefault(); this._seekBy(-10); this._showToast('⏪ 10s'); break;
+      case 'l': case 'L': e.preventDefault(); this._seekBy(10);  this._showToast('⏩ 10s'); break;
+
+      case 'ArrowUp':   e.preventDefault(); this._setVolume(this.volume + 0.05); this._showToast('Volume ' + Math.round(this.volume * 100) + '%'); break;
+      case 'ArrowDown': e.preventDefault(); this._setVolume(this.volume - 0.05); this._showToast('Volume ' + Math.round(this.volume * 100) + '%'); break;
+
+      case 'm': case 'M': e.preventDefault(); this._toggleMute(); this._showToast(this._isMuted() ? 'Muted' : 'Unmuted'); break;
+
+      case 'f': case 'F': e.preventDefault(); this._toggleFullscreen(); break;
+      case 't': case 'T': e.preventDefault(); this._toggleTheater(); break;
+      case 'i': case 'I': e.preventDefault(); this._togglePiP(); break;
+      case 'r': case 'R': e.preventDefault(); this._toggleLoop(); break;
+      case 'b': case 'B': e.preventDefault(); this._saveBookmark(); break;
+      case 'c': case 'C': e.preventDefault(); this._toggleCaptions(); break;
+      case 'n': case 'N': e.preventDefault(); this._nextPlaylist(); break;
+      case 'p': case 'P': e.preventDefault(); this._prevPlaylist(); break;
+
+      case '<': case ',': e.preventDefault(); this._setRate(this.playbackRate - 0.25); this._showToast('Speed: ' + this.playbackRate + 'x'); break;
+      case '>': case '.': e.preventDefault(); this._setRate(this.playbackRate + 0.25); this._showToast('Speed: ' + this.playbackRate + 'x'); break;
+
+      case 'Escape':
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+          e.preventDefault();
+          (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+        } else {
+          e.preventDefault();
+          this.close();
+        }
+        break;
+
+      default:
+        if (/^[0-9]$/.test(key)) {
+          e.preventDefault();
+          const pct = parseInt(key, 10) / 10;
+          this._seekTo(this._getDuration() * pct);
+          this._showToast('→ ' + (pct * 100) + '%');
+        }
+        break;
+    }
+  }
+
+  /* ------------------------------------------------------------
+     Watermark, protection, helpers
+     ------------------------------------------------------------ */
+  _renderWatermark() {
+    if (!this.watermarkEl) return;
+    const now = new Date();
+    const stamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const text = this.username + ' · ' + stamp;
+    this.watermarkEl.style.backgroundImage = makeWatermarkUrl(text, {
+      size: 14, angle: -25, tile: 700, dark: true
+    });
+    this.watermarkEl.style.opacity = '0.18';
+  }
+
+  _flashBlur() {
+    if (!this.modal) return;
+    const shell = this.modal.querySelector('.vp-shell');
+    if (!shell) return;
+    shell.style.transition = 'filter .1s';
+    shell.style.filter = 'blur(28px) grayscale(100%)';
+    setTimeout(() => { if (shell) shell.style.filter = ''; }, 1800);
+  }
+
+  _fmt(sec) {
+    if (!sec || sec < 0 || !isFinite(sec)) return '0:00';
+    const s = Math.floor(sec);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = s % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`
+      : `${m}:${String(ss).padStart(2,'0')}`;
+  }
+
+  _showToast(msg) {
+    const el = this.modal && this.modal.querySelector('#vpToast');
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => el.classList.remove('show'), 1400);
+  }
+
+  _showError(msg) {
+    if (!this.videoArea) return;
+    const div = document.createElement('div');
+    div.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;background:rgba(0,0,0,.65);z-index:6;padding:24px;text-align:center;';
+    div.innerHTML = `<i class="fas fa-triangle-exclamation" style="font-size:36px;color:#f59e0b;margin-bottom:14px;"></i><p style="margin:0 0 8px;font-size:15px;">${_escHtml(msg)}</p><p style="margin:0;font-size:12.5px;color:#9ca3af;">Try a different video or contact support.</p>`;
+    this.videoArea.appendChild(div);
+  }
+}
 
   window.VideoPlayer = new VideoPlayer();
 
