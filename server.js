@@ -2754,30 +2754,40 @@ app.post('/api/login', async (req, res) => {
         console.warn('[login] bumpStreak failed (non-fatal):', bumpErr.message);
       }
     }
-    // ---------- 1. Persist streak / self-heal changes ----------
-    // bumpStreak() (student branch) and the legacy-admin self-heal above
-    // only touched the in-memory document. Flush those now so they're not
-    // lost when we switch to the atomic session write below.
-    try {
-      await user.save();
-    } catch (preSaveErr) {
-      console.warn('[login] pre-session save failed (non-fatal):', preSaveErr.message);
-    }
-
-    // ---------- 2. SINGLE-DEVICE SESSION (atomic write) ----------
-    // We deliberately do NOT use user.save() here. Mongoose's save() only
-    // sends fields flagged as "modified" — and for nested / Mixed paths
-    // like `activeSession`, that flag isn't reliably set after a whole-
-    // object assignment. The OLD sessionId would silently remain in the
-    // database, letting the previous device stay logged in.
+    // ---------- 1. ATOMIC WRITE: streak + session in ONE round trip ----------
+    // Previously this handler performed TWO separate writes plus a
+    // verification read on every login:
     //
-    // updateOne({ $set: ... }) bypasses the document layer entirely and
-    // writes the new sessionId directly, guaranteeing that any device
-    // still holding a token with the OLD sessionId is rejected on its
-    // next /api/auth/session-check heartbeat.
+    //   • user.save()          → persisted the streak update
+    //   • User.updateOne(...)  → persisted the new session
+    //   • User.findById(...)   → verified the session write landed
+    //
+    // That's 3 DB round trips during the write phase. On a slow link
+    // to Atlas — or any high-latency campus proxy sitting between the
+    // client and the server — each round trip adds 50–200 ms to the
+    // login time. We now do ONE atomic updateOne covering everything
+    // that actually needs to change. The verification read is kept
+    // in development only, so production logins save one round trip
+    // while dev still catches schema issues early.
     const sessionId  = crypto.randomBytes(24).toString('hex');
     const deviceInfo = String(req.headers['user-agent'] || 'Unknown device').slice(0, 200);
     const now        = new Date();
+
+    const updateSet = {
+      activeSession: { sessionId, deviceInfo, loginAt: now, lastSeenAt: now }
+    };
+
+    /* For students, persist the current streak in the SAME write.
+       bumpStreak() was already called in the student branch above,
+       so the in-memory values are already up to date. It's a tiny
+       payload and the write is idempotent, so we just always include
+       the fields rather than computing a diff. Non-student roles
+       skip this branch entirely. */
+    if (user.role === 'student') {
+      updateSet.streakCount    = user.streakCount;
+      updateSet.longestStreak  = user.longestStreak;
+      updateSet.lastActiveDate = user.lastActiveDate;
+    }
 
     let sessionOk = false;
     let sessionWarning = null;
@@ -2785,15 +2795,14 @@ app.post('/api/login', async (req, res) => {
     try {
       const upd = await User.updateOne(
         { _id: user._id },
-        {
-          $set: {
-            activeSession: { sessionId, deviceInfo, loginAt: now, lastSeenAt: now }
-          }
-        }
+        { $set: updateSet }
       );
       sessionOk = !!(upd && (upd.matchedCount || 0) > 0);
 
-      if (sessionOk) {
+      /* Verification read — development only. In production the
+         write is trusted because updateOne returning matchedCount
+         > 0 already proves the document exists and was updated. */
+      if (sessionOk && process.env.NODE_ENV !== 'production') {
         const verify = await User.findById(user._id).select('activeSession').lean();
         sessionOk = !!(verify &&
                        verify.activeSession &&

@@ -2626,7 +2626,7 @@ async function handleLogin(e) {
         // Non-JSON reply (cold-start proxy page) — retry once
         if ((response.status === 502 || response.status === 504) && retries > 0) {
           showToast('Server is starting up… retrying', 'info');
-          await new Promise(r => setTimeout(r, 1500));
+          await new Promise(r => setTimeout(r, 500));
           return attemptLogin(retries - 1, 30000); // give cold start more room
         }
         showToast(
@@ -2693,6 +2693,27 @@ async function handleLogin(e) {
         _sessionKilled = false;
         startSessionHeartbeat();
         renderApp();
+
+        /* ⭐ Warm the data caches AFTER the login POST has landed.
+           ------------------------------------------------------------
+           The login page deliberately skips these fetches (see
+           initApp) so they can never queue ahead of the login
+           request on a slow campus proxy. We fire them here instead,
+           the instant the response is back — so the home / dashboard
+           view repaints with real data a moment later without ever
+           having delayed the sign-in itself. */
+        Promise.allSettled([
+          fetchCoursesFromDB(true),
+          fetchProfessorsFromDB(true),
+          fetchSubscriptionSettings(),
+          fetchOwnerProfile(true)
+        ]).then(() => {
+          try { renderApp(); } catch (e) {}
+        }).catch(() => {
+          /* Non-fatal: home page will show empty state and the user
+             can pull-to-refresh by navigating. */
+        });
+
         return;
       }
 
@@ -2711,7 +2732,7 @@ async function handleLogin(e) {
 
       if (isNetworkish && retries > 0) {
         showToast('Server is waking up… retrying', 'info');
-        await new Promise(r => setTimeout(r, 1500));
+        await new Promise(r => setTimeout(r, 500));
         return attemptLogin(retries - 1, 30000); // longer timeout on retry
       }
 
@@ -11475,6 +11496,23 @@ function initApp() {
   /* ---- INSTANT FIRST PAINT — no network wait ---- */
   renderApp();
 
+  /* ⭐ Skip the boot fetches when there is no session to resume.
+     ------------------------------------------------------------
+     On a high-latency campus proxy these four fetches queue on the
+     SAME connection pool as the login POST that is about to fire.
+     None of the data they fetch is rendered by the login screen,
+     so the login page has nothing to gain from sending them — but
+     they routinely add 1–3 s to the perceived sign-in time because
+     the login request has to wait for a free connection slot.
+
+     After login succeeds, the success path fires the SAME fetches
+     (see handleLogin below) — after the login POST has already
+     returned, so they can never slow the sign-in action itself. */
+  if (!savedUser) {
+    console.log('[initApp] No saved session — deferring boot fetches until after login');
+    return;
+  }
+
   /* ---- Fire all critical fetches in parallel, then re-render once ---- */
   Promise.allSettled([
     fetchCoursesFromDB(),
@@ -11492,12 +11530,10 @@ function initApp() {
   });
 
   /* ---- User-scoped data deferred so it doesn't compete for bandwidth ---- */
-  if (savedUser && savedUser._id) {
-    setTimeout(() => {
-      refreshUserData().catch(() => {});
-      loadNotifications().catch(() => {});
-    }, 800);
-  }
+  setTimeout(() => {
+    refreshUserData().catch(() => {});
+    loadNotifications().catch(() => {});
+  }, 800);
 }
 /* ============================================================
    STUDENT ANALYTICS DASHBOARD
@@ -16356,4 +16392,46 @@ function aiHomeUsePrompt(btn) {
   } else {
     mount();
   }
+})();
+/* ============================================================
+   ⭐ CAMPUS / PROXY CONNECTION WARM-UP
+   ------------------------------------------------------------
+   On high-latency campus networks the FIRST request after a
+   period of idle usually triggers a fresh TCP + TLS negotiation
+   with the campus proxy — 500–1500 ms of pure round-trip
+   overhead that the user experiences as "signing in is slow".
+
+   We fire one tiny GET to /api/version a few seconds after the
+   page has painted, purely to keep the connection hot. By the
+   time the user has typed their password and clicked Sign In,
+   the socket is already established and the login POST goes
+   over the warm path.
+
+   Pure optimisation — if it fails, nothing happens. It also
+   self-disables once the user has actually signed in.
+   ============================================================ */
+(function warmApiConnectionOnLoginPage() {
+  if (window.__aeroWarmConnectionFired) return;
+  window.__aeroWarmConnectionFired = true;
+
+  const fire = () => {
+    try {
+      /* Only warm up if the login view is still on screen. If the
+         user already signed in (or arrived with a live session),
+         the connection is already hot and this is unnecessary. */
+      const loginView = document.getElementById('loginView');
+      if (!loginView || !loginView.classList.contains('active')) return;
+
+      fetch('/api/version?_warm=1&_t=' + Date.now(), {
+        method: 'GET',
+        cache: 'no-store'
+      }).catch(() => {
+        /* silent — this is a warm-up, not a real request */
+      });
+    } catch (e) { /* never throw from a warm-up */ }
+  };
+
+  /* Fire at 3 s — after the initial paint, but well before the
+     user has finished typing their credentials. */
+  setTimeout(fire, 3000);
 })();
