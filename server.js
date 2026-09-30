@@ -1156,7 +1156,7 @@ async function requireAdminAuth(req, res, next) {
 
     const decoded = jwt.verify(token, JWT_SECRET);
     const u = await User.findById(decoded.id).select('role').lean();
-    if (!u || u.role !== 'admin') {
+    if (!u || String(u.role || '').trim().toLowerCase() !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin access only.' });
     }
     req.adminUser = u;
@@ -1289,7 +1289,7 @@ function evaluateMaterialAccess(user, course, material) {
   }
 
   /* ---- Admins always get full access ---- */
-  if (user.role === 'admin') {
+  if (String((user && user.role) || '').trim().toLowerCase() === 'admin') {
     return { allowed: true, canPreview: false, previewPercent: 0 };
   }
 
@@ -2685,7 +2685,7 @@ app.post('/api/login', async (req, res) => {
     }
 
     // ---------- Admin 2FA path ----------
-    if (user.role === 'admin') {
+    if (String(user.role || '').trim().toLowerCase() === 'admin') {
       const otpDestination = (user.email || process.env.ADMIN_EMAIL || '').trim().toLowerCase();
       if (!otpDestination) {
         return res.status(400).json({
@@ -2912,7 +2912,7 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
     adminLoginStore.delete(decoded.pendingId);
 
     const user = await User.findById(record.userId);
-    if (!user || user.role !== 'admin') {
+    if (!user || String(user.role || '').trim().toLowerCase() !== 'admin') {
       return res.status(401).json({ success: false, message: 'Admin account not found.' });
     }
 
@@ -3161,7 +3161,7 @@ app.put('/api/admin/update-credentials', requireAdminAuth, async (req, res) => {
     }
 
     const user = await User.findById(adminId);
-    if (!user || user.role !== 'admin') {
+    if (!user || String(user.role || '').trim().toLowerCase() !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin only.' });
     }
 
@@ -3754,7 +3754,7 @@ app.post('/api/admin/reset-password/:userId', requireAdminAuth, async (req, res)
   try {
     const user = await User.findById(req.params.userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-    if (user.role === 'admin') return res.status(400).json({ success: false, message: 'Cannot delete admin accounts.' });
+    if (String(user.role || '').trim().toLowerCase() === 'admin') return res.status(400).json({ success: false, message: 'Cannot delete admin accounts.' });
     await User.findByIdAndDelete(req.params.userId);
     res.json({ success: true, message: 'Student deleted.' });
   } catch (e) {
@@ -7232,8 +7232,9 @@ app.post('/api/materials/:courseId/:materialId/video-session',
       const ownsCourse   = (user.purchases || []).includes(String(course._id));
       const ownsMaterial = (user.purchases || []).includes(String(mat._id));
       const subscribed   = userHasActiveSubscription(user);
+      const isAdminUser  = String(user.role || '').trim().toLowerCase() === 'admin';
 
-      if (!ownsCourse && !ownsMaterial && !subscribed && user.role !== 'admin') {
+      if (!ownsCourse && !ownsMaterial && !subscribed && !isAdminUser) {
         return res.status(403).json({
           success: false,
           message: 'Purchase or subscription required to watch this video.'
@@ -7630,7 +7631,7 @@ const communitySubmitLimiter = rateLimit({
 async function requireAdmin(adminId) {
   if (!adminId) return null;
   const u = await User.findById(adminId).select('role').lean();
-  if (!u || u.role !== 'admin') return null;
+  if (!u || String(u.role || '').trim().toLowerCase() !== 'admin') return null;
   return u;
 }
 
@@ -9263,7 +9264,7 @@ app.get('/api/admin/online-users/stream', async (req, res) => {
     if (!token) return res.status(401).end();
     const decoded = jwt.verify(token, JWT_SECRET);
     const u = await User.findById(decoded.id).select('role').lean();
-    if (!u || u.role !== 'admin') return res.status(403).end();
+    if (!u || String(u.role || '').trim().toLowerCase() !== 'admin') return res.status(403).end();
   } catch (e) {
     return res.status(401).end();
   }
