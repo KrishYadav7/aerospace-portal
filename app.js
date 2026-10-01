@@ -10845,7 +10845,7 @@ function renderStudentAnswerAreaShuffled(q, qi, st) {
           ? (ans === origOptIdx || (Array.isArray(ans) && ans[0] === origOptIdx))
           : (Array.isArray(ans) && ans.includes(origOptIdx));
         const letter = String.fromCharCode(65 + displayPos);
-        return `<label class="quiz-play-option ${checked ? 'selected' : ''}${locked ? ' locked' : ''}">
+        return `<label class="quiz-play-option ${checked ? 'selected' : ''}${locked ? ' locked' : ''}" data-orig-opt-idx="${origOptIdx}">
           <input type="${inputType}" name="${name}" ${checked ? 'checked' : ''} ${locked ? 'disabled' : ''} style="display:none;"
                  onchange="selectQuizAnswerMulti(${qi}, ${origOptIdx}, this.checked, '${qType}')">
           <span class="quiz-play-letter">${letter}</span>
@@ -11089,6 +11089,16 @@ async function submitQuiz(opts = {}) {
   if (st.previewMode) return showToast('Preview mode — nothing submitted.', 'info');
   if (st.submitted) return;
 
+  /* ⭐ FIX: In-flight guard — the timer-expiry auto-submit and a
+     manual click can fire within the same tick and both reach the
+     server, causing the second POST to be rejected with
+     ALREADY_SUBMITTED. A 30 s timestamp guard blocks the duplicate
+     without needing try/finally plumbing (30 s is far longer than
+     any real submit round trip). */
+  const _now = Date.now();
+  if (st._submitGuardUntil && _now < st._submitGuardUntil) return;
+  st._submitGuardUntil = _now + 30000;
+
   const auto = !!opts.auto;
 
   if (!auto) {
@@ -11209,11 +11219,15 @@ async function submitQuiz(opts = {}) {
       } else {
         showToast(data.message || 'Failed.', 'error');
       }
+      /* ⭐ FIX: release the in-flight guard so the student can retry. */
+      st._submitGuardUntil = 0;
     }
   } catch (err) {
     console.error('[submitQuiz]', err);
     st.examStarted = true;
     showToast('Server error.', 'error');
+    /* ⭐ FIX: release the in-flight guard so the student can retry. */
+    st._submitGuardUntil = 0;
   }
 }
 
@@ -11317,13 +11331,20 @@ function updateQuizProgressUI() {
 function updateQuizQuestionCard(qi) {
   const st = quizPlayerState;
   if (!st) return;
-  const cards = document.querySelectorAll('.quiz-exam-body-inner .quiz-play-card');
-  const card = cards[qi];
+
+  /* ⭐ FIX: Find the card by its `data-original-index`, NOT by
+     positional index. In forward-only mode only ONE card is in the
+     DOM at a time, so `document.querySelectorAll(...)[qi]` was
+     always undefined for every question after the first — the
+     visual selection never updated. */
+  const card = document.querySelector(
+    `.quiz-exam-body-inner .quiz-play-card[data-original-index="${qi}"]`
+  );
   if (!card) return;
 
-  const q = st.quiz[qi];
-  const a = st.answers[qi];
-  const qType = q.type || 'single';
+  const q          = st.quiz[qi];
+  const a          = st.answers[qi];
+  const qType      = q.type || 'single';
   const isAnswered = _isQuestionAnswered(q, a);
 
   card.classList.toggle('answered', isAnswered);
@@ -11343,10 +11364,17 @@ function updateQuizQuestionCard(qi) {
 
   if (qType === 'single' || qType === 'multiple') {
     const opts = card.querySelectorAll('.quiz-play-option');
-    opts.forEach((opt, oi) => {
+    opts.forEach((opt) => {
+      /* ⭐ FIX: compare against the ORIGINAL option index stored on
+         the element, NOT the DOM position — they differ whenever the
+         option order was shuffled server-side. */
+      const origOptIdx = parseInt(opt.dataset.origOptIdx, 10);
+      if (Number.isNaN(origOptIdx)) return;
+
       const selected = qType === 'single'
-        ? (a === oi || (Array.isArray(a) && a[0] === oi))
-        : (Array.isArray(a) && a.includes(oi));
+        ? (a === origOptIdx || (Array.isArray(a) && a[0] === origOptIdx))
+        : (Array.isArray(a) && a.includes(origOptIdx));
+
       opt.classList.toggle('selected', selected);
       const input = opt.querySelector('input');
       if (input) input.checked = selected;
