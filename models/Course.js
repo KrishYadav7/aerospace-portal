@@ -64,7 +64,18 @@ const materialSchema = new mongoose.Schema({
     subject:    { type: String, default: '' },
     paperCode:  { type: String, default: '' },
     totalTime:  { type: String, default: '' },
-    totalMarks: { type: Number, default: 0 }
+    totalMarks: { type: Number, default: 0 },
+
+    /* ⭐ Per-quiz navigation policy.
+       false (default) = strict forward-only: Previous is hidden,
+                         earlier palette cells are disabled.
+       true            = flexible: Previous is shown and any
+                         question in the palette can be revisited. */
+    allowBackNavigation: { type: Boolean, default: false },
+
+    /* ⭐ Whether students see the numbered palette at all.
+       Default true so admins can turn it off for tiny quizzes. */
+    showQuestionPalette: { type: Boolean, default: true }
   },
 
   quiz: [quizQuestionSchema]

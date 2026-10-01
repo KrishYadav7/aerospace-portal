@@ -9053,7 +9053,15 @@ async function renderQuizEditor() {
     const saved = getSavedQuizDraft(quizEditingMaterialId);
     if (saved && Array.isArray(saved.quiz) && saved.quiz.length > 0) {
       quizDraft = saved.quiz.map(q => normalizeQuestion(q));
-      quizPaperConfig = saved.config || { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
+      const sc = saved.config || {};
+      quizPaperConfig = {
+        subject:    sc.subject    || '',
+        paperCode:  sc.paperCode  || '',
+        totalTime:  sc.totalTime  || '',
+        totalMarks: Number(sc.totalMarks) || 0,
+        allowBackNavigation: sc.allowBackNavigation === true,
+        showQuestionPalette: sc.showQuestionPalette !== false
+      };
     } else {
       quizDraft = (mat.quiz || []).map(q => normalizeQuestion(q));
       const cfg = mat.examConfig || {};
@@ -9061,7 +9069,9 @@ async function renderQuizEditor() {
         subject:    cfg.subject    || course.name || '',
         paperCode:  cfg.paperCode  || (course.code ? course.code + '-' + (mat.title || '') : ''),
         totalTime:  cfg.totalTime  || '',
-        totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0)
+        totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0),
+        allowBackNavigation: cfg.allowBackNavigation === true,
+        showQuestionPalette: cfg.showQuestionPalette !== false
       };
     }
   }
@@ -9115,6 +9125,59 @@ async function renderQuizEditor() {
           <input type="number" id="qpMarks" value="${quizPaperConfig.totalMarks || autoTotal}" min="0" step="1" placeholder="e.g. 100">
           <span class="hint">Auto-computed from questions: <strong id="qpAutoHint">${autoTotal}</strong></span>
         </div>
+      </div>
+
+      <!-- ⭐ PER-QUIZ NAVIGATION POLICY -->
+      <div class="quiz-nav-policy">
+        <div class="quiz-nav-policy-head">
+          <i class="fas fa-compass"></i>
+          <div>
+            <strong>Navigation Policy</strong>
+            <span>Controls what students can do between questions.</span>
+          </div>
+        </div>
+
+        <label class="quiz-nav-option ${!quizPaperConfig.allowBackNavigation ? 'active' : ''}"
+               id="qpNavStrictLabel">
+          <input type="radio" name="qpNavPolicy" value="strict"
+                 ${!quizPaperConfig.allowBackNavigation ? 'checked' : ''}
+                 onchange="onQuizNavPolicyChange()">
+          <div class="quiz-nav-option-body">
+            <div class="quiz-nav-option-title">
+              <i class="fas fa-lock"></i>
+              Strict — Forward-only
+            </div>
+            <div class="quiz-nav-option-desc">
+              Students answer one question at a time and cannot return. The
+              <strong>Previous</strong> button is hidden and earlier questions are locked in the palette.
+              Best for high-stakes exams.
+            </div>
+          </div>
+        </label>
+
+        <label class="quiz-nav-option ${quizPaperConfig.allowBackNavigation ? 'active' : ''}"
+               id="qpNavFlexLabel">
+          <input type="radio" name="qpNavPolicy" value="flexible"
+                 ${quizPaperConfig.allowBackNavigation ? 'checked' : ''}
+                 onchange="onQuizNavPolicyChange()">
+          <div class="quiz-nav-option-body">
+            <div class="quiz-nav-option-title">
+              <i class="fas fa-arrows-left-right"></i>
+              Flexible — Free navigation
+            </div>
+            <div class="quiz-nav-option-desc">
+              Students may jump to any question from the palette, use
+              <strong>Previous</strong> to go back, and change answers before submitting.
+              Best for practice tests.
+            </div>
+          </div>
+        </label>
+
+        <label class="quiz-nav-toggle quiz-nav-toggle-inline">
+          <input type="checkbox" id="qpShowPalette"
+                 ${quizPaperConfig.showQuestionPalette !== false ? 'checked' : ''}>
+          <span>Show the numbered question palette to students</span>
+        </label>
       </div>
     </div>
 
@@ -9673,6 +9736,15 @@ function removeMatrixRow(qi, ri) {
   q.matrixRows.splice(ri, 1);
   renderQuizDraft();
 }
+/* ---- Visual feedback when the admin switches the nav policy ---- */
+function onQuizNavPolicyChange() {
+  const strict = document.querySelector('input[name="qpNavPolicy"][value="strict"]');
+  const flex   = document.querySelector('input[name="qpNavPolicy"][value="flexible"]');
+  const strictLbl = document.getElementById('qpNavStrictLabel');
+  const flexLbl   = document.getElementById('qpNavFlexLabel');
+  if (strictLbl) strictLbl.classList.toggle('active', !!(strict && strict.checked));
+  if (flexLbl)   flexLbl.classList.toggle('active',   !!(flex   && flex.checked));
+}
 
 /* ============================================================
    QUIZ EDITOR — Save / Validate
@@ -9680,11 +9752,19 @@ function removeMatrixRow(qi, ri) {
 async function saveQuizPaper() {
   if (!quizEditingCourseId || !quizEditingMaterialId) return;
 
+  const navPolicy = document.querySelector('input[name="qpNavPolicy"]:checked');
+  const allowBack = navPolicy ? navPolicy.value === 'flexible' : false;
+  const showPal   = $('qpShowPalette') ? $('qpShowPalette').checked : true;
+
   quizPaperConfig = {
     subject:    ($('qpSubject')?.value || '').trim(),
     paperCode:  ($('qpCode')?.value    || '').trim(),
     totalTime:  ($('qpTime')?.value    || '').trim(),
-    totalMarks: parseInt($('qpMarks')?.value, 10) || 0
+    totalMarks: parseInt($('qpMarks')?.value, 10) || 0,
+
+    /* ⭐ Per-quiz navigation policy */
+    allowBackNavigation: allowBack,
+    showQuestionPalette: showPal
   };
 
   for (let i = 0; i < quizDraft.length; i++) {
@@ -9862,8 +9942,6 @@ async function openQuizPlayer(courseId, materialId) {
   let cfg = { maxStrikes: 3, forwardOnly: true, shuffleQuestions: true, shuffleOptions: true };
   try {
     const cfgRes = await fetchJSON('/api/settings/subscription').catch(() => null);
-    /* We piggyback on the settings fetch; if it doesn't carry the
-       exam block yet, the defaults above are used. */
     if (cfgRes && cfgRes.exam) {
       cfg.maxStrikes = Number(cfgRes.exam.maxStrikes) || cfg.maxStrikes;
       cfg.forwardOnly = cfgRes.exam.forwardOnly !== false;
@@ -9872,6 +9950,20 @@ async function openQuizPlayer(courseId, materialId) {
     }
   } catch (_) {}
   QUIZ_PROCTOR_MAX_STRIKES = Math.max(1, Math.min(10, cfg.maxStrikes));
+
+  /* ⭐ Per-quiz override wins over the global default.
+     The server has already resolved this in /start; if the response
+     is missing (offline / legacy), fall back to the global setting. */
+  let allowBackNavigation = !cfg.forwardOnly;
+  let showQuestionPalette = true;
+  if (sessionInfo) {
+    if (typeof sessionInfo.allowBackNavigation === 'boolean') {
+      allowBackNavigation = sessionInfo.allowBackNavigation;
+    }
+    if (typeof sessionInfo.showQuestionPalette === 'boolean') {
+      showQuestionPalette = sessionInfo.showQuestionPalette;
+    }
+  }
 
   /* Build the display order. If the server responded with one, use
      it verbatim — it's the canonical order for this attempt. */
@@ -9921,7 +10013,9 @@ async function openQuizPlayer(courseId, materialId) {
     fullscreenArmed: false,
 
     /* ⭐ NEW fields */
-    forwardOnly: cfg.forwardOnly !== false,
+    forwardOnly: !allowBackNavigation,          // strict when back-nav is OFF
+    allowBackNavigation,                        // ⭐ keep both, they read better
+    showQuestionPalette: showQuestionPalette !== false,
     questionOrder,
     optionOrders,
     displayIndex: 0,
@@ -9940,9 +10034,25 @@ async function openQuizPlayer(courseId, materialId) {
   const btn = document.getElementById('preExamBeginBtn');
   if (btn) btn.disabled = true;
 
-  /* Show the forward-only warning in the consent modal, if it exists */
-  const warnBox = document.getElementById('preExamForwardOnly');
-  if (warnBox) warnBox.style.display = (quizPlayerState.forwardOnly && normalized.length > 1) ? 'flex' : 'none';
+  /* ⭐ Dynamically update the pre-exam rules to match this quiz's policy.
+     Strict mode  → show the red "Forward-only" row, hide the "Flexible" row.
+     Flexible mode → show the green "Flexible" row, hide the red one. */
+  const warnBox    = document.getElementById('preExamForwardOnly');
+  const flexBox    = document.getElementById('preExamFlexible');
+  const isMultiQ   = normalized.length > 1;
+  const isStrict   = quizPlayerState.forwardOnly && isMultiQ;
+  const isFlexible = !quizPlayerState.forwardOnly && isMultiQ;
+
+  if (warnBox) warnBox.style.display = isStrict   ? 'flex' : 'none';
+  if (flexBox) flexBox.style.display = isFlexible ? 'flex' : 'none';
+
+  /* Also swap the consent line so it matches */
+  const consentText = document.getElementById('preExamConsentText');
+  if (consentText) {
+    consentText.innerHTML = isStrict
+      ? 'I understand and agree. I cannot return to previous questions once I click <em>Next</em>, and any violation will consume a strike.'
+      : 'I understand and agree. I may revisit earlier questions before final submission, and any violation will consume a strike.';
+  }
 
   openModal('preExamWarningModal');
 }
@@ -10002,6 +10112,99 @@ async function beginExamSession() {
   renderQuizExamShell();
   startQuizTimer();
   showToast('Exam started. Good luck!', 'success');
+}
+/* ============================================================
+   QUESTION PALETTE — numbered navigator strip
+   ------------------------------------------------------------
+   Behaviour depends on the per-quiz policy:
+     • Strict mode  → only the CURRENT question's cell is enabled.
+                      All others are visually muted and disabled.
+     • Flexible mode → every cell is clickable; the student can
+                      jump to any question at any time.
+   ============================================================ */
+function _renderQuestionPalette(st) {
+  if (!st || !st.showQuestionPalette) return '';
+  const total = st.questionOrder.length;
+  if (total < 2) return '';               // pointless for 1-question exams
+
+  let cells = '';
+  for (let displayIdx = 0; displayIdx < total; displayIdx++) {
+    const originalIdx = st.questionOrder[displayIdx];
+    const q = st.quiz[originalIdx];
+    const a = st.answers[originalIdx];
+    const isAnswered = _isQuestionAnswered(q, a);
+    const isCurrent  = displayIdx === st.displayIndex;
+    const isLocked   = st.forwardOnly && displayIdx !== st.displayIndex;
+
+    const classes = ['quiz-palette-cell'];
+    if (isCurrent)  classes.push('current');
+    if (isAnswered) classes.push('answered');
+    if (isLocked)   classes.push('locked');
+
+    const title = isLocked
+      ? 'Locked — this quiz is forward-only'
+      : `Go to question ${displayIdx + 1}`;
+
+    cells += `<button type="button"
+                class="${classes.join(' ')}"
+                data-display-index="${displayIdx}"
+                ${isLocked ? 'disabled' : ''}
+                title="${title}"
+                onclick="jumpToExamQuestion(${displayIdx})">
+                ${displayIdx + 1}
+              </button>`;
+  }
+
+  return `
+    <div class="quiz-palette" id="quizPalette">
+      <div class="quiz-palette-head">
+        <i class="fas fa-th"></i>
+        <span class="quiz-palette-title">Question Navigator</span>
+        <span class="quiz-palette-mode ${st.forwardOnly ? 'strict' : 'flexible'}">
+          <i class="fas ${st.forwardOnly ? 'fa-lock' : 'fa-arrows-left-right'}"></i>
+          ${st.forwardOnly ? 'Forward-only' : 'Free navigation'}
+        </span>
+        <span class="quiz-palette-count">
+          ${st.displayIndex + 1} / ${total}
+        </span>
+      </div>
+      <div class="quiz-palette-grid">${cells}</div>
+    </div>`;
+}
+
+/* ---- Jump to a specific question (used by the palette) ---- */
+function jumpToExamQuestion(displayIdx) {
+  const st = quizPlayerState;
+  if (!st || st.submitted) return;
+  if (displayIdx < 0 || displayIdx >= st.questionOrder.length) return;
+
+  /* Strict mode: only the current cell is allowed */
+  if (st.forwardOnly && displayIdx !== st.displayIndex) {
+    return showToast('This quiz is forward-only. Use “Next Question”.', 'info');
+  }
+
+  /* Record the time spent on the question we're leaving */
+  const fromOrigIdx = st.questionOrder[st.displayIndex];
+  _recordQuestionTime(fromOrigIdx);
+
+  /* In flexible mode, lock nothing — the answer is still editable.
+     In strict mode we never reach here for a different index. */
+
+  st.displayIndex = displayIdx;
+  _examQuestionEnteredAt = Date.now();
+
+  renderQuizExamShell();
+  const body = document.querySelector('.quiz-exam-body');
+  if (body) body.scrollTop = 0;
+}
+
+/* ---- Previous question (flexible mode only) ---- */
+function prevExamQuestion() {
+  const st = quizPlayerState;
+  if (!st || st.submitted) return;
+  if (st.forwardOnly) return;
+  if (st.displayIndex <= 0) return;
+  jumpToExamQuestion(st.displayIndex - 1);
 }
 
 /* ============================================================
@@ -10066,7 +10269,7 @@ function renderQuizExamShell() {
         </div>
       </div>
     </header>
-  `;
+  ` + _renderQuestionPalette(st);
 
   let bodyHtml = '';
   if (!st.submitted) {
@@ -10137,8 +10340,9 @@ function renderQuizExamShell() {
         </button>
       </footer>`;
   } else if (!st.submitted) {
-    const isLast = st.forwardOnly ? (st.displayIndex >= st.questionOrder.length - 1) : true;
-    const isFirst = st.forwardOnly ? (st.displayIndex === 0) : true;
+    const isLast  = st.displayIndex >= st.questionOrder.length - 1;
+    const isFirst = st.displayIndex === 0;
+
     footerHtml = `
       <footer class="quiz-exam-footer">
         <div class="quiz-exam-footer-left">
@@ -10149,27 +10353,22 @@ function renderQuizExamShell() {
             ? `<span class="quiz-exam-warning-note" style="background:rgba(239,68,68,.1);color:var(--rose-600);border-color:rgba(239,68,68,.3);">
                  <i class="fas fa-lock"></i> Forward-only · Question ${st.displayIndex + 1} of ${st.questionOrder.length}
                </span>`
-            : `<span class="quiz-exam-warning-note">
-                 <i class="fas fa-shield-halved"></i> Do not switch tabs or leave full-screen.
+            : `<span class="quiz-exam-warning-note" style="background:rgba(16,185,129,.1);color:var(--emerald-600);border-color:rgba(16,185,129,.3);">
+                 <i class="fas fa-arrows-left-right"></i> Free navigation · Question ${st.displayIndex + 1} of ${st.questionOrder.length}
                </span>`}
         </div>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <div class="quiz-exam-nav-actions">
+          ${!st.forwardOnly && !isFirst
+            ? `<button type="button" class="btn btn-outline btn-lg" onclick="prevExamQuestion()">
+                 <i class="fas fa-arrow-left"></i> Previous
+               </button>`
+            : ''}
           ${st.forwardOnly && !isLast
             ? `<button type="button" class="btn btn-primary btn-lg" onclick="nextExamQuestion()">
                  <i class="fas fa-arrow-right"></i> Next Question
                </button>`
             : ''}
-          ${st.forwardOnly && isFirst && isLast
-            ? `<button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
-                 <i class="fas fa-paper-plane"></i> Submit Test
-               </button>`
-            : ''}
-          ${st.forwardOnly && isLast
-            ? `<button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
-                 <i class="fas fa-paper-plane"></i> Submit Test
-               </button>`
-            : ''}
-          ${!st.forwardOnly
+          ${isLast
             ? `<button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
                  <i class="fas fa-paper-plane"></i> Submit Test
                </button>`
@@ -10678,11 +10877,27 @@ function exitQuizSession() {
   }
 }
 
-function retakeQuiz() {
+async function retakeQuiz() {
   const st = quizPlayerState;
   if (!st) return;
   const courseId = st.courseId;
   const materialId = st.materialId;
+
+  /* ⭐ Purge the previous server-side session so /start creates a
+     fresh one — otherwise the new attempt inherits the old timer. */
+  try {
+    await fetchJSON(
+      `/api/user/quiz/${courseId}/${materialId}/reset`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser._id })
+      }
+    );
+  } catch (e) {
+    console.warn('[retakeQuiz] session reset failed:', e.message);
+  }
+
   clearQuizAnswers(materialId);
   try { localStorage.removeItem('aero_quiz_start_' + materialId); } catch (e) {}
   exitQuizSession();
@@ -11022,6 +11237,8 @@ function previewQuizPaper() {
   const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
 
   const emptyAnswer = q => q.type === 'integer' ? '' : [];
+  const _previewOrder = Array.from({ length: quizDraft.length }, (_, i) => i);
+
   quizPlayerState = {
     courseId: quizEditingCourseId,
     materialId: quizEditingMaterialId,
@@ -11037,7 +11254,19 @@ function previewQuizPaper() {
     violations: [],
     startTime: null,
     violationHandling: false,
-    fullscreenArmed: true
+    fullscreenArmed: true,
+
+    /* ⭐ Preview honours the same policy the admin just configured */
+    forwardOnly: quizPaperConfig.allowBackNavigation !== true,
+    allowBackNavigation: quizPaperConfig.allowBackNavigation === true,
+    showQuestionPalette: quizPaperConfig.showQuestionPalette !== false,
+    questionOrder: _previewOrder,
+    optionOrders: {},
+    displayIndex: 0,
+    serverStartedAt: Date.now(),
+    durationSeconds: parseQuizTime(quizPaperConfig.totalTime),
+    timeSpentPerQuestion: {},
+    questionLocked: {}
   };
 
   const shell = document.getElementById('quizExamShell');

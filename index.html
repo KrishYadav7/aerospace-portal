@@ -1162,11 +1162,19 @@
           </div>
         </div>
 
-        <div class="pre-exam-rule danger" id="preExamForwardOnly">
+        <div class="pre-exam-rule danger" id="preExamForwardOnly" hidden>
           <i class="fas fa-arrow-right"></i>
           <div>
             <strong>Forward-only navigation</strong>
             <span>You cannot return to a question once you click <em>Next</em>.</span>
+          </div>
+        </div>
+
+        <div class="pre-exam-rule success" id="preExamFlexible" hidden>
+          <i class="fas fa-arrows-left-right"></i>
+          <div>
+            <strong>Free navigation</strong>
+            <span>You may revisit, review, and change any answer before final submission.</span>
           </div>
         </div>
 
@@ -1207,7 +1215,7 @@
       <!-- ---- Consent ---- -->
       <label class="pre-exam-consent">
         <input type="checkbox" id="preExamConsentBox" onchange="togglePreExamConsent()">
-        <span>I understand and agree. I cannot return to previous questions once I click <em>Next</em>, and any violation will consume a strike.</span>
+        <span id="preExamConsentText">I understand and agree. I cannot return to previous questions once I click <em>Next</em>, and any violation will consume a strike.</span>
       </label>
 
       <!-- ---- Actions ---- -->

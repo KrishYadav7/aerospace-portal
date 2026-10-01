@@ -4673,7 +4673,11 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth, 
         subject:    String(examConfig.subject    || '').slice(0, 200),
         paperCode:  String(examConfig.paperCode  || '').slice(0, 100),
         totalTime:  String(examConfig.totalTime  || '').slice(0, 60),
-        totalMarks: Number(examConfig.totalMarks) || 0
+        totalMarks: Number(examConfig.totalMarks) || 0,
+
+        /* ⭐ Per-quiz navigation policy */
+        allowBackNavigation: examConfig.allowBackNavigation === true,
+        showQuestionPalette: examConfig.showQuestionPalette !== false
       };
     }
 
@@ -4798,6 +4802,24 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
       ? Math.max(0, Math.floor((endsAt - now) / 1000))
       : null;
 
+    /* ⭐ Read the per-quiz navigation policy.
+       The material is the source of truth; the global Settings value
+       is only a fallback for quizzes saved before this field existed. */
+    const cfg = mat.examConfig || {};
+    let allowBackNavigation;
+    if (typeof cfg.allowBackNavigation === 'boolean') {
+      allowBackNavigation = cfg.allowBackNavigation;
+    } else {
+      /* Legacy quizzes — defer to the global default (defaults to false) */
+      try {
+        const s = await getGlobalSettings();
+        allowBackNavigation = s.examForwardOnly === false;
+      } catch (e) {
+        allowBackNavigation = false;
+      }
+    }
+    const showQuestionPalette = cfg.showQuestionPalette !== false;
+
     res.json({
       success: true,
       serverNow: now,
@@ -4807,7 +4829,11 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
       shuffleSeed: session.shuffleSeed,
       questionOrder: session.questionOrder,
       optionOrders: session.optionOrders,
-      questionCount: quiz.length
+      questionCount: quiz.length,
+
+      /* ⭐ Per-quiz navigation policy */
+      allowBackNavigation,
+      showQuestionPalette
     });
   } catch (e) {
     console.error('[quiz/start]', e);
@@ -4866,6 +4892,36 @@ app.get('/api/user/quiz/:courseId/:materialId/heartbeat', async (req, res) => {
     });
   } catch (e) {
     console.error('[quiz/heartbeat]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   QUIZ — RESET SESSION  (fresh attempt on retake)
+   ------------------------------------------------------------
+   POST /api/user/quiz/:courseId/:materialId/reset
+   Body: { userId }
+
+   Deletes the current session row so /start creates a new one
+   with a new timer and a new shuffle seed. Called by Retake.
+   ============================================================ */
+app.post('/api/user/quiz/:courseId/:materialId/reset', async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+
+    const result = await QuizSession.deleteOne({
+      userId: String(userId),
+      courseId: String(req.params.courseId),
+      materialId: String(req.params.materialId)
+    });
+    console.log(
+      `[quiz/reset] user=${userId} mat=${req.params.materialId} ` +
+      `removed=${result.deletedCount}`
+    );
+    res.json({ success: true, removed: result.deletedCount || 0 });
+  } catch (e) {
+    console.error('[quiz/reset]', e);
     res.status(500).json({ success: false, message: e.message });
   }
 });
