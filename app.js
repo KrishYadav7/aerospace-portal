@@ -10053,7 +10053,50 @@ async function openQuizPlayer(courseId, materialId) {
       ? 'I understand and agree. I cannot return to previous questions once I click <em>Next</em>, and any violation will consume a strike.'
       : 'I understand and agree. I may revisit earlier questions before final submission, and any violation will consume a strike.';
   }
+  /* ============================================================
+     ⭐ ROLE-BASED PREVIEW BYPASS
+     ------------------------------------------------------------
+     Admins and instructors should NEVER be subjected to the
+     proctored consent screen, fullscreen lock, or tab-switch
+     strikes. When an admin opens a quiz, we route them straight
+     into PREVIEW mode: the exam shell renders with no proctoring
+     listeners, no countdown enforcement, and a visible
+     "Preview mode" note. Students proceed to the normal consent
+     modal exactly as before.
+     ============================================================ */
+  if (isAdmin(currentUser)) {
+    // Force preview semantics — this is the single source of truth
+    // that renderQuizExamShell() and submitQuiz() already read.
+    quizPlayerState.previewMode = true;
+    quizPlayerState.examStarted = false;
+    quizPlayerState.forwardOnly = false;      // free nav for the admin
+    quizPlayerState.allowBackNavigation = true;
+    quizPlayerState.showQuestionPalette = true;
+    quizPlayerState.questionLocked = {};
+    quizPlayerState.strikes = 0;
 
+    // Tear down the consent gate (it may have been pre-populated)
+    const cb  = document.getElementById('preExamConsentBox');
+    const btn = document.getElementById('preExamBeginBtn');
+    if (cb)  cb.checked = false;
+    if (btn) btn.disabled = true;
+    closeModal('preExamWarningModal');
+
+    // Mount the exam shell directly — no modal, no fullscreen,
+    // no proctoring listeners.
+    const shell = document.getElementById('quizExamShell');
+    if (shell) {
+      shell.style.display = 'flex';
+      shell.setAttribute('aria-hidden', 'false');
+      document.body.style.overflow = 'hidden';
+    }
+
+    renderQuizExamShell();          // previewMode → "Close Preview" footer
+    showToast('Preview mode — proctoring disabled.', 'info');
+    return;                         // short-circuit the student path
+  }
+
+  openModal('preExamWarningModal');
   openModal('preExamWarningModal');
 }
 
