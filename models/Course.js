@@ -60,22 +60,54 @@ const materialSchema = new mongoose.Schema({
   estimatedTime: { type: String, default: '' },
   tags: { type: String, default: '' },
 
-  examConfig: {
+   examConfig: {
     subject:    { type: String, default: '' },
     paperCode:  { type: String, default: '' },
     totalTime:  { type: String, default: '' },
     totalMarks: { type: Number, default: 0 },
 
-    /* ⭐ Per-quiz navigation policy.
-       false (default) = strict forward-only: Previous is hidden,
-                         earlier palette cells are disabled.
-       true            = flexible: Previous is shown and any
-                         question in the palette can be revisited. */
+    /* Per-quiz navigation policy (unchanged) */
     allowBackNavigation: { type: Boolean, default: false },
+    showQuestionPalette: { type: Boolean, default: true },
 
-    /* ⭐ Whether students see the numbered palette at all.
-       Default true so admins can turn it off for tiny quizzes. */
-    showQuestionPalette: { type: Boolean, default: true }
+    /* ⭐ NEW — Attempt limits.
+       0  = unlimited (default → existing quizzes keep working)
+       >0 = the student may submit this many attempts, then the
+            Start / Retake button is disabled. Attempts are counted
+            on the Server via User.quizResults[materialId].attempts. */
+    maxAttempts: { type: Number, default: 0, min: 0 },
+
+    /* ⭐ NEW — Scheduled result publication.
+       'immediate' → score shown the moment the quiz is submitted
+                     (identical to the pre-update behaviour)
+       'scheduled' → score is stored server-side but hidden from the
+                     student until resultPublishAt (or the delay)
+                     elapses; a background sweeper publishes + sends
+                     notifications at exactly that time
+       'manual'    → score stays hidden until the admin clicks
+                     "Publish Now" in the quiz editor */
+    resultPublishMode: {
+      type: String,
+      enum: ['immediate', 'scheduled', 'manual'],
+      default: 'immediate'
+    },
+
+    /* Absolute publish time. Wins over resultPublishDelayHours
+       when both are set. Stored as a UTC Date so it is timezone
+       independent on the server side. */
+    resultPublishAt: { type: Date, default: null },
+
+    /* Convenience alternative to an absolute date: "publish N hours
+       after the student submits". Evaluated per-student so a student
+       who took the exam earlier doesn't have to wait for a late
+       joiner. Only used when resultPublishMode === 'scheduled' AND
+       resultPublishAt is null. */
+    resultPublishDelayHours: { type: Number, default: 0, min: 0 },
+
+    /* Flag flipped by the publisher (cron or admin) so a course is
+       never published twice. */
+    resultsPublished:   { type: Boolean, default: false },
+    resultsPublishedAt: { type: Date,    default: null }
   },
 
   quiz: [quizQuestionSchema]

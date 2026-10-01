@@ -1920,6 +1920,192 @@ function parseQuizTimeServer(s) {
   }
   return sec;
 }
+/* ============================================================
+   ⭐ QUIZ RESULT PUBLICATION  (helper)
+   ------------------------------------------------------------
+   Single source of truth for "make the score visible to the
+   student and notify them". Called by:
+
+     • POST /api/admin/quiz/:courseId/:materialId/publish   (admin override)
+     • POST /api/admin/quiz/:courseId/:materialId/publish-now
+     • the background sweeper (runs every 60 s)
+
+   It is fully idempotent: a student whose result is already
+   published is skipped, so running it twice never double-emails.
+   ============================================================ */
+async function publishQuizResults({ courseId, materialId, studentIds, reason }) {
+  const course = await Course.findById(courseId)
+    .select('name code materials')
+    .lean();
+  if (!course) return { published: 0, emailed: 0, error: 'Course not found' };
+
+  const mat = (course.materials || []).find(
+    m => String(m._id) === String(materialId)
+  );
+  if (!mat) return { published: 0, emailed: 0, error: 'Material not found' };
+
+  const filter = { role: 'student' };
+  if (Array.isArray(studentIds) && studentIds.length > 0) {
+    filter._id = { $in: studentIds };
+  }
+
+  const students = await User.find(filter)
+    .select('username fullName email phone quizResults notifications')
+    .lean();
+
+  const matIdStr = String(materialId);
+  const now      = new Date();
+  let published  = 0;
+  const deliveredEmails = [];
+  const deliveredInApp  = [];
+
+  for (const s of students) {
+    const r = (s.quizResults || {})[matIdStr];
+    if (!r) continue;
+    if (r.publishedAt) continue;             // already visible → skip
+
+    const autoMarks = Number(r.marksEarned)     || 0;
+    const autoMax   = Number(r.marksPossible)   || 0;
+    const subjMarks = Number(r.subjectiveMarksAwarded) || 0;
+    const subjMax   = Number(r.subjectiveMaxTotal)     || 0;
+    const finalEarned   = autoMarks + subjMarks;
+    const finalPossible = autoMax   + subjMax;
+    const finalPct      = finalPossible > 0
+      ? Math.round((finalEarned / finalPossible) * 100)
+      : (Number(r.percent) || 0);
+
+    /* ---- 1. Mark the score visible in the DB ---- */
+    try {
+      await User.updateOne(
+        { _id: s._id },
+        {
+          $set: {
+            [`quizResults.${matIdStr}.publishedAt`]:         now,
+            [`quizResults.${matIdStr}.manuallyEvaluated`]:   true,
+            [`quizResults.${matIdStr}.finalMarksEarned`]:    finalEarned,
+            [`quizResults.${matIdStr}.finalMarksPossible`]:  finalPossible,
+            [`quizResults.${matIdStr}.finalPercent`]:        finalPct
+          }
+        }
+      );
+    } catch (e) {
+      console.warn('[quiz/publish] update failed for', s.username, e.message);
+      continue;
+    }
+    published++;
+
+    /* ---- 2. In-app notification (survives even if email is broken) ---- */
+    try {
+      const notif = {
+        id:        Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        type:      'quiz-result',
+        title:     `📊 Results published — ${mat.title || 'Test'}`,
+        body:      `Your final score: ${finalEarned} / ${finalPossible} (${finalPct}%). ` +
+                   `Open the course to see the full breakdown.`,
+        link:      `#/course/${courseId}`,
+        read:      false,
+        createdAt: now
+      };
+      await User.updateOne(
+        { _id: s._id },
+        {
+          $push: {
+            notifications: {
+              $each:  [notif],
+              $slice: -50
+            }
+          }
+        }
+      );
+      deliveredInApp.push(s.username);
+    } catch (e) {
+      console.warn('[quiz/publish] in-app notify failed for', s.username, e.message);
+    }
+
+    /* ---- 3. Email (best-effort; never blocks the response) ---- */
+    if (s.email) {
+      try {
+        const subject = `Results published — ${mat.title || 'your test'}`;
+        const text =
+          `Hi ${s.fullName || s.username},\n\n` +
+          `Your results for "${mat.title || 'the test'}" in "${course.name}" are ready.\n\n` +
+          `Final score: ${finalEarned} / ${finalPossible} (${finalPct}%)\n` +
+          `Auto-graded: ${autoMarks} / ${autoMax}\n` +
+          (subjMax > 0 ? `Manually graded: ${subjMarks} / ${subjMax}\n` : '') +
+          `\nLog in to view the full answer breakdown.\n\n` +
+          `— Aerospace Department, IIT Kharagpur`;
+
+        transporter.sendMail({
+          to: s.email,
+          subject,
+          text,
+          html: `
+            <div style="font-family:Inter,sans-serif;max-width:560px;margin:0 auto;padding:22px;line-height:1.6;">
+              <div style="border-left:4px solid #6366f1;padding-left:12px;margin-bottom:18px;">
+                <strong style="font-size:17px;color:#14161c;">Aerospace Department</strong><br>
+                <span style="font-size:12px;color:#8b8d98;">RESULT PUBLISHED</span>
+              </div>
+              <p>Hi ${escapeHtml(s.fullName || s.username)},</p>
+              <p>Your results for <strong>${escapeHtml(mat.title || 'your test')}</strong>
+                 in <strong>${escapeHtml(course.name)}</strong> are ready.</p>
+              <div style="background:#eef2ff;border-radius:10px;padding:16px 20px;margin:16px 0;text-align:center;">
+                <div style="font-size:12px;letter-spacing:1px;color:#4f46e5;font-weight:700;">FINAL SCORE</div>
+                <div style="font-size:34px;font-weight:800;color:#312e81;margin-top:6px;">
+                  ${finalEarned} / ${finalPossible}
+                </div>
+                <div style="font-size:13px;color:#4a4d5a;margin-top:4px;">${finalPct}%</div>
+              </div>
+              <p style="font-size:13px;color:#4a4d5a;">
+                Auto-graded: <strong>${autoMarks}/${autoMax}</strong>
+                ${subjMax > 0 ? `<br>Manually graded: <strong>${subjMarks}/${subjMax}</strong>` : ''}
+              </p>
+              <p style="font-size:13px;color:#8b8d98;margin-top:22px;">
+                Log in to view the full answer breakdown.
+              </p>
+            </div>`
+        }).catch(err => console.warn('[quiz/publish] email failed:', err.message));
+
+        deliveredEmails.push(s.email);
+      } catch (e) { /* silent */ }
+    }
+
+    /* ---- 4. SMS (best-effort, only if configured) ---- */
+    if (s.phone) {
+      sendSMS(
+        s.phone,
+        `AeroGyan: Your ${mat.title || 'test'} result is out — ${finalEarned}/${finalPossible} (${finalPct}%). Log in to view.`
+      ).catch(() => {});
+    }
+  }
+
+  /* ---- 5. Flip the material-level flag so we don't re-scan ---- */
+  try {
+    await Course.updateOne(
+      { _id: courseId, 'materials._id': materialId },
+      {
+        $set: {
+          'materials.$.examConfig.resultsPublished':   true,
+          'materials.$.examConfig.resultsPublishedAt': now
+        }
+      }
+    );
+    cacheClear('courses:');
+  } catch (e) {
+    console.warn('[quiz/publish] flag update failed:', e.message);
+  }
+
+  console.log(
+    `[quiz/publish] ✅ reason=${reason || 'manual'} course=${courseId} mat=${materialId} ` +
+    `students=${published} inApp=${deliveredInApp.length} email=${deliveredEmails.length}`
+  );
+
+  return {
+    published,
+    emailed: deliveredEmails.length,
+    notifiedInApp: deliveredInApp.length
+  };
+}
+
    const otpTokenSchema = new mongoose.Schema({
   key:       { type: String, required: true, unique: true }, // email|phone|userId
   otp:       { type: String, required: true },
@@ -4669,16 +4855,46 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth, 
 
     const update = { 'materials.$.quiz': quiz };
     if (examConfig && typeof examConfig === 'object') {
-      update['materials.$.examConfig'] = {
-        subject:    String(examConfig.subject    || '').slice(0, 200),
-        paperCode:  String(examConfig.paperCode  || '').slice(0, 100),
-        totalTime:  String(examConfig.totalTime  || '').slice(0, 60),
-        totalMarks: Number(examConfig.totalMarks) || 0,
+      const P = 'materials.$.examConfig';
+      update[P + '.subject']    = String(examConfig.subject    || '').slice(0, 200);
+      update[P + '.paperCode']  = String(examConfig.paperCode  || '').slice(0, 100);
+      update[P + '.totalTime']  = String(examConfig.totalTime  || '').slice(0, 60);
+      update[P + '.totalMarks'] = Number(examConfig.totalMarks) || 0;
 
-        /* ⭐ Per-quiz navigation policy */
-        allowBackNavigation: examConfig.allowBackNavigation === true,
-        showQuestionPalette: examConfig.showQuestionPalette !== false
-      };
+      /* Per-quiz navigation policy (unchanged) */
+      update[P + '.allowBackNavigation'] = examConfig.allowBackNavigation === true;
+      update[P + '.showQuestionPalette'] = examConfig.showQuestionPalette !== false;
+
+      /* ⭐ NEW — Attempt limit.
+         0 = unlimited (preserves the behaviour of every quiz that
+         was created before this update). */
+      const maxAttempts = Math.max(0, Math.min(99, parseInt(examConfig.maxAttempts, 10) || 0));
+      update[P + '.maxAttempts'] = maxAttempts;
+
+      /* ⭐ NEW — Scheduled result publication. */
+      const validModes = ['immediate', 'scheduled', 'manual'];
+      const mode = validModes.includes(examConfig.resultPublishMode)
+        ? examConfig.resultPublishMode
+        : 'immediate';
+      update[P + '.resultPublishMode'] = mode;
+
+      let publishAt = null;
+      if (mode === 'scheduled' && examConfig.resultPublishAt) {
+        const d = new Date(examConfig.resultPublishAt);
+        if (!isNaN(d.getTime())) publishAt = d;
+      }
+      update[P + '.resultPublishAt'] = publishAt;
+
+      const delayH = (mode === 'scheduled')
+        ? Math.max(0, Math.min(8760, parseInt(examConfig.resultPublishDelayHours, 10) || 0))
+        : 0;
+      update[P + '.resultPublishDelayHours'] = delayH;
+
+      /* ⚠️ `resultsPublished` / `resultsPublishedAt` are deliberately
+         NOT touched here — they persist so re-saving a quiz that has
+         already been released does not silently hide the scores
+         students have already seen. Use the /publish-now endpoint
+         (or the "Publish Now" button) to publish. */
     }
 
     const result = await Course.updateOne(
@@ -4726,12 +4942,60 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
       return res.status(400).json({ success: false, message: 'This test has no questions.' });
     }
 
-    /* ---- Reuse existing in-progress session ---- */
-    let session = await QuizSession.findOne({
+    /* ============================================================
+       ⭐ ATTEMPT-LIMIT ENFORCEMENT
+       ------------------------------------------------------------
+       Counts how many times this student has already SUBMITTED
+       this particular material (from User.quizResults[materialId]
+       .attempts) and compares it to the admin-configured cap.
+       A submission that is still in progress does NOT count — the
+       student can resume it freely without burning an attempt.
+       ============================================================ */
+    const cfg          = mat.examConfig || {};
+    const maxAttempts  = Math.max(0, Number(cfg.maxAttempts) || 0);
+
+    const student = await User.findById(userId).select('quizResults').lean();
+    if (!student) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    const existingResult = (student.quizResults || {})[String(req.params.materialId)] || {};
+    const attemptsUsed   = Number(existingResult.attempts) || 0;
+
+    const publishMode   = cfg.resultPublishMode || 'immediate';
+    const publishedAtMs = existingResult.publishedAt
+      ? new Date(existingResult.publishedAt).getTime()
+      : null;
+    const resultsVisible =
+      publishMode === 'immediate' ||
+      (publishMode === 'scheduled' && publishedAtMs !== null);
+
+    /* Refuse to start a fresh attempt once the cap is reached AND
+       there is no in-progress session to resume. */
+    const resumedSession = await QuizSession.findOne({
       userId: String(userId),
       courseId: String(req.params.courseId),
-      materialId: String(req.params.materialId)
+      materialId: String(req.params.materialId),
+      status: 'in-progress'
     });
+
+    if (maxAttempts > 0 && attemptsUsed >= maxAttempts && !resumedSession) {
+      return res.status(403).json({
+        success: false,
+        code: 'ATTEMPT_LIMIT_REACHED',
+        message:
+          `You have used all ${maxAttempts} attempt${maxAttempts === 1 ? '' : 's'} ` +
+          `for this test.` +
+          (resultsVisible
+            ? ' Your result is available above.'
+            : ' Your result will be visible once the instructor publishes it.'),
+        attemptsUsed,
+        maxAttempts,
+        resultsVisible,
+        resultsPending: !resultsVisible
+      });
+    }
+
+    /* ---- Reuse existing in-progress session ---- */
+    let session = resumedSession;
 
     if (session && session.status !== 'in-progress') {
       return res.status(409).json({
@@ -4743,18 +5007,17 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
 
     if (!session) {
       const settings = await getGlobalSettings();
-      const durationSeconds = parseQuizTimeServer(mat.examConfig && mat.examConfig.totalTime);
+      const durationSeconds = parseQuizTimeServer(cfg.totalTime);
 
       const shuffleSeed = crypto
         .createHash('sha256')
-        .update(String(userId) + ':' + String(req.params.materialId) + ':' + Date.now() + ':' + crypto.randomBytes(8).toString('hex'))
+        .update(
+          String(userId) + ':' + String(req.params.materialId) + ':' +
+          Date.now() + ':' + crypto.randomBytes(8).toString('hex')
+        )
         .digest('hex')
         .slice(0, 32);
 
-      /* Per-question and per-option shuffle. The order arrays map
-         DISPLAY position → ORIGINAL index. The client uses these
-         for rendering only; the submission still sends answers in
-         ORIGINAL index order, so the grader is unchanged. */
       const qCount = quiz.length;
       let questionOrder = Array.from({ length: qCount }, (_, i) => i);
       if (settings.examShuffleQuestions !== false) {
@@ -4787,10 +5050,9 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
       });
       console.log(
         `[quiz/start] ✅ new session user=${userId} mat=${req.params.materialId} ` +
-        `duration=${durationSeconds}s q=${qCount}`
+        `duration=${durationSeconds}s q=${qCount} attempt=${attemptsUsed + 1}/${maxAttempts || '∞'}`
       );
     } else {
-      /* Touch heartbeat so an active tab can't be swept as idle */
       session.lastHeartbeat = new Date();
       await session.save();
       console.log(`[quiz/start] ♻️  resumed session user=${userId} mat=${req.params.materialId}`);
@@ -4802,15 +5064,11 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
       ? Math.max(0, Math.floor((endsAt - now) / 1000))
       : null;
 
-    /* ⭐ Read the per-quiz navigation policy.
-       The material is the source of truth; the global Settings value
-       is only a fallback for quizzes saved before this field existed. */
-    const cfg = mat.examConfig || {};
+    /* Per-quiz navigation policy (unchanged) */
     let allowBackNavigation;
     if (typeof cfg.allowBackNavigation === 'boolean') {
       allowBackNavigation = cfg.allowBackNavigation;
     } else {
-      /* Legacy quizzes — defer to the global default (defaults to false) */
       try {
         const s = await getGlobalSettings();
         allowBackNavigation = s.examForwardOnly === false;
@@ -4830,14 +5088,121 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
       questionOrder: session.questionOrder,
       optionOrders: session.optionOrders,
       questionCount: quiz.length,
-
-      /* ⭐ Per-quiz navigation policy */
       allowBackNavigation,
-      showQuestionPalette
+      showQuestionPalette,
+
+      /* ⭐ NEW — attempt + publication metadata for the UI */
+      attemptsUsed,               // completed attempts (before this one)
+      maxAttempts,                // 0 = unlimited
+      attemptsRemaining: maxAttempts > 0
+        ? Math.max(0, maxAttempts - attemptsUsed)
+        : null,                    // null = unlimited
+      resultPublishMode: publishMode,
+      resultsVisible,
+      resultPublishAt: cfg.resultPublishAt || null
     });
   } catch (e) {
     console.error('[quiz/start]', e);
     res.status(500).json({ success: false, message: 'Could not start test: ' + e.message });
+  }
+});
+/* ============================================================
+   GET /api/user/quiz/:courseId/:materialId/attempt-status
+   ------------------------------------------------------------
+   Cheap, unauthenticated-beyond-userId probe used by the
+   material card to render the correct button label and to
+   short-circuit openQuizPlayer() when the cap is reached.
+   ============================================================ */
+app.get('/api/user/quiz/:courseId/:materialId/attempt-status', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+
+    const course = await Course.findById(req.params.courseId)
+      .select('materials')
+      .lean();
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+
+    const mat = (course.materials || []).find(
+      m => String(m._id) === String(req.params.materialId)
+    );
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found.' });
+
+    const cfg          = mat.examConfig || {};
+    const maxAttempts  = Math.max(0, Number(cfg.maxAttempts) || 0);
+    const publishMode  = cfg.resultPublishMode || 'immediate';
+
+    const student = await User.findById(userId).select('quizResults').lean();
+    if (!student) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    const r = (student.quizResults || {})[String(req.params.materialId)] || {};
+    const attemptsUsed = Number(r.attempts) || 0;
+    const publishedAt  = r.publishedAt || null;
+    const publishedMs  = publishedAt ? new Date(publishedAt).getTime() : null;
+
+    /* If the publish mode is 'scheduled' and the deadline has
+       passed but the cron hasn't run yet (max 60 s lag), treat it
+       as published anyway so the student never sees a stale
+       "pending" state. */
+    let resultsVisible = false;
+    if (publishedMs) {
+      resultsVisible = true;
+    } else if (publishMode === 'immediate' && attemptsUsed > 0) {
+      resultsVisible = true;
+    } else if (publishMode === 'scheduled') {
+      const absolute = cfg.resultPublishAt ? new Date(cfg.resultPublishAt).getTime() : null;
+      if (absolute && Date.now() >= absolute && attemptsUsed > 0) {
+        resultsVisible = true;
+      } else if (!absolute && cfg.resultPublishDelayHours > 0 && attemptsUsed > 0) {
+        /* Delay is per-student from lastAttemptAt. */
+        const last = r.lastAttemptAt ? new Date(r.lastAttemptAt).getTime() : null;
+        if (last && Date.now() >= last + cfg.resultPublishDelayHours * 3600 * 1000) {
+          resultsVisible = true;
+        }
+      }
+    }
+
+    const attemptsRemaining = maxAttempts > 0
+      ? Math.max(0, maxAttempts - attemptsUsed)
+      : null;
+
+    const canAttempt   = (maxAttempts === 0) || (attemptsUsed < maxAttempts);
+    const hasSubmitted = attemptsUsed > 0;
+
+    /* Small, single-word status the client can switch on. */
+    let status;
+    if (!hasSubmitted)                                    status = 'not-started';
+    else if (resultsVisible)                              status = 'results-ready';
+    else                                                  status = 'pending';
+    if (!canAttempt && !resultsVisible)                   status = 'exhausted-pending';
+    if (!canAttempt &&  resultsVisible)                   status = 'exhausted-ready';
+
+    res.json({
+      success: true,
+      status,
+      attemptsUsed,
+      maxAttempts,
+      attemptsRemaining,
+      canAttempt,
+      hasSubmitted,
+      resultsVisible,
+      resultPublishMode: publishMode,
+      resultPublishAt: cfg.resultPublishAt || null,
+      lastAttemptAt: r.lastAttemptAt || null,
+      score: resultsVisible ? {
+        autoMarks:  Number(r.marksEarned)   || 0,
+        autoMax:    Number(r.marksPossible) || 0,
+        subjMarks:  Number(r.subjectiveMarksAwarded) || 0,
+        subjMax:    Number(r.subjectiveMaxTotal)     || 0,
+        finalMarks: Number(r.finalMarksEarned) || null,
+        finalMax:   Number(r.finalMarksPossible) || null,
+        percent:    Number(r.finalPercent) || Number(r.percent) || 0,
+        pendingEvaluation: !!r.pendingEvaluation
+      } : null
+    });
+  } catch (e) {
+    console.error('[quiz/attempt-status]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
 
@@ -5161,6 +5526,66 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
 
     await user.save();
 
+    /* ============================================================
+       ⭐ RESULT-PUBLICATION GATE
+       ------------------------------------------------------------
+       • 'immediate' → existing behaviour; score is returned now.
+       • 'scheduled' → hide the score until the admin-configured
+                       time (or per-student delay) is reached.
+       • 'manual'    → hide the score until the admin clicks
+                       "Publish Now".
+       In all three modes the score is stored in the DB immediately
+       so nothing is lost — only the response is filtered.
+       ============================================================ */
+    const cfg            = mat.examConfig || {};
+    const publishMode    = cfg.resultPublishMode || 'immediate';
+    const publishAtMs    = cfg.resultPublishAt ? new Date(cfg.resultPublishAt).getTime() : null;
+    const delayHours     = Math.max(0, Number(cfg.resultPublishDelayHours) || 0);
+    const delayMs        = delayHours * 3600 * 1000;
+    const submittedAtMs  = Date.now();
+
+    let resultsVisible = false;
+    let publishAtForThis = null;      // absolute epoch ms when this student will see the score
+
+    if (publishMode === 'immediate') {
+      resultsVisible = true;
+    } else if (publishMode === 'scheduled') {
+      if (publishAtMs) {
+        // Absolute deadline wins over the per-student delay
+        publishAtForThis = publishAtMs;
+        resultsVisible   = submittedAtMs >= publishAtMs;
+      } else if (delayMs > 0) {
+        publishAtForThis = submittedAtMs + delayMs;
+        resultsVisible   = false;    // never visible on submit for a delayed release
+      } else {
+        // scheduled but no time configured → fall back to manual
+        resultsVisible = false;
+      }
+    } else {
+      // 'manual' → hidden until admin publishes
+      resultsVisible = false;
+    }
+
+    /* If the result IS visible right now, stamp publishedAt so the
+       rest of the system (student material card, "View Result"
+       button, etc.) sees a consistent state. */
+    if (resultsVisible) {
+      try {
+        await User.updateOne(
+          { _id: user._id },
+          {
+            $set: {
+              [`quizResults.${req.params.materialId}.publishedAt`]:        new Date(submittedAtMs),
+              [`quizResults.${req.params.materialId}.manuallyEvaluated`]:  true,
+              [`quizResults.${req.params.materialId}.finalMarksEarned`]:   normalizedMarks,
+              [`quizResults.${req.params.materialId}.finalMarksPossible`]: totalMarksPossible,
+              [`quizResults.${req.params.materialId}.finalPercent`]:       pct
+            }
+          }
+        );
+      } catch (e) { /* silent */ }
+    }
+
     /* Non-blocking: bump today's quiz counters */
     DailyUsage.updateOne(
       { userId: String(user._id), date: istDateKey() },
@@ -5174,7 +5599,8 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       },
       { upsert: true }
     ).catch(() => {});
-        /* ---- Persist per-question time analytics + close the session ---- */
+
+    /* ---- Persist per-question time analytics + close the session ---- */
     if (_session) {
       try {
         if (timeSpentPerQuestion && typeof timeSpentPerQuestion === 'object') {
@@ -5205,6 +5631,39 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       }
     }
 
+    /* ============================================================
+       Response — different shape depending on publication state.
+       Every key from the previous version is preserved when the
+       result is visible; a small, additive `pendingPublication`
+       block is returned when it isn't.
+       ============================================================ */
+    const baseMeta = {
+      attempts:          (prev.attempts || 0) + 1,
+      attemptsUsed:      (prev.attempts || 0) + 1,
+      maxAttempts:       Math.max(0, Number(cfg.maxAttempts) || 0),
+      resultPublishMode: publishMode,
+      resultPublishAt:   publishAtForThis ? new Date(publishAtForThis).toISOString() : null,
+      resultsVisible
+    };
+
+    if (!resultsVisible) {
+      /* Score is hidden. Send enough info for the UI to render an
+         informative "Results Pending" card, but no numbers. */
+      return res.json({
+        success: true,
+        pendingPublication: true,
+        pendingEvaluation: subjectiveCount > 0 && !resultsVisible,
+        subjectiveCount,
+        subjectiveMaxTotal,
+        ...baseMeta,
+        message: publishMode === 'manual'
+          ? 'Your answers are recorded. Your instructor will publish the results shortly.'
+          : publishAtForThis
+            ? 'Your answers are recorded. Results will be published on the scheduled date.'
+            : 'Your answers are recorded. Results will be published soon.'
+      });
+    }
+
     res.json({
       success: true,
       score,
@@ -5215,16 +5674,16 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       results,
       attempts: (prev.attempts || 0) + 1,
 
-      // ⭐ NEW: signals to frontend that admin review is pending
       subjectiveCount,
       subjectiveMaxTotal,
       pendingEvaluation: subjectiveCount > 0,
 
-      // ⭐ NEW: XP feedback
       xp: user.xp || 0,
       level: user.level || 1,
       levelInfo: computeLevel(user.xp || 0),
-      xpResult
+      xpResult,
+
+      ...baseMeta
     });
   } catch (e) {
     console.error('[quiz/grade]', e);
@@ -9926,121 +10385,173 @@ app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) =
    studentIds is omitted, ALL pending submissions for that
    material are published.
    ============================================================ */
+/* ============================================================
+   POST /api/admin/quiz/:courseId/:materialId/publish
+   ------------------------------------------------------------
+   Publishes results *immediately* for one quiz. Behaviour is
+   identical to the previous version, but the heavy lifting is
+   delegated to the shared publishQuizResults() helper so the
+   background sweeper uses the exact same code path.
+
+   Body (all optional):
+     { studentIds?: string[] }
+   ============================================================ */
 app.post('/api/admin/quiz/:courseId/:materialId/publish',
   requireAdminAuth,
   async (req, res) => {
     try {
       const { studentIds } = req.body || {};
-
-      const course = await Course.findById(req.params.courseId)
-        .select('name code materials')
-        .lean();
-      if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
-
-      const mat = (course.materials || []).find(
-        m => String(m._id) === String(req.params.materialId)
-      );
-      if (!mat) return res.status(404).json({ success: false, message: 'Material not found.' });
-
-      const filter = { role: 'student' };
-      if (Array.isArray(studentIds) && studentIds.length > 0) {
-        filter._id = { $in: studentIds };
+      const result = await publishQuizResults({
+        courseId:  req.params.courseId,
+        materialId:req.params.materialId,
+        studentIds,
+        reason: 'admin-publish'
+      });
+      if (result.error) {
+        return res.status(404).json({ success: false, message: result.error });
       }
-
-      const students = await User.find(filter)
-        .select('username fullName email quizResults')
-        .lean();
-
-      const materialId = String(req.params.materialId);
-      let published = 0;
-      const delivered = [];
-
-      for (const s of students) {
-        const r = (s.quizResults || {})[materialId];
-        if (!r) continue;
-        if (r.publishedAt) continue;
-
-        const autoMarks = Number(r.marksEarned) || 0;
-        const autoMax   = Number(r.marksPossible) || 0;
-        const subjMarks = Number(r.subjectiveMarksAwarded) || 0;
-        const subjMax   = Number(r.subjectiveMaxTotal) || 0;
-
-        const finalEarned   = autoMarks + subjMarks;
-        const finalPossible = autoMax + subjMax;
-        const finalPct      = finalPossible > 0
-          ? Math.round((finalEarned / finalPossible) * 100)
-          : (Number(r.percent) || 0);
-
-        /* Update the record */
-        try {
-          await User.updateOne(
-            { _id: s._id },
-            {
-              $set: {
-                [`quizResults.${materialId}.publishedAt`]: new Date(),
-                [`quizResults.${materialId}.manuallyEvaluated`]: true,
-                [`quizResults.${materialId}.finalMarksEarned`]: finalEarned,
-                [`quizResults.${materialId}.finalMarksPossible`]: finalPossible,
-                [`quizResults.${materialId}.finalPercent`]: finalPct
-              }
-            }
-          );
-        } catch (e) {
-          console.warn('[quiz/publish] update failed for', s.username, e.message);
-          continue;
-        }
-
-        published++;
-
-        /* Email the student (best-effort; never blocks the response) */
-        if (s.email) {
-          try {
-            const subject = `Results published — ${mat.title || 'your test'}`;
-            const text =
-              `Hi ${s.fullName || s.username},\n\n` +
-              `Your results for "${mat.title || 'the test'}" in "${course.name}" are ready.\n\n` +
-              `Final score: ${finalEarned} / ${finalPossible} (${finalPct}%)\n` +
-              `Auto-graded: ${autoMarks} / ${autoMax}\n` +
-              (subjMax > 0 ? `Manually graded: ${subjMarks} / ${subjMax}\n` : '') +
-              `\nLog in to view the full answer breakdown.\n\n` +
-              `— Aerospace Department, IIT Kharagpur`;
-
-            transporter.sendMail({
-              to: s.email,
-              subject,
-              text,
-              html: `<div style="font-family:Inter,sans-serif;max-width:560px;margin:0 auto;padding:22px;line-height:1.6;">
-                <div style="border-left:4px solid #6366f1;padding-left:12px;margin-bottom:18px;">
-                  <strong style="font-size:17px;color:#14161c;">Aerospace Department</strong><br>
-                  <span style="font-size:12px;color:#8b8d98;">RESULT PUBLISHED</span>
-                </div>
-                <p>Hi ${escapeHtml(s.fullName || s.username)},</p>
-                <p>Your results for <strong>${escapeHtml(mat.title || 'your test')}</strong> in <strong>${escapeHtml(course.name)}</strong> are ready.</p>
-                <div style="background:#eef2ff;border-radius:10px;padding:16px 20px;margin:16px 0;text-align:center;">
-                  <div style="font-size:12px;letter-spacing:1px;color:#4f46e5;font-weight:700;">FINAL SCORE</div>
-                  <div style="font-size:34px;font-weight:800;color:#312e81;margin-top:6px;">${finalEarned} / ${finalPossible}</div>
-                  <div style="font-size:13px;color:#4a4d5a;margin-top:4px;">${finalPct}%</div>
-                </div>
-                <p style="font-size:13px;color:#4a4d5a;">
-                  Auto-graded: <strong>${autoMarks}/${autoMax}</strong>${subjMax > 0 ? `<br>Manually graded: <strong>${subjMarks}/${subjMax}</strong>` : ''}
-                </p>
-                <p style="font-size:13px;color:#8b8d98;margin-top:22px;">Log in to view the full answer breakdown.</p>
-              </div>`
-            }).catch(err => console.warn('[quiz/publish] email failed:', err.message));
-
-            delivered.push(s.email);
-          } catch (e) { /* silent */ }
-        }
-      }
-
       res.json({
         success: true,
-        message: `Published results for ${published} student${published === 1 ? '' : 's'}. ${delivered.length} email(s) queued.`,
-        published,
-        emailed: delivered.length
+        message: `Published results for ${result.published} student` +
+                 `${result.published === 1 ? '' : 's'}. ` +
+                 `${result.emailed} email(s) and ${result.notifiedInApp} in-app alert(s) queued.`,
+        published: result.published,
+        emailed: result.emailed,
+        notifiedInApp: result.notifiedInApp
       });
     } catch (e) {
       console.error('[quiz/publish]', e);
+      res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+    }
+  }
+);
+
+/* ============================================================
+   POST /api/admin/quiz/:courseId/:materialId/publish-now
+   ------------------------------------------------------------
+   Explicit admin override. Same effect as /publish, but the
+   response is idempotent-safe and the frontend "Publish Now"
+   button calls it. Also flips resultPublishMode → 'immediate'
+   so subsequent submissions are visible without any delay.
+   ============================================================ */
+app.post('/api/admin/quiz/:courseId/:materialId/publish-now',
+  requireAdminAuth,
+  async (req, res) => {
+    try {
+      /* 1. Flip the mode so any later submission is immediate too */
+      await Course.updateOne(
+        { _id: req.params.courseId, 'materials._id': req.params.materialId },
+        {
+          $set: {
+            'materials.$.examConfig.resultPublishMode':   'immediate',
+            'materials.$.examConfig.resultPublishAt':     null,
+            'materials.$.examConfig.resultPublishDelayHours': 0
+          }
+        }
+      );
+      cacheClear('courses:');
+
+      /* 2. Publish everything that is already in the DB */
+      const result = await publishQuizResults({
+        courseId:  req.params.courseId,
+        materialId:req.params.materialId,
+        reason: 'admin-publish-now'
+      });
+
+      if (result.error) {
+        return res.status(404).json({ success: false, message: result.error });
+      }
+      res.json({
+        success: true,
+        message: `Results released. ${result.published} student` +
+                 `${result.published === 1 ? '' : 's'} notified.`,
+        published: result.published,
+        emailed: result.emailed,
+        notifiedInApp: result.notifiedInApp
+      });
+    } catch (e) {
+      console.error('[quiz/publish-now]', e);
+      res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+    }
+  }
+);
+
+/* ============================================================
+   PUT /api/admin/quiz/:courseId/:materialId/schedule
+   ------------------------------------------------------------
+   Configures the future publication schedule for one quiz.
+   Can be called any time before or after the exam; a change
+   after publication is ignored (the flag is already true).
+
+   Body:
+     {
+       mode:              'immediate' | 'scheduled' | 'manual',
+       publishAt?:        ISO date string  (absolute time),
+       delayHours?:       number           (per-student delay)
+     }
+   ============================================================ */
+app.put('/api/admin/quiz/:courseId/:materialId/schedule',
+  requireAdminAuth,
+  async (req, res) => {
+    try {
+      const { mode, publishAt, delayHours } = req.body || {};
+      const cleanMode = ['immediate', 'scheduled', 'manual'].includes(mode)
+        ? mode
+        : 'immediate';
+
+      let parsedAt = null;
+      if (cleanMode === 'scheduled' && publishAt) {
+        const d = new Date(publishAt);
+        if (!isNaN(d.getTime())) parsedAt = d;
+      }
+      const cleanDelay = cleanMode === 'scheduled'
+        ? Math.max(0, Math.min(8760, parseInt(delayHours, 10) || 0))   // 0–365 days
+        : 0;
+
+      const update = {
+        'materials.$.examConfig.resultPublishMode':       cleanMode,
+        'materials.$.examConfig.resultPublishAt':         parsedAt,
+        'materials.$.examConfig.resultPublishDelayHours': cleanDelay
+      };
+
+      /* A schedule change resets the "already published" flag ONLY
+         if the quiz has not already been released. Otherwise we
+         would hide a score students have already seen. */
+      const course = await Course.findById(req.params.courseId)
+        .select('materials').lean();
+      const mat = (course && course.materials || []).find(
+        m => String(m._id) === String(req.params.materialId)
+      );
+      if (mat && !(mat.examConfig && mat.examConfig.resultsPublished)) {
+        update['materials.$.examConfig.resultsPublished']   = false;
+        update['materials.$.examConfig.resultsPublishedAt'] = null;
+      }
+
+      const r = await Course.updateOne(
+        { _id: req.params.courseId, 'materials._id': req.params.materialId },
+        { $set: update }
+      );
+      if (r.matchedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Material not found.' });
+      }
+
+      cacheClear('courses:');
+      res.json({
+        success: true,
+        message:
+          cleanMode === 'immediate' ? 'Results will be visible immediately.' :
+          cleanMode === 'manual'    ? 'Results will stay hidden until you click “Publish Now”.' :
+          parsedAt                  ? `Results will publish on ${parsedAt.toISOString()}.` :
+          cleanDelay > 0            ? `Results will publish ${cleanDelay} hour(s) after each student submits.` :
+                                      'Scheduled mode set, but no publish time configured yet.',
+        schedule: {
+          mode:       cleanMode,
+          publishAt:  parsedAt ? parsedAt.toISOString() : null,
+          delayHours: cleanDelay
+        }
+      });
+    } catch (e) {
+      console.error('[quiz/schedule]', e);
       res.status(500).json({ success: false, message: 'Server error: ' + e.message });
     }
   }
@@ -10056,3 +10567,107 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`✅ Server is running on port ${PORT}`);
 });
+/* ============================================================
+   ⭐ QUIZ RESULT PUBLICATION SWEEPER
+   ------------------------------------------------------------
+   Runs every 60 seconds. Scans for quizzes whose
+   resultPublishMode === 'scheduled' AND whose publish deadline
+   has just passed AND which are still marked unpublished.
+
+   No external cron package is required — setInterval is enough
+   for a task that runs at one-minute granularity. If the process
+   is restarted the sweeper picks up exactly where it left off
+   because the state lives in MongoDB, not in memory.
+   ============================================================ */
+const QUIZ_PUBLISH_SWEEP_MS = 60 * 1000;
+let _quizSweepRunning = false;
+
+async function runQuizPublishSweep() {
+  if (_quizSweepRunning) return;
+  _quizSweepRunning = true;
+
+  try {
+    const now = new Date();
+
+    /* Broad query — everything scheduled, then filter in JS so we
+       can handle both absolute dates AND per-student delays in a
+       single pass. The result set is tiny (only courses with a
+       quiz currently in scheduled mode). */
+    const courses = await Course.find({
+      'materials.examConfig.resultPublishMode': 'scheduled'
+    }).select('materials').lean();
+
+    let totalPublished = 0;
+
+    for (const course of courses) {
+      for (const mat of (course.materials || [])) {
+        const cfg = mat.examConfig || {};
+        if (cfg.resultPublishMode !== 'scheduled')  continue;
+        if (cfg.resultsPublished === true)          continue;
+
+        const absolute = cfg.resultPublishAt
+          ? new Date(cfg.resultPublishAt).getTime()
+          : null;
+        const delayMs = Math.max(0, Number(cfg.resultPublishDelayHours) || 0)
+                      * 3600 * 1000;
+
+        /* Absolute-only schedule → single global deadline. */
+        if (absolute && now.getTime() >= absolute) {
+          const r = await publishQuizResults({
+            courseId:   String(course._id),
+            materialId: String(mat._id),
+            reason:     'sweep-absolute'
+          });
+          totalPublished += r.published || 0;
+          continue;
+        }
+
+        /* Per-student delay → find every student whose attempt is
+           old enough and publish just for them. */
+        if (!absolute && delayMs > 0) {
+          const matIdStr = String(mat._id);
+          const students = await User.find({
+            [`quizResults.${matIdStr}`]: { $exists: true }
+          })
+            .select('quizResults')
+            .lean();
+
+          const due = [];
+          for (const s of students) {
+            const r = s.quizResults[matIdStr];
+            if (!r || r.publishedAt) continue;
+            const last = r.lastAttemptAt ? new Date(r.lastAttemptAt).getTime() : null;
+            if (last && now.getTime() >= last + delayMs) {
+              due.push(String(s._id));
+            }
+          }
+
+          if (due.length > 0) {
+            const r = await publishQuizResults({
+              courseId:   String(course._id),
+              materialId: matIdStr,
+              studentIds: due,
+              reason:     'sweep-per-student-delay'
+            });
+            totalPublished += r.published || 0;
+          }
+        }
+      }
+    }
+
+    if (totalPublished > 0) {
+      console.log(
+        `[quiz-sweep] ✅ published ${totalPublished} result(s) in this cycle`
+      );
+    }
+  } catch (e) {
+    console.warn('[quiz-sweep] non-fatal error:', e.message);
+  } finally {
+    _quizSweepRunning = false;
+  }
+}
+
+/* Kick it off once at boot (30 s in), then every minute. */
+setTimeout(runQuizPublishSweep, 30 * 1000);
+setInterval(runQuizPublishSweep, QUIZ_PUBLISH_SWEEP_MS);
+console.log('[quiz-sweep] scheduler armed — every 60 s');

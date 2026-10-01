@@ -8303,12 +8303,57 @@ function renderMaterialCard(course, m, isPurchased) {
                         ${viewed ? 'Completed' : 'Mark done'}
                       </button>`;
     if (quizCount > 0) {
-      const qr = (currentUser.quizResults || {})[m.id];
-      const label = qr ? `Retake (${qr.score}/${qr.total})` : `Take Quiz (${quizCount})`;
-      progressBtnHtml += ` <button class="btn btn-accent btn-sm"
-                            onclick="event.stopPropagation();openQuizPlayer('${course.id}', '${m.id}')">
-                            <i class="fas fa-question-circle"></i> ${label}
-                          </button>`;
+      const qr  = (currentUser.quizResults || {})[m.id] || {};
+      const cfg = m.examConfig || {};
+
+      /* ⭐ Attempt-limit math — computed locally from data we
+         already have, so no extra network call is needed. */
+      const cap       = Math.max(0, Number(cfg.maxAttempts) || 0);
+      const attempts  = Number(qr.attempts) || 0;
+      const unlimited = (cap === 0);
+      const exhausted = (!unlimited && attempts >= cap);
+
+      /* Result visibility flag from the last submit response */
+      const publishMode  = cfg.resultPublishMode || 'immediate';
+      const publishedAt  = qr.publishedAt ? new Date(qr.publishedAt).getTime() : null;
+      const resultsReady = publishMode === 'immediate'
+        ? (attempts > 0)
+        : !!publishedAt;
+
+      /* Attempt badge e.g. "1/3 attempts" or "2 attempts used" */
+      const attemptBadge = unlimited
+        ? (attempts > 0 ? ` · ${attempts} attempt${attempts === 1 ? '' : 's'}` : '')
+        : ` · ${attempts}/${cap} attempts`;
+
+      let quizLabel;
+      let quizDisabled = false;
+      let quizTitle = '';
+
+      if (exhausted && !resultsReady) {
+        quizLabel = `<i class="fas fa-hourglass-half"></i> Results Pending`;
+        quizDisabled = true;
+        quizTitle = 'You have used all your attempts. Awaiting instructor review.';
+      } else if (exhausted && resultsReady) {
+        quizLabel = `<i class="fas fa-lock"></i> Attempts Used Up`;
+        quizDisabled = true;
+        quizTitle = `You have used all ${cap} attempts for this test.`;
+      } else if (qr && typeof qr.score === 'number') {
+        quizLabel = `<i class="fas fa-question-circle"></i> Retake (${qr.score}/${qr.total})${attemptBadge}`;
+      } else {
+        quizLabel = `<i class="fas fa-question-circle"></i> Take Quiz (${quizCount})${attemptBadge}`;
+      }
+
+      if (quizDisabled) {
+        progressBtnHtml += ` <button class="btn btn-outline btn-sm" disabled
+                              title="${escapeHtml(quizTitle)}">
+                              ${quizLabel}
+                            </button>`;
+      } else {
+        progressBtnHtml += ` <button class="btn btn-accent btn-sm"
+                              onclick="event.stopPropagation();openQuizPlayer('${course.id}', '${m.id}')">
+                              ${quizLabel}
+                            </button>`;
+      }
     }
   }
 
@@ -8939,7 +8984,21 @@ async function openQuizEditor(courseId, materialId) {
 
   if (useSaved) {
     quizDraft = saved.quiz.map(q => normalizeQuestion(q));
-    quizPaperConfig = saved.config || { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
+    const sc = saved.config || {};
+    quizPaperConfig = {
+      subject:    sc.subject    || '',
+      paperCode:  sc.paperCode  || '',
+      totalTime:  sc.totalTime  || '',
+      totalMarks: Number(sc.totalMarks) || 0,
+      allowBackNavigation:  sc.allowBackNavigation  === true,
+      showQuestionPalette:  sc.showQuestionPalette !== false,
+      /* ⭐ NEW */
+      maxAttempts:             Number(sc.maxAttempts) || 0,
+      resultPublishMode:       sc.resultPublishMode   || 'immediate',
+      resultPublishAt:         sc.resultPublishAt     || null,
+      resultPublishDelayHours: Number(sc.resultPublishDelayHours) || 0,
+      resultsPublished:        sc.resultsPublished === true
+    };
   } else {
     const rawQuiz = Array.isArray(mat.quiz) ? mat.quiz : [];
     quizDraft = rawQuiz.map(q => normalizeQuestion(q));
@@ -8948,7 +9007,15 @@ async function openQuizEditor(courseId, materialId) {
       subject:    cfg.subject    || course.name    || '',
       paperCode:  cfg.paperCode  || (course.code ? course.code + '-' + (mat.title || '') : ''),
       totalTime:  cfg.totalTime  || '',
-      totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0)
+      totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0),
+      allowBackNavigation:  cfg.allowBackNavigation === true,
+      showQuestionPalette:  cfg.showQuestionPalette !== false,
+      /* ⭐ NEW */
+      maxAttempts:             Number(cfg.maxAttempts) || 0,
+      resultPublishMode:       cfg.resultPublishMode   || 'immediate',
+      resultPublishAt:         cfg.resultPublishAt     || null,
+      resultPublishDelayHours: Number(cfg.resultPublishDelayHours) || 0,
+      resultsPublished:        cfg.resultsPublished === true
     };
   }
 
@@ -9020,6 +9087,87 @@ function normalizeQuestion(q) {
    QUIZ EDITOR — Render (with live preview + reorder + autosave)
    ============================================================ */
 let _quizEditorLoading = false;
+/* ============================================================
+   QUIZ RESULT SCHEDULING — UI HELPERS
+   ------------------------------------------------------------
+   These three helpers are called by renderQuizEditor() when the
+   admin opens the paper editor. Without them the schedule fields
+   never show / hide and "Publish Now" throws "not a function".
+   ============================================================ */
+
+/* Format a Date / ISO string into the value format a
+   <input type="datetime-local"> expects: "YYYY-MM-DDTHH:MM" */
+function toDateTimeLocalValue(dateInput) {
+  if (!dateInput) return '';
+  try {
+    const d = new Date(dateInput);
+    if (isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+           `T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch (e) {
+    return '';
+  }
+}
+
+/* Show / hide the schedule sub-panel and the manual-publish box
+   depending on which result mode the admin selected. */
+function onQuizResultModeChange() {
+  const mode = ($('qpResultMode')?.value || 'immediate');
+  const scheduleWrap   = $('qpScheduleWrap');
+  const publishActions = $('qpPublishActions');
+  if (scheduleWrap)   scheduleWrap.style.display   = (mode === 'scheduled') ? 'block' : 'none';
+  if (publishActions) publishActions.style.display = (mode === 'manual')    ? 'block' : 'none';
+}
+
+/* Admin override — release results now, bypassing any schedule.
+   Calls POST /api/admin/quiz/:courseId/:materialId/publish-now  */
+async function publishQuizResultsNow() {
+  if (!quizEditingCourseId || !quizEditingMaterialId) {
+    return showToast('No quiz is open.', 'error');
+  }
+  if (!confirm(
+    'Release every submitted result NOW and notify every student?\n\n' +
+    'This also switches this paper back to "Immediate" mode, so any ' +
+    'student who submits later sees their score straight away.'
+  )) return;
+
+  const btn = document.querySelector('button[onclick="publishQuizResultsNow()"]');
+  const orig = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing…';
+  }
+
+  try {
+    const res = await fetch(
+      `/api/admin/quiz/${quizEditingCourseId}/${quizEditingMaterialId}/publish-now`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' } }
+    );
+    const data = await res.json();
+
+    if (data && data.success) {
+      showToast('✅ ' + (data.message || 'Results published.'), 'success');
+
+      /* Reflect the new state in the open editor */
+      quizPaperConfig.resultPublishMode = 'immediate';
+      quizPaperConfig.resultsPublished  = true;
+      const modeEl = $('qpResultMode');
+      if (modeEl) modeEl.value = 'immediate';
+      onQuizResultModeChange();
+    } else {
+      showToast((data && data.message) || 'Failed to publish.', 'error');
+    }
+  } catch (err) {
+    console.error('[publishQuizResultsNow]', err);
+    showToast('Network error while publishing.', 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = orig || '<i class="fas fa-bullhorn"></i> Publish Results Now';
+    }
+  }
+}
 async function renderQuizEditor() {
   const container = document.getElementById('quizEditorContent');
   if (!container) return;
@@ -9060,7 +9208,12 @@ async function renderQuizEditor() {
         totalTime:  sc.totalTime  || '',
         totalMarks: Number(sc.totalMarks) || 0,
         allowBackNavigation: sc.allowBackNavigation === true,
-        showQuestionPalette: sc.showQuestionPalette !== false
+        showQuestionPalette: sc.showQuestionPalette !== false,
+        maxAttempts:             Number(sc.maxAttempts) || 0,
+        resultPublishMode:       sc.resultPublishMode   || 'immediate',
+        resultPublishAt:         sc.resultPublishAt     || null,
+        resultPublishDelayHours: Number(sc.resultPublishDelayHours) || 0,
+        resultsPublished:        sc.resultsPublished === true
       };
     } else {
       quizDraft = (mat.quiz || []).map(q => normalizeQuestion(q));
@@ -9071,7 +9224,12 @@ async function renderQuizEditor() {
         totalTime:  cfg.totalTime  || '',
         totalMarks: Number(cfg.totalMarks) || quizDraft.reduce((s, q) => s + (q.marks || 0), 0),
         allowBackNavigation: cfg.allowBackNavigation === true,
-        showQuestionPalette: cfg.showQuestionPalette !== false
+        showQuestionPalette: cfg.showQuestionPalette !== false,
+        maxAttempts:             Number(cfg.maxAttempts) || 0,
+        resultPublishMode:       cfg.resultPublishMode   || 'immediate',
+        resultPublishAt:         cfg.resultPublishAt     || null,
+        resultPublishDelayHours: Number(cfg.resultPublishDelayHours) || 0,
+        resultsPublished:        cfg.resultsPublished === true
       };
     }
   }
@@ -9126,8 +9284,78 @@ async function renderQuizEditor() {
           <span class="hint">Auto-computed from questions: <strong id="qpAutoHint">${autoTotal}</strong></span>
         </div>
       </div>
+    </div>
 
-      <!-- ⭐ PER-QUIZ NAVIGATION POLICY -->
+    <!-- ⭐ ATTEMPT LIMITS & SCHEDULED RESULT PUBLICATION -->
+    <div class="editor-section">
+      <div class="editor-section-title">
+        <i class="fas fa-clock-rotate-left"></i> Attempts &amp; Result Publication
+      </div>
+
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Maximum Attempts Allowed</label>
+          <input type="number" id="qpMaxAttempts"
+                 value="${Number(quizPaperConfig.maxAttempts) || 0}"
+                 min="0" max="99" step="1"
+                 placeholder="0 = unlimited">
+          <span class="hint">
+            <strong>0 = unlimited.</strong> Once a student has submitted
+            this many attempts, the Start / Retake button is disabled
+            and they are told the test is finished.
+          </span>
+        </div>
+
+        <div class="form-group">
+          <label>Result Publication</label>
+          <select id="qpResultMode" onchange="onQuizResultModeChange()">
+            <option value="immediate" ${quizPaperConfig.resultPublishMode === 'immediate' ? 'selected' : ''}>Immediate — show score right after submit</option>
+            <option value="scheduled" ${quizPaperConfig.resultPublishMode === 'scheduled' ? 'selected' : ''}>Scheduled — hide until a set time</option>
+            <option value="manual"    ${quizPaperConfig.resultPublishMode === 'manual'    ? 'selected' : ''}>Manual — hide until you click “Publish Now”</option>
+          </select>
+          <span class="hint">
+            Controls when students see their score. The score is always
+            computed and saved; only the <em>visibility</em> is delayed.
+          </span>
+        </div>
+      </div>
+
+      <div id="qpScheduleWrap" style="display:${quizPaperConfig.resultPublishMode === 'scheduled' ? 'block' : 'none'}; margin-top:6px;">
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Publish On (absolute)</label>
+            <input type="datetime-local" id="qpPublishAt"
+                   value="${toDateTimeLocalValue(quizPaperConfig.resultPublishAt)}">
+            <span class="hint">Wins over the delay option below when both are set. Leave blank to use the delay.</span>
+          </div>
+          <div class="form-group">
+            <label>Or, Publish After Each Student Submits (hours)</label>
+            <input type="number" id="qpPublishDelayHours"
+                   value="${Number(quizPaperConfig.resultPublishDelayHours) || 0}"
+                   min="0" max="8760" step="1" placeholder="0">
+            <span class="hint">Per-student delay. <strong>0 = ignore.</strong> Example: 48 → each student sees their score 48 hours after they submit.</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="qpPublishActions" style="display:${quizPaperConfig.resultPublishMode === 'manual' ? 'block' : 'none'}; margin-top:14px; padding:14px 16px; background:linear-gradient(135deg, rgba(245,158,11,.10), rgba(251,191,36,.03)); border:1.5px solid rgba(245,158,11,.35); border-radius:var(--radius-md);">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+          <div>
+            <strong style="display:block; font-size:13.5px; color:var(--text-primary); margin-bottom:3px;">
+              <i class="fas fa-bullhorn" style="color:var(--gold-500);"></i>
+              Manual Release
+            </strong>
+            <span style="font-size:12.5px; color:var(--text-tertiary);">
+              Release every submitted result now and notify every student.
+            </span>
+          </div>
+          <button type="button" class="btn btn-warning"
+                  onclick="publishQuizResultsNow()"
+                  style="flex-shrink:0;">
+            <i class="fas fa-bullhorn"></i> Publish Results Now
+          </button>
+        </div>
+      </div>
       <div class="quiz-nav-policy">
         <div class="quiz-nav-policy-head">
           <i class="fas fa-compass"></i>
@@ -9756,17 +9984,51 @@ async function saveQuizPaper() {
   const allowBack = navPolicy ? navPolicy.value === 'flexible' : false;
   const showPal   = $('qpShowPalette') ? $('qpShowPalette').checked : true;
 
+  /* ⭐ Read the two new sections */
+  const maxAttemptsRaw = parseInt($('qpMaxAttempts')?.value, 10);
+  const maxAttempts    = Number.isFinite(maxAttemptsRaw)
+    ? Math.max(0, Math.min(99, maxAttemptsRaw))
+    : 0;
+
+  const resultMode = $('qpResultMode')?.value || 'immediate';
+
+  /* Absolute publish time — only meaningful in "scheduled" mode */
+  let resultPublishAt = null;
+  if (resultMode === 'scheduled') {
+    const raw = $('qpPublishAt')?.value;          // "YYYY-MM-DDTHH:MM"
+    if (raw) {
+      const d = new Date(raw);
+      if (!isNaN(d.getTime())) resultPublishAt = d.toISOString();
+    }
+  }
+
+  /* Per-student delay — only meaningful in "scheduled" mode */
+  let resultPublishDelayHours = 0;
+  if (resultMode === 'scheduled') {
+    const h = parseInt($('qpPublishDelayHours')?.value, 10);
+    resultPublishDelayHours = Number.isFinite(h)
+      ? Math.max(0, Math.min(8760, h))
+      : 0;
+  }
+
   quizPaperConfig = {
     subject:    ($('qpSubject')?.value || '').trim(),
     paperCode:  ($('qpCode')?.value    || '').trim(),
     totalTime:  ($('qpTime')?.value    || '').trim(),
     totalMarks: parseInt($('qpMarks')?.value, 10) || 0,
 
-    /* ⭐ Per-quiz navigation policy */
+    /* Per-quiz navigation policy (unchanged) */
     allowBackNavigation: allowBack,
-    showQuestionPalette: showPal
+    showQuestionPalette: showPal,
+
+    /* ⭐ NEW — Attempt limit + result publication */
+    maxAttempts,
+    resultPublishMode:       resultMode,
+    resultPublishAt,
+    resultPublishDelayHours
   };
 
+  /* ---------- Per-question validation (unchanged) ---------- */
   for (let i = 0; i < quizDraft.length; i++) {
     const q = quizDraft[i];
     if (!q.question || !q.question.trim()) {
@@ -9790,7 +10052,7 @@ async function saveQuizPaper() {
         return showToast(`Question ${i + 1}: integer answer required.`, 'error');
       }
     }
-    if (q.type === 'numerical') {                                    // ⭐ NEW
+    if (q.type === 'numerical') {
       if (q.rangeMin === null || q.rangeMin === undefined || isNaN(Number(q.rangeMin))) {
         return showToast(`Question ${i + 1}: minimum value required.`, 'error');
       }
@@ -9798,10 +10060,10 @@ async function saveQuizPaper() {
         return showToast(`Question ${i + 1}: maximum value required.`, 'error');
       }
       if (Number(q.rangeMin) > Number(q.rangeMax)) {
-        return showToast(`Question ${i + 1}: minimum value cannot be greater than maximum.`, 'error');
+        return showToast(`Question ${i + 1}: minimum cannot exceed maximum.`, 'error');
       }
     }
-    if (q.type === 'subjective') {                                   // ⭐ NEW
+    if (q.type === 'subjective') {
       const maxM = Number(q.subjectiveMaxMarks);
       if (!Number.isFinite(maxM) || maxM < 1) {
         return showToast(`Question ${i + 1}: maximum marks must be at least 1.`, 'error');
@@ -9810,7 +10072,7 @@ async function saveQuizPaper() {
     if (q.type === 'matrix') {
       const left  = (q.matrixLeftItems  || []).filter(x => x && x.trim());
       const right = (q.matrixRightItems || []).filter(x => x && x.trim());
-      if (left.length < 2)  return showToast(`Question ${i + 1}: at least 2 List-I items required.`, 'error');
+      if (left.length  < 2) return showToast(`Question ${i + 1}: at least 2 List-I items required.`, 'error');
       if (right.length < 2) return showToast(`Question ${i + 1}: at least 2 List-II items required.`, 'error');
       if ((q.matrixRows || []).length < 2) return showToast(`Question ${i + 1}: at least 2 rows required.`, 'error');
     }
@@ -9846,7 +10108,6 @@ async function saveQuizPaper() {
     if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save"></i> Save Paper'; }
   }
 }
-
 /* ============================================================
    QUIZ — PROCTORED FULL-PAGE EXAM MODE
    ------------------------------------------------------------
@@ -9925,6 +10186,32 @@ async function openQuizPlayer(courseId, materialId) {
       _examClockOffsetMs = (Number(sres.serverNow) || Date.now()) - Date.now();
     } else if (sres && sres.code === 'ALREADY_SUBMITTED') {
       return showToast('You have already submitted this test. Use Retake to start again.', 'info');
+    } else if (sres && sres.code === 'ATTEMPT_LIMIT_REACHED') {
+      /* ⭐ Student has used every attempt the admin allowed.
+         Show them their own result status instead of a wall. */
+      const used      = Number(sres.attemptsUsed)  || 0;
+      const cap       = Number(sres.maxAttempts)   || 0;
+      const visible   = sres.resultsVisible === true;
+      const pending   = sres.resultsPending === true;
+
+      if (visible) {
+        return showToast(
+          `You have used all ${cap} attempt${cap === 1 ? '' : 's'} for this test. ` +
+          `Open the course to see your result.`,
+          'info'
+        );
+      }
+      if (pending) {
+        return showToast(
+          `You have used all ${cap} attempt${cap === 1 ? '' : 's'}. ` +
+          `Your result will be visible once the instructor publishes it.`,
+          'info'
+        );
+      }
+      return showToast(
+        `Attempt limit reached (${used}/${cap}).`,
+        'error'
+      );
     }
   } catch (err) {
     console.warn('[openQuizPlayer] session start failed, running offline:', err.message);
@@ -10323,8 +10610,80 @@ function renderQuizExamShell() {
       : _renderAllExamQuestions(st);
     bodyHtml = `<div class="quiz-exam-body-inner">${qHtml}</div>`;
   } else {
-    /* Result summary — same as before, with "Pending Review" support */
-    const { score, total, percent, results, attempts, marksEarned, marksPossible } = st.response;
+    /* ⭐ If the server withheld the score (scheduled / manual mode),
+       render a "Results Pending" card instead of the scorecard. */
+    if (st.response.pendingPublication === true) {
+      const pubAt = st.response.resultPublishAt
+        ? new Date(st.response.resultPublishAt).toLocaleString('en-IN', {
+            day: 'numeric', month: 'short', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+          })
+        : null;
+
+      const subjCount = Number(st.response.subjectiveCount) || 0;
+
+      bodyHtml = `<div class="quiz-exam-body-inner">
+        <div class="quiz-result-hero pass" style="background:linear-gradient(135deg,rgba(99,102,241,.14),rgba(6,182,212,.06));border-color:rgba(99,102,241,.35);">
+          <div class="quiz-result-emoji">⏳</div>
+          <div class="quiz-result-score" style="font-size:22px;">Results Pending</div>
+          <div class="quiz-result-headline" style="max-width:520px;margin:12px auto 0;font-size:13.5px;line-height:1.6;">
+            ${escapeHtml(st.response.message || 'Your answers have been recorded.')}
+          </div>
+          ${pubAt ? `<div style="margin-top:14px;font-size:12.5px;color:var(--text-tertiary);">
+            Scheduled publication: <strong>${escapeHtml(pubAt)}</strong>
+          </div>` : ''}
+          ${subjCount > 0 ? `<p style="margin-top:14px;font-size:12.5px;color:var(--text-tertiary);">
+            Your submission includes <strong>${subjCount}</strong> manually-evaluated question${subjCount === 1 ? '' : 's'}.
+          </p>` : ''}
+        </div>
+        <p style="text-align:center;font-size:12.5px;color:var(--text-tertiary);margin-top:14px;">
+          You'll be notified by email and in your dashboard the moment the results go live.
+        </p>
+      </div>`;
+    } else {
+      /* ---- Normal scorecard (unchanged behaviour) ---- */
+      const { score, total, percent, results, attempts, marksEarned, marksPossible } = st.response;
+      const pendingReview = !!(st.response && st.response.pendingEvaluation);
+      const isPerfect = score === total && !pendingReview;
+      const isPass = percent >= 60;
+      const emoji = isPerfect ? '🏆' : pendingReview ? '⏳' : isPass ? '🎉' : '📚';
+      const headline = isPerfect ? 'Perfect Score!'
+                      : pendingReview ? 'Submitted — Pending Review'
+                      : isPass ? 'Well done!' : 'Keep practicing!';
+
+      let rHtml = `<div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
+        <div class="quiz-result-emoji">${emoji}</div>
+        <div class="quiz-result-score">${score} / ${total}</div>
+        <div class="quiz-result-pct">${percent}%${marksPossible ? ` · ${marksEarned} / ${marksPossible} marks` : ''}</div>
+        <div class="quiz-result-headline">${headline}</div>
+        ${pendingReview ? `<p style="margin-top:10px;font-size:12.5px;color:var(--text-tertiary);">
+          Your subjective answers are awaiting instructor review.
+        </p>` : ''}
+        <div style="font-size:12px;color:var(--text-tertiary);margin-top:6px;">Attempt #${attempts}</div>
+      </div>`;
+
+      st.quiz.forEach((q, qi) => {
+        const r = results[qi];
+        const ok = r.correct;
+        const isPending = r.manualReview === true;
+        const cls = isPending ? 'pending' : (ok ? 'ok' : 'bad');
+        const badge = isPending
+          ? '<i class="fas fa-hourglass-half"></i>'
+          : (ok ? '<i class="fas fa-check"></i>' : '<i class="fas fa-times"></i>');
+        rHtml += `<div class="quiz-result-item ${cls}">
+          <div class="quiz-result-head">
+            <span class="quiz-result-badge ${cls}">${badge}</span>
+            <strong>Q${qi + 1}.</strong>
+            <span class="latex-content">${escapeHtml(q.question)}</span>
+          </div>
+          <div class="quiz-result-body">
+            ${renderResultDetail(q, r)}
+            ${r.explanation ? `<div class="quiz-explain"><i class="fas fa-lightbulb"></i> <span class="latex-content">${escapeHtml(r.explanation)}</span></div>` : ''}
+          </div>
+        </div>`;
+      });
+      bodyHtml = `<div class="quiz-exam-body-inner">${rHtml}</div>`;
+    }
     const pendingReview = !!(st.response && st.response.pendingEvaluation);
     const isPerfect = score === total && !pendingReview;
     const isPass = percent >= 60;
