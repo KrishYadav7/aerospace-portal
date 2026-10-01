@@ -4912,129 +4912,219 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth, 
   }
 });
 /* ============================================================
-   ⭐ ATTEMPT-LIMIT ENFORCEMENT
+   QUIZ — START SESSION  (server-synced timer + shuffle)
+   ------------------------------------------------------------
+   POST /api/user/quiz/:courseId/:materialId/start
+   Body: { userId }
+
+   Returns the CANONICAL session record for this student. If a
+   session already exists and is still in progress, we return the
+   SAME startedAt + durationSeconds + shuffle seed, so refreshing
+   the page never resets the clock or re-rolls the order.
+
+   If the previous session was already submitted / expired, the
+   stale row is deleted so the UNIQUE index on
+   (userId, courseId, materialId) does not block a fresh attempt.
    ============================================================ */
-const cfg         = mat.examConfig || {};
-const maxAttempts = Math.max(0, Number(cfg.maxAttempts) || 0);
+app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
 
-const student = await User.findById(userId).select('quizResults').lean();
-if (!student) return res.status(404).json({ success: false, message: 'User not found.' });
+    const course = await Course.findById(req.params.courseId)
+      .select('isPremium materials')
+      .lean();
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
 
-const existingResult = (student.quizResults || {})[String(req.params.materialId)] || {};
-const attemptsUsed   = Number(existingResult.attempts) || 0;
-
-const publishMode   = cfg.resultPublishMode || 'immediate';
-const publishedAtMs = existingResult.publishedAt
-  ? new Date(existingResult.publishedAt).getTime()
-  : null;
-const resultsVisible =
-  publishMode === 'immediate' ||
-  (publishMode === 'scheduled' && publishedAtMs !== null);
-
-/* ============================================================
-   ⭐ FIX: Look for ANY existing session for this (user, course,
-   material) triple — not just in-progress ones.
-
-   The old code only queried `status:'in-progress'`, so a previously
-   SUBMITTED row stayed in the DB untouched. Because the schema has a
-   UNIQUE index on (userId, courseId, materialId), the subsequent
-   QuizSession.create(...) then blew up with E11000 duplicate key.
-   The client silently fell into "offline" mode without a real
-   server session, and any later submit was rejected by the stale
-   submitted row with code ALREADY_SUBMITTED.
-   ============================================================ */
-let session = await QuizSession.findOne({
-  userId:     String(userId),
-  courseId:   String(req.params.courseId),
-  materialId: String(req.params.materialId)
-});
-
-const isResuming = session && session.status === 'in-progress';
-
-/* Refuse a fresh attempt once the cap is reached */
-if (!isResuming && maxAttempts > 0 && attemptsUsed >= maxAttempts) {
-  return res.status(403).json({
-    success: false,
-    code: 'ATTEMPT_LIMIT_REACHED',
-    message:
-      `You have used all ${maxAttempts} attempt${maxAttempts === 1 ? '' : 's'} ` +
-      `for this test.` +
-      (resultsVisible
-        ? ' Your result is available above.'
-        : ' Your result will be visible once the instructor publishes it.'),
-    attemptsUsed,
-    maxAttempts,
-    resultsVisible,
-    resultsPending: !resultsVisible
-  });
-}
-
-if (isResuming) {
-  /* Resume the in-progress session — keep the SAME startedAt,
-     durationSeconds and shuffle seed so refreshing the page
-     never resets the clock or re-rolls the order. */
-  session.lastHeartbeat = new Date();
-  await session.save();
-  console.log(`[quiz/start] ♻️  resumed session user=${userId} mat=${req.params.materialId}`);
-} else {
-  /* Delete any stale (submitted / expired) row so the unique
-     index does not block the fresh create below. */
-  if (session) {
-    await QuizSession.deleteOne({ _id: session._id });
-    console.log(
-      `[quiz/start] 🗑️  cleared stale session (status=${session.status}) ` +
-      `user=${userId} mat=${req.params.materialId}`
+    const mat = (course.materials || []).find(
+      m => String(m._id) === String(req.params.materialId)
     );
-  }
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found.' });
 
-  /* Build a fresh session */
-  const settings        = await getGlobalSettings();
-  const durationSeconds = parseQuizTimeServer(cfg.totalTime);
+    const quiz = Array.isArray(mat.quiz) ? mat.quiz : [];
+    if (quiz.length === 0) {
+      return res.status(400).json({ success: false, message: 'This test has no questions.' });
+    }
 
-  const shuffleSeed = crypto
-    .createHash('sha256')
-    .update(
-      String(userId) + ':' + String(req.params.materialId) + ':' +
-      Date.now() + ':' + crypto.randomBytes(8).toString('hex')
-    )
-    .digest('hex')
-    .slice(0, 32);
+    /* ============================================================
+       ⭐ ATTEMPT-LIMIT ENFORCEMENT
+       ------------------------------------------------------------
+       Counts how many times this student has already SUBMITTED
+       this particular material (from User.quizResults[materialId]
+       .attempts) and compares it to the admin-configured cap.
+       A submission that is still in progress does NOT count — the
+       student can resume it freely without burning an attempt.
+       ============================================================ */
+    const cfg          = mat.examConfig || {};
+    const maxAttempts  = Math.max(0, Number(cfg.maxAttempts) || 0);
 
-  const qCount = quiz.length;
-  let questionOrder = Array.from({ length: qCount }, (_, i) => i);
-  if (settings.examShuffleQuestions !== false) {
-    questionOrder = seededShuffleArray(questionOrder, shuffleSeed + ':q');
-  }
+    const student = await User.findById(userId).select('quizResults').lean();
+    if (!student) return res.status(404).json({ success: false, message: 'User not found.' });
 
-  const optionOrders = {};
-  if (settings.examShuffleOptions !== false) {
-    quiz.forEach((q, i) => {
-      const n = Array.isArray(q.options) ? q.options.length : 0;
-      if (n > 1 && (q.type === 'single' || q.type === 'multiple')) {
-        optionOrders[i] = seededShuffleArray(
-          Array.from({ length: n }, (_, k) => k),
-          shuffleSeed + ':o:' + i
+    const existingResult = (student.quizResults || {})[String(req.params.materialId)] || {};
+    const attemptsUsed   = Number(existingResult.attempts) || 0;
+
+    const publishMode   = cfg.resultPublishMode || 'immediate';
+    const publishedAtMs = existingResult.publishedAt
+      ? new Date(existingResult.publishedAt).getTime()
+      : null;
+    const resultsVisible =
+      publishMode === 'immediate' ||
+      (publishMode === 'scheduled' && publishedAtMs !== null);
+
+    /* ============================================================
+       ⭐ FIX: Look for ANY existing session for this (user, course,
+       material) triple — not just in-progress ones.
+
+       The old code only queried `status:'in-progress'`, so a
+       previously SUBMITTED row stayed in the DB untouched. Because
+       the schema has a UNIQUE index on (userId, courseId,
+       materialId), the subsequent QuizSession.create(...) then blew
+       up with E11000 duplicate key. The client silently fell into
+       "offline" mode without a real server session, and any later
+       submit was rejected by the stale submitted row with code
+       ALREADY_SUBMITTED.
+       ============================================================ */
+    let session = await QuizSession.findOne({
+      userId:     String(userId),
+      courseId:   String(req.params.courseId),
+      materialId: String(req.params.materialId)
+    });
+
+    const isResuming = !!(session && session.status === 'in-progress');
+
+    /* Refuse a fresh attempt once the cap is reached, unless we are
+       literally resuming an already-open in-progress session. */
+    if (!isResuming && maxAttempts > 0 && attemptsUsed >= maxAttempts) {
+      return res.status(403).json({
+        success: false,
+        code: 'ATTEMPT_LIMIT_REACHED',
+        message:
+          `You have used all ${maxAttempts} attempt${maxAttempts === 1 ? '' : 's'} ` +
+          `for this test.` +
+          (resultsVisible
+            ? ' Your result is available above.'
+            : ' Your result will be visible once the instructor publishes it.'),
+        attemptsUsed,
+        maxAttempts,
+        resultsVisible,
+        resultsPending: !resultsVisible
+      });
+    }
+
+    if (isResuming) {
+      /* Resume — keep the SAME startedAt / durationSeconds / shuffle
+         seed so refreshing never resets the clock or re-rolls order. */
+      session.lastHeartbeat = new Date();
+      await session.save();
+      console.log(`[quiz/start] ♻️  resumed session user=${userId} mat=${req.params.materialId}`);
+    } else {
+      /* Delete any stale (submitted / expired) row so the unique
+         index does not block the fresh create below. */
+      if (session) {
+        await QuizSession.deleteOne({ _id: session._id });
+        console.log(
+          `[quiz/start] 🗑️  cleared stale session (status=${session.status}) ` +
+          `user=${userId} mat=${req.params.materialId}`
         );
       }
-    });
-  }
 
-  session = await QuizSession.create({
-    userId:     String(userId),
-    courseId:   String(req.params.courseId),
-    materialId: String(req.params.materialId),
-    startedAt:  new Date(),
-    durationSeconds,
-    shuffleSeed,
-    questionOrder,
-    optionOrders,
-    status: 'in-progress'
-  });
-  console.log(
-    `[quiz/start] ✅ new session user=${userId} mat=${req.params.materialId} ` +
-    `duration=${durationSeconds}s q=${qCount} attempt=${attemptsUsed + 1}/${maxAttempts || '∞'}`
-  );
-}
+      const settings        = await getGlobalSettings();
+      const durationSeconds = parseQuizTimeServer(cfg.totalTime);
+
+      const shuffleSeed = crypto
+        .createHash('sha256')
+        .update(
+          String(userId) + ':' + String(req.params.materialId) + ':' +
+          Date.now() + ':' + crypto.randomBytes(8).toString('hex')
+        )
+        .digest('hex')
+        .slice(0, 32);
+
+      const qCount = quiz.length;
+      let questionOrder = Array.from({ length: qCount }, (_, i) => i);
+      if (settings.examShuffleQuestions !== false) {
+        questionOrder = seededShuffleArray(questionOrder, shuffleSeed + ':q');
+      }
+
+      const optionOrders = {};
+      if (settings.examShuffleOptions !== false) {
+        quiz.forEach((q, i) => {
+          const n = Array.isArray(q.options) ? q.options.length : 0;
+          if (n > 1 && (q.type === 'single' || q.type === 'multiple')) {
+            optionOrders[i] = seededShuffleArray(
+              Array.from({ length: n }, (_, k) => k),
+              shuffleSeed + ':o:' + i
+            );
+          }
+        });
+      }
+
+      session = await QuizSession.create({
+        userId:     String(userId),
+        courseId:   String(req.params.courseId),
+        materialId: String(req.params.materialId),
+        startedAt:  new Date(),
+        durationSeconds,
+        shuffleSeed,
+        questionOrder,
+        optionOrders,
+        status: 'in-progress'
+      });
+      console.log(
+        `[quiz/start] ✅ new session user=${userId} mat=${req.params.materialId} ` +
+        `duration=${durationSeconds}s q=${qCount} attempt=${attemptsUsed + 1}/${maxAttempts || '∞'}`
+      );
+    }
+
+    const now = Date.now();
+    const endsAt = session.startedAt.getTime() + session.durationSeconds * 1000;
+    const remainingSeconds = session.durationSeconds > 0
+      ? Math.max(0, Math.floor((endsAt - now) / 1000))
+      : null;
+
+    /* Per-quiz navigation policy (unchanged) */
+    let allowBackNavigation;
+    if (typeof cfg.allowBackNavigation === 'boolean') {
+      allowBackNavigation = cfg.allowBackNavigation;
+    } else {
+      try {
+        const s = await getGlobalSettings();
+        allowBackNavigation = s.examForwardOnly === false;
+      } catch (e) {
+        allowBackNavigation = false;
+      }
+    }
+    const showQuestionPalette = cfg.showQuestionPalette !== false;
+
+    res.json({
+      success: true,
+      serverNow: now,
+      startedAt: session.startedAt.getTime(),
+      durationSeconds: session.durationSeconds,
+      remainingSeconds,
+      shuffleSeed: session.shuffleSeed,
+      questionOrder: session.questionOrder,
+      optionOrders: session.optionOrders,
+      questionCount: quiz.length,
+      allowBackNavigation,
+      showQuestionPalette,
+
+      /* ⭐ Attempt + publication metadata for the UI */
+      attemptsUsed,
+      maxAttempts,
+      attemptsRemaining: maxAttempts > 0
+        ? Math.max(0, maxAttempts - attemptsUsed)
+        : null,
+      resultPublishMode: publishMode,
+      resultsVisible,
+      resultPublishAt: cfg.resultPublishAt || null
+    });
+  } catch (e) {
+    console.error('[quiz/start]', e);
+    res.status(500).json({ success: false, message: 'Could not start test: ' + e.message });
+  }
+});
 /* ============================================================
    GET /api/user/quiz/:courseId/:materialId/attempt-status
    ------------------------------------------------------------
