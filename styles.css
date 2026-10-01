@@ -12573,3 +12573,29 @@ html {
   .quiz-exam-nav-actions { width: 100%; }
   .quiz-exam-nav-actions .btn { flex: 1; justify-content: center; }
 }
+/* ============================================================
+   BRAND ICON — new AeroGyan "A" mark
+   ------------------------------------------------------------
+   The Font Awesome rocket glyph inside .brand-icon is replaced
+   by an inline SVG of the tricolor A mark. This block keeps the
+   same 42x42 footprint so nothing else in the layout needs to
+   move — only the appearance changes.
+   ============================================================ */
+.brand-icon {
+  background: #ffffff !important;
+  border: 1px solid rgba(0, 0, 0, .06) !important;
+  padding: 6px !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .22) !important;
+  font-size: 0 !important;   /* collapses any residual <i> tag text */
+  color: transparent !important;
+}
+.brand-icon > svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+[data-theme="dark"] .brand-icon,
+[data-theme="dim"]  .brand-icon {
+  border-color: rgba(255, 255, 255, .15) !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .5) !important;
+}
