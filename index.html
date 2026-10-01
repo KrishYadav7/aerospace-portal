@@ -44,7 +44,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=113">
+  <link rel="stylesheet" href="styles.css?v=114">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -1162,6 +1162,42 @@
             <span>The exam will take over your entire screen.</span>
           </div>
         </div>
+        <div class="pre-exam-rule danger-forward" id="preExamForwardOnly">
+          <i class="fas fa-arrow-right"></i>
+          <div>
+            <strong>Forward-only navigation.</strong>
+            <span>You cannot return to previous questions once you click <em>Next</em>. Answers are locked in permanently.</span>
+          </div>
+        </div>
+        <div class="pre-exam-rule danger">
+          <i class="fas fa-ban"></i>
+          <div>
+            <strong>Leaving this tab = instant submission.</strong>
+            <span>Switching tabs, minimizing the window, or exiting full-screen will auto-submit your exam. You have up to 3 strikes.</span>
+          </div>
+        </div>
+        <div class="pre-exam-rule">
+          <i class="fas fa-clipboard-check"></i>
+          <div>
+            <strong>Restricted interactions.</strong>
+            <span>Right-click, copy, paste, and developer tools are disabled during the exam.</span>
+          </div>
+        </div>
+        <div class="pre-exam-rule">
+          <i class="fas fa-shuffle"></i>
+          <div>
+            <strong>Questions are shuffled.</strong>
+            <span>Both question order and answer option order are unique to your attempt.</span>
+          </div>
+        </div>
+        <div class="pre-exam-rule">
+          <i class="fas fa-clock"></i>
+          <div>
+            <strong>Server-enforced time limit.</strong>
+            <span>The countdown runs on the server. Refreshing the page or changing your device clock will not extend it.</span>
+          </div>
+        </div>
+      </div>
         <div class="pre-exam-rule danger">
           <i class="fas fa-ban"></i>
           <div>
@@ -1180,7 +1216,7 @@
 
       <label class="pre-exam-consent">
         <input type="checkbox" id="preExamConsentBox" onchange="togglePreExamConsent()">
-        <span>I understand and agree to follow these rules. I accept that any violation will result in immediate auto-submission of my exam.</span>
+        <span>I understand and agree to these rules — including that I cannot return to previous questions once I click <em>Next</em>, and that any proctoring violation will consume a strike and may auto-submit my exam.</span>
       </label>
 
       <div class="modal-actions" style="flex-direction:column-reverse;">
@@ -1769,8 +1805,8 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=113" defer></script>
-  <script src="app.js?v=112" defer></script>
+ 	<script src="media-viewer.js?v=114" defer></script>
+  <script src="app.js?v=114" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {

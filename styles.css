@@ -11928,3 +11928,114 @@ html {
   .vp-shortcuts-card { padding: 20px 18px 16px; }
   .vp-big-play { width: 68px; height: 68px; font-size: 24px; }
 }
+/* ============================================================
+   72. CORE EXAMINATION CONTROLS — forward-only, lock, pending
+   ============================================================ */
+
+/* ---- Locked question: visually retired ---- */
+.quiz-play-card.locked {
+  border-left-color: var(--rose-500) !important;
+  background: linear-gradient(135deg, rgba(239,68,68,.04), transparent 40%);
+  opacity: .92;
+}
+.quiz-play-option.locked {
+  opacity: .62;
+  cursor: not-allowed;
+}
+.quiz-play-option.locked * { pointer-events: none; }
+
+.quiz-locked-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(239,68,68,.08);
+  border: 1px solid rgba(239,68,68,.28);
+  border-left: 3px solid var(--rose-500);
+  color: var(--rose-600);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+[data-theme="dark"] .quiz-locked-note,
+[data-theme="dim"]   .quiz-locked-note { color: var(--rose-400); }
+.quiz-locked-note i { flex-shrink: 0; }
+
+/* ---- Pending review badge on result items ---- */
+.quiz-result-item.pending { border-left: 4px solid var(--gold-500); }
+.quiz-result-badge.pending {
+  background: var(--gold-500);
+  color: #422006;
+}
+
+/* ---- Forward-only info banner in the pre-exam consent modal ---- */
+.pre-exam-rule.danger-forward {
+  background: linear-gradient(135deg, rgba(239,68,68,.10), rgba(239,68,68,.03));
+  border-color: rgba(239,68,68,.4);
+}
+.pre-exam-rule.danger-forward > i {
+  background: linear-gradient(135deg, #ef4444, #dc2626);
+  color: #fff;
+}
+.pre-exam-rule.danger-forward strong { color: var(--rose-600); }
+[data-theme="dark"] .pre-exam-rule.danger-forward strong,
+[data-theme="dim"]   .pre-exam-rule.danger-forward strong { color: var(--rose-400); }
+
+/* ---- Server-timer "syncing" pulse while heartbeat is in flight ---- */
+.quiz-exam-timer.syncing {
+  animation: quizTimerSync 1s ease-in-out infinite alternate;
+}
+@keyframes quizTimerSync {
+  from { opacity: .82; }
+  to   { opacity: 1; }
+}
+
+/* ---- Time-spent table in the result summary (student view) ---- */
+.quiz-time-breakdown {
+  margin-top: 20px;
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+}
+.quiz-time-breakdown h4 {
+  font-size: 13.5px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px;
+}
+.quiz-time-breakdown h4 i { color: var(--brand-500); }
+.quiz-time-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+.quiz-time-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-surface);
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  border: 1px solid var(--border-subtle);
+}
+.quiz-time-item .label { color: var(--text-secondary); }
+.quiz-time-item .value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  color: var(--brand-600);
+}
+[data-theme="dark"] .quiz-time-item .value,
+[data-theme="dim"]   .quiz-time-item .value { color: var(--brand-300); }
+.quiz-time-item.slow   .value { color: var(--gold-600); }
+.quiz-time-item.slowest .value { color: var(--rose-600); }
+[data-theme="dark"] .quiz-time-item.slow .value,
+[data-theme="dim"]   .quiz-time-item.slow .value { color: var(--gold-400); }
+[data-theme="dark"] .quiz-time-item.slowest .value,
+[data-theme="dim"]   .quiz-time-item.slowest .value { color: var(--rose-400); }

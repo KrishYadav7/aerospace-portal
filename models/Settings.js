@@ -86,6 +86,13 @@ const settingsSchema = new mongoose.Schema({
   referralRewardTitle:  { type: String,  default: '1 Month Free Premium' },
   referralRewardDesc:   { type: String,  default: 'Reward every time your referrals hit the required threshold.' },
 
+  /* ---------- NEW: Exam-control configuration ---------- */
+  examMaxStrikes:        { type: Number,  default: 3, min: 1, max: 10 },
+  examForwardOnly:       { type: Boolean, default: true },
+  examShuffleQuestions:  { type: Boolean, default: true },
+  examShuffleOptions:    { type: Boolean, default: true },
+  examServerTimerGraceSec: { type: Number, default: 30, min: 0, max: 300 },
+
   /* Organization owner profile */
   ownerProfile: {
     type: ownerProfileSchema,

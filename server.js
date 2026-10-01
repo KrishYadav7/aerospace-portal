@@ -1839,7 +1839,86 @@ console.log('[session] ActiveSession model ready');
    Render free tier spins down after 15 min inactivity.
    MongoDB TTL index auto-deletes expired docs.
    ============================================================ */
-const otpTokenSchema = new mongoose.Schema({
+/* ============================================================
+   QUIZ SESSION — server-synced timer + shuffle + analytics
+   ------------------------------------------------------------
+   One document per (user, course, material). Created the moment
+   the student clicks "Begin Exam" and kept until submission.
+
+   The server is the single source of truth for TIME. The client
+   ticks down from serverStartedAt and the server independently
+   enforces the same wall-clock expiry, so:
+     • Refreshing the page does NOT reset the timer.
+     • Changing the device clock does NOT extend the timer.
+     • Disabling JavaScript does NOT bypass the deadline.
+   ============================================================ */
+const quizSessionSchema = new mongoose.Schema({
+  userId:          { type: String, required: true, index: true },
+  courseId:        { type: String, required: true },
+  materialId:      { type: String, required: true },
+
+  startedAt:       { type: Date,   required: true, default: Date.now },
+  durationSeconds: { type: Number, required: true, default: 0 },
+
+  shuffleSeed:     { type: String, required: true },
+  questionOrder:   { type: [Number], default: [] },      // display[i] → original index
+  optionOrders:    { type: mongoose.Schema.Types.Mixed, default: {} }, // origIdx → [display→orig]
+
+  status:          { type: String, enum: ['in-progress', 'submitted', 'expired'], default: 'in-progress', index: true },
+  lastHeartbeat:   { type: Date, default: Date.now },
+  submittedAt:     { type: Date, default: null },
+  autoSubmitted:   { type: Boolean, default: false },
+
+  /* Time spent (seconds) on each ORIGINAL question index */
+  timeSpentPerQuestion: { type: mongoose.Schema.Types.Mixed, default: {} }
+}, { timestamps: true });
+
+quizSessionSchema.index({ userId: 1, courseId: 1, materialId: 1 }, { unique: true });
+
+/* Auto-clean abandoned sessions after 7 days */
+quizSessionSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 7 * 24 * 60 * 60 });
+
+const QuizSession = mongoose.models.QuizSession ||
+  mongoose.model('QuizSession', quizSessionSchema);
+
+/* ---------- Seeded PRNG + shuffle (deterministic per seed) ---------- */
+function _seededRng(seed) {
+  let s = 0;
+  for (let i = 0; i < String(seed).length; i++) {
+    s = ((s << 5) - s) + String(seed).charCodeAt(i);
+    s |= 0;
+  }
+  return function () {
+    s = (s * 1664525 + 1013904223) | 0;
+    return ((s >>> 0) % 1000000) / 1000000;
+  };
+}
+function seededShuffleArray(arr, seed) {
+  const a = arr.slice();
+  const rng = _seededRng(seed);
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/* Server-side time parser (mirror of the client's parseQuizTime) */
+function parseQuizTimeServer(s) {
+  if (!s) return 0;
+  s = String(s).toLowerCase().trim();
+  const hm = s.match(/(\d+)\s*h(?:our|r)?s?/);
+  const mm = s.match(/(\d+)\s*m(?:in(?:ute)?)?s?/);
+  let sec = 0;
+  if (hm) sec += parseInt(hm[1], 10) * 3600;
+  if (mm) sec += parseInt(mm[1], 10) * 60;
+  if (!sec) {
+    const n = s.match(/^(\d+)$/);
+    if (n) sec = parseInt(n[1], 10) * 60;
+  }
+  return sec;
+}
+   const otpTokenSchema = new mongoose.Schema({
   key:       { type: String, required: true, unique: true }, // email|phone|userId
   otp:       { type: String, required: true },
   payload:   { type: mongoose.Schema.Types.Mixed, default: {} },
@@ -4610,6 +4689,184 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth, 
     res.status(500).json({ success: false, message: 'Error saving paper: ' + e.message });
   }
 });
+/* ============================================================
+   QUIZ — START SESSION  (server-synced timer + shuffle)
+   ------------------------------------------------------------
+   POST /api/user/quiz/:courseId/:materialId/start
+   Body: { userId }
+
+   Returns the CANONICAL session record for this student. If a
+   session already exists and is still in progress, we return the
+   SAME startedAt + durationSeconds + shuffle seed, so refreshing
+   the page never resets the clock or re-rolls the order.
+   ============================================================ */
+app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+
+    const course = await Course.findById(req.params.courseId)
+      .select('isPremium materials')
+      .lean();
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+
+    const mat = (course.materials || []).find(
+      m => String(m._id) === String(req.params.materialId)
+    );
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found.' });
+
+    const quiz = Array.isArray(mat.quiz) ? mat.quiz : [];
+    if (quiz.length === 0) {
+      return res.status(400).json({ success: false, message: 'This test has no questions.' });
+    }
+
+    /* ---- Reuse existing in-progress session ---- */
+    let session = await QuizSession.findOne({
+      userId: String(userId),
+      courseId: String(req.params.courseId),
+      materialId: String(req.params.materialId)
+    });
+
+    if (session && session.status !== 'in-progress') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_SUBMITTED',
+        message: 'You have already submitted this test. Use Retake to start a fresh attempt.'
+      });
+    }
+
+    if (!session) {
+      const settings = await getGlobalSettings();
+      const durationSeconds = parseQuizTimeServer(mat.examConfig && mat.examConfig.totalTime);
+
+      const shuffleSeed = crypto
+        .createHash('sha256')
+        .update(String(userId) + ':' + String(req.params.materialId) + ':' + Date.now() + ':' + crypto.randomBytes(8).toString('hex'))
+        .digest('hex')
+        .slice(0, 32);
+
+      /* Per-question and per-option shuffle. The order arrays map
+         DISPLAY position → ORIGINAL index. The client uses these
+         for rendering only; the submission still sends answers in
+         ORIGINAL index order, so the grader is unchanged. */
+      const qCount = quiz.length;
+      let questionOrder = Array.from({ length: qCount }, (_, i) => i);
+      if (settings.examShuffleQuestions !== false) {
+        questionOrder = seededShuffleArray(questionOrder, shuffleSeed + ':q');
+      }
+
+      const optionOrders = {};
+      if (settings.examShuffleOptions !== false) {
+        quiz.forEach((q, i) => {
+          const n = Array.isArray(q.options) ? q.options.length : 0;
+          if (n > 1 && (q.type === 'single' || q.type === 'multiple')) {
+            optionOrders[i] = seededShuffleArray(
+              Array.from({ length: n }, (_, k) => k),
+              shuffleSeed + ':o:' + i
+            );
+          }
+        });
+      }
+
+      session = await QuizSession.create({
+        userId: String(userId),
+        courseId: String(req.params.courseId),
+        materialId: String(req.params.materialId),
+        startedAt: new Date(),
+        durationSeconds,
+        shuffleSeed,
+        questionOrder,
+        optionOrders,
+        status: 'in-progress'
+      });
+      console.log(
+        `[quiz/start] ✅ new session user=${userId} mat=${req.params.materialId} ` +
+        `duration=${durationSeconds}s q=${qCount}`
+      );
+    } else {
+      /* Touch heartbeat so an active tab can't be swept as idle */
+      session.lastHeartbeat = new Date();
+      await session.save();
+      console.log(`[quiz/start] ♻️  resumed session user=${userId} mat=${req.params.materialId}`);
+    }
+
+    const now = Date.now();
+    const endsAt = session.startedAt.getTime() + session.durationSeconds * 1000;
+    const remainingSeconds = session.durationSeconds > 0
+      ? Math.max(0, Math.floor((endsAt - now) / 1000))
+      : null;
+
+    res.json({
+      success: true,
+      serverNow: now,
+      startedAt: session.startedAt.getTime(),
+      durationSeconds: session.durationSeconds,
+      remainingSeconds,
+      shuffleSeed: session.shuffleSeed,
+      questionOrder: session.questionOrder,
+      optionOrders: session.optionOrders,
+      questionCount: quiz.length
+    });
+  } catch (e) {
+    console.error('[quiz/start]', e);
+    res.status(500).json({ success: false, message: 'Could not start test: ' + e.message });
+  }
+});
+
+/* ============================================================
+   QUIZ — HEARTBEAT  (drift-corrected countdown + server enforcement)
+   ------------------------------------------------------------
+   GET /api/user/quiz/:courseId/:materialId/heartbeat?userId=…
+
+   The client polls this every 15 s. The server compares wall
+   clock against the session's deadline and, if time is up and
+   the session is still marked "in-progress", marks it expired.
+   The client's next tick will see remainingSeconds <= 0 and
+   submit — but even if the client never ticks, the server has
+   already locked the deadline.
+   ============================================================ */
+app.get('/api/user/quiz/:courseId/:materialId/heartbeat', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+
+    const session = await QuizSession.findOne({
+      userId,
+      courseId: String(req.params.courseId),
+      materialId: String(req.params.materialId)
+    });
+    if (!session) return res.status(404).json({ success: false, message: 'No active session.' });
+    if (session.status !== 'in-progress') {
+      return res.json({ success: true, expired: true, status: session.status, remainingSeconds: 0 });
+    }
+
+    session.lastHeartbeat = new Date();
+    const now = Date.now();
+    const endsAt = session.startedAt.getTime() + session.durationSeconds * 1000;
+    const remainingSeconds = session.durationSeconds > 0
+      ? Math.max(0, Math.floor((endsAt - now) / 1000))
+      : null;
+
+    let expired = false;
+    if (session.durationSeconds > 0 && remainingSeconds === 0) {
+      session.status = 'expired';
+      expired = true;
+    }
+    await session.save();
+
+    res.json({
+      success: true,
+      serverNow: now,
+      endsAt,
+      remainingSeconds,
+      expired,
+      status: session.status
+    });
+  } catch (e) {
+    console.error('[quiz/heartbeat]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
 
 /* ============================================================
    QUIZ — Grade submission (student)
@@ -4617,10 +4874,56 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth, 
    ============================================================ */
 app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
   try {
-    const { userId, answers } = req.body;
+    const { userId, answers, timeSpentPerQuestion, autoSubmitted } = req.body || {};
     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
     if (!Array.isArray(answers)) {
       return res.status(400).json({ success: false, message: 'answers must be an array' });
+    }
+
+    /* ---- Server-side deadline enforcement ----
+       Load the session (if one exists) and refuse submissions that
+       arrived after the server-recorded deadline + grace. This
+       catches the case where a student disables JS, edits the
+       client clock, or replays a stale request. */
+    let _session = null;
+    try {
+      _session = await QuizSession.findOne({
+        userId: String(userId),
+        courseId: String(req.params.courseId),
+        materialId: String(req.params.materialId)
+      });
+    } catch (_) { /* non-fatal — session may not exist for legacy flows */ }
+
+    if (_session && _session.status === 'submitted') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_SUBMITTED',
+        message: 'This test has already been submitted.'
+      });
+    }
+
+    if (_session && _session.durationSeconds > 0) {
+      let graceSec = 30;
+      try {
+        const _gs = await getGlobalSettings();
+        graceSec = Number(_gs.examServerTimerGraceSec) || 30;
+      } catch (_) {}
+      const endsAt = _session.startedAt.getTime() + _session.durationSeconds * 1000;
+      const overdueMs = Date.now() - endsAt;
+      if (overdueMs > graceSec * 1000) {
+        _session.status = 'expired';
+        _session.autoSubmitted = true;
+        _session.submittedAt = new Date();
+        try { await _session.save(); } catch (_) {}
+        console.warn(
+          `[quiz/submit] ⏰ rejected late submission user=${userId} overdue=${Math.round(overdueMs/1000)}s`
+        );
+        return res.status(410).json({
+          success: false,
+          code: 'TIME_EXPIRED',
+          message: 'Your attempt has expired. Answers must be submitted before the deadline.'
+        });
+      }
     }
 
     const course = await Course.findById(req.params.courseId);
@@ -4813,6 +5116,36 @@ app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
       },
       { upsert: true }
     ).catch(() => {});
+        /* ---- Persist per-question time analytics + close the session ---- */
+    if (_session) {
+      try {
+        if (timeSpentPerQuestion && typeof timeSpentPerQuestion === 'object') {
+          _session.timeSpentPerQuestion = timeSpentPerQuestion;
+        }
+        _session.status = 'submitted';
+        _session.submittedAt = new Date();
+        if (autoSubmitted === true) _session.autoSubmitted = true;
+        await _session.save();
+      } catch (sessErr) {
+        console.warn('[quiz/submit] session close failed:', sessErr.message);
+      }
+    }
+
+    /* ---- Store per-question time on the result record too ---- */
+    if (timeSpentPerQuestion && typeof timeSpentPerQuestion === 'object') {
+      try {
+        const r = user.quizResults.get(String(req.params.materialId));
+        if (r) {
+          r.timeSpentPerQuestion = timeSpentPerQuestion;
+          r.timeSpentTotalSeconds = Object.values(timeSpentPerQuestion)
+            .reduce((s, v) => s + (Number(v) || 0), 0);
+          user.quizResults.set(String(req.params.materialId), r);
+          await user.save();
+        }
+      } catch (tErr) {
+        console.warn('[quiz/submit] time analytics persist failed:', tErr.message);
+      }
+    }
 
     res.json({
       success: true,
@@ -5343,6 +5676,13 @@ app.get('/api/settings/subscription', async (req, res) => {
         amount:      s.subscriptionAmount,
         title:       s.subscriptionTitle,
         description: s.subscriptionDesc
+      },
+      exam: {
+        maxStrikes:       Number(s.examMaxStrikes) || 3,
+        forwardOnly:      s.examForwardOnly !== false,
+        shuffleQuestions: s.examShuffleQuestions !== false,
+        shuffleOptions:   s.examShuffleOptions !== false,
+        serverTimerGraceSec: Number(s.examServerTimerGraceSec) || 30
       }
     };
     cacheSet('settings:subscription', payload, 5 * 60 * 1000);
@@ -9517,6 +9857,136 @@ app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) =
     res.status(500).json({ success: false, message: e.message });
   }
 });
+/* ============================================================
+   ADMIN — Publish exam results + notify students
+   ------------------------------------------------------------
+   POST /api/admin/quiz/:courseId/:materialId/publish
+   Body: { adminId, studentIds?: string[] }
+
+   Marks each submission as manuallyEvaluated = true and emails
+   every affected student with their final combined score. If
+   studentIds is omitted, ALL pending submissions for that
+   material are published.
+   ============================================================ */
+app.post('/api/admin/quiz/:courseId/:materialId/publish',
+  requireAdminAuth,
+  async (req, res) => {
+    try {
+      const { studentIds } = req.body || {};
+
+      const course = await Course.findById(req.params.courseId)
+        .select('name code materials')
+        .lean();
+      if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+
+      const mat = (course.materials || []).find(
+        m => String(m._id) === String(req.params.materialId)
+      );
+      if (!mat) return res.status(404).json({ success: false, message: 'Material not found.' });
+
+      const filter = { role: 'student' };
+      if (Array.isArray(studentIds) && studentIds.length > 0) {
+        filter._id = { $in: studentIds };
+      }
+
+      const students = await User.find(filter)
+        .select('username fullName email quizResults')
+        .lean();
+
+      const materialId = String(req.params.materialId);
+      let published = 0;
+      const delivered = [];
+
+      for (const s of students) {
+        const r = (s.quizResults || {})[materialId];
+        if (!r) continue;
+        if (r.publishedAt) continue;
+
+        const autoMarks = Number(r.marksEarned) || 0;
+        const autoMax   = Number(r.marksPossible) || 0;
+        const subjMarks = Number(r.subjectiveMarksAwarded) || 0;
+        const subjMax   = Number(r.subjectiveMaxTotal) || 0;
+
+        const finalEarned   = autoMarks + subjMarks;
+        const finalPossible = autoMax + subjMax;
+        const finalPct      = finalPossible > 0
+          ? Math.round((finalEarned / finalPossible) * 100)
+          : (Number(r.percent) || 0);
+
+        /* Update the record */
+        try {
+          await User.updateOne(
+            { _id: s._id },
+            {
+              $set: {
+                [`quizResults.${materialId}.publishedAt`]: new Date(),
+                [`quizResults.${materialId}.manuallyEvaluated`]: true,
+                [`quizResults.${materialId}.finalMarksEarned`]: finalEarned,
+                [`quizResults.${materialId}.finalMarksPossible`]: finalPossible,
+                [`quizResults.${materialId}.finalPercent`]: finalPct
+              }
+            }
+          );
+        } catch (e) {
+          console.warn('[quiz/publish] update failed for', s.username, e.message);
+          continue;
+        }
+
+        published++;
+
+        /* Email the student (best-effort; never blocks the response) */
+        if (s.email) {
+          try {
+            const subject = `Results published — ${mat.title || 'your test'}`;
+            const text =
+              `Hi ${s.fullName || s.username},\n\n` +
+              `Your results for "${mat.title || 'the test'}" in "${course.name}" are ready.\n\n` +
+              `Final score: ${finalEarned} / ${finalPossible} (${finalPct}%)\n` +
+              `Auto-graded: ${autoMarks} / ${autoMax}\n` +
+              (subjMax > 0 ? `Manually graded: ${subjMarks} / ${subjMax}\n` : '') +
+              `\nLog in to view the full answer breakdown.\n\n` +
+              `— Aerospace Department, IIT Kharagpur`;
+
+            transporter.sendMail({
+              to: s.email,
+              subject,
+              text,
+              html: `<div style="font-family:Inter,sans-serif;max-width:560px;margin:0 auto;padding:22px;line-height:1.6;">
+                <div style="border-left:4px solid #6366f1;padding-left:12px;margin-bottom:18px;">
+                  <strong style="font-size:17px;color:#14161c;">Aerospace Department</strong><br>
+                  <span style="font-size:12px;color:#8b8d98;">RESULT PUBLISHED</span>
+                </div>
+                <p>Hi ${escapeHtml(s.fullName || s.username)},</p>
+                <p>Your results for <strong>${escapeHtml(mat.title || 'your test')}</strong> in <strong>${escapeHtml(course.name)}</strong> are ready.</p>
+                <div style="background:#eef2ff;border-radius:10px;padding:16px 20px;margin:16px 0;text-align:center;">
+                  <div style="font-size:12px;letter-spacing:1px;color:#4f46e5;font-weight:700;">FINAL SCORE</div>
+                  <div style="font-size:34px;font-weight:800;color:#312e81;margin-top:6px;">${finalEarned} / ${finalPossible}</div>
+                  <div style="font-size:13px;color:#4a4d5a;margin-top:4px;">${finalPct}%</div>
+                </div>
+                <p style="font-size:13px;color:#4a4d5a;">
+                  Auto-graded: <strong>${autoMarks}/${autoMax}</strong>${subjMax > 0 ? `<br>Manually graded: <strong>${subjMarks}/${subjMax}</strong>` : ''}
+                </p>
+                <p style="font-size:13px;color:#8b8d98;margin-top:22px;">Log in to view the full answer breakdown.</p>
+              </div>`
+            }).catch(err => console.warn('[quiz/publish] email failed:', err.message));
+
+            delivered.push(s.email);
+          } catch (e) { /* silent */ }
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `Published results for ${published} student${published === 1 ? '' : 's'}. ${delivered.length} email(s) queued.`,
+        published,
+        emailed: delivered.length
+      });
+    } catch (e) {
+      console.error('[quiz/publish]', e);
+      res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+    }
+  }
+);
 
 /* ============================================================
    LISTEN — start the HTTP server

@@ -9776,9 +9776,17 @@ async function saveQuizPaper() {
        1 = one grace warning, second violation auto-submits  (default)
        2 = two grace warnings, third auto-submits
    ============================================================ */
-const QUIZ_PROCTOR_MAX_STRIKES = 1;
+/* Default strike limit — overridden at openQuizPlayer() time by the
+   value in Settings (admin can configure 1–10). */
+let QUIZ_PROCTOR_MAX_STRIKES = 3;
 
 let quizPlayerState = null;
+
+/* ⭐ FORWARD-ONLY + SERVER-TIMER + ANALYTICS state */
+let _examSessionPoll = null;          // heartbeat interval handle
+let _examClockOffsetMs = 0;           // serverNow - clientNow, applied to timer math
+let _examQuestionEnteredAt = 0;       // ms — when the current question was first shown
+let _examQuestionLocked = {};         // { [originalIdx]: true } once "Next" clicked
 
 /* ---- Listener registry (cleanup after exam) ---- */
 const _quizListeners = [];
@@ -9817,13 +9825,84 @@ async function openQuizPlayer(courseId, materialId) {
   }
   if (quiz.length === 0) return showToast('This test has no questions yet.', 'info');
 
+  /* ⭐ START the server-side session.
+     The server enforces the deadline and returns the shuffle that
+     must be applied to questions and options. If the server is
+     unreachable we fall back to a local shuffle so the exam still
+     runs — the client is not the enforcer anyway. */
+  let sessionInfo = null;
+  try {
+    const sres = await fetchJSON(
+      `/api/user/quiz/${courseId}/${materialId}/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser._id })
+      }
+    );
+    if (sres && sres.success) {
+      sessionInfo = sres;
+      _examClockOffsetMs = (Number(sres.serverNow) || Date.now()) - Date.now();
+    } else if (sres && sres.code === 'ALREADY_SUBMITTED') {
+      return showToast('You have already submitted this test. Use Retake to start again.', 'info');
+    }
+  } catch (err) {
+    console.warn('[openQuizPlayer] session start failed, running offline:', err.message);
+  }
+
   const normalized = quiz.map(q => normalizeQuestion(q));
-  const emptyAnswer = q => q.type === 'integer' ? '' : [];
+  const emptyAnswer = q => q.type === 'integer' || q.type === 'numerical' ? '' : [];
 
   const saved = restoreQuizAnswers(materialId);
   const initialAnswers = (saved && Array.isArray(saved) && saved.length === normalized.length)
     ? saved
     : normalized.map(emptyAnswer);
+
+  /* Read the admin's proctoring config (defaults if fetch failed) */
+  let cfg = { maxStrikes: 3, forwardOnly: true, shuffleQuestions: true, shuffleOptions: true };
+  try {
+    const cfgRes = await fetchJSON('/api/settings/subscription').catch(() => null);
+    /* We piggyback on the settings fetch; if it doesn't carry the
+       exam block yet, the defaults above are used. */
+    if (cfgRes && cfgRes.exam) {
+      cfg.maxStrikes = Number(cfgRes.exam.maxStrikes) || cfg.maxStrikes;
+      cfg.forwardOnly = cfgRes.exam.forwardOnly !== false;
+      cfg.shuffleQuestions = cfgRes.exam.shuffleQuestions !== false;
+      cfg.shuffleOptions = cfgRes.exam.shuffleOptions !== false;
+    }
+  } catch (_) {}
+  QUIZ_PROCTOR_MAX_STRIKES = Math.max(1, Math.min(10, cfg.maxStrikes));
+
+  /* Build the display order. If the server responded with one, use
+     it verbatim — it's the canonical order for this attempt. */
+  let questionOrder;
+  if (sessionInfo && Array.isArray(sessionInfo.questionOrder) && sessionInfo.questionOrder.length === normalized.length) {
+    questionOrder = sessionInfo.questionOrder.slice();
+  } else {
+    questionOrder = Array.from({ length: normalized.length }, (_, i) => i);
+    if (cfg.shuffleQuestions) {
+      for (let i = questionOrder.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [questionOrder[i], questionOrder[j]] = [questionOrder[j], questionOrder[i]];
+      }
+    }
+  }
+
+  let optionOrders = (sessionInfo && sessionInfo.optionOrders) || {};
+  if (!sessionInfo && cfg.shuffleOptions) {
+    optionOrders = {};
+    normalized.forEach((q, i) => {
+      const n = (q.options || []).length;
+      if (n > 1 && (q.type === 'single' || q.type === 'multiple')) {
+        const arr = Array.from({ length: n }, (_, k) => k);
+        for (let k = arr.length - 1; k > 0; k--) {
+          const j = Math.floor(Math.random() * (k + 1));
+          [arr[k], arr[j]] = [arr[j], arr[k]];
+        }
+        optionOrders[i] = arr;
+      }
+    });
+  }
 
   quizPlayerState = {
     courseId, materialId,
@@ -9839,13 +9918,32 @@ async function openQuizPlayer(courseId, materialId) {
     violations: [],
     startTime: null,
     violationHandling: false,
-    fullscreenArmed: false
+    fullscreenArmed: false,
+
+    /* ⭐ NEW fields */
+    forwardOnly: cfg.forwardOnly !== false,
+    questionOrder,
+    optionOrders,
+    displayIndex: 0,
+    serverStartedAt: sessionInfo ? sessionInfo.startedAt : Date.now(),
+    durationSeconds: sessionInfo ? Number(sessionInfo.durationSeconds) || 0 : parseQuizTime(mat.examConfig && mat.examConfig.totalTime),
+    timeSpentPerQuestion: {},
+    questionLocked: {}
   };
+
+  /* Reset per-question timers */
+  _examQuestionEnteredAt = 0;
+  _examQuestionLocked = {};
 
   const cb = document.getElementById('preExamConsentBox');
   if (cb) cb.checked = false;
   const btn = document.getElementById('preExamBeginBtn');
   if (btn) btn.disabled = true;
+
+  /* Show the forward-only warning in the consent modal, if it exists */
+  const warnBox = document.getElementById('preExamForwardOnly');
+  if (warnBox) warnBox.style.display = (quizPlayerState.forwardOnly && normalized.length > 1) ? 'flex' : 'none';
+
   openModal('preExamWarningModal');
 }
 
@@ -9898,6 +9996,9 @@ async function beginExamSession() {
 
   setTimeout(() => { if (quizPlayerState) quizPlayerState.fullscreenArmed = true; }, 900);
 
+  /* ⭐ Mark entry time for question 1 */
+  _examQuestionEnteredAt = Date.now();
+
   renderQuizExamShell();
   startQuizTimer();
   showToast('Exam started. Good luck!', 'success');
@@ -9916,15 +10017,22 @@ function renderQuizExamShell() {
   const mat = course && (course.materials || []).find(m => m.id === st.materialId);
   const examCfg = cfg.subject ? cfg : (mat && mat.examConfig) || {};
 
+  const totalQ = st.quiz.length;
+
+  /* ---------- Answered count (across every question) ---------- */
   const answered = st.quiz.reduce((s, q, i) => {
     const a = st.answers[i];
-    if (q.type === 'integer') return s + (a !== '' && a !== null && a !== undefined && !isNaN(Number(a)) ? 1 : 0);
-    if (q.type === 'matrix') {
+    const t = q.type || 'single';
+    if (t === 'integer' || t === 'numerical') {
+      return s + (a !== '' && a !== null && a !== undefined && !isNaN(Number(a)) ? 1 : 0);
+    }
+    if (t === 'matrix') {
       const rows = q.matrixRows || [];
-      const filled = Array.isArray(a)
-        ? a.filter(x => x !== undefined && x !== null && x !== '').length
-        : 0;
+      const filled = Array.isArray(a) ? a.filter(x => x !== undefined && x !== null && x !== '').length : 0;
       return s + (filled >= rows.length ? 1 : 0);
+    }
+    if (t === 'subjective') {
+      return s + (Array.isArray(a) && a.some(u => u && u.url) ? 1 : 0);
     }
     return s + (Array.isArray(a) ? (a.length > 0 ? 1 : 0) : (a >= 0 ? 1 : 0));
   }, 0);
@@ -9938,7 +10046,7 @@ function renderQuizExamShell() {
         </div>
         <div class="quiz-exam-sub">
           ${examCfg.paperCode ? `<span><i class="fas fa-hashtag"></i> ${escapeHtml(examCfg.paperCode)}</span>` : ''}
-          <span><i class="fas fa-list-ol"></i> ${st.quiz.length} question${st.quiz.length === 1 ? '' : 's'}</span>
+          <span><i class="fas fa-list-ol"></i> ${totalQ} question${totalQ === 1 ? '' : 's'}</span>
           ${examCfg.totalMarks ? `<span><i class="fas fa-star"></i> Max ${examCfg.totalMarks}</span>` : ''}
         </div>
       </div>
@@ -9950,11 +10058,11 @@ function renderQuizExamShell() {
 
       <div class="quiz-exam-progress">
         <span class="quiz-exam-progress-text">
-          <strong>${answered}</strong> / ${st.quiz.length} answered
+          <strong>${answered}</strong> / ${totalQ} answered
         </span>
         <div class="quiz-exam-progress-bar">
           <div class="quiz-exam-progress-fill"
-               style="width:${st.quiz.length > 0 ? (answered / st.quiz.length) * 100 : 0}%"></div>
+               style="width:${totalQ > 0 ? (answered / totalQ) * 100 : 0}%"></div>
         </div>
       </div>
     </header>
@@ -9962,50 +10070,46 @@ function renderQuizExamShell() {
 
   let bodyHtml = '';
   if (!st.submitted) {
-    let qHtml = '';
-    st.quiz.forEach((q, qi) => {
-      const qType = q.type || 'single';
-      const a = st.answers[qi];
-      const isAnswered =
-        qType === 'integer' ? (a !== '' && a !== null && a !== undefined && !isNaN(Number(a))) :
-        qType === 'matrix'  ? (Array.isArray(a) && a.filter(x => x !== undefined && x !== null && x !== '').length >= (q.matrixRows || []).length) :
-                              (Array.isArray(a) ? a.length > 0 : (a >= 0));
-
-      qHtml += `<div class="quiz-play-card ${isAnswered ? 'answered' : ''}">
-        <div class="quiz-play-qnum">
-          Question ${qi + 1} of ${st.quiz.length}
-          <span class="quiz-qtype-tag">${questionTypeLabel(qType)}</span>
-          <span class="quiz-qmark-tag">+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}</span>
-          ${isAnswered ? '<span class="quiz-answered-tag"><i class="fas fa-check-circle"></i> Answered</span>' : ''}
-        </div>
-        <h4 class="quiz-play-question latex-content">${escapeHtml(q.question)}</h4>
-        ${renderStudentAnswerArea(q, qi)}
-      </div>`;
-    });
+    /* ⭐ FORWARD-ONLY: render exactly ONE question at a time.
+       The display index maps back to the original index via
+       st.questionOrder, and options are reordered via st.optionOrders. */
+    const qHtml = st.forwardOnly
+      ? _renderSingleExamQuestion(st)
+      : _renderAllExamQuestions(st);
     bodyHtml = `<div class="quiz-exam-body-inner">${qHtml}</div>`;
   } else {
+    /* Result summary — same as before, with "Pending Review" support */
     const { score, total, percent, results, attempts, marksEarned, marksPossible } = st.response;
-    const isPerfect = score === total;
+    const pendingReview = !!(st.response && st.response.pendingEvaluation);
+    const isPerfect = score === total && !pendingReview;
     const isPass = percent >= 60;
-    const emoji = isPerfect ? '🏆' : isPass ? '🎉' : '📚';
-    const headline = isPerfect ? 'Perfect Score!' : isPass ? 'Well done!' : 'Keep practicing!';
+    const emoji = isPerfect ? '🏆' : pendingReview ? '⏳' : isPass ? '🎉' : '📚';
+    const headline = isPerfect ? 'Perfect Score!'
+                    : pendingReview ? 'Submitted — Pending Review'
+                    : isPass ? 'Well done!' : 'Keep practicing!';
 
     let rHtml = `<div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
       <div class="quiz-result-emoji">${emoji}</div>
       <div class="quiz-result-score">${score} / ${total}</div>
       <div class="quiz-result-pct">${percent}%${marksPossible ? ` · ${marksEarned} / ${marksPossible} marks` : ''}</div>
       <div class="quiz-result-headline">${headline}</div>
+      ${pendingReview ? `<p style="margin-top:10px;font-size:12.5px;color:var(--text-tertiary);">
+        Your subjective answers are awaiting instructor review. Final marks will be visible after review.
+      </p>` : ''}
       <div style="font-size:12px;color:var(--text-tertiary);margin-top:6px;">Attempt #${attempts}</div>
     </div>`;
 
     st.quiz.forEach((q, qi) => {
       const r = results[qi];
       const ok = r.correct;
-      rHtml += `<div class="quiz-result-item ${ok ? 'ok' : 'bad'}">
+      const isPending = r.manualReview === true;
+      const cls = isPending ? 'pending' : (ok ? 'ok' : 'bad');
+      const badge = isPending
+        ? '<i class="fas fa-hourglass-half"></i>'
+        : (ok ? '<i class="fas fa-check"></i>' : '<i class="fas fa-times"></i>');
+      rHtml += `<div class="quiz-result-item ${cls}">
         <div class="quiz-result-head">
-          <span class="quiz-result-badge ${ok ? 'ok' : 'bad'}">
-            <i class="fas ${ok ? 'fa-check' : 'fa-times'}"></i>
-          </span>
+          <span class="quiz-result-badge ${cls}">${badge}</span>
           <strong>Q${qi + 1}.</strong>
           <span class="latex-content">${escapeHtml(q.question)}</span>
         </div>
@@ -10018,13 +10122,13 @@ function renderQuizExamShell() {
     bodyHtml = `<div class="quiz-exam-body-inner">${rHtml}</div>`;
   }
 
+  /* ---------- Footer ---------- */
   let footerHtml;
   if (st.previewMode) {
     footerHtml = `
       <footer class="quiz-exam-footer">
         <div class="quiz-exam-footer-left">
-          <span class="quiz-exam-warning-note"
-                style="background:rgba(99,102,241,.1);color:var(--brand-600);border-color:rgba(99,102,241,.25);">
+          <span class="quiz-exam-warning-note" style="background:rgba(99,102,241,.1);color:var(--brand-600);border-color:rgba(99,102,241,.25);">
             <i class="fas fa-eye"></i> Preview mode — no proctoring, no submission.
           </span>
         </div>
@@ -10033,19 +10137,44 @@ function renderQuizExamShell() {
         </button>
       </footer>`;
   } else if (!st.submitted) {
+    const isLast = st.forwardOnly ? (st.displayIndex >= st.questionOrder.length - 1) : true;
+    const isFirst = st.forwardOnly ? (st.displayIndex === 0) : true;
     footerHtml = `
       <footer class="quiz-exam-footer">
         <div class="quiz-exam-footer-left">
           <button type="button" class="btn btn-outline" onclick="requestQuitExam()">
             <i class="fas fa-times"></i> Quit Exam
           </button>
-          <span class="quiz-exam-warning-note">
-            <i class="fas fa-shield-halved"></i> Do not switch tabs or leave full-screen.
-          </span>
+          ${st.forwardOnly
+            ? `<span class="quiz-exam-warning-note" style="background:rgba(239,68,68,.1);color:var(--rose-600);border-color:rgba(239,68,68,.3);">
+                 <i class="fas fa-lock"></i> Forward-only · Question ${st.displayIndex + 1} of ${st.questionOrder.length}
+               </span>`
+            : `<span class="quiz-exam-warning-note">
+                 <i class="fas fa-shield-halved"></i> Do not switch tabs or leave full-screen.
+               </span>`}
         </div>
-        <button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
-          <i class="fas fa-paper-plane"></i> Submit Test
-        </button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          ${st.forwardOnly && !isLast
+            ? `<button type="button" class="btn btn-primary btn-lg" onclick="nextExamQuestion()">
+                 <i class="fas fa-arrow-right"></i> Next Question
+               </button>`
+            : ''}
+          ${st.forwardOnly && isFirst && isLast
+            ? `<button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
+                 <i class="fas fa-paper-plane"></i> Submit Test
+               </button>`
+            : ''}
+          ${st.forwardOnly && isLast
+            ? `<button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
+                 <i class="fas fa-paper-plane"></i> Submit Test
+               </button>`
+            : ''}
+          ${!st.forwardOnly
+            ? `<button type="button" class="btn btn-primary btn-lg" onclick="submitQuiz()">
+                 <i class="fas fa-paper-plane"></i> Submit Test
+               </button>`
+            : ''}
+        </div>
       </footer>`;
   } else {
     footerHtml = `
@@ -10064,6 +10193,134 @@ function renderQuizExamShell() {
 
   shell.innerHTML = headerHtml + `<div class="quiz-exam-body">${bodyHtml}</div>` + footerHtml;
   renderMathIn(shell.querySelector('.quiz-exam-body'));
+
+  /* Re-arm the timer's countdown display after a fresh render */
+  if (!st.submitted && st.durationSeconds) {
+    const serverNow = Date.now() + _examClockOffsetMs;
+    const deadlineMs = st.serverStartedAt + st.durationSeconds * 1000;
+    const remaining = Math.max(0, Math.floor((deadlineMs - serverNow) / 1000));
+    const el = document.getElementById('quizTimerDisplay');
+    if (el) el.textContent = formatDuration(remaining);
+  }
+}
+
+/* ---- Forward-only: single-question renderer ---- */
+function _renderSingleExamQuestion(st) {
+  const displayIdx = st.displayIndex;
+  const originalIdx = st.questionOrder[displayIdx];
+  const q = st.quiz[originalIdx];
+  if (!q) return '';
+
+  const qType = q.type || 'single';
+  const a = st.answers[originalIdx];
+  const isAnswered = _isQuestionAnswered(q, a);
+  const locked = !!st.questionLocked[originalIdx];
+
+  return `<div class="quiz-play-card ${isAnswered ? 'answered' : ''}${locked ? ' locked' : ''}"
+              data-original-index="${originalIdx}"
+              data-display-index="${displayIdx}">
+    <div class="quiz-play-qnum">
+      Question ${displayIdx + 1} of ${st.questionOrder.length}
+      <span class="quiz-qtype-tag">${questionTypeLabel(qType)}</span>
+      <span class="quiz-qmark-tag">+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}</span>
+      ${isAnswered ? '<span class="quiz-answered-tag"><i class="fas fa-check-circle"></i> Answered</span>' : ''}
+      ${locked ? '<span class="quiz-answered-tag" style="color:var(--rose-500);"><i class="fas fa-lock"></i> Locked</span>' : ''}
+    </div>
+    <h4 class="quiz-play-question latex-content">${escapeHtml(q.question)}</h4>
+    ${locked ? `<div class="quiz-locked-note"><i class="fas fa-lock"></i> This answer has been locked in.</div>` : ''}
+    ${renderStudentAnswerAreaShuffled(q, originalIdx, st)}
+  </div>`;
+}
+
+/* ---- Non forward-only: render every question as before ---- */
+function _renderAllExamQuestions(st) {
+  let html = '';
+  st.quiz.forEach((q, qi) => {
+    const qType = q.type || 'single';
+    const a = st.answers[qi];
+    const isAnswered = _isQuestionAnswered(q, a);
+    html += `<div class="quiz-play-card ${isAnswered ? 'answered' : ''}" data-original-index="${qi}">
+      <div class="quiz-play-qnum">
+        Question ${qi + 1} of ${st.quiz.length}
+        <span class="quiz-qtype-tag">${questionTypeLabel(qType)}</span>
+        <span class="quiz-qmark-tag">+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}</span>
+        ${isAnswered ? '<span class="quiz-answered-tag"><i class="fas fa-check-circle"></i> Answered</span>' : ''}
+      </div>
+      <h4 class="quiz-play-question latex-content">${escapeHtml(q.question)}</h4>
+      ${renderStudentAnswerAreaShuffled(q, qi, st)}
+    </div>`;
+  });
+  return html;
+}
+
+/* ---- Answer area that respects per-question option order ---- */
+function renderStudentAnswerAreaShuffled(q, qi, st) {
+  const qType = q.type || 'single';
+  const ans = st.answers[qi];
+
+  if (qType === 'single' || qType === 'multiple') {
+    const inputType = qType === 'single' ? 'radio' : 'checkbox';
+    const name = `pq-${qi}`;
+    const order = (st.optionOrders && st.optionOrders[qi]) ||
+                  Array.from({ length: (q.options || []).length }, (_, i) => i);
+    const locked = !!st.questionLocked[qi];
+
+    return `<div class="quiz-play-options">
+      ${order.map((origOptIdx, displayPos) => {
+        const opt = (q.options || [])[origOptIdx] || '';
+        const checked = qType === 'single'
+          ? (ans === origOptIdx || (Array.isArray(ans) && ans[0] === origOptIdx))
+          : (Array.isArray(ans) && ans.includes(origOptIdx));
+        const letter = String.fromCharCode(65 + displayPos);
+        return `<label class="quiz-play-option ${checked ? 'selected' : ''}${locked ? ' locked' : ''}">
+          <input type="${inputType}" name="${name}" ${checked ? 'checked' : ''} ${locked ? 'disabled' : ''} style="display:none;"
+                 onchange="selectQuizAnswerMulti(${qi}, ${origOptIdx}, this.checked, '${qType}')">
+          <span class="quiz-play-letter">${letter}</span>
+          <span class="quiz-play-text latex-content">${escapeHtml(opt)}</span>
+        </label>`;
+      }).join('')}
+    </div>`;
+  }
+
+  /* Non-MCQ types are unchanged */
+  return renderStudentAnswerArea(q, qi);
+}
+
+/* ---- Advance to the next question (forward-only) ---- */
+function nextExamQuestion() {
+  const st = quizPlayerState;
+  if (!st || !st.forwardOnly || st.submitted) return;
+
+  const currentOriginalIdx = st.questionOrder[st.displayIndex];
+
+  /* Record the time spent on the current question */
+  _recordQuestionTime(currentOriginalIdx);
+
+  /* Lock it — cannot be revisited */
+  st.questionLocked[currentOriginalIdx] = true;
+
+  /* Advance */
+  st.displayIndex = Math.min(st.displayIndex + 1, st.questionOrder.length - 1);
+
+  /* Reset entry timer for the new question */
+  _examQuestionEnteredAt = Date.now();
+
+  renderQuizExamShell();
+
+  /* Scroll back to top */
+  const body = document.querySelector('.quiz-exam-body');
+  if (body) body.scrollTop = 0;
+}
+
+/* ---- Time tracking ---- */
+function _recordQuestionTime(originalIdx) {
+  if (!quizPlayerState) return;
+  if (_examQuestionEnteredAt > 0) {
+    const elapsed = Math.max(0, Math.round((Date.now() - _examQuestionEnteredAt) / 1000));
+    const prev = Number(quizPlayerState.timeSpentPerQuestion[originalIdx]) || 0;
+    quizPlayerState.timeSpentPerQuestion[originalIdx] = prev + elapsed;
+  }
+  _examQuestionEnteredAt = Date.now();
 }
 
 /* ============================================================
@@ -10262,6 +10519,7 @@ async function submitQuiz(opts = {}) {
   const auto = !!opts.auto;
 
   if (!auto) {
+    /* Validate that every question has an answer */
     for (let i = 0; i < st.quiz.length; i++) {
       const q = st.quiz[i];
       const a = st.answers[i];
@@ -10293,6 +10551,17 @@ async function submitQuiz(opts = {}) {
     }
   }
 
+  /* ⭐ Record time on the final question before submitting */
+  if (st.forwardOnly && st.questionOrder && st.questionOrder.length > 0) {
+    const lastOrigIdx = st.questionOrder[st.displayIndex];
+    _recordQuestionTime(lastOrigIdx);
+  } else {
+    /* Non forward-only: credit remaining time to the question that was
+       being viewed when the user clicked submit. We approximate by
+       crediting _examQuestionEnteredAt to the currently-visible card. */
+    _recordQuestionTime(0);
+  }
+
   st.examStarted = false;
 
   try {
@@ -10301,10 +10570,16 @@ async function submitQuiz(opts = {}) {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: currentUser._id, answers: st.answers })
+        body: JSON.stringify({
+          userId: currentUser._id,
+          answers: st.answers,
+          timeSpentPerQuestion: st.timeSpentPerQuestion,
+          autoSubmitted: auto
+        })
       }
     );
     const data = await res.json();
+
     if (data.success) {
       st.submitted = true;
       st.response = data;
@@ -10339,7 +10614,9 @@ async function submitQuiz(opts = {}) {
       renderQuizExamShell();
 
       if (auto) {
-        showToast('⚠️ Exam auto-submitted due to proctoring violation.', 'error');
+        showToast('⚠️ Exam auto-submitted (time up or proctoring violation).', 'error');
+      } else if (data.pendingEvaluation) {
+        showToast('✅ Submitted. Subjective answers are pending instructor review.', 'success');
       } else {
         const pct = data.percent;
         if (pct === 100)     showToast('🏆 Perfect!', 'success');
@@ -10348,9 +10625,20 @@ async function submitQuiz(opts = {}) {
       }
     } else {
       st.examStarted = true;
-      showToast(data.message || 'Failed.', 'error');
+      if (data.code === 'TIME_EXPIRED') {
+        stopQuizTimer();
+        _detachAllProctorListeners();
+        exitFullscreenNow();
+        st.submitted = true;
+        st.response = { score: 0, total: 0, percent: 0, results: st.quiz.map(() => ({ correct: false })), attempts: 0, marksEarned: 0, marksPossible: 0 };
+        renderQuizExamShell();
+        showToast('⏰ Attempt expired before submission.', 'error');
+      } else {
+        showToast(data.message || 'Failed.', 'error');
+      }
     }
-  } catch {
+  } catch (err) {
+    console.error('[submitQuiz]', err);
     st.examStarted = true;
     showToast('Server error.', 'error');
   }
