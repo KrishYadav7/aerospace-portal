@@ -10097,7 +10097,6 @@ async function openQuizPlayer(courseId, materialId) {
   }
 
   openModal('preExamWarningModal');
-  openModal('preExamWarningModal');
 }
 
 function togglePreExamConsent() {

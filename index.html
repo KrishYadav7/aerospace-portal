@@ -1230,99 +1230,8 @@
 
     </div>
   </div>
-    <div class="modal-box" style="max-width:560px;">
-      <div style="text-align:center;margin-bottom:16px;">
-        <div style="display:inline-flex;align-items:center;justify-content:center;
-                    width:72px;height:72px;border-radius:50%;
-                    background:linear-gradient(135deg,#f59e0b,#ef4444);
-                    color:#fff;font-size:32px;
-                    box-shadow:0 12px 32px rgba(239,68,68,.35);">
-          <i class="fas fa-shield-halved"></i>
-        </div>
-      </div>
-      <h3 style="text-align:center;justify-content:center;">
-        <i class="fas fa-triangle-exclamation" style="color:var(--gold-500);"></i>
-        Proctored Assessment
-      </h3>
-      <p class="modal-sub" style="text-align:center;">
-        You are about to begin a <strong>proctored test</strong>. Please read the following rules carefully.
-      </p>
 
-      <div class="pre-exam-rules">
-        <div class="pre-exam-rule">
-          <i class="fas fa-expand"></i>
-          <div>
-            <strong>Full-screen mode is required.</strong>
-            <span>The exam will take over your entire screen.</span>
-          </div>
-        </div>
-        <div class="pre-exam-rule danger-forward" id="preExamForwardOnly">
-          <i class="fas fa-arrow-right"></i>
-          <div>
-            <strong>Forward-only navigation.</strong>
-            <span>You cannot return to previous questions once you click <em>Next</em>. Answers are locked in permanently.</span>
-          </div>
-        </div>
-        <div class="pre-exam-rule danger">
-          <i class="fas fa-ban"></i>
-          <div>
-            <strong>Leaving this tab = instant submission.</strong>
-            <span>Switching tabs, minimizing the window, or exiting full-screen will auto-submit your exam. You have up to 3 strikes.</span>
-          </div>
-        </div>
-        <div class="pre-exam-rule">
-          <i class="fas fa-clipboard-check"></i>
-          <div>
-            <strong>Restricted interactions.</strong>
-            <span>Right-click, copy, paste, and developer tools are disabled during the exam.</span>
-          </div>
-        </div>
-        <div class="pre-exam-rule">
-          <i class="fas fa-shuffle"></i>
-          <div>
-            <strong>Questions are shuffled.</strong>
-            <span>Both question order and answer option order are unique to your attempt.</span>
-          </div>
-        </div>
-        <div class="pre-exam-rule">
-          <i class="fas fa-clock"></i>
-          <div>
-            <strong>Server-enforced time limit.</strong>
-            <span>The countdown runs on the server. Refreshing the page or changing your device clock will not extend it.</span>
-          </div>
-        </div>
-      </div>
-        <div class="pre-exam-rule danger">
-          <i class="fas fa-ban"></i>
-          <div>
-            <strong>Leaving this tab = instant submission.</strong>
-            <span>Switching tabs, minimizing the window, or exiting full-screen will auto-submit your exam exactly where you left off.</span>
-          </div>
-        </div>
-        <div class="pre-exam-rule">
-          <i class="fas fa-clipboard-check"></i>
-          <div>
-            <strong>Restricted interactions.</strong>
-            <span>Right-click, copy, paste, and developer tools are disabled during the exam.</span>
-          </div>
-        </div>
-      </div>
-
-      <label class="pre-exam-consent">
-        <input type="checkbox" id="preExamConsentBox" onchange="togglePreExamConsent()">
-        <span>I understand and agree to these rules — including that I cannot return to previous questions once I click <em>Next</em>, and that any proctoring violation will consume a strike and may auto-submit my exam.</span>
-      </label>
-
-      <div class="modal-actions" style="flex-direction:column-reverse;">
-        <button type="button" class="btn btn-outline btn-block" onclick="cancelPreExam()">
-          <i class="fas fa-arrow-left"></i> Cancel
-        </button>
-        <button type="button" class="btn btn-danger btn-block" id="preExamBeginBtn" onclick="beginExamSession()" disabled>
-          <i class="fas fa-shield-halved"></i> Begin Exam
-        </button>
-      </div>
-    </div>
-  </div>
+  <!-- Violation Warning Modal -->
 
   <!-- Violation Warning Modal -->
   <div class="modal-overlay" id="quizViolationModal">
@@ -1900,7 +1809,7 @@
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
  	<script src="media-viewer.js?v=115" defer></script>
-  <script src="app.js?v=115" defer></script>
+  <script src="app.js?v=116" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
