@@ -10535,7 +10535,6 @@ function prevExamQuestion() {
   if (st.displayIndex <= 0) return;
   jumpToExamQuestion(st.displayIndex - 1);
 }
-
 /* ============================================================
    RENDER — Full-page shell
    ============================================================ */
@@ -10600,34 +10599,39 @@ function renderQuizExamShell() {
     </header>
   ` + _renderQuestionPalette(st);
 
+  /* ============================================================
+     BODY — depends on whether the exam has been submitted.
+     ============================================================ */
   let bodyHtml = '';
+
   if (!st.submitted) {
-    /* ⭐ FORWARD-ONLY: render exactly ONE question at a time.
-       The display index maps back to the original index via
-       st.questionOrder, and options are reordered via st.optionOrders. */
+    /* ⭐ FORWARD-ONLY: render exactly ONE question at a time. */
     const qHtml = st.forwardOnly
       ? _renderSingleExamQuestion(st)
       : _renderAllExamQuestions(st);
     bodyHtml = `<div class="quiz-exam-body-inner">${qHtml}</div>`;
   } else {
-    /* ⭐ If the server withheld the score (scheduled / manual mode),
-       render a "Results Pending" card instead of the scorecard. */
-    if (st.response.pendingPublication === true) {
-      const pubAt = st.response.resultPublishAt
-        ? new Date(st.response.resultPublishAt).toLocaleString('en-IN', {
+    /* ---------- SUBMITTED ---------- */
+    const resp = st.response || {};
+    const isPending = resp.pendingPublication === true;
+
+    if (isPending) {
+      /* ⭐ Score withheld — admin scheduled the publication (or set it to manual) */
+      const pubAt = resp.resultPublishAt
+        ? new Date(resp.resultPublishAt).toLocaleString('en-IN', {
             day: 'numeric', month: 'short', year: 'numeric',
             hour: '2-digit', minute: '2-digit'
           })
         : null;
 
-      const subjCount = Number(st.response.subjectiveCount) || 0;
+      const subjCount = Number(resp.subjectiveCount) || 0;
 
       bodyHtml = `<div class="quiz-exam-body-inner">
         <div class="quiz-result-hero pass" style="background:linear-gradient(135deg,rgba(99,102,241,.14),rgba(6,182,212,.06));border-color:rgba(99,102,241,.35);">
           <div class="quiz-result-emoji">⏳</div>
           <div class="quiz-result-score" style="font-size:22px;">Results Pending</div>
           <div class="quiz-result-headline" style="max-width:520px;margin:12px auto 0;font-size:13.5px;line-height:1.6;">
-            ${escapeHtml(st.response.message || 'Your answers have been recorded.')}
+            ${escapeHtml(resp.message || 'Your answers have been recorded.')}
           </div>
           ${pubAt ? `<div style="margin-top:14px;font-size:12.5px;color:var(--text-tertiary);">
             Scheduled publication: <strong>${escapeHtml(pubAt)}</strong>
@@ -10641,9 +10645,9 @@ function renderQuizExamShell() {
         </p>
       </div>`;
     } else {
-      /* ---- Normal scorecard (unchanged behaviour) ---- */
-      const { score, total, percent, results, attempts, marksEarned, marksPossible } = st.response;
-      const pendingReview = !!(st.response && st.response.pendingEvaluation);
+      /* ---------- Normal scorecard ---------- */
+      const { score, total, percent, results, attempts, marksEarned, marksPossible } = resp;
+      const pendingReview = !!(resp && resp.pendingEvaluation);
       const isPerfect = score === total && !pendingReview;
       const isPass = percent >= 60;
       const emoji = isPerfect ? '🏆' : pendingReview ? '⏳' : isPass ? '🎉' : '📚';
@@ -10657,7 +10661,7 @@ function renderQuizExamShell() {
         <div class="quiz-result-pct">${percent}%${marksPossible ? ` · ${marksEarned} / ${marksPossible} marks` : ''}</div>
         <div class="quiz-result-headline">${headline}</div>
         ${pendingReview ? `<p style="margin-top:10px;font-size:12.5px;color:var(--text-tertiary);">
-          Your subjective answers are awaiting instructor review.
+          Your subjective answers are awaiting instructor review. Final marks will be visible after review.
         </p>` : ''}
         <div style="font-size:12px;color:var(--text-tertiary);margin-top:6px;">Attempt #${attempts}</div>
       </div>`;
@@ -10665,9 +10669,9 @@ function renderQuizExamShell() {
       st.quiz.forEach((q, qi) => {
         const r = results[qi];
         const ok = r.correct;
-        const isPending = r.manualReview === true;
-        const cls = isPending ? 'pending' : (ok ? 'ok' : 'bad');
-        const badge = isPending
+        const itemPending = r.manualReview === true;
+        const cls = itemPending ? 'pending' : (ok ? 'ok' : 'bad');
+        const badge = itemPending
           ? '<i class="fas fa-hourglass-half"></i>'
           : (ok ? '<i class="fas fa-check"></i>' : '<i class="fas fa-times"></i>');
         rHtml += `<div class="quiz-result-item ${cls}">
@@ -10684,46 +10688,6 @@ function renderQuizExamShell() {
       });
       bodyHtml = `<div class="quiz-exam-body-inner">${rHtml}</div>`;
     }
-    const pendingReview = !!(st.response && st.response.pendingEvaluation);
-    const isPerfect = score === total && !pendingReview;
-    const isPass = percent >= 60;
-    const emoji = isPerfect ? '🏆' : pendingReview ? '⏳' : isPass ? '🎉' : '📚';
-    const headline = isPerfect ? 'Perfect Score!'
-                    : pendingReview ? 'Submitted — Pending Review'
-                    : isPass ? 'Well done!' : 'Keep practicing!';
-
-    let rHtml = `<div class="quiz-result-hero ${isPass ? 'pass' : 'fail'}">
-      <div class="quiz-result-emoji">${emoji}</div>
-      <div class="quiz-result-score">${score} / ${total}</div>
-      <div class="quiz-result-pct">${percent}%${marksPossible ? ` · ${marksEarned} / ${marksPossible} marks` : ''}</div>
-      <div class="quiz-result-headline">${headline}</div>
-      ${pendingReview ? `<p style="margin-top:10px;font-size:12.5px;color:var(--text-tertiary);">
-        Your subjective answers are awaiting instructor review. Final marks will be visible after review.
-      </p>` : ''}
-      <div style="font-size:12px;color:var(--text-tertiary);margin-top:6px;">Attempt #${attempts}</div>
-    </div>`;
-
-    st.quiz.forEach((q, qi) => {
-      const r = results[qi];
-      const ok = r.correct;
-      const isPending = r.manualReview === true;
-      const cls = isPending ? 'pending' : (ok ? 'ok' : 'bad');
-      const badge = isPending
-        ? '<i class="fas fa-hourglass-half"></i>'
-        : (ok ? '<i class="fas fa-check"></i>' : '<i class="fas fa-times"></i>');
-      rHtml += `<div class="quiz-result-item ${cls}">
-        <div class="quiz-result-head">
-          <span class="quiz-result-badge ${cls}">${badge}</span>
-          <strong>Q${qi + 1}.</strong>
-          <span class="latex-content">${escapeHtml(q.question)}</span>
-        </div>
-        <div class="quiz-result-body">
-          ${renderResultDetail(q, r)}
-          ${r.explanation ? `<div class="quiz-explain"><i class="fas fa-lightbulb"></i> <span class="latex-content">${escapeHtml(r.explanation)}</span></div>` : ''}
-        </div>
-      </div>`;
-    });
-    bodyHtml = `<div class="quiz-exam-body-inner">${rHtml}</div>`;
   }
 
   /* ---------- Footer ---------- */
@@ -10777,13 +10741,21 @@ function renderQuizExamShell() {
         </div>
       </footer>`;
   } else {
+    /* ⭐ After a submission, only show Retake if the student still
+       has an attempt left (maxAttempts === 0 means unlimited). */
+    const resp        = st.response || {};
+    const cap         = Number(resp.maxAttempts) || 0;
+    const usedSoFar   = Number(resp.attemptsUsed) || Number(resp.attempts) || 0;
+    const canRetake   = (cap === 0) || (usedSoFar < cap);
+
     footerHtml = `
       <footer class="quiz-exam-footer">
         <div class="quiz-exam-footer-left"></div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
-          <button type="button" class="btn btn-outline" onclick="retakeQuiz()">
-            <i class="fas fa-redo"></i> Retake
-          </button>
+          ${canRetake ? `
+            <button type="button" class="btn btn-outline" onclick="retakeQuiz()">
+              <i class="fas fa-redo"></i> Retake
+            </button>` : ''}
           <button type="button" class="btn btn-primary" onclick="exitQuizSession()">
             <i class="fas fa-check"></i> Done
           </button>
@@ -10803,6 +10775,7 @@ function renderQuizExamShell() {
     if (el) el.textContent = formatDuration(remaining);
   }
 }
+
 
 /* ---- Forward-only: single-question renderer ---- */
 function _renderSingleExamQuestion(st) {
