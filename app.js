@@ -10819,13 +10819,40 @@ function renderStudentAnswerArea(q, qi) {
         <div class="subjective-meta-row">
           <span class="subjective-max-badge"><i class="fas fa-star"></i> ${maxM} marks · Admin evaluated</span>
         </div>
-        <label class="subjective-upload-btn">
-          <input type="file" accept="image/*" multiple style="display:none;"
-                 onmousedown="allowExamBlurBriefly();"
-                 onfocus="allowExamBlurBriefly();"
-                 onchange="handleSubjectiveUpload(${qi}, this);">
-          <i class="fas fa-camera"></i> Choose Photos of Your Solution
-        </label>
+
+        <!-- ⭐ Two buttons so mobile users can either shoot a photo or attach a PDF -->
+        <div class="subjective-upload-row">
+          <label class="subjective-upload-btn">
+            <input type="file"
+                   accept="image/*,.heic,.heif"
+                   capture="environment"
+                   multiple
+                   style="display:none;"
+                   onmousedown="allowExamBlurBriefly();"
+                   onfocus="allowExamBlurBriefly();"
+                   onchange="handleSubjectiveUpload(${qi}, this, 'image');">
+            <i class="fas fa-camera"></i>
+            <span>Take / Choose Photo</span>
+          </label>
+
+          <label class="subjective-upload-btn subjective-upload-btn--pdf">
+            <input type="file"
+                   accept="application/pdf,.pdf"
+                   multiple
+                   style="display:none;"
+                   onmousedown="allowExamBlurBriefly();"
+                   onfocus="allowExamBlurBriefly();"
+                   onchange="handleSubjectiveUpload(${qi}, this, 'pdf');">
+            <i class="fas fa-file-pdf"></i>
+            <span>Attach PDF Scan</span>
+          </label>
+        </div>
+
+        <p class="subjective-upload-hint">
+          <i class="fas fa-info-circle"></i>
+          Images (<strong>JPG · PNG · HEIC</strong>) or <strong>PDF</strong> · max <strong>25 MB</strong> per file · up to <strong>10 files</strong>
+        </p>
+
         <div class="subjective-uploads" id="subjectiveUploads-${qi}">
           ${uploads.map((u, idx) => renderSubjectiveUpload(u, qi, idx)).join('')}
         </div>
@@ -15470,13 +15497,62 @@ function showMyPlanModal() {
    while the file picker is open (otherwise the OS dialog would
    trigger an auto-submit).
    ============================================================ */
-async function handleSubjectiveUpload(qi, input) {
+/* ============================================================
+   handleSubjectiveUpload — accepts images AND PDFs
+   ------------------------------------------------------------
+   • Images: jpg / jpeg / png / webp / gif / heic / heif
+   • Documents: PDF
+   • Up to 25 MB per file, up to 10 files per question
+
+   The `kind` argument is passed by the file input so we can
+   validate strictly without relying on the OS to have set a
+   MIME type (iOS frequently sends an empty type for HEIC).
+   ============================================================ */
+const SUBJECTIVE_MAX_FILE_BYTES = 25 * 1024 * 1024;   // 25 MB
+const SUBJECTIVE_MAX_FILES      = 10;
+
+const SUBJECTIVE_IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.heic', '.heif'];
+const SUBJECTIVE_IMAGE_MIMES = [
+  'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+  'image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence'
+];
+
+function _isAllowedSubjectiveFile(file, kind) {
+  const name = String(file.name || '').toLowerCase();
+  const mime = String(file.type || '').toLowerCase();
+  const ext  = name.lastIndexOf('.') >= 0 ? name.slice(name.lastIndexOf('.')) : '';
+
+  /* PDF input always expects a PDF — validate strictly */
+  if (kind === 'pdf') {
+    return ext === '.pdf' || mime === 'application/pdf';
+  }
+
+  /* Image input — accept if either MIME or extension matches.
+     iOS sometimes sends an empty MIME for HEIC, so the extension
+     check is essential. */
+  if (SUBJECTIVE_IMAGE_MIMES.indexOf(mime) !== -1) return true;
+  if (SUBJECTIVE_IMAGE_EXTS.indexOf(ext)  !== -1) return true;
+
+  /* A PDF attached through the image button is still valid */
+  if (ext === '.pdf' || mime === 'application/pdf') return true;
+
+  return false;
+}
+
+function _isSubjectivePdf(file) {
+  const name = String(file.name || '').toLowerCase();
+  const mime = String(file.type || '').toLowerCase();
+  return mime === 'application/pdf' || /\.pdf$/.test(name);
+}
+
+async function handleSubjectiveUpload(qi, input, kind) {
   const st = quizPlayerState;
   if (!st || st.submitted) return;
 
   const files = Array.from(input.files || []);
+
   if (files.length === 0) {
-    // User cancelled the picker — release the blur grace immediately.
+    /* User cancelled the picker — release the blur grace immediately. */
     clearTimeout(window.__examBlurTimer);
     window.__examAllowBlur = false;
     return;
@@ -15484,18 +15560,50 @@ async function handleSubjectiveUpload(qi, input) {
 
   if (!Array.isArray(st.answers[qi])) st.answers[qi] = [];
 
+  if (st.answers[qi].length + files.length > SUBJECTIVE_MAX_FILES) {
+    showToast(
+      `Maximum ${SUBJECTIVE_MAX_FILES} files per question. ` +
+      `You already have ${st.answers[qi].length}.`,
+      'error'
+    );
+    input.value = '';
+    return;
+  }
+
   for (const file of files) {
-    if (!file.type.startsWith('image/')) {
-      showToast(`"${file.name}" is not an image. Only JPG/PNG allowed.`, 'error');
-      continue;
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      showToast(`"${file.name}" is too large (max 10 MB).`, 'error');
+    /* ---- ① Type check ---- */
+    if (!_isAllowedSubjectiveFile(file, kind)) {
+      showToast(
+        `"${file.name}" is not supported. Please attach a JPG, PNG, HEIC image or a PDF.`,
+        'error'
+      );
       continue;
     }
 
-    // Insert placeholder so the student sees progress
-    const placeholder = { url: '', fileName: file.name, uploading: true, progress: 0 };
+    /* ---- ② Size check ---- */
+    if (file.size > SUBJECTIVE_MAX_FILE_BYTES) {
+      const mb = (file.size / 1024 / 1024).toFixed(1);
+      showToast(
+        `"${file.name}" is ${mb} MB — max is 25 MB per file. ` +
+        `Try a lower-resolution photo or compress the PDF.`,
+        'error'
+      );
+      continue;
+    }
+
+    if (file.size === 0) {
+      showToast(`"${file.name}" is empty. Please pick a different file.`, 'error');
+      continue;
+    }
+
+    /* ---- ③ Add placeholder tile + upload ---- */
+    const placeholder = {
+      url: '',
+      fileName: file.name,
+      uploading: true,
+      progress: 0,
+      isPdf: _isSubjectivePdf(file)
+    };
     st.answers[qi].push(placeholder);
     renderSubjectiveUploads(qi);
     updateQuizQuestionCard(qi);
@@ -15506,25 +15614,51 @@ async function handleSubjectiveUpload(qi, input) {
         placeholder.progress = pct;
         updateSubjectiveUploadProgress(qi, placeholder);
       });
+
+      if (!result || !result.url) {
+        throw new Error('Server did not return a file URL.');
+      }
+
       placeholder.url = result.url;
       placeholder.uploading = false;
       delete placeholder.progress;
+
+      /* Persist so a page refresh doesn't lose the upload */
       persistQuizAnswers();
       renderSubjectiveUploads(qi);
       updateQuizQuestionCard(qi);
       updateQuizProgressUI();
+
     } catch (err) {
-      console.error('[subjective upload]', err);
-      showToast('Upload failed: ' + err.message, 'error');
+      console.error('[subjective upload]', file.name, err);
+
+      /* ---- ④ User-visible error, then remove the dead tile ---- */
+      const msg = String((err && err.message) || 'Unknown error');
+      let friendly = `Upload failed: ${msg}`;
+
+      if (/HTTP 413/.test(msg))          friendly = `"${file.name}" is too large for the server. Max 25 MB.`;
+      else if (/HTTP 415/.test(msg))     friendly = `Server rejected the file type of "${file.name}".`;
+      else if (/HTTP 401|HTTP 403/.test(msg))
+                                          friendly = 'You are not authorised to upload. Try refreshing and logging in again.';
+      else if (/HTTP 5\d\d/.test(msg))   friendly = 'The server could not store the file. Please try again in a moment.';
+      else if (/Network error/i.test(msg))
+                                          friendly = 'Network problem — check your connection and try again.';
+      else if (/timed out/i.test(msg))   friendly = 'Upload timed out. Try a smaller file or a stronger connection.';
+
+      showToast(friendly, 'error');
+
       const idx = st.answers[qi].indexOf(placeholder);
       if (idx >= 0) st.answers[qi].splice(idx, 1);
       renderSubjectiveUploads(qi);
+      updateQuizQuestionCard(qi);
+      updateQuizProgressUI();
     }
   }
 
+  /* Reset the input so the same file can be re-picked if needed */
   input.value = '';
-  // Release the blur-grace flag after a short delay so any leftover
-  // OS window transitions don't accidentally trigger a violation.
+
+  /* Release the blur grace so a cancelled dialog can't disable proctoring */
   clearTimeout(window.__examBlurTimer);
   window.__examBlurTimer = setTimeout(() => {
     window.__examAllowBlur = false;
@@ -15532,6 +15666,7 @@ async function handleSubjectiveUpload(qi, input) {
 }
 
 function renderSubjectiveUpload(u, qi, idx) {
+  /* ---- Uploading state (unchanged) ---- */
   if (u.uploading) {
     return `
       <div class="subjective-upload-tile uploading" data-upload-idx="${idx}">
@@ -15542,11 +15677,41 @@ function renderSubjectiveUpload(u, qi, idx) {
         <div class="subjective-upload-name">${escapeHtml(u.fileName || 'Uploading…')}</div>
       </div>`;
   }
+
+  /* ---- PDF tile — no <img>, use an icon + file name ---- */
+  const isPdf = u.isPdf === true ||
+                /\.pdf(\b|$|\?|#)/i.test(u.url || '') ||
+                /\.pdf(\b|$|\?|#)/i.test(u.fileName || '');
+
+  if (isPdf) {
+    return `
+      <div class="subjective-upload-tile pdf" data-upload-idx="${idx}">
+        <a href="${escapeHtml(u.url)}" target="_blank" rel="noopener noreferrer"
+           class="subjective-pdf-link" title="Open in new tab">
+          <i class="fas fa-file-pdf"></i>
+          <span>PDF</span>
+        </a>
+        <div class="subjective-upload-name" title="${escapeHtml(u.fileName || '')}">
+          ${escapeHtml(u.fileName || 'document.pdf')}
+        </div>
+        <button type="button" class="subjective-upload-remove"
+                onclick="removeSubjectiveUpload(${qi}, ${idx})" title="Remove">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>`;
+  }
+
+  /* ---- Image tile (unchanged visual, but with proper error fallback) ---- */
   return `
-    <div class="subjective-upload-tile">
-      <img src="${escapeHtml(u.url)}" alt="Solution" loading="lazy" decoding="async">
-      <div class="subjective-upload-name">${escapeHtml(u.fileName || '')}</div>
-      <button type="button" class="subjective-upload-remove" onclick="removeSubjectiveUpload(${qi}, ${idx})" title="Remove">
+    <div class="subjective-upload-tile" data-upload-idx="${idx}">
+      <img src="${escapeHtml(u.url)}" alt="Solution"
+           loading="lazy" decoding="async"
+           onerror="this.style.display='none';this.parentNode.classList.add('img-error');">
+      <div class="subjective-upload-name" title="${escapeHtml(u.fileName || '')}">
+        ${escapeHtml(u.fileName || '')}
+      </div>
+      <button type="button" class="subjective-upload-remove"
+              onclick="removeSubjectiveUpload(${qi}, ${idx})" title="Remove">
         <i class="fas fa-times"></i>
       </button>
     </div>`;

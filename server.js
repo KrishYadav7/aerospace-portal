@@ -398,6 +398,7 @@ const ALLOWED_MIMES = new Set([
   'text/plain',
   // Images
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+  'image/heic', 'image/heif', 'image/heic-sequence', 'image/heif-sequence',
   // Video
   'video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska',
   // Audio
@@ -413,6 +414,7 @@ const ALLOWED_EXTS = new Set([
   '.xls', '.xlsx',
   '.txt',
   '.jpg', '.jpeg', '.png', '.webp', '.gif',
+  '.heic', '.heif',
   '.mp4', '.webm', '.mov', '.avi', '.mkv',
   '.mp3', '.wav', '.ogg',
   '.zip'
@@ -438,7 +440,7 @@ function fileFilter(req, file, cb) {
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 12 * 1024 * 1024 },
+  limits: { fileSize: 30 * 1024 * 1024 },   // was 12 MB — raised so large single-shot uploads don't 413
   fileFilter
 });
 /* ============================================================
@@ -636,7 +638,7 @@ app.post('/api/upload/init', (req, res) => {
       return res.status(400).json({ success: false, message: 'fileName and fileSize are required.' });
     }
     const uploadId  = crypto.randomBytes(16).toString('hex');
-    const chunkSize = 6 * 1024 * 1024;               // 6 MB per chunk (safely under 10 MB)
+    const chunkSize = 5 * 1024 * 1024;               // 5 MB per chunk — smaller chunks finish faster on weak networks
     const totalChunks = Math.ceil(Number(fileSize) / chunkSize);
     const sessionDir  = path.join(CHUNK_DIR, uploadId);
     fs.mkdirSync(sessionDir, { recursive: true });
