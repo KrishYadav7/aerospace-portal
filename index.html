@@ -1134,8 +1134,94 @@
        ============================================================ -->
   <div id="quizExamShell" class="quiz-exam-shell" aria-hidden="true"></div>
 
-  <!-- Pre-Exam Consent Modal -->
+  <!-- ============================================================
+       PRE-EXAM CONSENT MODAL  (compact · single-column · no overflow)
+       ============================================================ -->
   <div class="modal-overlay" id="preExamWarningModal">
+    <div class="modal-box pre-exam-modal">
+
+      <!-- ---- Header ---- -->
+      <div class="pre-exam-head">
+        <div class="pre-exam-head-icon">
+          <i class="fas fa-shield-halved"></i>
+        </div>
+        <div class="pre-exam-head-text">
+          <h3><i class="fas fa-triangle-exclamation"></i> Proctored Assessment</h3>
+          <p>Read the rules carefully before you begin.</p>
+        </div>
+      </div>
+
+      <!-- ---- Rules (compact rows) ---- -->
+      <div class="pre-exam-rules" id="preExamRules">
+
+        <div class="pre-exam-rule">
+          <i class="fas fa-expand"></i>
+          <div>
+            <strong>Full-screen required</strong>
+            <span>The exam takes over your entire screen.</span>
+          </div>
+        </div>
+
+        <div class="pre-exam-rule danger" id="preExamForwardOnly">
+          <i class="fas fa-arrow-right"></i>
+          <div>
+            <strong>Forward-only navigation</strong>
+            <span>You cannot return to a question once you click <em>Next</em>.</span>
+          </div>
+        </div>
+
+        <div class="pre-exam-rule danger">
+          <i class="fas fa-ban"></i>
+          <div>
+            <strong>Tab-switch penalty</strong>
+            <span>Leaving this tab or full-screen counts as a strike. 3 strikes = auto-submit.</span>
+          </div>
+        </div>
+
+        <div class="pre-exam-rule">
+          <i class="fas fa-clipboard-check"></i>
+          <div>
+            <strong>Restricted actions</strong>
+            <span>Right-click, copy, paste and dev-tools are disabled.</span>
+          </div>
+        </div>
+
+        <div class="pre-exam-rule">
+          <i class="fas fa-shuffle"></i>
+          <div>
+            <strong>Shuffled per student</strong>
+            <span>Question order and option order are unique to your attempt.</span>
+          </div>
+        </div>
+
+        <div class="pre-exam-rule">
+          <i class="fas fa-clock"></i>
+          <div>
+            <strong>Server-synced timer</strong>
+            <span>Refreshing the page or changing your device clock will not extend it.</span>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ---- Consent ---- -->
+      <label class="pre-exam-consent">
+        <input type="checkbox" id="preExamConsentBox" onchange="togglePreExamConsent()">
+        <span>I understand and agree. I cannot return to previous questions once I click <em>Next</em>, and any violation will consume a strike.</span>
+      </label>
+
+      <!-- ---- Actions ---- -->
+      <div class="modal-actions pre-exam-actions">
+        <button type="button" class="btn btn-outline" onclick="cancelPreExam()">
+          <i class="fas fa-arrow-left"></i> Cancel
+        </button>
+        <button type="button" class="btn btn-danger" id="preExamBeginBtn" onclick="beginExamSession()" disabled>
+          <i class="fas fa-shield-halved"></i> Begin Exam
+        </button>
+      </div>
+
+    </div>
+  </div>
     <div class="modal-box" style="max-width:560px;">
       <div style="text-align:center;margin-bottom:16px;">
         <div style="display:inline-flex;align-items:center;justify-content:center;
