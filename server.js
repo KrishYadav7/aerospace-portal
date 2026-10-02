@@ -2596,6 +2596,20 @@ async function serveUploadFile(filename, req, res) {
   };
 
   /* ============================================================
+     ⭐ FIX: Fetch stat FIRST so it's available to BOTH the Nginx
+     Accel path and the Node fallback path.
+     Previously `let stat;` was declared AFTER the Nginx block,
+     which caused `ReferenceError: Cannot access 'stat' before initialization`.
+     ============================================================ */
+  let stat;
+  try {
+    stat = await fs.promises.stat(diskPath);
+  } catch (e) {
+    return res.status(404).send('File not found');
+  }
+  if (!stat.isFile()) return res.status(404).send('Not a file');
+
+  /* ============================================================
      ⚡ NGINX ACCEL FAST PATH
      ------------------------------------------------------------
      Hand off to Nginx BEFORE any disk stat, header setup, or
@@ -2626,14 +2640,6 @@ async function serveUploadFile(filename, req, res) {
   }
 
   /* ── Node fallback (dev / non-Nginx environments) ── */
-  let stat;
-  try {
-    stat = await fs.promises.stat(diskPath);
-  } catch (e) {
-    return res.status(404).send('File not found');
-  }
-  if (!stat.isFile()) return res.status(404).send('Not a file');
-
   const isMedia = ['.pdf', '.mp4', '.webm', '.mov', '.mp3'].includes(ext);
   const etag = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
 
