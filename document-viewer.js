@@ -1,28 +1,25 @@
 /* ============================================================
-   AEROGYAN DOCUMENT VIEWER — v1
+   AEROGYAN DOCUMENT VIEWER — v2 (Fallback-enabled)
    ------------------------------------------------------------
    Universal viewer for any non-PDF, non-video material:
-     • PowerPoint   (.pptx .ppt .ppsx .pps)  → MS Office viewer
-     • Word         (.docx .doc .rtf .odt)   → MS Office viewer
-     • Excel/CSV    (.xlsx .xls .csv .ods)   → MS Office viewer
+     • PowerPoint   (.pptx .ppt .ppsx .pps)  → Office/Google viewer
+     • Word         (.docx .doc .rtf .odt)   → Office/Google viewer
+     • Excel/CSV    (.xlsx .xls .csv .ods)   → Office/Google viewer
      • Images       (.png .jpg .gif .webp …) → inline <img>
      • Text         (.txt .md .log .json …)  → <pre>
 
-   Design:
-     • Completely self-contained — no dependency on app.js,
-       media-viewer.js, PDFViewer or VideoPlayer.
-     • Never mutates any existing global or DOM node.
-     • Renders inside its own #docViewerModal overlay with a
-       unique class prefix (docv-) so it can never collide with
-       the PDF (pdfv-) or video (vp-) viewers.
-     • Safe to load with `defer`; does nothing until open().
+   NEW in v2:
+     • Microsoft Office viewer is tried first.
+     • If it times out (7s) or crashes, it automatically falls
+       back to Google Docs Viewer.
+     • If both fail, a clean "Download / Open in new tab" card
+       is shown.
    ============================================================ */
 (function () {
   'use strict';
   if (window.__AERO_DOCUMENT_VIEWER_LOADED__) return;
   window.__AERO_DOCUMENT_VIEWER_LOADED__ = true;
 
-  /* ---------- tiny helpers ---------- */
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
   function _esc(s) {
@@ -35,9 +32,6 @@
     else console.log('[DocumentViewer]', msg);
   }
 
-  /* ------------------------------------------------------------
-     File-type detection — extension first, MIME fallback.
-     ------------------------------------------------------------ */
   function detectDocType(fileName, url) {
     const hay = (String(fileName || '') + ' ' + String(url || ''))
       .toLowerCase().split('?')[0].split('#')[0];
@@ -49,14 +43,10 @@
     if (['xlsx', 'xls', 'csv', 'ods'].includes(ext))  return 'spreadsheet';
     if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'svg'].includes(ext)) return 'image';
     if (['txt', 'md', 'log', 'json', 'xml', 'yaml', 'yml', 'ini'].includes(ext)) return 'text';
-    if (['pdf'].includes(ext)) return 'pdf';   // handled by PDFViewer; kept for safety
+    if (['pdf'].includes(ext)) return 'pdf';
     return 'unknown';
   }
 
-  /* ------------------------------------------------------------
-     Watermark — same visual style as the PDF / video viewers so
-     the platform looks consistent.
-     ------------------------------------------------------------ */
   function makeWatermarkUrl(text, opts) {
     opts = opts || {};
     const color = opts.dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
@@ -74,9 +64,6 @@
     return 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")';
   }
 
-  /* ------------------------------------------------------------
-     DocumentViewer
-     ------------------------------------------------------------ */
   class DocumentViewer {
     constructor() {
       this.active       = false;
@@ -90,23 +77,14 @@
       this.docType      = 'unknown';
       this._prevOverflow = '';
       this._onKeyDown   = this._onKeyDown.bind(this);
+      this._officeAttempt = 0;
+      this._officeTimer = null;
     }
 
-    /**
-     * @param {Object} opts
-     *   url            - {string} file URL (may be relative or absolute)
-     *   fileName       - {string} original filename
-     *   title          - {string} display title
-     *   docType        - {string} optional; otherwise auto-detected
-     *   username       - {string} watermark text
-     *   courseId       - {string} kept for future use
-     *   materialId     - {string} kept for future use
-     */
     open(opts) {
       opts = opts || {};
       if (this.active) return;
 
-      /* PDFs should never reach here — but route them safely if they do. */
       const kind = opts.docType || detectDocType(opts.fileName, opts.url);
       if (kind === 'pdf' && window.PDFViewer && typeof window.PDFViewer.open === 'function') {
         return window.PDFViewer.open({
@@ -129,8 +107,8 @@
       this.courseId   = opts.courseId || null;
       this.materialId = opts.materialId || null;
       this.docType    = kind;
+      this._officeAttempt = 0;
 
-      /* Build an absolute URL for the external Office viewer */
       let rawUrl = String(opts.url || '').trim();
       if (rawUrl && !/^(https?:|blob:|data:)/i.test(rawUrl)) {
         try { rawUrl = new URL(rawUrl, location.origin).href; }
@@ -144,7 +122,6 @@
       document.body.style.overflow = 'hidden';
       document.addEventListener('keydown', this._onKeyDown, true);
 
-      /* Dispatch to the right renderer */
       if (this.docType === 'image') {
         this._renderImage();
       } else if (this.docType === 'text') {
@@ -158,7 +135,6 @@
       }
     }
 
-    /* ---------- shell ---------- */
     _buildUI() {
       const old = document.getElementById('docViewerModal');
       if (old) old.remove();
@@ -219,7 +195,6 @@
       wm.style.opacity = '0.30';
     }
 
-    /* ---------- renderers ---------- */
     _renderImage() {
       const body = this.modal.querySelector('#docvBody');
       body.innerHTML = `
@@ -250,39 +225,54 @@
     }
 
     /* ------------------------------------------------------------
-       Office documents — Microsoft Office Online embed.
-       Renders PPTX as a real slideshow, DOCX as a paginated
-       document, XLSX as a spreadsheet grid.
+       Office documents — Try Microsoft, then Google, then fallback
        ------------------------------------------------------------ */
     _renderOffice() {
+      if (this._officeTimer) {
+        clearTimeout(this._officeTimer);
+        this._officeTimer = null;
+      }
+
       const body = this.modal.querySelector('#docvBody');
       const srcEncoded = encodeURIComponent(this.fileUrl);
 
-      /* Microsoft Office Online viewer — most reliable for PPTX */
+      // Microsoft viewer (tries to render actual slides)
       const msEmbed = 'https://view.officeapps.live.com/op/embed.aspx?src=' + srcEncoded;
+      // Google viewer (very reliable fallback)
+      const googleEmbed = 'https://docs.google.com/viewer?url=' + srcEncoded + '&embedded=true';
 
+      const providers = [
+        { name: 'Microsoft Office Viewer', url: msEmbed },
+        { name: 'Google Docs Viewer',      url: googleEmbed }
+      ];
+
+      if (this._officeAttempt >= providers.length) {
+        return this._renderUnsupported();
+      }
+
+      const provider = providers[this._officeAttempt];
       const loaderId = 'docvLoader_' + uid();
 
       body.innerHTML = `
         <div class="docv-office-wrap">
           <iframe id="docvFrame"
-                  src="${_esc(msEmbed)}"
+                  src="${_esc(provider.url)}"
                   class="docv-frame"
                   allowfullscreen
                   referrerpolicy="no-referrer"></iframe>
           <div class="docv-loader docv-loader-overlay" id="${loaderId}">
             <div class="docv-spinner"></div>
-            <p>Loading presentation…</p>
+            <p>Loading presentation via ${_esc(provider.name)}…</p>
             <p class="docv-loader-hint">
-              If this takes more than a few seconds, use the
-              <i class="fas fa-external-link-alt"></i> button in the top-right corner.
+              If this takes more than a few seconds, we will automatically
+              try a different viewer.
             </p>
           </div>
         </div>`;
 
-      const iframe  = body.querySelector('#docvFrame');
-      const loader  = body.querySelector('#' + loaderId);
-      let   settled = false;
+      const iframe = body.querySelector('#docvFrame');
+      const loader = body.querySelector('#' + loaderId);
+      let settled = false;
 
       const dismiss = () => {
         if (settled) return;
@@ -293,26 +283,51 @@
         }
       };
 
+      // ⭐ 8-second timeout: if the viewer hasn't dismissed its own
+      // loader, it's almost certainly broken (as seen in your console
+      // with the 404 errors). Trigger the fallback automatically.
+      this._officeTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        console.warn(`[DocumentViewer] ${provider.name} timed out. Trying next provider…`);
+        this._officeAttempt++;
+        this._renderOffice();
+      }, 8000);
+
       if (iframe) {
-        /* The cross-origin iframe fires load intermittently, so we
-           combine a load listener with a hard 6 s timeout. */
-        iframe.addEventListener('load', () => setTimeout(dismiss, 300), { once: true });
-        setTimeout(dismiss, 6000);
+        // Some browsers fire `load` even on 404s, so we only use it
+        // to dismiss the loader early. The timeout handles real failures.
+        iframe.addEventListener('load', () => setTimeout(dismiss, 600), { once: true });
       }
     }
 
     _renderUnsupported() {
+      if (this._officeTimer) clearTimeout(this._officeTimer);
       const body = this.modal.querySelector('#docvBody');
       body.innerHTML = `
         <div class="docv-unsupported">
           <i class="fas fa-file"></i>
-          <h3>Preview not available for this format</h3>
-          <p>You can open this file in a new tab or download it to view on your device.</p>
-          <a href="${_esc(this.fileUrl)}" target="_blank" rel="noopener noreferrer"
-             class="btn btn-primary btn-lg">
-            <i class="fas fa-external-link-alt"></i> Open file
-          </a>
+          <h3>Preview not available in-app</h3>
+          <p>
+            Both the Microsoft and Google viewers were unable to display this file.
+            You can open it in a new tab or download it to view on your device.
+          </p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:6px;">
+            <a href="${_esc(this.fileUrl)}" target="_blank" rel="noopener noreferrer"
+               class="btn btn-primary btn-lg">
+              <i class="fas fa-external-link-alt"></i> Open in new tab
+            </a>
+            <button type="button" class="btn btn-outline btn-lg"
+                    onclick="window.DocumentViewer._retryViewers()">
+              <i class="fas fa-rotate"></i> Retry viewers
+            </button>
+          </div>
         </div>`;
+    }
+
+    _retryViewers() {
+      this._officeAttempt = 0;
+      this._renderOffice();
     }
 
     _renderError(msg) {
@@ -329,7 +344,6 @@
         </div>`;
     }
 
-    /* ---------- lifecycle ---------- */
     _onKeyDown(e) {
       if (!this.active) return;
       if (e.key === 'Escape') {
@@ -341,6 +355,7 @@
     close() {
       if (!this.active) return;
       this.active = false;
+      if (this._officeTimer) clearTimeout(this._officeTimer);
       document.removeEventListener('keydown', this._onKeyDown, true);
       document.body.style.overflow = this._prevOverflow || '';
 
@@ -354,5 +369,5 @@
   }
 
   window.DocumentViewer = new DocumentViewer();
-  console.log('[DocumentViewer v1] Ready');
+  console.log('[DocumentViewer v2] Ready with fallback providers');
 })();
