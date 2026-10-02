@@ -223,82 +223,37 @@
         this._renderError('Could not load the text file. ' + (err.message || ''));
       }
     }
-
-     /* ------------------------------------------------------------
-       Office documents — Try Google, then fallback to download
+    /* ------------------------------------------------------------
+       Office documents — Show a clean download card.
        ------------------------------------------------------------
-       Microsoft's Office Web Viewer cannot handle signed URLs and
-       frequently fails, causing the browser to render raw PPTX/DOCX
-       text in a broken vertical column. Google Docs Viewer handles
-       signed URLs much better. If Google also fails, we show a
-       clean download fallback instead of raw text.
+       External viewers (Microsoft, Google) cannot access files
+       behind authentication (like our signed URLs). When they fail,
+       the browser renders raw PPTX/DOCX text vertically, which looks
+       broken. Instead, we show a clean "Download to view" card.
        ------------------------------------------------------------ */
     _renderOffice() {
-      if (this._officeTimer) {
-        clearTimeout(this._officeTimer);
-        this._officeTimer = null;
-      }
-
       const body = this.modal.querySelector('#docvBody');
-      const srcEncoded = encodeURIComponent(this.fileUrl);
-
-      // Google viewer is the most reliable for embedded rendering of signed URLs
-      const googleEmbed = 'https://docs.google.com/viewer?url=' + srcEncoded + '&embedded=true';
-
-      const providers = [
-        { name: 'Google Docs Viewer', url: googleEmbed }
-      ];
-
-      if (this._officeAttempt >= providers.length) {
-        return this._renderUnsupported();
-      }
-
-      const provider = providers[this._officeAttempt];
-      const loaderId = 'docvLoader_' + uid();
-
+      const ext = this.fileName ? this.fileName.split('.').pop().toUpperCase() : 'FILE';
+      
       body.innerHTML = `
-        <div class="docv-office-wrap">
-          <iframe id="docvFrame"
-                  src="${_esc(provider.url)}"
-                  class="docv-frame"
-                  allowfullscreen
-                  referrerpolicy="no-referrer"></iframe>
-          <div class="docv-loader docv-loader-overlay" id="${loaderId}">
-            <div class="docv-spinner"></div>
-            <p>Loading document via ${_esc(provider.name)}…</p>
-            <p class="docv-loader-hint">
-              If this takes more than a few seconds, we will show a download option.
-            </p>
+        <div class="docv-unsupported">
+          <i class="fas fa-file-powerpoint" style="color: #d24726;"></i>
+          <h3>Preview not available for ${ext} files</h3>
+          <p>
+            Due to security restrictions, this file cannot be previewed directly in the browser.
+            Please download it to view it on your device.
+          </p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:6px;">
+            <a href="${_esc(this.fileUrl)}" download="${_esc(this.fileName)}"
+               class="btn btn-primary btn-lg">
+              <i class="fas fa-download"></i> Download File
+            </a>
+            <a href="${_esc(this.fileUrl)}" target="_blank" rel="noopener noreferrer"
+               class="btn btn-outline btn-lg">
+              <i class="fas fa-external-link-alt"></i> Open in new tab
+            </a>
           </div>
         </div>`;
-
-      const iframe = body.querySelector('#docvFrame');
-      const loader = body.querySelector('#' + loaderId);
-      let settled = false;
-
-      const dismiss = () => {
-        if (settled) return;
-        settled = true;
-        if (loader && loader.parentNode) {
-          loader.style.opacity = '0';
-          setTimeout(() => { try { loader.remove(); } catch (e) {} }, 250);
-        }
-      };
-
-      // ⭐ 6-second timeout: if the viewer hasn't dismissed its own
-      // loader, assume it failed (common with signed URLs) and show
-      // the download fallback.
-      this._officeTimer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        console.warn(`[DocumentViewer] ${provider.name} timed out. Showing fallback.`);
-        this._officeAttempt++;
-        this._renderOffice(); 
-      }, 6000);
-
-      if (iframe) {
-        iframe.addEventListener('load', () => setTimeout(dismiss, 800), { once: true });
-      }
     }
 
     _renderUnsupported() {
