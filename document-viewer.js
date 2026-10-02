@@ -223,9 +223,13 @@
         this._renderError('Could not load the text file. ' + (err.message || ''));
       }
     }
-
     /* ------------------------------------------------------------
-       Office documents — Try Microsoft, then Google, then fallback
+       Office documents — Try Google first, then Microsoft, then fallback
+       ------------------------------------------------------------
+       Microsoft's Office Web Viewer frequently fails with 404s and
+       ChunkLoadErrors (especially on authenticated/signed URLs),
+       causing broken layouts. Google Docs Viewer is significantly
+       more reliable for embedded rendering.
        ------------------------------------------------------------ */
     _renderOffice() {
       if (this._officeTimer) {
@@ -236,14 +240,14 @@
       const body = this.modal.querySelector('#docvBody');
       const srcEncoded = encodeURIComponent(this.fileUrl);
 
-      // Microsoft viewer (tries to render actual slides)
-      const msEmbed = 'https://view.officeapps.live.com/op/embed.aspx?src=' + srcEncoded;
-      // Google viewer (very reliable fallback)
+      // Google viewer (very reliable for authenticated URLs)
       const googleEmbed = 'https://docs.google.com/viewer?url=' + srcEncoded + '&embedded=true';
+      // Microsoft viewer (fallback)
+      const msEmbed = 'https://view.officeapps.live.com/op/embed.aspx?src=' + srcEncoded;
 
       const providers = [
-        { name: 'Microsoft Office Viewer', url: msEmbed },
-        { name: 'Google Docs Viewer',      url: googleEmbed }
+        { name: 'Google Docs Viewer',      url: googleEmbed },
+        { name: 'Microsoft Office Viewer', url: msEmbed }
       ];
 
       if (this._officeAttempt >= providers.length) {
@@ -262,7 +266,7 @@
                   referrerpolicy="no-referrer"></iframe>
           <div class="docv-loader docv-loader-overlay" id="${loaderId}">
             <div class="docv-spinner"></div>
-            <p>Loading presentation via ${_esc(provider.name)}…</p>
+            <p>Loading document via ${_esc(provider.name)}…</p>
             <p class="docv-loader-hint">
               If this takes more than a few seconds, we will automatically
               try a different viewer.
@@ -283,23 +287,23 @@
         }
       };
 
-      // ⭐ 8-second timeout: if the viewer hasn't dismissed its own
-      // loader, it's almost certainly broken (as seen in your console
-      // with the 404 errors). Trigger the fallback automatically.
+      // ⭐ 10-second timeout: if the viewer hasn't dismissed its own
+      // loader, trigger the fallback automatically.
       this._officeTimer = setTimeout(() => {
         if (settled) return;
         settled = true;
         console.warn(`[DocumentViewer] ${provider.name} timed out. Trying next provider…`);
         this._officeAttempt++;
         this._renderOffice();
-      }, 8000);
+      }, 10000);
 
       if (iframe) {
         // Some browsers fire `load` even on 404s, so we only use it
         // to dismiss the loader early. The timeout handles real failures.
-        iframe.addEventListener('load', () => setTimeout(dismiss, 600), { once: true });
+        iframe.addEventListener('load', () => setTimeout(dismiss, 800), { once: true });
       }
     }
+ 
 
     _renderUnsupported() {
       if (this._officeTimer) clearTimeout(this._officeTimer);
