@@ -31,7 +31,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- Same global stylesheet → 100% theme continuity with the app -->
-  <link rel="stylesheet" href="styles.css?v=123">
+  <link rel="stylesheet" href="styles.css?v=124">
 
   <style>
     /* ============================================================
@@ -2138,6 +2138,62 @@
       </div>
     </div>
   </header>
+  <!-- ⭐ Branding bootstrap — instant logo swap + favicon sync.
+     Reads the cached branding state from localStorage (written by
+     the admin panel), applies it synchronously BEFORE first paint,
+     then verifies with the server in the background. -->
+<script>
+(function () {
+  var KEY = 'aero_branding_v1';
+
+  function apply(data) {
+    if (!data || !data.success) return;
+    var v = String(data.version || 1);
+
+    /* 1. Sync every favicon <link> to the current branding version */
+    document.querySelectorAll('link[rel*="icon"], link[rel="apple-touch-icon"]')
+      .forEach(function (link) {
+        var href = link.getAttribute('href') || '';
+        if (!href || href.startsWith('data:')) return;
+        var base = href.split('?')[0];
+        var cur  = (href.match(/[?&]v=([^&]+)/) || [])[1];
+        if (cur !== v) link.setAttribute('href', base + '?v=' + v);
+      });
+
+    /* 2. Swap every .brand-icon (navbar + footer) for the upload */
+    if (!data.hasLogo) return;
+    document.querySelectorAll('.brand-icon').forEach(function (el) {
+      var img = el.querySelector('img[data-aero-logo]');
+      if (img && img.dataset.aeroVersion === v) return;
+      if (!el.dataset.aeroOriginalMarkup) {
+        el.dataset.aeroOriginalMarkup = el.innerHTML;
+      }
+      el.innerHTML =
+        '<img src="/logo.svg?v=' + v + '" alt="Brand logo"' +
+        ' data-aero-logo data-aero-version="' + v + '"' +
+        ' style="width:100%;height:100%;object-fit:contain;display:block;"' +
+        ' decoding="async" fetchpriority="high">';
+    });
+  }
+
+  /* Step 1 — instant apply from cache */
+  var cached = null;
+  try { cached = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) {}
+  if (cached) apply(cached);
+
+  /* Step 2 — background verify */
+  fetch('/api/branding-status?_t=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data || !data.success) return;
+      if (!cached || cached.version !== data.version) {
+        try { localStorage.setItem(KEY, JSON.stringify(data)); } catch (e) {}
+        apply(data);
+      }
+    })
+    .catch(function () {});
+})();
+</script>
 
   <main class="landing-main">
 

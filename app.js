@@ -17978,17 +17978,20 @@ async function _uploadBrandingFile(inputEl, endpoint, label) {
 
     showToast(`✓ ${label === 'favicon' ? 'Favicon' : 'Logo'} updated.`, 'success');
 
-    /* ⭐ Immediate refresh: bump every <link rel="icon"> to a fresh
-       timestamp so the browser fetches the newly-uploaded file
-       rather than trusting its cached copy of the same URL. */
-    _refreshFaviconLinksInDocument();
+    /* ⚡ Refresh the whole branding state right now. This single call:
+         • hits /api/branding-status to fetch the new version
+         • writes it to localStorage (`aero_branding_v1`) so subsequent
+           page loads paint the new logo/favicon instantly — before the
+           network has even answered
+         • re-stamps every <link rel="icon"> in the document head
+         • swaps every .brand-icon (header brand mark + anywhere else)
 
-    /* For the logo, re-run the swap logic so the header updates too. */
-    if (label === 'logo') {
-      try { sessionStorage.removeItem('aero_branding_checked'); } catch (e) {}
-      document.querySelectorAll('.brand-icon').forEach(el => { el.innerHTML = ''; });
-      _applyCustomLogoIfAny().catch(() => {});
-    }
+       We deliberately call it for BOTH favicon and logo uploads so the
+       localStorage cache always carries the newest version. Previously
+       this was only wired for logo uploads, which is why a favicon
+       change could look "stuck" for a few seconds on the next
+       navigation. */
+    _applyCustomLogoIfAny().catch(() => {});
 
     await renderAdminBranding();
   } catch (err) {
@@ -18026,12 +18029,16 @@ async function _resetBranding(scope, label) {
     if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
 
     showToast(`✓ ${label} reverted to default.`, 'success');
-    _refreshFaviconLinksInDocument();
+
+    /* Wipe the local cache so the next page load re-fetches state
+       from the server instead of painting the reverted asset. */
+    try { localStorage.removeItem('aero_branding_v1'); } catch (e) {}
+
+    _applyCustomLogoIfAny().catch(() => {});
     await renderAdminBranding();
 
     if (scope === 'logo') {
-      try { sessionStorage.removeItem('aero_branding_checked'); } catch (e) {}
-      location.reload();
+      setTimeout(() => location.reload(), 250);
     }
   } catch (err) {
     console.error('[_resetBranding]', err);
@@ -18055,9 +18062,8 @@ async function resetAllBranding() {
     if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
 
     showToast('✓ All branding reset to defaults.', 'success');
-    try { sessionStorage.removeItem('aero_branding_checked'); } catch (e) {}
-    _refreshFaviconLinksInDocument();
-    location.reload();
+    try { localStorage.removeItem('aero_branding_v1'); } catch (e) {}
+    setTimeout(() => location.reload(), 250);
   } catch (err) {
     console.error('[resetAllBranding]', err);
     showToast('Reset failed: ' + (err.message || 'unknown'), 'error');
@@ -18080,56 +18086,92 @@ function _refreshFaviconLinksInDocument() {
   } catch (e) { /* purely a nicety */ }
 }
 
-/* Swap the header brand mark for the admin-uploaded logo, if any. */
-async function _applyCustomLogoIfAny() {
+/* ============================================================
+   CUSTOM BRANDING — cached apply + background verify
+   ------------------------------------------------------------
+   On every page load:
+     1. Read the last-known branding state from localStorage.
+     2. If a custom logo exists, swap the brand-icon IMMEDIATELY —
+        synchronously, before first paint, with NO network wait.
+     3. Fire one background request to /api/branding-status. If the
+        server's version differs from the cached one, re-apply.
+   That gives returning visitors a 0 ms logo swap while still
+   picking up an admin upload within one navigation.
+   ============================================================ */
+const BRANDING_CACHE_KEY = 'aero_branding_v1';
+
+function _readBrandingCache() {
   try {
-    /* ⚠️ We deliberately do NOT guard this with a sessionStorage flag.
-       A branding change must reach every open tab the very next time
-       it loads, and the call itself is a few hundred bytes. Running it
-       on every page load is what makes "upload → refresh → icon is
-       still there" true for the admin. */
-    const res = await fetch('/api/branding-status?_t=' + Date.now(), {
-      cache: 'no-store'
-    });
-    const data = await res.json();
-    if (!data || !data.success) return;
+    const raw = localStorage.getItem(BRANDING_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) { return null; }
+}
 
-    const versionStr = String(data.version || 1);
+function _writeBrandingCache(data) {
+  try { localStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(data)); } catch (_) {}
+}
 
-    /* ⭐ PRIMARY FIX: force the browser to re-fetch every favicon
-       <link> whenever the server's branding version changes.
+/* Synchronously rewrite every <link rel="icon"> and every
+   .brand-icon element for the given branding state. */
+function _applyBrandingAssets(data) {
+  if (!data || !data.success) return;
+  const versionStr = String(data.version || 1);
+  const hasLogo    = !!data.hasLogo;
 
-       Why: the icons in <head> use a hard-coded query string
-       (?v=121). The browser keys its HTTP cache on the *whole URL*,
-       so even after an admin uploads a custom favicon the browser
-       happily keeps serving the old default from its cache for up
-       to a week — which is exactly the "change disappears after
-       refresh" symptom. Bumping the version parameter changes the
-       URL, so the browser fetches the current file fresh. */
-    document.querySelectorAll(
-      'link[rel*="icon"], link[rel="apple-touch-icon"]'
-    ).forEach(link => {
+  /* 1. Sync favicon <link> tags */
+  document.querySelectorAll('link[rel*="icon"], link[rel="apple-touch-icon"]')
+    .forEach(link => {
       const href = link.getAttribute('href') || '';
       if (!href || href.startsWith('data:')) return;
       const base = href.split('?')[0];
       const current = (href.match(/[?&]v=([^&]+)/) || [])[1];
-      if (current !== versionStr) {
-        link.setAttribute('href', base + '?v=' + versionStr);
-      }
+      if (current !== versionStr) link.setAttribute('href', base + '?v=' + versionStr);
     });
 
-    /* ⭐ Custom logo — swap the header's inline SVG for the upload. */
-    if (data.hasLogo) {
-      document.querySelectorAll('.brand-icon').forEach(el => {
-        if (el.querySelector('img')) return;
-        el.innerHTML =
-          `<img src="/logo.svg?v=${versionStr}" alt="Brand logo"
-                style="width:100%;height:100%;object-fit:contain;display:block;"
-                decoding="async">`;
-      });
+  /* 2. Swap the brand icon in the header (and anywhere else) */
+  document.querySelectorAll('.brand-icon').forEach(el => {
+    /* Remember the built-in SVG so a later revert can restore it */
+    if (!el.dataset.aeroOriginalMarkup) {
+      el.dataset.aeroOriginalMarkup = el.innerHTML;
     }
-  } catch (e) {
-    /* silent — the built-in defaults stay in place */
+
+    if (hasLogo) {
+      const existing = el.querySelector('img[data-aero-logo]');
+      if (existing && existing.dataset.aeroVersion === versionStr) return;
+      el.innerHTML =
+        `<img src="/logo.svg?v=${versionStr}" alt="Brand logo"
+              data-aero-logo
+              data-aero-version="${versionStr}"
+              style="width:100%;height:100%;object-fit:contain;display:block;"
+              decoding="async"
+              fetchpriority="high">`;
+    } else if (el.querySelector('img[data-aero-logo]')) {
+      /* Admin reverted — restore the built-in SVG */
+      el.innerHTML = el.dataset.aeroOriginalMarkup;
+    }
+  });
+}
+
+async function _applyCustomLogoIfAny() {
+  /* ⚡ Step 1 — INSTANT apply from cache (no await, no network) */
+  const cached = _readBrandingCache();
+  if (cached) {
+    try { _applyBrandingAssets(cached); } catch (_) {}
   }
+
+  /* ⚡ Step 2 — background verify. If the server has a newer
+     version, re-apply; otherwise nothing changes visually. */
+  try {
+    const res = await fetch('/api/branding-status?_t=' + Date.now(), { cache: 'no-store' });
+    const data = await res.json();
+    if (!data || !data.success) return;
+
+    const cachedVersion = cached && cached.version;
+    const serverVersion = data.version;
+    if (!cached || cachedVersion !== serverVersion) {
+      _writeBrandingCache(data);
+      _applyBrandingAssets(data);
+    }
+  } catch (_) { /* silent — cached state stays in place */ }
 }
 

@@ -97,26 +97,31 @@ async function serveBrandableAsset(res, assetKey) {
         const fp = path.join(BRANDING_DIR, fname);
         if (fs.existsSync(fp)) {
           const st = fs.statSync(fp);
-          const brandVersion = (s.branding && s.branding.version) || 1;
+          const currentVersion  = String((s.branding && s.branding.version) || 1);
+          const req             = res.req;
+          const requestedVersion = (req && req.query) ? String(req.query.v || '') : '';
 
           res.setHeader('Content-Type', entry.mimeType || mimeForFile(fname));
-
-          /* ⭐ A custom brand asset is served from the SAME public URL
-             as the built-in default (/favicon-32.png, /logo.svg, …).
-             If we let the browser cache the default for a week, the
-             admin's upload is invisible after a refresh — the browser
-             simply reuses its stale copy. We force revalidation on
-             every use so an updated asset appears immediately.
-             ​• 304 is cheap (no body re-download)
-             ​• ETag embeds the branding version, so it changes the
-               moment the admin saves a new file  */
-          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-          res.setHeader('Pragma', 'no-cache');
-          res.setHeader('Expires', '0');
           res.setHeader(
             'ETag',
-            `"brand-v${brandVersion}-${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`
+            `"brand-v${currentVersion}-${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`
           );
+
+          /* ⭐ Version-aware caching.
+             • URL carries the CURRENT branding version
+                 → URL is content-addressed (it changes on upload)
+                 → safe to cache for 1 year with `immutable`
+                 → repeated navigations cost 0 ms, 0 bytes
+             • Stale or missing ?v=
+                 → force revalidation so an uploaded file reaches
+                   a client that still has the old copy cached */
+          if (requestedVersion && requestedVersion === currentVersion) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          } else {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+          }
 
           res.sendFile(fp);
           return true;
@@ -1114,7 +1119,45 @@ app.get('/favicon.svg', async (req, res) => {
   if (await serveBrandableAsset(res, 'faviconSvg')) return;
   sendCached(res, 'favicon.svg', 300);
 });
-app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json', 86400));
+/* ============================================================
+   DYNAMIC MANIFEST — versioned icon URLs
+   ------------------------------------------------------------
+   The manifest is served fresh on every request and every icon
+   URL carries the current branding version as a query string.
+   When the admin uploads a new icon:
+     • branding.version increments
+     • every icon src in the manifest changes
+     • the browser/OS treats the manifest as NEW
+     • the PWA icon refreshes on the next install / sync
+   ============================================================ */
+app.get('/manifest.json', async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    const version = (s && s.branding && s.branding.version) || 1;
+
+    const raw = fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8');
+    const manifest = JSON.parse(raw);
+
+    if (Array.isArray(manifest.icons)) {
+      manifest.icons = manifest.icons.map(icon => {
+        if (!icon || !icon.src) return icon;
+        const base = String(icon.src).split('?')[0];
+        return Object.assign({}, icon, { src: base + '?v=' + version });
+      });
+    }
+
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.json(manifest);
+  } catch (e) {
+    console.warn('[manifest] dynamic serve failed, falling back to static:', e.message);
+    res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    res.sendFile(path.join(__dirname, 'manifest.json'));
+  }
+});
 app.get('/sw.js',           (req, res) => {
   res.setHeader('Cache-Control', 'no-cache'); // SW को हमेशा fresh चाहिए
   res.sendFile(path.join(__dirname, 'sw.js'));
