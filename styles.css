@@ -13224,3 +13224,12 @@ body:has(.doc-viewer-modal.active) .aero-to-top {
   .branding-size-96  { width: 34px; height: 34px; }
   .branding-simple-body .branding-upload-btn { flex: 1 1 100%; }
 }
+/* ------------------------------------------------------------
+   ⭐ Course editor — Download ZIP button spacing
+   ------------------------------------------------------------ */
+.editor-hero-right {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}

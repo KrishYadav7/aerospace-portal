@@ -40,6 +40,7 @@ cloudinary.config({
 const fs   = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib   = require('zlib');
 const { execFile } = require('child_process');
 const UPLOAD_DIR = process.env.UPLOAD_DIR
   ? path.resolve(process.env.UPLOAD_DIR)
@@ -2764,6 +2765,125 @@ function safeEqualHex(a, b) {
   } catch (e) {
     return false;
   }
+}
+
+/* ============================================================
+   ⭐ MINIMAL ZIP WRITER — no external dependencies
+   ------------------------------------------------------------
+   Produces a fully valid ZIP (deflate, method 8) with a
+   classic end-of-central-directory. Sufficient for the
+   admin course download feature and safe for every modern
+   unzip tool on Windows / macOS / Linux.
+
+   Files are read into memory, so a 500 MB hard cap is
+   enforced by the caller before this is invoked.
+   ============================================================ */
+const _CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) {
+      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function _crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) {
+    c = _CRC32_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  }
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+function _dosDateTime(date) {
+  const d = date instanceof Date ? date : new Date();
+  const year  = Math.max(1980, d.getFullYear());
+  const month = d.getMonth() + 1;
+  const day   = d.getDate();
+  const hours = d.getHours();
+  const mins  = d.getMinutes();
+  const secs  = Math.floor(d.getSeconds() / 2);
+  const dosTime = (hours << 11) | (mins << 5) | secs;
+  const dosDate = ((year - 1980) << 9) | (month << 5) | day;
+  return { dosTime, dosDate };
+}
+
+/**
+ * Build a complete ZIP archive in memory.
+ * @param {Array<{name:string,data:Buffer}>} entries
+ * @returns {Buffer}
+ */
+function _buildZipBuffer(entries) {
+  const { dosTime, dosDate } = _dosDateTime(new Date());
+
+  const localChunks   = [];
+  const centralChunks = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBuf = Buffer.from(entry.name, 'utf8');
+    const data    = entry.data;
+    const crc     = _crc32(data);
+    const comp    = zlib.deflateRawSync(data, { level: 6 });
+
+    /* ---- Local file header (30 bytes + filename) ---- */
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0);       // signature
+    lh.writeUInt16LE(20, 4);               // version needed
+    lh.writeUInt16LE(0, 6);                // general purpose flags
+    lh.writeUInt16LE(8, 8);                // method = deflate
+    lh.writeUInt16LE(dosTime, 10);
+    lh.writeUInt16LE(dosDate, 12);
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(comp.length, 18);
+    lh.writeUInt32LE(data.length, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    lh.writeUInt16LE(0, 28);               // extra field length
+
+    localChunks.push(lh, nameBuf, comp);
+
+    /* ---- Central directory record (46 bytes + filename) ---- */
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0);
+    cd.writeUInt16LE(20, 4);               // version made by
+    cd.writeUInt16LE(20, 6);               // version needed
+    cd.writeUInt16LE(0, 8);                // flags
+    cd.writeUInt16LE(8, 10);               // method
+    cd.writeUInt16LE(dosTime, 12);
+    cd.writeUInt16LE(dosDate, 14);
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(comp.length, 20);
+    cd.writeUInt32LE(data.length, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt16LE(0, 30);               // extra length
+    cd.writeUInt16LE(0, 32);               // comment length
+    cd.writeUInt16LE(0, 34);               // disk number start
+    cd.writeUInt16LE(0, 36);               // internal attributes
+    cd.writeUInt32LE(0, 38);               // external attributes
+    cd.writeUInt32LE(offset, 42);          // offset of local header
+    centralChunks.push(cd, nameBuf);
+
+    offset += lh.length + nameBuf.length + comp.length;
+  }
+
+  const localDir   = Buffer.concat(localChunks);
+  const centralDir = Buffer.concat(centralChunks);
+
+  /* ---- End of central directory record (22 bytes) ---- */
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);                // this disk number
+  eocd.writeUInt16LE(0, 6);                // disk with central dir
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(centralDir.length, 12);
+  eocd.writeUInt32LE(localDir.length, 16);
+  eocd.writeUInt16LE(0, 20);               // comment length
+
+  return Buffer.concat([localDir, centralDir, eocd]);
 }
 /* ============================================================
    SIGNED PDF URL SYSTEM
@@ -10148,6 +10268,200 @@ app.delete('/api/admin/contributions/:id', requireAdminAuth, async (req, res) =>
   }
 });
 
+
+/* ============================================================
+   ⭐ ADMIN — Download entire course as a single ZIP
+   ------------------------------------------------------------
+   GET /api/admin/courses/:courseId/download-zip
+
+   Packages every material that lives on disk (i.e. any material
+   whose `url` starts with `/uploads/`) into one ZIP archive.
+   External web links (YouTube, Cloudinary-only, direct http(s)
+   URLs, materials with only base64 fileData) are STRICTLY
+   EXCLUDED — the manifest lists them so the admin can see what
+   was skipped.
+
+   Hard safety rules:
+     • Admin-only (requireAdminAuth)
+     • Path-traversal guard on every filename
+     • 500 MB in-memory cap — courses larger than that must be
+       downloaded file by file
+     • No caching (each request rebuilds a fresh archive)
+   ============================================================ */
+const COURSE_ZIP_MAX_BYTES = 500 * 1024 * 1024;   // 500 MB
+
+app.get('/api/admin/courses/:courseId/download-zip',
+  requireAdminAuth,
+  async (req, res) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
+        return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+      }
+
+      const course = await Course.findById(req.params.courseId)
+        .select('name code materials')
+        .lean();
+      if (!course) {
+        return res.status(404).json({ success: false, message: 'Course not found.' });
+      }
+
+      const entries = [];
+      const manifest = [
+        'AeroGyan — Course Archive Manifest',
+        '====================================',
+        `Course:   ${course.name}`,
+        `Code:     ${course.code || '(none)'}`,
+        `Created:  ${new Date().toISOString()}`,
+        `Materials on disk: this archive`,
+        '',
+        'FILES INCLUDED:',
+        ''
+      ];
+      const skipped = [];
+      let totalBytes = 0;
+
+      /* ---------- Iterate every material ---------- */
+      for (const mat of (course.materials || [])) {
+        const rawUrl = String(mat.url || '').trim();
+
+        /* Non-/uploads/ URLs are external — skip, record why. */
+        if (!rawUrl.startsWith('/uploads/')) {
+          skipped.push({
+            title: mat.title || '(untitled)',
+            reason: rawUrl ? 'external URL' : 'no file attached',
+            url: rawUrl || ''
+          });
+          continue;
+        }
+
+        /* Strip any query / fragment before basename extraction */
+        const cleanPath = rawUrl.split('?')[0].split('#')[0];
+        const diskFilename = path.basename(cleanPath);
+
+        /* Path-traversal guard */
+        if (!/^[A-Za-z0-9._-]+$/.test(diskFilename) ||
+            diskFilename === '.' || diskFilename === '..') {
+          skipped.push({
+            title: mat.title || '(untitled)',
+            reason: 'unsafe filename',
+            url: rawUrl
+          });
+          continue;
+        }
+
+        const diskPath = path.join(UPLOAD_DIR, diskFilename);
+        let stat;
+        try {
+          stat = await fs.promises.stat(diskPath);
+        } catch (e) {
+          skipped.push({
+            title: mat.title || '(untitled)',
+            reason: 'file missing on disk',
+            url: rawUrl
+          });
+          continue;
+        }
+        if (!stat.isFile()) {
+          skipped.push({
+            title: mat.title || '(untitled)',
+            reason: 'not a regular file',
+            url: rawUrl
+          });
+          continue;
+        }
+
+        /* Hard size cap so we never blow up Node's heap */
+        totalBytes += stat.size;
+        if (totalBytes > COURSE_ZIP_MAX_BYTES) {
+          return res.status(413).json({
+            success: false,
+            message:
+              'This course is larger than 500 MB. Please download ' +
+              'the individual materials instead.'
+          });
+        }
+
+        /* Compose a friendly in-archive filename */
+        const ext = path.extname(diskFilename);
+        const base = String(mat.title || diskFilename)
+          .replace(/[\\/:*?"<>|\r\n\t]+/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 100) || path.basename(diskFilename, ext);
+
+        entries.push({ base, ext, diskPath, title: mat.title || diskFilename, size: stat.size });
+      }
+
+      if (entries.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'No downloadable files on disk for this course.'
+        });
+      }
+
+      /* ---------- Deduplicate in-archive filenames ---------- */
+      const usedNames = new Set();
+      const zipEntries = [];
+
+      for (const e of entries) {
+        let candidate = `${e.base}${e.ext}`;
+        let n = 2;
+        while (usedNames.has(candidate)) {
+          candidate = `${e.base} (${n})${e.ext}`;
+          n++;
+        }
+        usedNames.add(candidate);
+
+        const data = await fs.promises.readFile(e.diskPath);
+        zipEntries.push({ name: candidate, data });
+        manifest.push(`  ${candidate}  (${(data.length / 1024).toFixed(1)} KB)`);
+      }
+
+      /* ---------- Append skipped-list to manifest ---------- */
+      if (skipped.length > 0) {
+        manifest.push('', 'SKIPPED (external or unavailable):', '');
+        for (const s of skipped) {
+          manifest.push(`  ${s.title} — ${s.reason}${s.url ? ' (' + s.url + ')' : ''}`);
+        }
+      }
+      manifest.push('', 'End of manifest.');
+
+      zipEntries.push({
+        name: 'MANIFEST.txt',
+        data: Buffer.from(manifest.join('\n'), 'utf8')
+      });
+
+      /* ---------- Build the archive ---------- */
+      console.log(
+        `[course-zip] building "${course.name}" — ${zipEntries.length} entries ` +
+        `(${(totalBytes / 1048576).toFixed(1)} MB uncompressed)`
+      );
+      const zipBuffer = _buildZipBuffer(zipEntries);
+
+      /* ---------- Safe download filename ---------- */
+      const safeName = String(course.name || 'course')
+        .replace(/[^A-Za-z0-9._-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 80) || 'course';
+      const zipName = `${safeName}-${Date.now()}.zip`;
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`);
+      res.setHeader('Content-Length', String(zipBuffer.length));
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.send(zipBuffer);
+
+      console.log(`[course-zip] ✅ ${zipName} — ${(zipBuffer.length / 1048576).toFixed(1)} MB`);
+    } catch (e) {
+      console.error('[course-zip]', e);
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+      }
+    }
+  }
+);
 
 /* ============================================================
    STUDENT DATA BACKUP — CSV EXPORT / IMPORT

@@ -1427,7 +1427,12 @@ class VideoPlayer {
           const dataURL = String(opts.data || '').indexOf('data:') === 0
             ? opts.data
             : 'data:application/pdf;base64,' + opts.data;
-          const bytes = dataURLToBytes(dataURL);
+          /* ⚠️ dataURLToBytes() is async (it prefers the browser's
+             native fetch-based base64 decoder). The previous code
+             did not await it, so PDF.js received a Promise instead
+             of a Uint8Array and every base64/legacy-fallback PDF
+             failed to render. */
+          const bytes = await dataURLToBytes(dataURL);
           source = { data: bytes };
         }
 

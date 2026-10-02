@@ -4387,6 +4387,66 @@ async function updateAdminPassword() {
    ------------------------------------------------------------ */
 var _overviewFetchGeneration = 0;
 
+/* ============================================================
+   ⭐ ADMIN — Download entire course as a ZIP
+   ------------------------------------------------------------
+   Streams a server-built ZIP archive of every on-disk material
+   for the given course. External links are excluded by the
+   server, so no filtering is needed here.
+   ============================================================ */
+async function downloadCourseZip(courseId) {
+  if (!courseId) return showToast('No course selected.', 'error');
+
+  const proceed = confirm(
+    'Download every on-disk material of this course as a single ZIP?\n\n' +
+    'External web links (YouTube, external URLs) will be skipped — ' +
+    'the archive always includes a MANIFEST.txt listing them.'
+  );
+  if (!proceed) return;
+
+  const token = (function () {
+    try { return sessionStorage.getItem('aero_token'); } catch (e) { return null; }
+  })();
+
+  showToast('Preparing ZIP archive… this may take a moment.', 'info');
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/admin/courses/${courseId}/download-zip`,
+      { headers: token ? { 'Authorization': 'Bearer ' + token } : {} }
+    );
+
+    if (!res.ok) {
+      let msg = 'Download failed (HTTP ' + res.status + ').';
+      try {
+        const data = await res.json();
+        if (data && data.message) msg = data.message;
+      } catch (e) { /* non-JSON error body */ }
+      throw new Error(msg);
+    }
+
+    /* Determine the server-suggested filename if possible */
+    let fname = 'course.zip';
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/i);
+    if (m && m[1]) fname = m[1];
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 500);
+
+    showToast('✅ ZIP download started.', 'success');
+  } catch (err) {
+    console.error('[downloadCourseZip]', err);
+    showToast(err.message || 'Could not download the ZIP.', 'error');
+  }
+}
+
 async function renderAdminOverview() {
   const myGen = ++_overviewFetchGeneration;
 
@@ -6168,6 +6228,10 @@ function renderCourseEditor(courseId) {
       <div class="editor-hero-right">
         <button class="btn btn-outline btn-sm" onclick="viewCourseDetail('${course.id}')">
           <i class="fas fa-eye"></i> Preview
+        </button>
+        <button class="btn btn-success btn-sm" onclick="downloadCourseZip('${course.id}')"
+                title="Download every on-disk material as a single ZIP archive">
+          <i class="fas fa-file-zipper"></i> Download ZIP
         </button>
       </div>
     </div>
