@@ -332,9 +332,43 @@ const multer = require('multer');
    Google Gemini SDK — used by the AI Doubt Solver
    ============================================================ */
 const { GoogleGenAI } = require('@google/genai');
-const sharp = require('sharp');
 const app = express();
 app.set('trust proxy', 1);
+
+/* ------------------------------------------------------------
+   Lazy sharp loader — image processor for the branding feature.
+
+   We deliberately do NOT require('sharp') at module load.
+   On a server where `npm install` was skipped, or where the
+   prebuilt native binary is unavailable, that single line threw
+   at boot and took the ENTIRE backend down — nginx then reported
+   502 for every URL, not just the branding routes.
+
+   Requiring it lazily means:
+     • the app boots and serves every existing route even if
+       sharp is missing
+     • only the branding upload endpoint reports the problem,
+       with a clear, actionable message
+   ------------------------------------------------------------ */
+let _sharp = null;
+let _sharpLoadError = null;
+function getSharp() {
+  if (_sharp) return _sharp;
+  if (_sharpLoadError) throw _sharpLoadError;
+  try {
+    _sharp = require('sharp');
+    console.log('[sharp] ✅ image processor ready');
+    return _sharp;
+  } catch (e) {
+    _sharpLoadError = new Error(
+      'Image processor (sharp) is not installed on this server. ' +
+      'Run `npm install sharp` inside the app directory, then restart the process. ' +
+      'Original error: ' + (e && e.message ? e.message : String(e))
+    );
+    console.error('[sharp] ❌ not available:', _sharpLoadError.message);
+    throw _sharpLoadError;
+  }
+}
 
 /* ============================================================
    SIMPLE IN-MEMORY CACHE — dramatically reduces DB hits
@@ -6546,6 +6580,8 @@ async function generateFaviconVariants(sourceBuffer, originalExt) {
   const generated = {};
 
   /* ---- Prepare a sharp instance from the source ---- */
+  const sharp = getSharp();   // throws a friendly error if unavailable
+
   let base;
   if (isSvg) {
     const clean = sanitizeSvgBuffer(sourceBuffer);
@@ -6646,6 +6682,8 @@ async function generateLogo(sourceBuffer, originalExt) {
     };
     return { generated, prefix };
   }
+
+  const sharp = getSharp();   // throws a friendly error if unavailable
 
   /* Raster → preserve aspect ratio, cap the longest side at 1024,
      then wrap in an SVG so /logo.svg is always a valid SVG. */
