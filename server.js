@@ -2598,8 +2598,6 @@ async function serveUploadFile(filename, req, res) {
   /* ============================================================
      ⭐ FIX: Fetch stat FIRST so it's available to BOTH the Nginx
      Accel path and the Node fallback path.
-     Previously `let stat;` was declared AFTER the Nginx block,
-     which caused `ReferenceError: Cannot access 'stat' before initialization`.
      ============================================================ */
   let stat;
   try {
@@ -2611,28 +2609,11 @@ async function serveUploadFile(filename, req, res) {
 
   /* ============================================================
      ⚡ NGINX ACCEL FAST PATH
-     ------------------------------------------------------------
-     Hand off to Nginx BEFORE any disk stat, header setup, or
-     Cache-Control logic. Nginx will:
-       • serve the file with sendfile() (kernel zero-copy)
-       • handle HTTP Range natively (206 Partial Content)
-       • set Cache-Control / Accept-Ranges / Content-Type from
-         its own mime.types and the /protected-uploads/ location
-       • return 404 automatically if the file is missing
-
-     Node's entire job here is: verify signed token → set one
-     header → return. Total cost: ~0.1 ms per range request.
      ============================================================ */
   if (process.env.USE_NGINX_ACCEL === 'true') {
     res.setHeader('X-Accel-Redirect', '/protected-uploads/' + filename);
-    /* ⭐ Advertise range support explicitly so Nginx is guaranteed
-       to answer Range requests with 206 Partial Content instead of
-       stripping the header through the accel path. */
     res.setHeader('Accept-Ranges', 'bytes');
-    /* ⭐ Advertise the byte count too — Nginx preserves whatever
-       Content-Length Node sets here, and PDF.js refuses to start
-       progressive rendering without it. */
-    res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Content-Length', String(stat.size)); // ← now safe
     if (MIME_MAP[ext]) {
       res.setHeader('Content-Type', MIME_MAP[ext]);
     }
@@ -2646,28 +2627,9 @@ async function serveUploadFile(filename, req, res) {
   res.setHeader('ETag', etag);
   res.setHeader('Last-Modified', stat.mtime.toUTCString());
   res.setHeader('X-Content-Type-Options', 'nosniff');
-
-  /* ⭐ ADVERTISE RANGE SUPPORT EXPLICITLY — on EVERY file, not
-     just media. PDF.js only starts progressive rendering when the
-     server's first response carries Accept-Ranges: bytes. Without
-     this header on the initial HEAD/GET probe, PDF.js falls back
-     to "download the whole file, then render", which is what made
-     PDFs take 20–60 s on the campus network. */
   res.setHeader('Accept-Ranges', 'bytes');
-
-  /* ⭐ CONTENT-LENGTH — set on every file, not just media. Some
-     proxy chains (Hostinger, some campus NATs) strip a
-     Content-Length that is only set at the final hop. Without it,
-     the browser can't compute valid byte ranges and falls back to
-     a single full GET, defeating streaming entirely. */
   res.setHeader('Content-Length', String(stat.size));
 
-  /* ⭐ CACHE-CONTROL — "immutable" tells the browser "this exact
-     URL will never change content". Combined with the 30-day
-     max-age this means the SECOND time a student opens the same
-     PDF, the browser serves it from disk with zero network I/O.
-     Upload filenames are timestamp + random, so a given URL can
-     genuinely never point at different bytes. */
   res.setHeader(
     'Cache-Control',
     isMedia
