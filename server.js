@@ -97,9 +97,27 @@ async function serveBrandableAsset(res, assetKey) {
         const fp = path.join(BRANDING_DIR, fname);
         if (fs.existsSync(fp)) {
           const st = fs.statSync(fp);
+          const brandVersion = (s.branding && s.branding.version) || 1;
+
           res.setHeader('Content-Type', entry.mimeType || mimeForFile(fname));
-          res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
-          res.setHeader('ETag', `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`);
+
+          /* ⭐ A custom brand asset is served from the SAME public URL
+             as the built-in default (/favicon-32.png, /logo.svg, …).
+             If we let the browser cache the default for a week, the
+             admin's upload is invisible after a refresh — the browser
+             simply reuses its stale copy. We force revalidation on
+             every use so an updated asset appears immediately.
+             ​• 304 is cheap (no body re-download)
+             ​• ETag embeds the branding version, so it changes the
+               moment the admin saves a new file  */
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+          res.setHeader(
+            'ETag',
+            `"brand-v${brandVersion}-${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`
+          );
+
           res.sendFile(fp);
           return true;
         }
@@ -1054,47 +1072,47 @@ app.get('/vendor/pdfjs/pdf.worker.min.js', (req, res) => sendImmutableAsset(res,
 /* ---- Logo / PWA icons — admin-overridable via Branding tab ---- */
 app.get('/favicon-16.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'favicon16')) return;
-  sendCached(res, 'favicon-16.png', 604800);
+  sendCached(res, 'favicon-16.png', 300);
 });
 app.get('/favicon-32.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'favicon32')) return;
-  sendCached(res, 'favicon-32.png', 604800);
+  sendCached(res, 'favicon-32.png', 300);
 });
 app.get('/favicon-48.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'favicon48')) return;
-  sendCached(res, 'favicon-48.png', 604800);
+  sendCached(res, 'favicon-48.png', 300);
 });
 app.get('/favicon-96.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'favicon96')) return;
-  sendCached(res, 'favicon-96.png', 604800);
+  sendCached(res, 'favicon-96.png', 300);
 });
 app.get('/apple-touch-icon.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'appleTouchIcon')) return;
-  sendCached(res, 'apple-touch-icon.png', 604800);
+  sendCached(res, 'apple-touch-icon.png', 300);
 });
 app.get('/icon-192.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'icon192')) return;
-  sendCached(res, 'icon-192.png', 604800);
+  sendCached(res, 'icon-192.png', 300);
 });
 app.get('/icon-256.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'icon256')) return;
-  sendCached(res, 'icon-256.png', 604800);
+  sendCached(res, 'icon-256.png', 300);
 });
 app.get('/icon-384.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'icon384')) return;
-  sendCached(res, 'icon-384.png', 604800);
+  sendCached(res, 'icon-384.png', 300);
 });
 app.get('/icon-512.png', async (req, res) => {
   if (await serveBrandableAsset(res, 'icon512')) return;
-  sendCached(res, 'icon-512.png', 604800);
+  sendCached(res, 'icon-512.png', 300);
 });
 app.get('/logo.svg', async (req, res) => {
   if (await serveBrandableAsset(res, 'logo')) return;
-  sendCached(res, 'logo.svg', 604800);
+  sendCached(res, 'logo.svg', 300);
 });
 app.get('/favicon.svg', async (req, res) => {
   if (await serveBrandableAsset(res, 'faviconSvg')) return;
-  sendCached(res, 'favicon.svg', 604800);
+  sendCached(res, 'favicon.svg', 300);
 });
 app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json', 86400));
 app.get('/sw.js',           (req, res) => {
@@ -6558,13 +6576,15 @@ app.get('/api/branding-status', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store');
     const s = await getGlobalSettings();
+    const b = (s && s.branding) || {};
     res.json({
       success: true,
-      version: (s.branding && s.branding.version) || 1,
-      hasLogo: !!(s.branding && s.branding.logo && s.branding.logo.url)
+      version:    b.version || 1,
+      hasLogo:    !!(b.logo      && b.logo.url),
+      hasFavicon: !!(b.favicon16 && b.favicon16.url)   // ⭐ new
     });
   } catch (e) {
-    res.json({ success: false, version: 1, hasLogo: false });
+    res.json({ success: false, version: 1, hasLogo: false, hasFavicon: false });
   }
 });
 

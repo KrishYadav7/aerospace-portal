@@ -17977,15 +17977,20 @@ async function _uploadBrandingFile(inputEl, endpoint, label) {
     }
 
     showToast(`✓ ${label === 'favicon' ? 'Favicon' : 'Logo'} updated.`, 'success');
-    _refreshFaviconLinksInDocument();
-    await renderAdminBranding();
 
-    /* Nudge the header brand mark to pick up the new logo instantly */
+    /* ⭐ Immediate refresh: bump every <link rel="icon"> to a fresh
+       timestamp so the browser fetches the newly-uploaded file
+       rather than trusting its cached copy of the same URL. */
+    _refreshFaviconLinksInDocument();
+
+    /* For the logo, re-run the swap logic so the header updates too. */
     if (label === 'logo') {
       try { sessionStorage.removeItem('aero_branding_checked'); } catch (e) {}
       document.querySelectorAll('.brand-icon').forEach(el => { el.innerHTML = ''; });
       _applyCustomLogoIfAny().catch(() => {});
     }
+
+    await renderAdminBranding();
   } catch (err) {
     console.error('[uploadBrandingFile]', err);
     showToast('Upload failed: ' + (err.message || 'unknown'), 'error');
@@ -18078,20 +18083,53 @@ function _refreshFaviconLinksInDocument() {
 /* Swap the header brand mark for the admin-uploaded logo, if any. */
 async function _applyCustomLogoIfAny() {
   try {
-    if (sessionStorage.getItem('aero_branding_checked') === '1') return;
-    sessionStorage.setItem('aero_branding_checked', '1');
-
-    const res = await fetch('/api/branding-status?_t=' + Date.now(), { cache: 'no-store' });
-    const data = await res.json();
-    if (!data || !data.success || !data.hasLogo) return;
-
-    document.querySelectorAll('.brand-icon').forEach(el => {
-      if (el.querySelector('img')) return;
-      el.innerHTML =
-        `<img src="/logo.svg?v=${data.version || 1}" alt="Brand logo"
-              style="width:100%;height:100%;object-fit:contain;display:block;"
-              decoding="async">`;
+    /* ⚠️ We deliberately do NOT guard this with a sessionStorage flag.
+       A branding change must reach every open tab the very next time
+       it loads, and the call itself is a few hundred bytes. Running it
+       on every page load is what makes "upload → refresh → icon is
+       still there" true for the admin. */
+    const res = await fetch('/api/branding-status?_t=' + Date.now(), {
+      cache: 'no-store'
     });
-  } catch (e) { /* silent — the inline SVG stays in place */ }
+    const data = await res.json();
+    if (!data || !data.success) return;
+
+    const versionStr = String(data.version || 1);
+
+    /* ⭐ PRIMARY FIX: force the browser to re-fetch every favicon
+       <link> whenever the server's branding version changes.
+
+       Why: the icons in <head> use a hard-coded query string
+       (?v=121). The browser keys its HTTP cache on the *whole URL*,
+       so even after an admin uploads a custom favicon the browser
+       happily keeps serving the old default from its cache for up
+       to a week — which is exactly the "change disappears after
+       refresh" symptom. Bumping the version parameter changes the
+       URL, so the browser fetches the current file fresh. */
+    document.querySelectorAll(
+      'link[rel*="icon"], link[rel="apple-touch-icon"]'
+    ).forEach(link => {
+      const href = link.getAttribute('href') || '';
+      if (!href || href.startsWith('data:')) return;
+      const base = href.split('?')[0];
+      const current = (href.match(/[?&]v=([^&]+)/) || [])[1];
+      if (current !== versionStr) {
+        link.setAttribute('href', base + '?v=' + versionStr);
+      }
+    });
+
+    /* ⭐ Custom logo — swap the header's inline SVG for the upload. */
+    if (data.hasLogo) {
+      document.querySelectorAll('.brand-icon').forEach(el => {
+        if (el.querySelector('img')) return;
+        el.innerHTML =
+          `<img src="/logo.svg?v=${versionStr}" alt="Brand logo"
+                style="width:100%;height:100%;object-fit:contain;display:block;"
+                decoding="async">`;
+      });
+    }
+  } catch (e) {
+    /* silent — the built-in defaults stay in place */
+  }
 }
 
