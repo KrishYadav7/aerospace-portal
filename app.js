@@ -11954,7 +11954,10 @@ async function viewFileOnline(courseId, materialId) {
 
       /* Prefer the URL the server already signed (has ?su=&st=).
          Fall back to the raw URL if signing was not applicable. */
-      const _viewUrl = (meta && meta.fileUrl) ? String(meta.fileUrl) : serverFileUrl;
+      let _viewUrl = (meta && meta.fileUrl) ? String(meta.fileUrl) : serverFileUrl;
+if (_viewUrl.startsWith('/')) {
+  _viewUrl = window.location.origin + _viewUrl;
+}
 
       window.DocumentViewer.open({
         url:            _viewUrl,

@@ -223,13 +223,15 @@
         this._renderError('Could not load the text file. ' + (err.message || ''));
       }
     }
-    /* ------------------------------------------------------------
-       Office documents — Try Google first, then Microsoft, then fallback
+
+     /* ------------------------------------------------------------
+       Office documents — Try Google, then fallback to download
        ------------------------------------------------------------
-       Microsoft's Office Web Viewer frequently fails with 404s and
-       ChunkLoadErrors (especially on authenticated/signed URLs),
-       causing broken layouts. Google Docs Viewer is significantly
-       more reliable for embedded rendering.
+       Microsoft's Office Web Viewer cannot handle signed URLs and
+       frequently fails, causing the browser to render raw PPTX/DOCX
+       text in a broken vertical column. Google Docs Viewer handles
+       signed URLs much better. If Google also fails, we show a
+       clean download fallback instead of raw text.
        ------------------------------------------------------------ */
     _renderOffice() {
       if (this._officeTimer) {
@@ -240,14 +242,11 @@
       const body = this.modal.querySelector('#docvBody');
       const srcEncoded = encodeURIComponent(this.fileUrl);
 
-      // Google viewer (very reliable for authenticated URLs)
+      // Google viewer is the most reliable for embedded rendering of signed URLs
       const googleEmbed = 'https://docs.google.com/viewer?url=' + srcEncoded + '&embedded=true';
-      // Microsoft viewer (fallback)
-      const msEmbed = 'https://view.officeapps.live.com/op/embed.aspx?src=' + srcEncoded;
 
       const providers = [
-        { name: 'Google Docs Viewer',      url: googleEmbed },
-        { name: 'Microsoft Office Viewer', url: msEmbed }
+        { name: 'Google Docs Viewer', url: googleEmbed }
       ];
 
       if (this._officeAttempt >= providers.length) {
@@ -268,8 +267,7 @@
             <div class="docv-spinner"></div>
             <p>Loading document via ${_esc(provider.name)}…</p>
             <p class="docv-loader-hint">
-              If this takes more than a few seconds, we will automatically
-              try a different viewer.
+              If this takes more than a few seconds, we will show a download option.
             </p>
           </div>
         </div>`;
@@ -287,23 +285,21 @@
         }
       };
 
-      // ⭐ 10-second timeout: if the viewer hasn't dismissed its own
-      // loader, trigger the fallback automatically.
+      // ⭐ 6-second timeout: if the viewer hasn't dismissed its own
+      // loader, assume it failed (common with signed URLs) and show
+      // the download fallback.
       this._officeTimer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        console.warn(`[DocumentViewer] ${provider.name} timed out. Trying next provider…`);
+        console.warn(`[DocumentViewer] ${provider.name} timed out. Showing fallback.`);
         this._officeAttempt++;
-        this._renderOffice();
-      }, 10000);
+        this._renderOffice(); 
+      }, 6000);
 
       if (iframe) {
-        // Some browsers fire `load` even on 404s, so we only use it
-        // to dismiss the loader early. The timeout handles real failures.
         iframe.addEventListener('load', () => setTimeout(dismiss, 800), { once: true });
       }
     }
- 
 
     _renderUnsupported() {
       if (this._officeTimer) clearTimeout(this._officeTimer);
