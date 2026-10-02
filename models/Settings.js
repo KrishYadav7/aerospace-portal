@@ -13,6 +13,32 @@ const ownerProfileSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { _id: false });
 
+/* ---------- Branding asset (one uploaded file) ---------- */
+const brandingAssetSchema = new mongoose.Schema({
+  url:       { type: String, default: '' },  // disk filename, e.g. "brand-faviconSvg-…svg"
+  fileName:  { type: String, default: '' },  // original filename for reference
+  mimeType:  { type: String, default: '' },
+  size:      { type: Number, default: 0 },
+  updatedAt: { type: Date,   default: null },
+  updatedBy: { type: String, default: '' }
+}, { _id: false });
+
+/* ---------- Branding (all replaceable assets) ---------- */
+const brandingSchema = new mongoose.Schema({
+  faviconSvg:     { type: brandingAssetSchema, default: () => ({}) },
+  favicon16:      { type: brandingAssetSchema, default: () => ({}) },
+  favicon32:      { type: brandingAssetSchema, default: () => ({}) },
+  favicon48:      { type: brandingAssetSchema, default: () => ({}) },
+  favicon96:      { type: brandingAssetSchema, default: () => ({}) },
+  appleTouchIcon: { type: brandingAssetSchema, default: () => ({}) },
+  icon192:        { type: brandingAssetSchema, default: () => ({}) },
+  icon256:        { type: brandingAssetSchema, default: () => ({}) },
+  icon384:        { type: brandingAssetSchema, default: () => ({}) },
+  icon512:        { type: brandingAssetSchema, default: () => ({}) },
+  logo:           { type: brandingAssetSchema, default: () => ({}) },
+  version:        { type: Number, default: 1 }
+}, { _id: false });
+
 /* ---------- Subscription Plan (multi-tier) ---------- */
 const planSchema = new mongoose.Schema({
   id:             { type: String, required: true },   // e.g. 'plan_6m', 'plan_custom_xyz'
@@ -107,6 +133,9 @@ const settingsSchema = new mongoose.Schema({
       visible: true
     })
   },
+
+  /* ⭐ NEW — Branding assets (favicon, logo, PWA icons) */
+  branding: { type: brandingSchema, default: () => ({}) },
 
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });

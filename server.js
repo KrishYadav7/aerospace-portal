@@ -46,6 +46,54 @@ const UPLOAD_DIR = process.env.UPLOAD_DIR
   : path.join(__dirname, 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+/* ---------- ⭐ Branding assets: dedicated subfolder ---------- */
+const BRANDING_DIR = path.join(UPLOAD_DIR, 'branding');
+if (!fs.existsSync(BRANDING_DIR)) fs.mkdirSync(BRANDING_DIR, { recursive: true });
+
+const BRANDING_ASSET_MAP = {
+  faviconSvg:     { publicPath: '/favicon.svg',          defaultFile: 'favicon.svg',          svgOnly: true  },
+  favicon16:      { publicPath: '/favicon-16.png',       defaultFile: 'favicon-16.png',       pngOnly: true  },
+  favicon32:      { publicPath: '/favicon-32.png',       defaultFile: 'favicon-32.png',       pngOnly: true  },
+  favicon48:      { publicPath: '/favicon-48.png',       defaultFile: 'favicon-48.png',       pngOnly: true  },
+  favicon96:      { publicPath: '/favicon-96.png',       defaultFile: 'favicon-96.png',       pngOnly: true  },
+  appleTouchIcon: { publicPath: '/apple-touch-icon.png', defaultFile: 'apple-touch-icon.png', pngOnly: true  },
+  icon192:        { publicPath: '/icon-192.png',         defaultFile: 'icon-192.png',         pngOnly: true  },
+  icon256:        { publicPath: '/icon-256.png',         defaultFile: 'icon-256.png',         pngOnly: true  },
+  icon384:        { publicPath: '/icon-384.png',         defaultFile: 'icon-384.png',         pngOnly: true  },
+  icon512:        { publicPath: '/icon-512.png',         defaultFile: 'icon-512.png',         pngOnly: true  },
+  logo:           { publicPath: '/logo.svg',             defaultFile: 'logo.svg',             svgOnly: true  }
+};
+
+/* Serve a branding asset if the admin has uploaded one.
+   Returns true when a custom file was sent, false when the caller
+   should fall back to the built-in default. */
+async function serveBrandableAsset(res, assetKey) {
+  const meta = BRANDING_ASSET_MAP[assetKey];
+  if (!meta) return false;
+  try {
+    const s = await getGlobalSettings();
+    const entry = s && s.branding && s.branding[assetKey];
+    if (entry && entry.url) {
+      const fname = path.basename(String(entry.url));
+      if (/^[A-Za-z0-9._-]+$/.test(fname)) {
+        const fp = path.join(BRANDING_DIR, fname);
+        if (fs.existsSync(fp)) {
+          const st = fs.statSync(fp);
+          res.setHeader('Content-Type', entry.mimeType || mimeForFile(fname));
+          res.setHeader('Cache-Control', 'public, max-age=60, must-revalidate');
+          res.setHeader('ETag', `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`);
+          res.sendFile(fp);
+          return true;
+        }
+        console.warn(`[branding] custom file missing on disk for "${assetKey}": ${fname}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[branding] serve check failed:', e.message);
+  }
+  return false;
+}
+
 /* ---------- Explicit MIME map for /uploads/ responses ---------- */
 const MIME_BY_EXT = {
   '.pdf':  'application/pdf',
@@ -442,6 +490,29 @@ const upload = multer({
   storage,
   limits: { fileSize: 30 * 1024 * 1024 },   // was 12 MB — raised so large single-shot uploads don't 413
   fileFilter
+});
+
+/* ---------- ⭐ Branding uploads: SVG + PNG + ICO, 2 MB max ---------- */
+const BRANDING_MIMES = new Set([
+  'image/svg+xml',
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/x-icon',
+  'image/vnd.microsoft.icon'
+]);
+const BRANDING_EXTS = ['.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico'];
+
+const brandingUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (BRANDING_MIMES.has(file.mimetype) || BRANDING_EXTS.includes(ext)) {
+      return cb(null, true);
+    }
+    cb(new Error('Branding files must be SVG, PNG, JPEG, WebP, or ICO.'));
+  }
 });
 /* ============================================================
    HYBRID STATIC FILE SERVING
@@ -867,18 +938,51 @@ app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800
    1-year cache below — downloads them exactly ONCE per device. */
 app.get('/vendor/pdfjs/pdf.min.js',        (req, res) => sendImmutableAsset(res, 'vendor/pdfjs/pdf.min.js'));
 app.get('/vendor/pdfjs/pdf.worker.min.js', (req, res) => sendImmutableAsset(res, 'vendor/pdfjs/pdf.worker.min.js'));
-/* ---- Logo / PWA icons ---- */
-app.get('/favicon-16.png',       (req, res) => sendCached(res, 'favicon-16.png', 604800));
-app.get('/favicon-32.png',       (req, res) => sendCached(res, 'favicon-32.png', 604800));
-app.get('/favicon-48.png',       (req, res) => sendCached(res, 'favicon-48.png', 604800));
-app.get('/favicon-96.png',       (req, res) => sendCached(res, 'favicon-96.png', 604800));
-app.get('/apple-touch-icon.png', (req, res) => sendCached(res, 'apple-touch-icon.png', 604800));
-app.get('/icon-192.png',         (req, res) => sendCached(res, 'icon-192.png', 604800));
-app.get('/icon-256.png',         (req, res) => sendCached(res, 'icon-256.png', 604800));
-app.get('/icon-384.png',         (req, res) => sendCached(res, 'icon-384.png', 604800));
-app.get('/icon-512.png',         (req, res) => sendCached(res, 'icon-512.png', 604800));
-app.get('/logo.svg',             (req, res) => sendCached(res, 'logo.svg', 604800));
-app.get('/favicon.svg',          (req, res) => sendCached(res, 'favicon.svg', 604800));
+/* ---- Logo / PWA icons — admin-overridable via Branding tab ---- */
+app.get('/favicon-16.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'favicon16')) return;
+  sendCached(res, 'favicon-16.png', 604800);
+});
+app.get('/favicon-32.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'favicon32')) return;
+  sendCached(res, 'favicon-32.png', 604800);
+});
+app.get('/favicon-48.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'favicon48')) return;
+  sendCached(res, 'favicon-48.png', 604800);
+});
+app.get('/favicon-96.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'favicon96')) return;
+  sendCached(res, 'favicon-96.png', 604800);
+});
+app.get('/apple-touch-icon.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'appleTouchIcon')) return;
+  sendCached(res, 'apple-touch-icon.png', 604800);
+});
+app.get('/icon-192.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'icon192')) return;
+  sendCached(res, 'icon-192.png', 604800);
+});
+app.get('/icon-256.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'icon256')) return;
+  sendCached(res, 'icon-256.png', 604800);
+});
+app.get('/icon-384.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'icon384')) return;
+  sendCached(res, 'icon-384.png', 604800);
+});
+app.get('/icon-512.png', async (req, res) => {
+  if (await serveBrandableAsset(res, 'icon512')) return;
+  sendCached(res, 'icon-512.png', 604800);
+});
+app.get('/logo.svg', async (req, res) => {
+  if (await serveBrandableAsset(res, 'logo')) return;
+  sendCached(res, 'logo.svg', 604800);
+});
+app.get('/favicon.svg', async (req, res) => {
+  if (await serveBrandableAsset(res, 'faviconSvg')) return;
+  sendCached(res, 'favicon.svg', 604800);
+});
 app.get('/manifest.json',   (req, res) => sendCached(res, 'manifest.json', 86400));
 app.get('/sw.js',           (req, res) => {
   res.setHeader('Cache-Control', 'no-cache'); // SW को हमेशा fresh चाहिए
@@ -6275,6 +6379,448 @@ app.put('/api/admin/settings/owner', requireAdminAuth, async (req, res) => {
   } catch (e) {
     console.error('[admin/settings/owner]', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
+   ⭐ ADMIN — Branding (favicon, logo, PWA icons)
+   ------------------------------------------------------------
+   Files land in uploads/branding/<random>-<type>.<ext> and
+   are served in place of the built-in defaults at the same
+   public URLs (/favicon.svg, /icon-512.png, /logo.svg, …).
+   ============================================================ */
+
+/* ---- Admin: read current branding state ---- */
+app.get('/api/admin/branding', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    const branding = s.branding || {};
+    const assets = {};
+    for (const key of Object.keys(BRANDING_ASSET_MAP)) {
+      const entry = branding[key] || {};
+      assets[key] = {
+        custom:      !!(entry.url && entry.url.length),
+        url:         entry.url      || '',
+        fileName:    entry.fileName || '',
+        mimeType:    entry.mimeType || '',
+        size:        entry.size     || 0,
+        updatedAt:   entry.updatedAt || null,
+        publicPath:  BRANDING_ASSET_MAP[key].publicPath,
+        defaultFile: BRANDING_ASSET_MAP[key].defaultFile,
+        svgOnly:     !!BRANDING_ASSET_MAP[key].svgOnly,
+        pngOnly:     !!BRANDING_ASSET_MAP[key].pngOnly
+      };
+    }
+    res.json({
+      success: true,
+      version: branding.version || 1,
+      assets
+    });
+  } catch (e) {
+    console.error('[admin/branding/GET]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Public: minimal branding status (for client cache-buster) ---- */
+app.get('/api/branding-status', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const s = await getGlobalSettings();
+    res.json({
+      success: true,
+      version: (s.branding && s.branding.version) || 1,
+      hasLogo: !!(s.branding && s.branding.logo && s.branding.logo.url)
+    });
+  } catch (e) {
+    res.json({ success: false, version: 1, hasLogo: false });
+  }
+});
+
+/* ---- Admin: upload ONE asset ---- */
+app.post(
+  '/api/admin/branding/:type',
+  requireAdminAuth,
+  brandingUpload.single('file'),
+  async (req, res) => {
+    try {
+      const type = String(req.params.type);
+      const meta = BRANDING_ASSET_MAP[type];
+      if (!meta) {
+        return res.status(400).json({ success: false, message: `Unknown asset type "${type}".` });
+      }
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ success: false, message: 'No file was uploaded.' });
+      }
+
+      const ext = path.extname(req.file.originalname || '').toLowerCase();
+      if (meta.svgOnly && ext !== '.svg') {
+        return res.status(400).json({ success: false, message: `${type} must be a .svg file.` });
+      }
+      if (meta.pngOnly && ext !== '.png') {
+        return res.status(400).json({ success: false, message: `${type} must be a .png file.` });
+      }
+      if (!BRANDING_EXTS.includes(ext)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Only .svg, .png, .jpg, .jpeg, .webp, or .ico files are accepted.'
+        });
+      }
+
+      /* Lightweight SVG sanity check — reject scripts and event handlers */
+      if (ext === '.svg') {
+        const text = req.file.buffer.toString('utf8').slice(0, 200000);
+        if (/<script\b/i.test(text) || /\son\w+\s*=/i.test(text)) {
+          return res.status(400).json({
+            success: false,
+            message: 'SVG contains inline scripts or event handlers. Please upload a clean SVG.'
+          });
+        }
+        if (!/<svg\b/i.test(text)) {
+          return res.status(400).json({ success: false, message: 'File does not look like an SVG.' });
+        }
+      }
+
+      const safeType = type.replace(/[^A-Za-z0-9]/g, '');
+      const filename = `brand-${safeType}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
+      const filePath = path.join(BRANDING_DIR, filename);
+      fs.writeFileSync(filePath, req.file.buffer);
+
+      const s = await getGlobalSettings();
+      if (!s.branding) s.branding = {};
+
+      /* Remove the previous custom file, if any */
+      const old = s.branding[type];
+      if (old && old.url) {
+        try {
+          const oldPath = path.join(BRANDING_DIR, path.basename(String(old.url)));
+          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        } catch (e) {
+          console.warn('[admin/branding] could not delete old file:', e.message);
+        }
+      }
+
+      s.branding[type] = {
+        url:       filename,
+        fileName:  req.file.originalname || filename,
+        mimeType:  req.file.mimetype || mimeForFile(filename),
+        size:      req.file.size || req.file.buffer.length,
+        updatedAt: new Date(),
+        updatedBy: String(req.adminUser._id)
+      };
+      s.branding.version = (s.branding.version || 1) + 1;
+      s.markModified('branding');
+      s.updatedAt = new Date();
+      await s.save();
+
+      cacheClear('settings:');
+      invalidateGlobalSettingsCache();
+
+      console.log(`[admin/branding] ✅ ${type} → ${filename} (v${s.branding.version})`);
+
+      res.json({
+        success: true,
+        message: `Updated ${type}.`,
+        version: s.branding.version,
+        asset:   s.branding[type]
+      });
+    } catch (e) {
+      console.error('[admin/branding/upload]', e);
+      res.status(500).json({ success: false, message: 'Upload failed: ' + e.message });
+    }
+  }
+);
+
+/* ---- Admin: revert ONE asset to the built-in default ---- */
+app.delete('/api/admin/branding/:type', requireAdminAuth, async (req, res) => {
+  try {
+    const type = String(req.params.type);
+    if (!BRANDING_ASSET_MAP[type]) {
+      return res.status(400).json({ success: false, message: `Unknown asset type "${type}".` });
+    }
+
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+    const entry = s.branding[type];
+    if (entry && entry.url) {
+      try {
+        const oldPath = path.join(BRANDING_DIR, path.basename(String(entry.url)));
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      } catch (e) { /* non-fatal */ }
+    }
+    s.branding[type] = {};
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    res.json({
+      success: true,
+      message: `Reverted ${type} to the default.`,
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[admin/branding/delete]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: reset EVERYTHING at once ---- */
+app.post('/api/admin/branding/reset', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+
+    for (const key of Object.keys(BRANDING_ASSET_MAP)) {
+      const entry = s.branding[key];
+      if (entry && entry.url) {
+        try {
+          const fp = path.join(BRANDING_DIR, path.basename(String(entry.url)));
+          if (fs.existsSync(fp)) fs.unlinkSync(fp);
+        } catch (e) { /* non-fatal */ }
+      }
+      s.branding[key] = {};
+    }
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    res.json({
+      success: true,
+      message: 'All custom branding assets reverted to defaults.',
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[admin/branding/reset]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   ⭐ ADMIN — Branding (favicon, logo, PWA icons)
+   ------------------------------------------------------------
+   Files land in uploads/branding/<random>-<type>.<ext> and
+   are served in place of the built-in defaults at the same
+   public URLs (/favicon.svg, /icon-512.png, /logo.svg, …).
+   ============================================================ */
+
+/* ---- Admin: read current branding state ---- */
+app.get('/api/admin/branding', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    const branding = s.branding || {};
+    const assets = {};
+    for (const key of Object.keys(BRANDING_ASSET_MAP)) {
+      const entry = branding[key] || {};
+      assets[key] = {
+        custom:      !!(entry.url && entry.url.length),
+        url:         entry.url      || '',
+        fileName:    entry.fileName || '',
+        mimeType:    entry.mimeType || '',
+        size:        entry.size     || 0,
+        updatedAt:   entry.updatedAt || null,
+        publicPath:  BRANDING_ASSET_MAP[key].publicPath,
+        defaultFile: BRANDING_ASSET_MAP[key].defaultFile,
+        svgOnly:     !!BRANDING_ASSET_MAP[key].svgOnly,
+        pngOnly:     !!BRANDING_ASSET_MAP[key].pngOnly
+      };
+    }
+    res.json({
+      success: true,
+      version: branding.version || 1,
+      assets
+    });
+  } catch (e) {
+    console.error('[admin/branding/GET]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Public: minimal branding status (for client cache-buster) ---- */
+app.get('/api/branding-status', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const s = await getGlobalSettings();
+    res.json({
+      success: true,
+      version: (s.branding && s.branding.version) || 1,
+      hasLogo: !!(s.branding && s.branding.logo && s.branding.logo.url)
+    });
+  } catch (e) {
+    res.json({ success: false, version: 1, hasLogo: false });
+  }
+});
+
+/* ---- Admin: upload ONE asset ---- */
+app.post(
+  '/api/admin/branding/:type',
+  requireAdminAuth,
+  brandingUpload.single('file'),
+  async (req, res) => {
+    try {
+      const type = String(req.params.type);
+      const meta = BRANDING_ASSET_MAP[type];
+      if (!meta) {
+        return res.status(400).json({ success: false, message: `Unknown asset type "${type}".` });
+      }
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ success: false, message: 'No file was uploaded.' });
+      }
+
+      const ext = path.extname(req.file.originalname || '').toLowerCase();
+      if (meta.svgOnly && ext !== '.svg') {
+        return res.status(400).json({ success: false, message: `${type} must be a .svg file.` });
+      }
+      if (meta.pngOnly && ext !== '.png') {
+        return res.status(400).json({ success: false, message: `${type} must be a .png file.` });
+      }
+      if (!BRANDING_EXTS.includes(ext)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Only .svg, .png, .jpg, .jpeg, .webp, or .ico files are accepted.'
+        });
+      }
+
+      /* Lightweight SVG sanity check — reject scripts and event handlers */
+      if (ext === '.svg') {
+        const text = req.file.buffer.toString('utf8').slice(0, 200000);
+        if (/<script\b/i.test(text) || /\son\w+\s*=/i.test(text)) {
+          return res.status(400).json({
+            success: false,
+            message: 'SVG contains inline scripts or event handlers. Please upload a clean SVG.'
+          });
+        }
+        if (!/<svg\b/i.test(text)) {
+          return res.status(400).json({ success: false, message: 'File does not look like an SVG.' });
+        }
+      }
+
+      const safeType = type.replace(/[^A-Za-z0-9]/g, '');
+      const filename = `brand-${safeType}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
+      const filePath = path.join(BRANDING_DIR, filename);
+      fs.writeFileSync(filePath, req.file.buffer);
+
+      const s = await getGlobalSettings();
+      if (!s.branding) s.branding = {};
+
+      /* Remove the previous custom file, if any */
+      const old = s.branding[type];
+      if (old && old.url) {
+        try {
+          const oldPath = path.join(BRANDING_DIR, path.basename(String(old.url)));
+          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+        } catch (e) {
+          console.warn('[admin/branding] could not delete old file:', e.message);
+        }
+      }
+
+      s.branding[type] = {
+        url:       filename,
+        fileName:  req.file.originalname || filename,
+        mimeType:  req.file.mimetype || mimeForFile(filename),
+        size:      req.file.size || req.file.buffer.length,
+        updatedAt: new Date(),
+        updatedBy: String(req.adminUser._id)
+      };
+      s.branding.version = (s.branding.version || 1) + 1;
+      s.markModified('branding');
+      s.updatedAt = new Date();
+      await s.save();
+
+      cacheClear('settings:');
+      invalidateGlobalSettingsCache();
+
+      console.log(`[admin/branding] ✅ ${type} → ${filename} (v${s.branding.version})`);
+
+      res.json({
+        success: true,
+        message: `Updated ${type}.`,
+        version: s.branding.version,
+        asset:   s.branding[type]
+      });
+    } catch (e) {
+      console.error('[admin/branding/upload]', e);
+      res.status(500).json({ success: false, message: 'Upload failed: ' + e.message });
+    }
+  }
+);
+
+/* ---- Admin: revert ONE asset to the built-in default ---- */
+app.delete('/api/admin/branding/:type', requireAdminAuth, async (req, res) => {
+  try {
+    const type = String(req.params.type);
+    if (!BRANDING_ASSET_MAP[type]) {
+      return res.status(400).json({ success: false, message: `Unknown asset type "${type}".` });
+    }
+
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+    const entry = s.branding[type];
+    if (entry && entry.url) {
+      try {
+        const oldPath = path.join(BRANDING_DIR, path.basename(String(entry.url)));
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      } catch (e) { /* non-fatal */ }
+    }
+    s.branding[type] = {};
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    res.json({
+      success: true,
+      message: `Reverted ${type} to the default.`,
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[admin/branding/delete]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ---- Admin: reset EVERYTHING at once ---- */
+app.post('/api/admin/branding/reset', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+
+    for (const key of Object.keys(BRANDING_ASSET_MAP)) {
+      const entry = s.branding[key];
+      if (entry && entry.url) {
+        try {
+          const fp = path.join(BRANDING_DIR, path.basename(String(entry.url)));
+          if (fs.existsSync(fp)) fs.unlinkSync(fp);
+        } catch (e) { /* non-fatal */ }
+      }
+      s.branding[key] = {};
+    }
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    res.json({
+      success: true,
+      message: 'All custom branding assets reverted to defaults.',
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[admin/branding/reset]', e);
+    res.status(500).json({ success: false, message: e.message });
   }
 });
 

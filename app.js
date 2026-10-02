@@ -4156,7 +4156,8 @@ function updateAdminTabUI() {
     security:      { icon: 'fa-shield-halved',  text: 'Admin Security' },
     feedback:      { icon: 'fa-comment-dots',        text: 'Feedback Moderation' },
     contributions: { icon: 'fa-hand-holding-heart',  text: 'Student Contributions' },
-    backup:        { icon: 'fa-database',            text: 'Backup & Restore' }
+    backup:        { icon: 'fa-database',            text: 'Backup & Restore' },
+    branding:      { icon: 'fa-palette',             text: 'Branding — Favicon & App Icons' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -4213,6 +4214,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'feedback')      renderAdminFeedback();
   else if (adminTab === 'contributions') renderAdminContributions();
   else if (adminTab === 'backup')        renderAdminBackup();
+  else if (adminTab === 'branding')      renderAdminBranding();
 }
 
 /* ============================================================
@@ -12649,6 +12651,8 @@ function initApp() {
     _sessionKilled = false;
     startSessionHeartbeat();
   }
+  /* ⭐ Swap the header brand mark for the admin-uploaded logo (if any) */
+  _applyCustomLogoIfAny().catch(() => {});
   updateThemeIcon();
   syncHashToState();
 
@@ -17737,3 +17741,285 @@ function aiHomeUsePrompt(btn) {
      user has finished typing their credentials. */
   setTimeout(fire, 3000);
 })();
+
+/* ============================================================
+   ⭐ ADMIN — BRANDING PANEL
+   ------------------------------------------------------------
+   Upload / replace / revert each brandable asset. Files are
+   stored on disk (uploads/branding/) and served at the same
+   public URLs, so no HTML or CSS change is ever needed.
+   ============================================================ */
+
+const BRANDING_ASSET_ORDER = [
+  { key: 'faviconSvg',     label: 'Favicon (SVG)',        hint: 'Vector favicon · 1:1 aspect · max 200 KB',   size: null },
+  { key: 'favicon16',      label: 'Favicon 16 × 16',      hint: 'PNG · 16 × 16 px',                           size: 16   },
+  { key: 'favicon32',      label: 'Favicon 32 × 32',      hint: 'PNG · 32 × 32 px',                           size: 32   },
+  { key: 'favicon48',      label: 'Favicon 48 × 48',      hint: 'PNG · 48 × 48 px',                           size: 48   },
+  { key: 'favicon96',      label: 'Favicon 96 × 96',      hint: 'PNG · 96 × 96 px',                           size: 96   },
+  { key: 'appleTouchIcon', label: 'Apple Touch Icon',     hint: 'PNG · 180 × 180 px (iOS home screen)',       size: 180  },
+  { key: 'icon192',        label: 'PWA Icon 192 × 192',   hint: 'PNG · 192 × 192 px (Android)',               size: 192  },
+  { key: 'icon256',        label: 'PWA Icon 256 × 256',   hint: 'PNG · 256 × 256 px',                         size: 256  },
+  { key: 'icon384',        label: 'PWA Icon 384 × 384',   hint: 'PNG · 384 × 384 px',                         size: 384  },
+  { key: 'icon512',        label: 'PWA Icon 512 × 512',   hint: 'PNG · 512 × 512 px (maskable)',              size: 512  },
+  { key: 'logo',           label: 'Brand Logo (SVG)',     hint: 'Served at /logo.svg · 1:1 aspect preferred', size: null }
+];
+
+async function renderAdminBranding() {
+  const host = document.getElementById('adminBrandingContent');
+  if (!host) return;
+  host.innerHTML = `<div class="empty-state">
+    <i class="fas fa-spinner fa-spin"></i><p>Loading branding…</p>
+  </div>`;
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/branding?_t=${Date.now()}`);
+    if (!data || !data.success) throw new Error((data && data.message) || 'Could not load branding.');
+    _paintBrandingPanel(host, data);
+  } catch (err) {
+    console.error('[renderAdminBranding]', err);
+    host.innerHTML = `<div class="empty-state">
+      <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);"></i>
+      <p style="color:var(--rose-500);">Could not load branding: ${escapeHtml(err.message)}</p>
+      <button class="btn btn-outline" style="margin-top:14px;" onclick="renderAdminBranding()">
+        <i class="fas fa-rotate"></i> Retry
+      </button>
+    </div>`;
+  }
+}
+
+function _paintBrandingPanel(host, data) {
+  const v = data.version || 1;
+  const assets = data.assets || {};
+
+  let cards = '';
+  BRANDING_ASSET_ORDER.forEach(item => {
+    const a = assets[item.key] || {};
+    const isCustom = !!a.custom;
+    const previewUrl = `${a.publicPath || '#'}?v=${v}&t=${Date.now()}`;
+    const dimClass = item.size ? `branding-preview--${item.size}` : 'branding-preview--svg';
+    const isSvgSlot = (item.key === 'faviconSvg' || item.key === 'logo');
+    const acceptAttr = isSvgSlot ? '.svg' : '.png';
+
+    cards += `
+      <div class="branding-card ${isCustom ? 'is-custom' : 'is-default'}">
+        <div class="branding-preview ${dimClass}">
+          <img src="${previewUrl}" alt="${escapeHtml(item.label)}"
+               loading="eager" decoding="async"
+               onerror="this.style.opacity=.15;">
+        </div>
+        <div class="branding-card-body">
+          <div class="branding-card-head">
+            <strong>${escapeHtml(item.label)}</strong>
+            <span class="branding-status ${isCustom ? 'custom' : 'default'}">
+              ${isCustom ? '<i class="fas fa-check-circle"></i> Custom' : 'Default'}
+            </span>
+          </div>
+          <div class="branding-hint">${escapeHtml(item.hint)}</div>
+          ${isCustom && a.fileName ? `
+            <div class="branding-file" title="${escapeHtml(a.fileName)}">
+              <i class="fas fa-file"></i> ${escapeHtml(a.fileName)}
+              ${a.size ? `<span class="branding-size">${(a.size / 1024).toFixed(1)} KB</span>` : ''}
+            </div>
+          ` : ''}
+          ${isCustom && a.updatedAt ? `
+            <div class="branding-meta">
+              <i class="fas fa-clock"></i> Updated ${timeAgo(a.updatedAt)}
+            </div>
+          ` : ''}
+        </div>
+        <div class="branding-actions">
+          <label class="btn btn-primary btn-sm branding-upload-btn">
+            <i class="fas fa-upload"></i> ${isCustom ? 'Replace' : 'Upload'}
+            <input type="file"
+                   accept="${acceptAttr}"
+                   style="display:none;"
+                   onchange="uploadBrandingAsset('${item.key}', this)">
+          </label>
+          ${isCustom ? `
+            <button class="btn btn-outline btn-sm"
+                    onclick="removeBrandingAsset('${item.key}')"
+                    title="Revert to the built-in default">
+              <i class="fas fa-rotate-left"></i> Revert
+            </button>` : ''}
+        </div>
+      </div>`;
+  });
+
+  host.innerHTML = `
+    <div class="editor-section branding-intro">
+      <div class="editor-section-title">
+        <i class="fas fa-palette"></i> Branding & App Icons
+      </div>
+      <p class="editor-hint">
+        Replace the browser-tab favicon, the mobile home-screen icon, the install
+        prompt icon and any other brandable asset. Uploads here
+        <strong>override the built-in defaults</strong> for everyone, at the same
+        public URLs — no code change or redeploy needed.
+      </p>
+      <p class="editor-hint" style="margin-top:6px;">
+        <i class="fas fa-info-circle"></i>
+        For the best result on phones and tablets, upload each PNG in its exact
+        pixel size. Any raster image will be scaled automatically by the browser,
+        but a correctly sized file looks sharpest.
+      </p>
+    </div>
+
+    <div class="branding-grid">
+      ${cards}
+    </div>
+
+    <div class="editor-section" style="margin-top:20px;">
+      <div class="editor-section-title">
+        <i class="fas fa-triangle-exclamation" style="color:var(--rose-500);"></i>
+        Reset everything
+      </div>
+      <p class="editor-hint">
+        Reverts every asset below back to the built-in AeroGyan defaults and removes
+        all uploaded files from the server. This cannot be undone.
+      </p>
+      <button class="btn btn-danger" onclick="resetAllBranding()">
+        <i class="fas fa-rotate-left"></i> Reset ALL branding to defaults
+      </button>
+    </div>
+  `;
+}
+
+async function uploadBrandingAsset(type, inputEl) {
+  if (!inputEl || !inputEl.files || !inputEl.files[0]) return;
+  const file = inputEl.files[0];
+
+  const maxBytes = 2 * 1024 * 1024;
+  if (file.size > maxBytes) {
+    showToast(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 2 MB.`, 'error');
+    inputEl.value = '';
+    return;
+  }
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const isSvg = ext === 'svg';
+  const svgOnly = type === 'faviconSvg' || type === 'logo';
+  if (svgOnly && !isSvg)        { showToast(`${type} must be an .svg file.`, 'error'); inputEl.value = ''; return; }
+  if (!svgOnly && ext !== 'png') { showToast(`${type} must be a .png file.`, 'error'); inputEl.value = ''; return; }
+
+  const form = new FormData();
+  form.append('file', file);
+
+  const btn = inputEl.closest('.branding-upload-btn');
+  const originalHTML = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = '0.7';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading…';
+  }
+
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(
+      `${API_BASE}/admin/branding/${encodeURIComponent(type)}`,
+      {
+        method: 'POST',
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+        body: form
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok || !data.success) {
+      throw new Error(data.message || `HTTP ${res.status}`);
+    }
+
+    showToast(`✓ ${type} updated.`, 'success');
+    _refreshFaviconLinksInDocument();
+    await renderAdminBranding();
+  } catch (err) {
+    console.error('[uploadBrandingAsset]', err);
+    showToast('Upload failed: ' + (err.message || 'unknown'), 'error');
+    if (btn) { btn.style.pointerEvents = ''; btn.style.opacity = ''; btn.innerHTML = originalHTML; }
+  } finally {
+    inputEl.value = '';
+  }
+}
+
+async function removeBrandingAsset(type) {
+  if (!confirm(`Revert "${type}" to the built-in default?`)) return;
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(
+      `${API_BASE}/admin/branding/${encodeURIComponent(type)}`,
+      {
+        method: 'DELETE',
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
+
+    showToast('✓ Reverted to default.', 'success');
+    _refreshFaviconLinksInDocument();
+    await renderAdminBranding();
+  } catch (err) {
+    console.error('[removeBrandingAsset]', err);
+    showToast('Could not revert: ' + (err.message || 'unknown'), 'error');
+  }
+}
+
+async function resetAllBranding() {
+  if (!confirm(
+    'Reset ALL branding assets to the built-in defaults?\n\n' +
+    'Every uploaded file will be removed from the server. ' +
+    'This cannot be undone.'
+  )) return;
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(`${API_BASE}/admin/branding/reset`, {
+      method: 'POST',
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.message || `HTTP ${res.status}`);
+
+    showToast('✓ All branding reset to defaults.', 'success');
+    _refreshFaviconLinksInDocument();
+    await renderAdminBranding();
+  } catch (err) {
+    console.error('[resetAllBranding]', err);
+    showToast('Reset failed: ' + (err.message || 'unknown'), 'error');
+  }
+}
+
+/* Force the browser to re-fetch every icon <link> in <head>.
+   The server ignores the ?v= query; the browser uses it to
+   bypass its icon cache. */
+function _refreshFaviconLinksInDocument() {
+  try {
+    const links = document.querySelectorAll('link[rel*="icon"], link[rel="apple-touch-icon"]');
+    const stamp = Date.now();
+    links.forEach(link => {
+      const href = link.getAttribute('href') || '';
+      if (!href || href.startsWith('data:')) return;
+      const base = href.split('?')[0];
+      link.setAttribute('href', base + '?v=' + stamp);
+    });
+  } catch (e) { /* purely a nicety */ }
+}
+
+/* Swap the header brand mark for the admin-uploaded logo, if any.
+   Falls back silently to the inline SVG that ships in the HTML. */
+async function _applyCustomLogoIfAny() {
+  try {
+    if (sessionStorage.getItem('aero_branding_checked') === '1') return;
+    sessionStorage.setItem('aero_branding_checked', '1');
+
+    const res = await fetch('/api/branding-status?_t=' + Date.now(), { cache: 'no-store' });
+    const data = await res.json();
+    if (!data || !data.success || !data.hasLogo) return;
+
+    document.querySelectorAll('.brand-icon').forEach(el => {
+      if (el.querySelector('img')) return;
+      el.innerHTML =
+        `<img src="/logo.svg?v=${data.version || 1}" alt="Brand logo"
+              style="width:100%;height:100%;object-fit:contain;display:block;"
+              decoding="async">`;
+    });
+  } catch (e) { /* silent — the inline SVG stays in place */ }
+}
+
