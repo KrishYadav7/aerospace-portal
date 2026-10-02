@@ -11716,6 +11716,23 @@ function assertMaterialUnlocked(courseId, materialId, opts) {
   }
   return false;
 }
+/* ============================================================
+   ⭐ _detectDocumentKind — classify a non-PDF file by its name
+      or URL so viewFileOnline() can route it to the correct
+      viewer. Pure function; never mutates state.
+   ============================================================ */
+function _detectDocumentKind(fileName, url) {
+  const hay = (String(fileName || '') + ' ' + String(url || ''))
+    .toLowerCase().split('?')[0].split('#')[0];
+  const m = hay.match(/\.([a-z0-9]{1,6})(?:\s|$|\/|&|,)/);
+  const ext = m ? m[1] : '';
+  if (['pptx','ppt','ppsx','pps','potx','pot'].includes(ext))  return 'presentation';
+  if (['docx','doc','rtf','odt'].includes(ext))                return 'document';
+  if (['xlsx','xls','csv','ods'].includes(ext))                return 'spreadsheet';
+  if (['png','jpg','jpeg','gif','webp','avif','bmp','svg'].includes(ext)) return 'image';
+  if (['txt','md','log','json','xml','yaml','yml','ini'].includes(ext))   return 'text';
+  return 'unknown';
+}
 
 /* ============================================================
    viewFileOnline — PREMIUM + PREVIEW GATED, STREAMING-FIRST
@@ -11886,10 +11903,75 @@ async function viewFileOnline(courseId, materialId) {
     return;
   }
 
-  /* ⑤b Non-PDF but has a public URL → not previewable */
-  if (!isPdf && (isDiskUrl || isExternalUrl)) {
-    return showToast('Preview is only available for PDFs.', 'error');
-  }
+    /* ============================================================
+       ⑤b  ⭐ NON-PDF MATERIALS → Universal DocumentViewer
+       ------------------------------------------------------------
+       Handles PPTX/PPT, DOCX/DOC, XLSX/XLS/CSV, images, and
+       plain text. The PDF path above is completely unchanged;
+       this block only runs when isPdf is false.
+
+       Design notes
+       ------------
+       • The signed URL (fileUrl from /file?meta=1) is used so
+         Microsoft's Office viewer can fetch the file. For users
+         without full access the file is not signed, so we show
+         the same lock message the PDF path already uses.
+       • Office formats cannot be physically truncated for a
+         free preview, so they are treated as fully locked when
+         the user does not own the content.
+       • Falls through to a clean "Preview unavailable" toast
+         for unknown formats rather than a misleading error.
+       ============================================================ */
+    if (!isPdf && (isDiskUrl || isExternalUrl)) {
+      const _docKind = _detectDocumentKind(fileName, serverFileUrl);
+
+      if (_docKind === 'unknown') {
+        return showToast('Preview is not available for this file format.', 'info');
+      }
+
+      const _isOfficeDoc = _docKind === 'presentation' ||
+                           _docKind === 'document'     ||
+                           _docKind === 'spreadsheet';
+
+      /* Office documents need a publicly-reachable signed URL
+         for Microsoft's servers. Without full access there is no
+         signed URL, so we show the same lock toast as PDFs. */
+      if (_isOfficeDoc && !hasFullAccess) {
+        if (!currentUser || (meta && meta.requiresLogin)) {
+          return showToast('Please log in to open this material.', 'error');
+        }
+        if (meta && meta.isCoursePremium) {
+          return showToast('Purchase the course to access this material.', 'error');
+        }
+        return showToast('This content is locked. Purchase it to unlock.', 'error');
+      }
+
+      /* Guard: DocumentViewer must have loaded. It's `defer`ed, so
+         it should already be present by the time a user clicks. */
+      if (!window.DocumentViewer || typeof window.DocumentViewer.open !== 'function') {
+        return showToast('Document viewer is still loading. Please try again.', 'info');
+      }
+
+      /* Prefer the URL the server already signed (has ?su=&st=).
+         Fall back to the raw URL if signing was not applicable. */
+      const _viewUrl = (meta && meta.fileUrl) ? String(meta.fileUrl) : serverFileUrl;
+
+      window.DocumentViewer.open({
+        url:            _viewUrl,
+        fileName:       fileName,
+        title:          mat.title,
+        docType:        _docKind,
+        courseId:       course.id,
+        materialId:     mat.id,
+        hasFullAccess:  hasFullAccess,
+        previewPercent: previewPercent,
+        lockReason:     lockReason,
+        username:       currentUser
+                          ? (currentUser.fullName || currentUser.username || 'Student')
+                          : 'Guest'
+      });
+      return;
+    }
 
   /* ⑤c LEGACY BASE64 FALLBACK — only when streaming isn't possible */
   try { await pdfJsPromise; }

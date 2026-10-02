@@ -12599,3 +12599,295 @@ html {
   border-color: rgba(255, 255, 255, .15) !important;
   box-shadow: 0 4px 14px rgba(0, 0, 0, .5) !important;
 }
+/* ============================================================
+   76. UNIVERSAL DOCUMENT VIEWER
+   ------------------------------------------------------------
+   Handles every non-PDF, non-video material:
+     • PPTX / PPT / PPSX / PPS   → MS Office Online embed
+     • DOCX / DOC / RTF / ODT    → MS Office Online embed
+     • XLSX / XLS / CSV / ODS    → MS Office Online embed
+     • PNG / JPG / GIF / WebP    → inline <img>
+     • TXT / MD / JSON / XML     → styled <pre>
+
+   Class prefix `docv-` guarantees zero collision with the PDF
+   (pdfv-) and video (vp-) viewers. Purely additive — the
+   existing viewers are untouched.
+   ============================================================ */
+
+.doc-viewer-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(16, 18, 22, .96);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: none;
+}
+.doc-viewer-modal.active { display: flex; }
+
+.docv-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---- Toolbar ---- */
+.docv-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: rgba(10, 14, 31, .96);
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  color: #fff;
+  flex-shrink: 0;
+  z-index: 5;
+}
+.docv-toolbar-left,
+.docv-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.docv-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 15px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .12);
+  border: 1px solid rgba(255, 255, 255, .22);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: .2s;
+  flex-shrink: 0;
+}
+.docv-back-btn:hover {
+  background: rgba(99, 102, 241, .75);
+  border-color: rgba(255, 255, 255, .45);
+  transform: translateX(-2px);
+}
+.docv-back-btn:active { transform: translateX(-2px) scale(.97); }
+.docv-back-btn i { font-size: 12px; }
+
+.docv-title {
+  margin-left: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  max-width: min(60vw, 520px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docv-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, .14);
+  background: rgba(255, 255, 255, .08);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: .2s;
+  flex-shrink: 0;
+}
+.docv-btn:hover { background: rgba(255, 255, 255, .2); }
+.docv-btn:active { transform: scale(.95); }
+
+/* ---- Body ---- */
+.docv-body {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: #131727;
+}
+
+.docv-watermark {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  background-repeat: repeat;
+  opacity: .3;
+}
+
+/* ---- Office iframe ---- */
+.docv-office-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.docv-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: #fff;
+}
+
+/* ---- Image ---- */
+.docv-image-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #131727;
+}
+.docv-image-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+}
+
+/* ---- Text ---- */
+.docv-text-wrap {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  padding: 24px;
+  background: #131727;
+}
+.docv-text {
+  max-width: 900px;
+  width: 100%;
+  margin: 0;
+  padding: 22px 26px;
+  border-radius: 8px;
+  background: #1e2338;
+  color: #e2e8f0;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .4);
+}
+
+/* ---- Loader ---- */
+.docv-loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px 20px;
+  color: #fff;
+  text-align: center;
+}
+.docv-loader-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  background: rgba(19, 23, 39, .94);
+  pointer-events: none;
+  transition: opacity .25s ease;
+}
+.docv-loader p {
+  margin: 0;
+  font-size: 14px;
+  color: rgba(255, 255, 255, .9);
+}
+.docv-loader-hint {
+  max-width: 380px;
+  font-size: 12px !important;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, .55) !important;
+}
+.docv-loader-hint i { margin: 0 3px; }
+
+.docv-spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, .15);
+  border-top-color: #6366f1;
+  animation: docvSpin .8s linear infinite;
+}
+@keyframes docvSpin { to { transform: rotate(360deg); } }
+
+/* ---- Unsupported / error card ---- */
+.docv-unsupported {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px 24px;
+  color: #fff;
+  text-align: center;
+}
+.docv-unsupported i {
+  font-size: 54px;
+  color: #f59e0b;
+  opacity: .9;
+}
+.docv-unsupported h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+.docv-unsupported p {
+  max-width: 480px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, .7);
+}
+.docv-unsupported a.btn { text-decoration: none; }
+
+/* ---- Mobile ---- */
+@media (max-width: 640px) {
+  .docv-toolbar { padding: 8px 12px; gap: 8px; }
+  .docv-title { max-width: 46vw; font-size: 13px; }
+  .docv-back-btn { padding: 7px 12px; font-size: 12px; }
+  .docv-btn { width: 34px; height: 34px; }
+  .docv-text-wrap,
+  .docv-image-wrap { padding: 12px; }
+  .docv-text { padding: 16px 18px; font-size: 12.5px; }
+}
+@media (max-width: 420px) {
+  .docv-back-btn span { display: none; }
+  .docv-back-btn { padding: 8px 10px; }
+  .docv-title { max-width: 42vw; font-size: 12.5px; }
+}
+
+/* ---- Stand down the mobile bottom nav + back-to-top while
+        the document viewer is open (same pattern used by the
+        PDF and video viewers). ---- */
+body:has(.doc-viewer-modal.active) .mobile-bottom-nav,
+body:has(.doc-viewer-modal.active) .aero-to-top {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .docv-spinner { animation-duration: 1.6s; }
+  .docv-back-btn,
+  .docv-btn { transition: none; }
+}

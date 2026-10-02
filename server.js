@@ -853,9 +853,10 @@ function sendImmutableAsset(res, filename) {
     res.status(404).send('Not found');
   }
 }
-app.get('/app.js',          (req, res) => sendImmutableAsset(res, 'app.js'));
-app.get('/styles.css',      (req, res) => sendImmutableAsset(res, 'styles.css'));
-app.get('/media-viewer.js', (req, res) => sendImmutableAsset(res, 'media-viewer.js'));
+app.get('/app.js',             (req, res) => sendImmutableAsset(res, 'app.js'));
+app.get('/styles.css',         (req, res) => sendImmutableAsset(res, 'styles.css'));
+app.get('/media-viewer.js',    (req, res) => sendImmutableAsset(res, 'media-viewer.js'));
+app.get('/document-viewer.js', (req, res) => sendImmutableAsset(res, 'document-viewer.js'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 
 /* ⭐ PDF.js — self-hosted so campus / corporate proxies that
