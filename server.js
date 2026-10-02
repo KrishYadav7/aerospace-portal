@@ -50,18 +50,36 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const BRANDING_DIR = path.join(UPLOAD_DIR, 'branding');
 if (!fs.existsSync(BRANDING_DIR)) fs.mkdirSync(BRANDING_DIR, { recursive: true });
 
+/* Every public URL that gets an admin-override, mapped to the
+   Settings.branding.<key> that stores the current filename. */
 const BRANDING_ASSET_MAP = {
-  faviconSvg:     { publicPath: '/favicon.svg',          defaultFile: 'favicon.svg',          svgOnly: true  },
-  favicon16:      { publicPath: '/favicon-16.png',       defaultFile: 'favicon-16.png',       pngOnly: true  },
-  favicon32:      { publicPath: '/favicon-32.png',       defaultFile: 'favicon-32.png',       pngOnly: true  },
-  favicon48:      { publicPath: '/favicon-48.png',       defaultFile: 'favicon-48.png',       pngOnly: true  },
-  favicon96:      { publicPath: '/favicon-96.png',       defaultFile: 'favicon-96.png',       pngOnly: true  },
-  appleTouchIcon: { publicPath: '/apple-touch-icon.png', defaultFile: 'apple-touch-icon.png', pngOnly: true  },
-  icon192:        { publicPath: '/icon-192.png',         defaultFile: 'icon-192.png',         pngOnly: true  },
-  icon256:        { publicPath: '/icon-256.png',         defaultFile: 'icon-256.png',         pngOnly: true  },
-  icon384:        { publicPath: '/icon-384.png',         defaultFile: 'icon-384.png',         pngOnly: true  },
-  icon512:        { publicPath: '/icon-512.png',         defaultFile: 'icon-512.png',         pngOnly: true  },
-  logo:           { publicPath: '/logo.svg',             defaultFile: 'logo.svg',             svgOnly: true  }
+  faviconSvg:     { publicPath: '/favicon.svg',          defaultFile: 'favicon.svg'          },
+  favicon16:      { publicPath: '/favicon-16.png',       defaultFile: 'favicon-16.png'       },
+  favicon32:      { publicPath: '/favicon-32.png',       defaultFile: 'favicon-32.png'       },
+  favicon48:      { publicPath: '/favicon-48.png',       defaultFile: 'favicon-48.png'       },
+  favicon96:      { publicPath: '/favicon-96.png',       defaultFile: 'favicon-96.png'       },
+  appleTouchIcon: { publicPath: '/apple-touch-icon.png', defaultFile: 'apple-touch-icon.png' },
+  icon192:        { publicPath: '/icon-192.png',         defaultFile: 'icon-192.png'         },
+  icon256:        { publicPath: '/icon-256.png',         defaultFile: 'icon-256.png'         },
+  icon384:        { publicPath: '/icon-384.png',         defaultFile: 'icon-384.png'         },
+  icon512:        { publicPath: '/icon-512.png',         defaultFile: 'icon-512.png'         },
+  logo:           { publicPath: '/logo.svg',             defaultFile: 'logo.svg'             }
+};
+
+/* PNG dimensions the favicon generator must produce. */
+const FAVICON_SIZES = [16, 32, 48, 96, 180, 192, 256, 384, 512];
+
+/* Which generated variant maps to which Settings key. */
+const FAVICON_SIZE_KEYS = {
+  16:  'favicon16',
+  32:  'favicon32',
+  48:  'favicon48',
+  96:  'favicon96',
+  180: 'appleTouchIcon',
+  192: 'icon192',
+  256: 'icon256',
+  384: 'icon384',
+  512: 'icon512'
 };
 
 /* Serve a branding asset if the admin has uploaded one.
@@ -92,6 +110,62 @@ async function serveBrandableAsset(res, assetKey) {
     console.warn('[branding] serve check failed:', e.message);
   }
   return false;
+}
+
+/* ------------------------------------------------------------
+   Wrap any raster image in a self-contained SVG so /favicon.svg
+   and /logo.svg always serve a valid SVG document.
+   ------------------------------------------------------------ */
+function rasterToSvgWrapper(pngBuffer, width, height) {
+  const b64 = pngBuffer.toString('base64');
+  return Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ` +
+    `viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">` +
+    `<image width="${width}" height="${height}" ` +
+    `xlink:href="data:image/png;base64,${b64}"/></svg>`,
+    'utf8'
+  );
+}
+
+/* ------------------------------------------------------------
+   Delete every file in uploads/branding whose name starts with
+   the given prefix. Called before writing a fresh set.
+   ------------------------------------------------------------ */
+function purgeBrandingFiles(prefix) {
+  try {
+    const entries = fs.readdirSync(BRANDING_DIR);
+    for (const f of entries) {
+      if (f.startsWith(prefix)) {
+        try { fs.unlinkSync(path.join(BRANDING_DIR, f)); }
+        catch (e) { /* non-fatal */ }
+      }
+    }
+  } catch (e) { /* non-fatal */ }
+}
+
+/* ------------------------------------------------------------
+   Detect whether a buffer is an SVG (by content, not extension).
+   ------------------------------------------------------------ */
+function looksLikeSvg(buffer) {
+  try {
+    const head = buffer.slice(0, 4096).toString('utf8');
+    return /<svg[\s>]/i.test(head);
+  } catch (e) { return false; }
+}
+
+/* ------------------------------------------------------------
+   Sanitize an uploaded SVG (strip scripts and event handlers).
+   Throws on a rejected payload.
+   ------------------------------------------------------------ */
+function sanitizeSvgBuffer(buffer) {
+  const text = buffer.toString('utf8').slice(0, 400000);
+  if (!/<svg[\s>]/i.test(text)) {
+    throw new Error('File does not look like a valid SVG.');
+  }
+  if (/<script\b/i.test(text) || /\son\w+\s*=/i.test(text)) {
+    throw new Error('SVG contains inline scripts or event handlers — please clean it and retry.');
+  }
+  return Buffer.from(text, 'utf8');
 }
 
 /* ---------- Explicit MIME map for /uploads/ responses ---------- */
@@ -258,6 +332,7 @@ const multer = require('multer');
    Google Gemini SDK — used by the AI Doubt Solver
    ============================================================ */
 const { GoogleGenAI } = require('@google/genai');
+const sharp = require('sharp');
 const app = express();
 app.set('trust proxy', 1);
 
@@ -492,7 +567,11 @@ const upload = multer({
   fileFilter
 });
 
-/* ---------- ⭐ Branding uploads: SVG + PNG + ICO, 2 MB max ---------- */
+/* ---------- ⭐ Branding uploads: SVG / PNG / JPG / WebP / ICO ----------
+   No file-size limit is enforced (per product requirement). Only the
+   extension and mime type are validated. Sharp will resize whatever
+   comes in, so a 20 MB source image works fine and produces small
+   optimised PNGs. */
 const BRANDING_MIMES = new Set([
   'image/svg+xml',
   'image/png',
@@ -505,7 +584,7 @@ const BRANDING_EXTS = ['.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico'];
 
 const brandingUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
+  // Intentionally NO fileSize limit — see header comment above.
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();
     if (BRANDING_MIMES.has(file.mimetype) || BRANDING_EXTS.includes(ext)) {
@@ -6383,38 +6462,56 @@ app.put('/api/admin/settings/owner', requireAdminAuth, async (req, res) => {
 });
 
 /* ============================================================
-   ⭐ ADMIN — Branding (favicon, logo, PWA icons)
+   ⭐ ADMIN — Branding (single-source upload → auto-generated)
    ------------------------------------------------------------
-   Files land in uploads/branding/<random>-<type>.<ext> and
-   are served in place of the built-in defaults at the same
-   public URLs (/favicon.svg, /icon-512.png, /logo.svg, …).
+   The admin uploads ONE image for the favicon and ONE for the
+   logo. Sharp generates every PNG size and the SVG wrapper
+   automatically. There is no file-size limit.
+
+     POST /api/admin/branding/upload-favicon   → favicon source
+     POST /api/admin/branding/upload-logo      → logo source
+     POST /api/admin/branding/reset            → revert everything
+     GET  /api/admin/branding                  → current state
+     GET  /api/branding-status                 → cache-buster info
    ============================================================ */
 
 /* ---- Admin: read current branding state ---- */
 app.get('/api/admin/branding', requireAdminAuth, async (req, res) => {
   try {
     const s = await getGlobalSettings();
-    const branding = s.branding || {};
-    const assets = {};
-    for (const key of Object.keys(BRANDING_ASSET_MAP)) {
-      const entry = branding[key] || {};
-      assets[key] = {
-        custom:      !!(entry.url && entry.url.length),
-        url:         entry.url      || '',
-        fileName:    entry.fileName || '',
-        mimeType:    entry.mimeType || '',
-        size:        entry.size     || 0,
-        updatedAt:   entry.updatedAt || null,
-        publicPath:  BRANDING_ASSET_MAP[key].publicPath,
-        defaultFile: BRANDING_ASSET_MAP[key].defaultFile,
-        svgOnly:     !!BRANDING_ASSET_MAP[key].svgOnly,
-        pngOnly:     !!BRANDING_ASSET_MAP[key].pngOnly
-      };
-    }
+    const b = s.branding || {};
+
+    const pick = (entry) => ({
+      custom:    !!(entry && entry.url),
+      url:       (entry && entry.url)       || '',
+      fileName:  (entry && entry.fileName)  || '',
+      mimeType:  (entry && entry.mimeType)  || '',
+      size:      (entry && entry.size)      || 0,
+      updatedAt: (entry && entry.updatedAt) || null
+    });
+
     res.json({
       success: true,
-      version: branding.version || 1,
-      assets
+      version: b.version || 1,
+      favicon: {
+        source:    pick(b.faviconSource),
+        generated: {
+          faviconSvg:     pick(b.faviconSvg),
+          favicon16:      pick(b.favicon16),
+          favicon32:      pick(b.favicon32),
+          favicon48:      pick(b.favicon48),
+          favicon96:      pick(b.favicon96),
+          appleTouchIcon: pick(b.appleTouchIcon),
+          icon192:        pick(b.icon192),
+          icon256:        pick(b.icon256),
+          icon384:        pick(b.icon384),
+          icon512:        pick(b.icon512)
+        }
+      },
+      logo: {
+        source:    pick(b.logoSource),
+        generated: { logo: pick(b.logo) }
+      }
     });
   } catch (e) {
     console.error('[admin/branding/GET]', e);
@@ -6437,29 +6534,160 @@ app.get('/api/branding-status', async (req, res) => {
   }
 });
 
-/* ---- Admin: upload ONE asset ---- */
+/* ============================================================
+   Shared worker: generate every favicon variant from ONE source.
+   Returns the object of generated entries and the disk prefix
+   used for cleanup on the next upload.
+   ============================================================ */
+async function generateFaviconVariants(sourceBuffer, originalExt) {
+  const isSvg = originalExt === '.svg' || looksLikeSvg(sourceBuffer);
+  const ts    = Date.now();
+  const prefix = `favicon-${ts}-`;   // every file we create shares this prefix
+  const generated = {};
+
+  /* ---- Prepare a sharp instance from the source ---- */
+  let base;
+  if (isSvg) {
+    const clean = sanitizeSvgBuffer(sourceBuffer);
+    /* density lets sharp rasterise SVGs at a high resolution so the
+       largest favicon is crisp instead of pixelated. */
+    base = sharp(clean, { density: 600 });
+  } else {
+    base = sharp(sourceBuffer);
+  }
+
+  /* Normalise the source to a square PNG. contain + transparent bg
+     keeps a non-square upload centred without cropping. */
+  const maxSize = Math.max(...FAVICON_SIZES);
+  const squareSource = await base
+    .resize(maxSize, maxSize, {
+      fit: 'contain',
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+
+  /* ---- Generate every size ---- */
+  for (const size of FAVICON_SIZES) {
+    const png = await sharp(squareSource)
+      .resize(size, size, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      })
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    const filename = `${prefix}${size}.png`;
+    fs.writeFileSync(path.join(BRANDING_DIR, filename), png);
+
+    const key = FAVICON_SIZE_KEYS[size];
+    generated[key] = {
+      url:       filename,
+      fileName:  `favicon-${size}.png`,
+      mimeType:  'image/png',
+      size:      png.length,
+      updatedAt: new Date()
+    };
+  }
+
+  /* ---- /favicon.svg ---- */
+  if (isSvg) {
+    const clean = sanitizeSvgBuffer(sourceBuffer);
+    const filename = `${prefix}root.svg`;
+    fs.writeFileSync(path.join(BRANDING_DIR, filename), clean);
+    generated.faviconSvg = {
+      url:       filename,
+      fileName:  'favicon.svg',
+      mimeType:  'image/svg+xml',
+      size:      clean.length,
+      updatedAt: new Date()
+    };
+  } else {
+    /* Raster source → wrap the 512 PNG inside an SVG */
+    const largest = await sharp(squareSource)
+      .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+    const svg = rasterToSvgWrapper(largest, 512, 512);
+    const filename = `${prefix}root.svg`;
+    fs.writeFileSync(path.join(BRANDING_DIR, filename), svg);
+    generated.faviconSvg = {
+      url:       filename,
+      fileName:  'favicon.svg',
+      mimeType:  'image/svg+xml',
+      size:      svg.length,
+      updatedAt: new Date()
+    };
+  }
+
+  return { generated, prefix };
+}
+
+/* ============================================================
+   Shared worker: generate the logo (either the SVG as-is or a
+   raster wrapped in an SVG). Preserves aspect ratio.
+   ============================================================ */
+async function generateLogo(sourceBuffer, originalExt) {
+  const isSvg = originalExt === '.svg' || looksLikeSvg(sourceBuffer);
+  const ts    = Date.now();
+  const prefix = `logo-${ts}-`;
+  const generated = {};
+
+  if (isSvg) {
+    const clean = sanitizeSvgBuffer(sourceBuffer);
+    const filename = `${prefix}root.svg`;
+    fs.writeFileSync(path.join(BRANDING_DIR, filename), clean);
+    generated.logo = {
+      url:       filename,
+      fileName:  'logo.svg',
+      mimeType:  'image/svg+xml',
+      size:      clean.length,
+      updatedAt: new Date()
+    };
+    return { generated, prefix };
+  }
+
+  /* Raster → preserve aspect ratio, cap the longest side at 1024,
+     then wrap in an SVG so /logo.svg is always a valid SVG. */
+  const meta = await sharp(sourceBuffer).metadata();
+  const w = meta.width  || 1024;
+  const h = meta.height || 1024;
+  const scale = Math.min(1, 1024 / Math.max(w, h));
+  const outW = Math.max(1, Math.round(w * scale));
+  const outH = Math.max(1, Math.round(h * scale));
+
+  const png = await sharp(sourceBuffer)
+    .resize(outW, outH, { fit: 'inside', withoutEnlargement: true })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+
+  const svg = rasterToSvgWrapper(png, outW, outH);
+  const filename = `${prefix}root.svg`;
+  fs.writeFileSync(path.join(BRANDING_DIR, filename), svg);
+  generated.logo = {
+    url:       filename,
+    fileName:  'logo.svg',
+    mimeType:  'image/svg+xml',
+    size:      svg.length,
+    updatedAt: new Date()
+  };
+  return { generated, prefix };
+}
+
+/* ============================================================
+   POST /api/admin/branding/upload-favicon
+   Multipart: field name  "file"
+   ============================================================ */
 app.post(
-  '/api/admin/branding/:type',
+  '/api/admin/branding/upload-favicon',
   requireAdminAuth,
   brandingUpload.single('file'),
   async (req, res) => {
     try {
-      const type = String(req.params.type);
-      const meta = BRANDING_ASSET_MAP[type];
-      if (!meta) {
-        return res.status(400).json({ success: false, message: `Unknown asset type "${type}".` });
-      }
       if (!req.file || !req.file.buffer) {
         return res.status(400).json({ success: false, message: 'No file was uploaded.' });
       }
-
       const ext = path.extname(req.file.originalname || '').toLowerCase();
-      if (meta.svgOnly && ext !== '.svg') {
-        return res.status(400).json({ success: false, message: `${type} must be a .svg file.` });
-      }
-      if (meta.pngOnly && ext !== '.png') {
-        return res.status(400).json({ success: false, message: `${type} must be a .png file.` });
-      }
       if (!BRANDING_EXTS.includes(ext)) {
         return res.status(400).json({
           success: false,
@@ -6467,47 +6695,39 @@ app.post(
         });
       }
 
-      /* Lightweight SVG sanity check — reject scripts and event handlers */
-      if (ext === '.svg') {
-        const text = req.file.buffer.toString('utf8').slice(0, 200000);
-        if (/<script\b/i.test(text) || /\son\w+\s*=/i.test(text)) {
-          return res.status(400).json({
-            success: false,
-            message: 'SVG contains inline scripts or event handlers. Please upload a clean SVG.'
-          });
-        }
-        if (!/<svg\b/i.test(text)) {
-          return res.status(400).json({ success: false, message: 'File does not look like an SVG.' });
-        }
-      }
+      console.log(
+        `[branding/favicon] generating from ${req.file.originalname} ` +
+        `(${(req.file.size / 1024).toFixed(1)} KB)`
+      );
 
-      const safeType = type.replace(/[^A-Za-z0-9]/g, '');
-      const filename = `brand-${safeType}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
-      const filePath = path.join(BRANDING_DIR, filename);
-      fs.writeFileSync(filePath, req.file.buffer);
+      const { generated, prefix } = await generateFaviconVariants(req.file.buffer, ext);
 
       const s = await getGlobalSettings();
       if (!s.branding) s.branding = {};
 
-      /* Remove the previous custom file, if any */
-      const old = s.branding[type];
+      /* Delete the previous favicon's files */
+      const old = s.branding.faviconSource;
       if (old && old.url) {
-        try {
-          const oldPath = path.join(BRANDING_DIR, path.basename(String(old.url)));
-          if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-        } catch (e) {
-          console.warn('[admin/branding] could not delete old file:', e.message);
-        }
+        const oldPrefix = String(old.url).split('-').slice(0, 2).join('-') + '-';
+        purgeBrandingFiles(oldPrefix);
       }
 
-      s.branding[type] = {
-        url:       filename,
-        fileName:  req.file.originalname || filename,
-        mimeType:  req.file.mimetype || mimeForFile(filename),
+      /* Save the new source + generated entries */
+      s.branding.faviconSource = {
+        url:       `${prefix}source${ext}`,
+        fileName:  req.file.originalname || `favicon${ext}`,
+        mimeType:  req.file.mimetype || 'application/octet-stream',
         size:      req.file.size || req.file.buffer.length,
         updatedAt: new Date(),
         updatedBy: String(req.adminUser._id)
       };
+      /* Persist the source bytes too so we can re-generate if needed */
+      fs.writeFileSync(
+        path.join(BRANDING_DIR, `${prefix}source${ext}`),
+        req.file.buffer
+      );
+
+      Object.assign(s.branding, generated);
       s.branding.version = (s.branding.version || 1) + 1;
       s.markModified('branding');
       s.updatedAt = new Date();
@@ -6516,72 +6736,121 @@ app.post(
       cacheClear('settings:');
       invalidateGlobalSettingsCache();
 
-      console.log(`[admin/branding] ✅ ${type} → ${filename} (v${s.branding.version})`);
+      console.log(
+        `[branding/favicon] ✅ generated ${Object.keys(generated).length} variants ` +
+        `(v${s.branding.version})`
+      );
 
       res.json({
         success: true,
-        message: `Updated ${type}.`,
-        version: s.branding.version,
-        asset:   s.branding[type]
+        message: `Generated ${Object.keys(generated).length} favicon variants.`,
+        version: s.branding.version
       });
     } catch (e) {
-      console.error('[admin/branding/upload]', e);
-      res.status(500).json({ success: false, message: 'Upload failed: ' + e.message });
+      console.error('[branding/favicon]', e);
+      res.status(500).json({
+        success: false,
+        message: 'Could not process the image: ' + (e.message || 'unknown')
+      });
     }
   }
 );
 
-/* ---- Admin: revert ONE asset to the built-in default ---- */
-app.delete('/api/admin/branding/:type', requireAdminAuth, async (req, res) => {
-  try {
-    const type = String(req.params.type);
-    if (!BRANDING_ASSET_MAP[type]) {
-      return res.status(400).json({ success: false, message: `Unknown asset type "${type}".` });
+/* ============================================================
+   POST /api/admin/branding/upload-logo
+   ============================================================ */
+app.post(
+  '/api/admin/branding/upload-logo',
+  requireAdminAuth,
+  brandingUpload.single('file'),
+  async (req, res) => {
+    try {
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ success: false, message: 'No file was uploaded.' });
+      }
+      const ext = path.extname(req.file.originalname || '').toLowerCase();
+      if (!BRANDING_EXTS.includes(ext)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Only .svg, .png, .jpg, .jpeg, .webp, or .ico files are accepted.'
+        });
+      }
+
+      console.log(
+        `[branding/logo] generating from ${req.file.originalname} ` +
+        `(${(req.file.size / 1024).toFixed(1)} KB)`
+      );
+
+      const { generated, prefix } = await generateLogo(req.file.buffer, ext);
+
+      const s = await getGlobalSettings();
+      if (!s.branding) s.branding = {};
+
+      const old = s.branding.logoSource;
+      if (old && old.url) {
+        const oldPrefix = String(old.url).split('-').slice(0, 2).join('-') + '-';
+        purgeBrandingFiles(oldPrefix);
+      }
+
+      s.branding.logoSource = {
+        url:       `${prefix}source${ext}`,
+        fileName:  req.file.originalname || `logo${ext}`,
+        mimeType:  req.file.mimetype || 'application/octet-stream',
+        size:      req.file.size || req.file.buffer.length,
+        updatedAt: new Date(),
+        updatedBy: String(req.adminUser._id)
+      };
+      fs.writeFileSync(
+        path.join(BRANDING_DIR, `${prefix}source${ext}`),
+        req.file.buffer
+      );
+
+      Object.assign(s.branding, generated);
+      s.branding.version = (s.branding.version || 1) + 1;
+      s.markModified('branding');
+      s.updatedAt = new Date();
+      await s.save();
+
+      cacheClear('settings:');
+      invalidateGlobalSettingsCache();
+
+      console.log(`[branding/logo] ✅ generated logo (v${s.branding.version})`);
+
+      res.json({
+        success: true,
+        message: 'Logo updated.',
+        version: s.branding.version
+      });
+    } catch (e) {
+      console.error('[branding/logo]', e);
+      res.status(500).json({
+        success: false,
+        message: 'Could not process the image: ' + (e.message || 'unknown')
+      });
     }
-
-    const s = await getGlobalSettings();
-    if (!s.branding) s.branding = {};
-    const entry = s.branding[type];
-    if (entry && entry.url) {
-      try {
-        const oldPath = path.join(BRANDING_DIR, path.basename(String(entry.url)));
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-      } catch (e) { /* non-fatal */ }
-    }
-    s.branding[type] = {};
-    s.branding.version = (s.branding.version || 1) + 1;
-    s.markModified('branding');
-    s.updatedAt = new Date();
-    await s.save();
-
-    cacheClear('settings:');
-    invalidateGlobalSettingsCache();
-
-    res.json({
-      success: true,
-      message: `Reverted ${type} to the default.`,
-      version: s.branding.version
-    });
-  } catch (e) {
-    console.error('[admin/branding/delete]', e);
-    res.status(500).json({ success: false, message: e.message });
   }
-});
+);
 
-/* ---- Admin: reset EVERYTHING at once ---- */
+/* ============================================================
+   POST /api/admin/branding/reset
+   ------------------------------------------------------------
+   Wipes every custom file and reverts every URL to the
+   built-in default.
+   ============================================================ */
 app.post('/api/admin/branding/reset', requireAdminAuth, async (req, res) => {
   try {
     const s = await getGlobalSettings();
     if (!s.branding) s.branding = {};
 
+    /* Clear the whole branding folder, then rebuild the schema
+       with empty asset objects. */
+    purgeBrandingFiles('favicon-');
+    purgeBrandingFiles('logo-');
+    purgeBrandingFiles('brand-');   // tidy up any old leftovers
+
+    s.branding.faviconSource = {};
+    s.branding.logoSource    = {};
     for (const key of Object.keys(BRANDING_ASSET_MAP)) {
-      const entry = s.branding[key];
-      if (entry && entry.url) {
-        try {
-          const fp = path.join(BRANDING_DIR, path.basename(String(entry.url)));
-          if (fs.existsSync(fp)) fs.unlinkSync(fp);
-        } catch (e) { /* non-fatal */ }
-      }
       s.branding[key] = {};
     }
     s.branding.version = (s.branding.version || 1) + 1;
@@ -6592,13 +6861,169 @@ app.post('/api/admin/branding/reset', requireAdminAuth, async (req, res) => {
     cacheClear('settings:');
     invalidateGlobalSettingsCache();
 
+    console.log(`[branding/reset] ✅ everything reverted (v${s.branding.version})`);
+
     res.json({
       success: true,
-      message: 'All custom branding assets reverted to defaults.',
+      message: 'All custom branding reverted to defaults.',
       version: s.branding.version
     });
   } catch (e) {
-    console.error('[admin/branding/reset]', e);
+    console.error('[branding/reset]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   POST /api/admin/branding/reset-favicon
+   Revert only the favicon family (keeps logo + everything else).
+   ============================================================ */
+app.post('/api/admin/branding/reset-favicon', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+
+    purgeBrandingFiles('favicon-');
+
+    s.branding.faviconSource = {};
+    s.branding.faviconSvg     = {};
+    s.branding.favicon16      = {};
+    s.branding.favicon32      = {};
+    s.branding.favicon48      = {};
+    s.branding.favicon96      = {};
+    s.branding.appleTouchIcon = {};
+    s.branding.icon192        = {};
+    s.branding.icon256        = {};
+    s.branding.icon384        = {};
+    s.branding.icon512        = {};
+
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    console.log(`[branding/reset-favicon] ✅ reverted (v${s.branding.version})`);
+    res.json({
+      success: true,
+      message: 'Favicon reverted to the built-in default.',
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[branding/reset-favicon]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   POST /api/admin/branding/reset-logo
+   Revert only the brand logo.
+   ============================================================ */
+app.post('/api/admin/branding/reset-logo', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+
+    purgeBrandingFiles('logo-');
+
+    s.branding.logoSource = {};
+    s.branding.logo       = {};
+
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    console.log(`[branding/reset-logo] ✅ reverted (v${s.branding.version})`);
+    res.json({
+      success: true,
+      message: 'Logo reverted to the built-in default.',
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[branding/reset-logo]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   POST /api/admin/branding/reset-favicon
+   Revert only the favicon family (keeps logo + everything else).
+   ============================================================ */
+app.post('/api/admin/branding/reset-favicon', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+
+    purgeBrandingFiles('favicon-');
+
+    s.branding.faviconSource = {};
+    s.branding.faviconSvg     = {};
+    s.branding.favicon16      = {};
+    s.branding.favicon32      = {};
+    s.branding.favicon48      = {};
+    s.branding.favicon96      = {};
+    s.branding.appleTouchIcon = {};
+    s.branding.icon192        = {};
+    s.branding.icon256        = {};
+    s.branding.icon384        = {};
+    s.branding.icon512        = {};
+
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    console.log(`[branding/reset-favicon] ✅ reverted (v${s.branding.version})`);
+    res.json({
+      success: true,
+      message: 'Favicon reverted to the built-in default.',
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[branding/reset-favicon]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   POST /api/admin/branding/reset-logo
+   Revert only the brand logo.
+   ============================================================ */
+app.post('/api/admin/branding/reset-logo', requireAdminAuth, async (req, res) => {
+  try {
+    const s = await getGlobalSettings();
+    if (!s.branding) s.branding = {};
+
+    purgeBrandingFiles('logo-');
+
+    s.branding.logoSource = {};
+    s.branding.logo       = {};
+
+    s.branding.version = (s.branding.version || 1) + 1;
+    s.markModified('branding');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    console.log(`[branding/reset-logo] ✅ reverted (v${s.branding.version})`);
+    res.json({
+      success: true,
+      message: 'Logo reverted to the built-in default.',
+      version: s.branding.version
+    });
+  } catch (e) {
+    console.error('[branding/reset-logo]', e);
     res.status(500).json({ success: false, message: e.message });
   }
 });

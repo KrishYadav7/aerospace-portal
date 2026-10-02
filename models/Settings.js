@@ -23,8 +23,13 @@ const brandingAssetSchema = new mongoose.Schema({
   updatedBy: { type: String, default: '' }
 }, { _id: false });
 
-/* ---------- Branding (all replaceable assets) ---------- */
+/* ---------- Branding (single-source uploads + auto-generated variants) ---------- */
 const brandingSchema = new mongoose.Schema({
+  /* The ONE file the admin uploaded — kept for reference & re-generation */
+  faviconSource: { type: brandingAssetSchema, default: () => ({}) },
+  logoSource:    { type: brandingAssetSchema, default: () => ({}) },
+
+  /* Auto-generated favicon variants (created by sharp on upload) */
   faviconSvg:     { type: brandingAssetSchema, default: () => ({}) },
   favicon16:      { type: brandingAssetSchema, default: () => ({}) },
   favicon32:      { type: brandingAssetSchema, default: () => ({}) },
@@ -35,7 +40,10 @@ const brandingSchema = new mongoose.Schema({
   icon256:        { type: brandingAssetSchema, default: () => ({}) },
   icon384:        { type: brandingAssetSchema, default: () => ({}) },
   icon512:        { type: brandingAssetSchema, default: () => ({}) },
+
+  /* Auto-generated logo (SVG wrapper if source was raster) */
   logo:           { type: brandingAssetSchema, default: () => ({}) },
+
   version:        { type: Number, default: 1 }
 }, { _id: false });
 
