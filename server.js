@@ -348,6 +348,7 @@ const Feedback     = require('./models/Feedback');
 const Contribution = require('./models/Contribution');
 const Coupon       = require('./models/Coupon');
 const DailyUsage   = require('./models/DailyUsage');
+const Visit = require('./models/Visit');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
@@ -1184,6 +1185,140 @@ const recoveryLimiter = rateLimit({
   standardHeaders: true, legacyHeaders: false,
   message: { success: false, message: 'Too many recovery attempts. Please wait 15 minutes.' }
 });
+/* ============================================================
+   ⭐ VISITOR ANALYTICS — tracking middleware + in-memory buffer
+   ------------------------------------------------------------
+   Design goals:
+     • Zero added latency on the request path (sync Map writes).
+     • Never touches /api, /uploads, or static assets.
+     • Zero DB writes until the 5-second flush.
+     • All failures swallowed — a broken tracker can never
+       affect a page load.
+   ============================================================ */
+
+/* Paths that count as "a page view" */
+const TRACKED_PATHS = new Set(['/', '/app', '/index.html', '/landing.html']);
+
+/* Last-seen timestamp per visitor (session hash → ms).
+   5-minute window = "currently active". */
+const activeVisitors = new Map();
+const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+
+/* In-memory buffer — flushed to the Visit doc every 5 s. */
+const _visitBuffer = {
+  date: istDateKey(),           // IST day the buffer belongs to
+  visits: 0,
+  devices: { desktop: 0, mobile: 0, tablet: 0 },
+  _uniqueToday:  new Set(),     // hashes seen today (bounded)
+  _flushedCount: 0,             // how many of those we already $inc'ed
+  hardCap: 50000                // safety cap on the Set size
+};
+
+/* Bot filter — anything with these tokens in the UA is skipped. */
+const BOT_RE = /bot|crawl|spider|slurp|preview|facebookexternalhit|bing|yandex|baiduspider|headless/i;
+
+function _trackVisitorIfNeeded(req) {
+  try {
+    if (req.method !== 'GET') return;
+    const path = (req.path || '').toLowerCase();
+    if (!TRACKED_PATHS.has(path)) return;
+
+    const ua = String(req.headers['user-agent'] || '');
+    if (!ua || BOT_RE.test(ua)) return;
+
+    const info = parseDeviceInfo(ua);
+    const device =
+      info.device === 'mobile' ? 'mobile' :
+      info.device === 'tablet' ? 'tablet' : 'desktop';
+
+    const visitorHash = crypto
+      .createHash('sha256')
+      .update(String(req.ip || '') + '|' + ua + '|' + istDateKey())
+      .digest('hex')
+      .slice(0, 16);
+
+    /* Roll the buffer over at midnight (IST) — reset unique Set. */
+    const today = istDateKey();
+    if (_visitBuffer.date !== today) {
+      _visitBuffer.date = today;
+      _visitBuffer._uniqueToday.clear();
+      _visitBuffer._flushedCount = 0;
+    }
+
+    _visitBuffer.visits++;
+    _visitBuffer.devices[device]++;
+    if (_visitBuffer._uniqueToday.size < _visitBuffer.hardCap) {
+      _visitBuffer._uniqueToday.add(visitorHash);
+    }
+    activeVisitors.set(visitorHash, Date.now());
+  } catch (_) {
+    /* tracker must NEVER break a page load */
+  }
+}
+
+app.use((req, res, next) => {
+  _trackVisitorIfNeeded(req);
+  next();
+});
+
+/* Purge stale active visitors every 60 s. */
+setInterval(() => {
+  const cutoff = Date.now() - ACTIVE_WINDOW_MS;
+  for (const [h, t] of activeVisitors) {
+    if (t < cutoff) activeVisitors.delete(h);
+  }
+}, 60 * 1000).unref?.();
+
+/* Flush the buffer to the Visit doc every 5 s. */
+async function _flushVisitBuffer() {
+  if (_visitBuffer.visits === 0 &&
+      _visitBuffer._uniqueToday.size === _visitBuffer._flushedCount) {
+    return;
+  }
+
+  const snap = {
+    date:        _visitBuffer.date,
+    visits:      _visitBuffer.visits,
+    devices:     { ..._visitBuffer.devices },
+    newUnique:   Math.max(0, _visitBuffer._uniqueToday.size - _visitBuffer._flushedCount)
+  };
+
+  /* Reset the in-memory counters immediately so the next flush
+     window starts clean even if the DB call is slow. */
+  _visitBuffer.visits = 0;
+  _visitBuffer.devices = { desktop: 0, mobile: 0, tablet: 0 };
+  _visitBuffer._flushedCount += snap.newUnique;
+
+  const d = snap.date;
+  try {
+    await Visit.updateOne(
+      { key: 'global' },
+      {
+        $inc: {
+          totalVisits:             snap.visits,
+          'deviceCounts.desktop':  snap.devices.desktop,
+          'deviceCounts.mobile':   snap.devices.mobile,
+          'deviceCounts.tablet':   snap.devices.tablet,
+          [`daily.${d}`]:          snap.visits,
+          [`dailyUnique.${d}`]:    snap.newUnique,
+          [`dailyDesktop.${d}`]:   snap.devices.desktop,
+          [`dailyMobile.${d}`]:    snap.devices.mobile,
+          [`dailyTablet.${d}`]:    snap.devices.tablet
+        },
+        $set: { lastUpdatedAt: new Date() }
+      },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.warn('[visit-flush] failed (will retry next tick):', e.message);
+    /* Roll the numbers back into the buffer so nothing is lost. */
+    _visitBuffer.visits += snap.visits;
+    _visitBuffer.devices.desktop += snap.devices.desktop;
+    _visitBuffer.devices.mobile  += snap.devices.mobile;
+    _visitBuffer.devices.tablet  += snap.devices.tablet;
+  }
+}
+setInterval(_flushVisitBuffer, 5000).unref?.();
 app.use('/api/', apiLimiter);
 app.use('/api/login', authLimiter);
 app.use('/api/send-otp', authLimiter);
@@ -11325,6 +11460,147 @@ app.get('/api/admin/online-users/stream', async (req, res) => {
   req.on('close',  cleanup);
   req.on('aborted', cleanup);
 });
+/* ============================================================
+   ⭐ ADMIN — Visitor analytics snapshot + live SSE stream
+   ============================================================ */
+
+/* Build a single traffic snapshot — shared by the GET route
+   and the SSE broadcaster so both stay perfectly in sync. */
+async function _buildTrafficSnapshot() {
+  const now = Date.now();
+
+  /* Purge stale active visitors on every build. */
+  const cutoff = now - ACTIVE_WINDOW_MS;
+  for (const [h, t] of activeVisitors) if (t < cutoff) activeVisitors.delete(h);
+
+  /* Read the singleton doc. If it does not exist yet, treat
+     everything as zero — do NOT throw. */
+  const doc = await Visit.findOne({ key: 'global' }).lean() || {};
+  const d = doc.daily         instanceof Map ? Object.fromEntries(doc.daily)         : (doc.daily         || {});
+  const du = doc.dailyUnique  instanceof Map ? Object.fromEntries(doc.dailyUnique)  : (doc.dailyUnique  || {});
+  const dD = doc.dailyDesktop instanceof Map ? Object.fromEntries(doc.dailyDesktop) : (doc.dailyDesktop || {});
+  const dM = doc.dailyMobile  instanceof Map ? Object.fromEntries(doc.dailyMobile)  : (doc.dailyMobile  || {});
+  const dT = doc.dailyTablet  instanceof Map ? Object.fromEntries(doc.dailyTablet)  : (doc.dailyTablet  || {});
+
+  /* Last 30 days series */
+  const daily = [];
+  const today = new Date();
+  for (let i = 29; i >= 0; i--) {
+    const dt = new Date(today);
+    dt.setDate(dt.getDate() - i);
+    const key = istDateKey(dt);
+    daily.push({
+      date:   key,
+      visits: Number(d[key])  || 0,
+      unique: Number(du[key]) || 0,
+      devices: {
+        desktop: Number(dD[key]) || 0,
+        mobile:  Number(dM[key]) || 0,
+        tablet:  Number(dT[key]) || 0
+      }
+    });
+  }
+
+  /* Include the not-yet-flushed buffer so the numbers are truthful
+     down to the current second, not the last flush. */
+  const todayKey = istDateKey();
+  const pendingVisits = _visitBuffer.visits;
+  const pendingUnique = Math.max(0, _visitBuffer._uniqueToday.size - _visitBuffer._flushedCount);
+
+  const bufferIsToday = _visitBuffer.date === todayKey;
+  const pendingVisitsForToday = bufferIsToday ? pendingVisits : 0;
+  const pendingUniqueForToday = bufferIsToday ? pendingUnique : 0;
+
+  return {
+    success: true,
+    active: activeVisitors.size,
+    totalVisits: (Number(doc.totalVisits) || 0) + pendingVisits,
+    today: {
+      visits: (Number(d[todayKey])  || 0) + pendingVisitsForToday,
+      unique: (Number(du[todayKey]) || 0) + pendingUniqueForToday
+    },
+    deviceCounts: {
+      desktop: Number(doc.deviceCounts && doc.deviceCounts.desktop) || 0,
+      mobile:  Number(doc.deviceCounts && doc.deviceCounts.mobile)  || 0,
+      tablet:  Number(doc.deviceCounts && doc.deviceCounts.tablet)  || 0
+    },
+    daily,
+    serverNow: now
+  };
+}
+
+/* ---- One-shot snapshot ---- */
+app.get('/api/admin/visitor-analytics', requireAdminAuth, async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const snap = await _buildTrafficSnapshot();
+    res.json(snap);
+  } catch (e) {
+    console.error('[visitor-analytics]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ---- Live SSE stream (same auth pattern as online-users) ---- */
+const trafficSseClients = new Set();
+
+app.get('/api/admin/visitor-analytics/stream', async (req, res) => {
+  try {
+    const token = String(req.query.auth || '');
+    if (!token) return res.status(401).end();
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const u = await User.findById(decoded.id).select('role').lean();
+    if (!u || String(u.role || '').trim().toLowerCase() !== 'admin') {
+      return res.status(403).end();
+    }
+  } catch (e) {
+    return res.status(401).end();
+  }
+
+  /* Cap concurrent streams so a bad client cannot OOM the server. */
+  if (trafficSseClients.size >= 8) {
+    const oldest = trafficSseClients.values().next().value;
+    if (oldest) { try { oldest.end(); } catch (e) {} trafficSseClients.delete(oldest); }
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  trafficSseClients.add(res);
+
+  /* Immediate snapshot so the UI paints instantly on connect. */
+  try {
+    const snap = await _buildTrafficSnapshot();
+    res.write('data: ' + JSON.stringify(snap) + '\n\n');
+  } catch (e) { /* keep stream open regardless */ }
+
+  const keepAlive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch (e) {}
+  }, 25000);
+
+  const cleanup = () => {
+    clearInterval(keepAlive);
+    trafficSseClients.delete(res);
+  };
+  req.on('close',  cleanup);
+  req.on('aborted', cleanup);
+});
+
+/* Broadcast to every connected admin every 3 s. */
+setInterval(async () => {
+  if (trafficSseClients.size === 0) return;
+  try {
+    const snap = await _buildTrafficSnapshot();
+    const payload = 'data: ' + JSON.stringify(snap) + '\n\n';
+    for (const res of trafficSseClients) {
+      try { res.write(payload); }
+      catch (e) { trafficSseClients.delete(res); }
+    }
+  } catch (e) { /* silent — next tick retries */ }
+}, 3000).unref?.();
 
 /* ============================================================
    GET /api/admin/usage/report-daily?date=YYYY-MM-DD
@@ -11778,7 +12054,353 @@ async function runQuizPublishSweep() {
     _quizSweepRunning = false;
   }
 }
+/* ============================================================
+   ⭐ ADMIN — VISITOR ANALYTICS / TRAFFIC OVERVIEW
+   ------------------------------------------------------------
+   • Injects one new tab ("Traffic") into the admin tab strip
+     and one new container. index.html is NOT modified.
+   • Hooks into renderAdminDashboard so switching to the tab
+     calls renderAdminTraffic().
+   • Live-updates via SSE, with a 10-second polling fallback
+     if the stream dies.
+   ============================================================ */
 
+/* ---- 1. Inject the tab button + container once ---- */
+(function ensureTrafficTab() {
+  const tabsEl = document.querySelector('.admin-tabs');
+  if (!tabsEl) return;
+  if (tabsEl.querySelector('[data-tab="traffic"]')) return;
+
+  const btn = document.createElement('button');
+  btn.className = 'admin-tab';
+  btn.dataset.tab = 'traffic';
+  btn.innerHTML = '<i class="fas fa-chart-column"></i> Traffic';
+  btn.setAttribute('onclick', "switchAdminTab('traffic')");
+
+  /* Place it right after the "Live Activity" tab */
+  const anchor = tabsEl.querySelector('[data-tab="live"]');
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+  else tabsEl.appendChild(btn);
+
+  const view = document.getElementById('adminView');
+  if (view && !document.getElementById('adminTabTraffic')) {
+    const c = document.createElement('div');
+    c.className = 'admin-tab-content';
+    c.id = 'adminTabTraffic';
+    view.appendChild(c);
+  }
+})();
+
+/* ---- 2. Extend the tab dispatcher ---- */
+(function wrapTrafficRouting() {
+  if (window.__aeroTrafficRoutingWrapped) return;
+  window.__aeroTrafficRoutingWrapped = true;
+
+  const _origUpdateAdminTabUI = window.updateAdminTabUI;
+  window.updateAdminTabUI = function () {
+    if (typeof _origUpdateAdminTabUI === 'function') {
+      _origUpdateAdminTabUI.apply(this, arguments);
+    }
+    if (adminTab === 'traffic') {
+      const t = document.getElementById('adminPageTitle');
+      if (t) t.innerHTML = '<i class="fas fa-chart-column"></i> Traffic Overview';
+      const a = document.getElementById('adminHeaderActions');
+      if (a) {
+        a.innerHTML =
+          '<span class="traffic-live-pill" id="trafficLivePill">' +
+            '<span class="live-pulse-dot"></span>' +
+            ' <span id="trafficLiveStatus">Connecting…</span>' +
+          '</span>' +
+          '<button class="btn btn-outline" onclick="renderAdminTraffic(true)">' +
+            '<i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span>' +
+          '</button>';
+      }
+    }
+  };
+
+  const _origRenderAdminDashboard = window.renderAdminDashboard;
+  window.renderAdminDashboard = function () {
+    if (adminTab === 'traffic') return renderAdminTraffic();
+    if (typeof _origRenderAdminDashboard === 'function') {
+      return _origRenderAdminDashboard.apply(this, arguments);
+    }
+  };
+})();
+
+/* ---- 3. SSE state ---- */
+let _trafficES = null;
+let _trafficESFails = 0;
+let _trafficPollTimer = null;
+let _trafficLastData = null;
+
+function _trafficSetStatus(label, isLive) {
+  const el  = document.getElementById('trafficLiveStatus');
+  const pill = document.getElementById('trafficLivePill');
+  if (el) el.textContent = label;
+  if (pill) pill.classList.toggle('is-live', !!isLive);
+}
+
+function _trafficCloseStream() {
+  if (_trafficES) { try { _trafficES.close(); } catch (e) {} _trafficES = null; }
+}
+function _trafficStopPolling() {
+  if (_trafficPollTimer) { clearInterval(_trafficPollTimer); _trafficPollTimer = null; }
+}
+
+function _trafficStartPolling() {
+  if (_trafficPollTimer) return;
+  _trafficSetStatus('Polling', false);
+  _trafficPollTimer = setInterval(() => {
+    const host = document.getElementById('adminTabTraffic');
+    if (!host || !host.classList.contains('active')) {
+      _trafficStopPolling();
+      return;
+    }
+    if (document.hidden) return;
+    renderAdminTraffic(true).catch(() => {});
+  }, 10000);
+}
+
+function _trafficOpenStream() {
+  _trafficCloseStream();
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    if (!token) { _trafficStartPolling(); return; }
+
+    const url = `${API_BASE}/admin/visitor-analytics/stream?auth=${encodeURIComponent(token)}`;
+    const es = new EventSource(url);
+    _trafficES = es;
+
+    es.onopen = () => {
+      _trafficESFails = 0;
+      _trafficSetStatus('Live', true);
+    };
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data && data.success) {
+          _trafficLastData = data;
+          _trafficPaint(data);
+        }
+      } catch (e) { /* silent */ }
+    };
+    es.onerror = () => {
+      _trafficESFails++;
+      _trafficSetStatus('Reconnecting…', false);
+      if (_trafficESFails >= 3) {
+        _trafficCloseStream();
+        _trafficStartPolling();
+      }
+    };
+  } catch (e) {
+    _trafficStartPolling();
+  }
+}
+
+/* ---- 4. Entry point — called by renderAdminDashboard ---- */
+async function renderAdminTraffic(forceRefresh) {
+  const host = document.getElementById('adminTabTraffic');
+  if (!host) return;
+
+  /* Skeleton on the very first paint */
+  if (!host.querySelector('.traffic-wrap')) {
+    host.innerHTML = `
+      <div class="traffic-wrap" id="trafficWrap">
+        <div class="traffic-loading">
+          <div class="pdfv-spinner"></div>
+          <p>Loading traffic data…</p>
+        </div>
+      </div>`;
+  }
+
+  /* Kick the stream (idempotent) */
+  if (!_trafficES && !_trafficPollTimer) _trafficOpenStream();
+
+  /* If we already have a snapshot, repaint instantly — no flicker
+     when switching back to the tab from another one. */
+  if (_trafficLastData && !forceRefresh) {
+    _trafficPaint(_trafficLastData);
+    return;
+  }
+
+  /* Otherwise fetch one snapshot immediately. */
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(`${API_BASE}/admin/visitor-analytics?_t=${Date.now()}`, {
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      cache: 'no-store'
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      _trafficLastData = data;
+      _trafficPaint(data);
+    }
+  } catch (e) {
+    console.warn('[traffic] initial fetch failed:', e);
+  }
+}
+
+/* ---- 5. Paint the payload ---- */
+function _trafficPaint(data) {
+  const host = document.getElementById('trafficWrap');
+  if (!host) return;
+
+  const fmtNum = (n) => Number(n || 0).toLocaleString('en-IN');
+  const total = (Number(data.deviceCounts.desktop) || 0)
+              + (Number(data.deviceCounts.mobile)  || 0)
+              + (Number(data.deviceCounts.tablet)  || 0);
+  const pct = (v) => total > 0 ? Math.round((v / total) * 100) : 0;
+
+  /* Daily series — last 30 days, for the bar chart. */
+  const daily = Array.isArray(data.daily) ? data.daily : [];
+  const maxDaily = Math.max(1, ...daily.map(d => d.visits || 0));
+  const dailyBars = daily.map((d, i) => {
+    const h = Math.round((d.visits / maxDaily) * 100);
+    const [y, m, dd] = d.date.split('-');
+    const label = new Date(Number(y), Number(m) - 1, Number(dd))
+      .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    return `<div class="traffic-bar-wrap" title="${label} · ${fmtNum(d.visits)} visits · ${fmtNum(d.unique)} unique">
+      <div class="traffic-bar" style="height:${Math.max(2, h)}%"></div>
+    </div>`;
+  }).join('');
+
+  const deviceData = [
+    { key: 'desktop', label: 'Desktop',  icon: 'fa-desktop',             count: Number(data.deviceCounts.desktop) || 0 },
+    { key: 'mobile',  label: 'Mobile',   icon: 'fa-mobile-screen',       count: Number(data.deviceCounts.mobile)  || 0 },
+    { key: 'tablet',  label: 'Tablet',   icon: 'fa-tablet-screen-button',count: Number(data.deviceCounts.tablet)  || 0 }
+  ];
+
+  host.innerHTML = `
+    <!-- ============ 4 STAT TILES ============ -->
+    <div class="traffic-stats">
+      <div class="traffic-stat traffic-stat-active">
+        <div class="traffic-stat-icon tone-emerald"><i class="fas fa-signal"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.active)}</div>
+          <div class="traffic-stat-lbl">Active right now</div>
+          <div class="traffic-stat-hint">Last 5 minutes</div>
+        </div>
+      </div>
+      <div class="traffic-stat">
+        <div class="traffic-stat-icon tone-brand"><i class="fas fa-chart-simple"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.totalVisits)}</div>
+          <div class="traffic-stat-lbl">Total page views</div>
+          <div class="traffic-stat-hint">All time</div>
+        </div>
+      </div>
+      <div class="traffic-stat">
+        <div class="traffic-stat-icon tone-cyan"><i class="fas fa-calendar-day"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.today.visits)}</div>
+          <div class="traffic-stat-lbl">Views today</div>
+          <div class="traffic-stat-hint">Since midnight IST</div>
+        </div>
+      </div>
+      <div class="traffic-stat">
+        <div class="traffic-stat-icon tone-gold"><i class="fas fa-user-check"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.today.unique)}</div>
+          <div class="traffic-stat-lbl">Unique today</div>
+          <div class="traffic-stat-hint">Distinct sessions</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 30-DAY CHART + DEVICE SPLIT ============ -->
+    <div class="traffic-grid">
+      <section class="traffic-panel traffic-panel-wide">
+        <header class="traffic-panel-head">
+          <h3><i class="fas fa-chart-column"></i> Last 30 days</h3>
+          <span class="traffic-panel-sub">Daily page views</span>
+        </header>
+        <div class="traffic-chart">${dailyBars || '<div class="traffic-empty-chart">No data yet</div>'}</div>
+        <div class="traffic-chart-axis">
+          <span>30 days ago</span>
+          <span>Today</span>
+        </div>
+      </section>
+
+      <section class="traffic-panel">
+        <header class="traffic-panel-head">
+          <h3><i class="fas fa-mobile-screen"></i> Devices (all time)</h3>
+          <span class="traffic-panel-sub">${fmtNum(total)} total views</span>
+        </header>
+        <div class="traffic-devices">
+          ${deviceData.map(d => `
+            <div class="traffic-device-row">
+              <div class="traffic-device-icon tone-${d.key}">
+                <i class="fas ${d.icon}"></i>
+              </div>
+              <div class="traffic-device-info">
+                <div class="traffic-device-head">
+                  <strong>${d.label}</strong>
+                  <span class="traffic-device-pct">${pct(d.count)}%</span>
+                </div>
+                <div class="traffic-device-bar">
+                  <div class="traffic-device-fill fill-${d.key}" style="width:${pct(d.count)}%"></div>
+                </div>
+                <div class="traffic-device-count">${fmtNum(d.count)} views</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ RECENT DAILY BREAKDOWN ============ -->
+    <section class="traffic-panel traffic-panel-wide" style="margin-top:16px;">
+      <header class="traffic-panel-head">
+        <h3><i class="fas fa-list-ul"></i> Recent days</h3>
+        <span class="traffic-panel-sub">Latest 10 days at a glance</span>
+      </header>
+      <div class="traffic-table-wrap">
+        <table class="traffic-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Views</th>
+              <th>Unique</th>
+              <th>Desktop</th>
+              <th>Mobile</th>
+              <th>Tablet</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${daily.slice(-10).reverse().map(d => {
+              const [y, m, dd] = d.date.split('-');
+              const lbl = new Date(Number(y), Number(m) - 1, Number(dd))
+                .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+              return `<tr>
+                <td><strong>${lbl}</strong></td>
+                <td>${fmtNum(d.visits)}</td>
+                <td>${fmtNum(d.unique)}</td>
+                <td>${fmtNum(d.devices.desktop)}</td>
+                <td>${fmtNum(d.devices.mobile)}</td>
+                <td>${fmtNum(d.devices.tablet)}</td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-tertiary);padding:24px;">No data yet</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+/* ---- 6. Stop the stream when leaving the tab or the page ---- */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  /* reconnect immediately if the tab is currently visible */
+  const host = document.getElementById('adminTabTraffic');
+  if (host && host.classList.contains('active') && !_trafficES) {
+    _trafficOpenStream();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  _trafficCloseStream();
+  _trafficStopPolling();
+});
 /* Kick it off once at boot (30 s in), then every minute. */
 setTimeout(runQuizPublishSweep, 30 * 1000);
 setInterval(runQuizPublishSweep, QUIZ_PUBLISH_SWEEP_MS);
