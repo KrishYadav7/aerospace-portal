@@ -1068,8 +1068,32 @@ let _coursePagination = { page: 1, hasMore: false, total: 0 };
 async function fetchCoursesFromDB(force = false, page = 1) {
   const isAdmin = currentUser && currentUser.role === 'admin';
 
-  // Fast path: fresh cache + first page + no admin force-refresh
-  if (!force && !isAdmin && page === 1 && liveCourses.length > 0
+  /* ⚡ ADMIN SESSIONS ALWAYS BYPASS BOTH CACHES.
+     -----------------------------------------------------------------
+     The server marks GET /api/courses with
+         Cache-Control: public, max-age=30, stale-while-revalidate=180
+     which is perfect for students (near-instant repeat navigations)
+     but catastrophic for admins: after a save the client re-fetched
+     the same URL and the BROWSER served its 30-second-old copy, so
+     the UI kept showing the pre-edit values until the SSE broadcast
+     landed ~200-800 ms later.
+
+     By promoting an admin request to `force = true` we:
+       • skip the in-memory _courseCacheAt window (already the case)
+       • add an _t=<Date.now()> cache-buster to the URL
+       • send Cache-Control: no-store so the browser cannot reuse it
+
+     This fixes EVERY caller that invokes fetchCoursesFromDB() with
+     no arguments (saveMaterialInline, saveCourseDetails,
+     handleThumbnailUpload, postAnnouncement, deleteAnnouncement,
+     addNewMaterial, deleteMaterialFromEditor, handleNewMaterialFile,
+     savePlaylistFromModal, autoGeneratePlaylist, renamePlaylist,
+     deletePlaylist, addSelectedVideoToPlaylist, …) without editing
+     any of them.                                                */
+  const effectiveForce = force === true || isAdmin;
+
+  // Fast path: fresh cache + first page + non-admin
+  if (!effectiveForce && page === 1 && liveCourses.length > 0
       && (Date.now() - _courseCacheAt) < COURSE_CACHE_MS) {
     renderApp();
     return;
@@ -1103,8 +1127,8 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     //    + server in-memory cache both work. Force-refresh (admin
     //    button, after mutations) still bypasses everything.
     const baseUrl = `${API_BASE}/courses?limit=${PER_PAGE}&page=${page}`;
-    const url     = force ? `${baseUrl}&_t=${Date.now()}` : baseUrl;
-    const opts    = force ? { cache: 'no-store' } : {};
+    const url     = effectiveForce ? `${baseUrl}&_t=${Date.now()}` : baseUrl;
+    const opts    = effectiveForce ? { cache: 'no-store' } : {};
 
     const data = await fetchJSON(url, opts);
 
@@ -1131,7 +1155,7 @@ async function fetchCoursesFromDB(force = false, page = 1) {
         const results = await Promise.allSettled(
           pagesToFetch.map(p => {
             const u = `${API_BASE}/courses?limit=${PER_PAGE}&page=${p}`;
-            const finalUrl = force ? `${u}&_t=${Date.now()}` : u;
+            const finalUrl = effectiveForce ? `${u}&_t=${Date.now()}` : u;
             return fetchJSON(finalUrl, opts);
           })
         );
@@ -7119,8 +7143,44 @@ async function saveCourseDetails(courseId) {
       body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if (data.success) { showToast('✅ Saved!', 'success'); await fetchCoursesFromDB(); }
-    else showToast(data.message || 'Failed.', 'error');
+    if (data.success) {
+      showToast('✅ Saved!', 'success');
+
+      /* ⚡ Instant local merge — no round trip. */
+      if (data.course && data.course._id) {
+        const c = liveCourses.find(x => x.id === courseId || x._id === courseId);
+        if (c) {
+          const u = data.course;
+          Object.assign(c, {
+            name:             u.name             ?? c.name,
+            code:             u.code             ?? c.code,
+            semester:         u.semester         ?? c.semester,
+            instructor:       u.instructor       ?? c.instructor,
+            description:      u.description      ?? c.description,
+            category:         u.category         ?? c.category,
+            difficulty:       u.difficulty       ?? c.difficulty,
+            duration:         u.duration         ?? c.duration,
+            credits:          u.credits          ?? c.credits,
+            language:         u.language         ?? c.language,
+            learningOutcomes: u.learningOutcomes ?? c.learningOutcomes,
+            status:           u.status           ?? c.status,
+            featured:         u.featured         ?? c.featured,
+            isPremium:        u.isPremium        ?? c.isPremium,
+            price:            u.price            ?? c.price,
+            certificate:      u.certificate      ?? c.certificate
+          });
+        }
+        _courseCacheAt = Date.now();
+      }
+
+      if (editingCourseId === courseId) renderCourseEditor(courseId);
+
+      fetchCoursesFromDB(true).catch(err =>
+        console.warn('[saveCourseDetails] background refetch failed:', err)
+      );
+    } else {
+      showToast(data.message || 'Failed.', 'error');
+    }
   } catch { showToast('Server error.', 'error'); }
 }
 
@@ -7193,15 +7253,60 @@ async function saveMaterialInline(courseId, materialId) {
     previewPercent: previewPercent
   };
   if (!payload.title) return showToast('Title required.', 'error');
+
   try {
     const res = await fetch(`/api/courses/${courseId}/materials/${materialId}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if (data.success) { showToast('✓ Material saved!', 'success'); await fetchCoursesFromDB(); }
-    else showToast(data.message || 'Failed.', 'error');
-  } catch { showToast('Server error.', 'error'); }
+
+    if (data.success) {
+      showToast('✓ Material saved!', 'success');
+
+      /* ⚡ INSTANT LOCAL UPDATE
+         -----------------------------------------------------------------
+         The PUT response now carries the exact material document the
+         server persisted. We merge it straight into liveCourses and
+         repaint the editor in the same tick. The admin sees the new
+         values before the toast has even faded — no network wait.   */
+      if (data.material) {
+        const c = liveCourses.find(x => x.id === courseId || x._id === courseId);
+        if (c && Array.isArray(c.materials)) {
+          const mi = c.materials.findIndex(m =>
+            String(m.id) === String(materialId) || String(m._id) === String(materialId)
+          );
+          if (mi >= 0) {
+            const old = c.materials[mi];
+            c.materials[mi] = {
+              ...old,
+              ...data.material,
+              _id: data.material._id || old._id,
+              id:  data.material._id || old.id
+            };
+          }
+        }
+        _courseCacheAt = Date.now();
+      }
+
+      /* Repaint the editor synchronously — this is the "same location"
+         update the user expects. It reads liveCourses, which we just
+         patched, so the new values are guaranteed to appear. */
+      if (editingCourseId === courseId) renderCourseEditor(courseId);
+
+      /* ⚡ BACKGROUND RECONCILE
+         force = true → bypasses the browser's 30-second HTTP cache
+         (Fix 1 also does this automatically for admins, but passing
+         it explicitly keeps the intent obvious and future-proof). */
+      fetchCoursesFromDB(true).catch(err =>
+        console.warn('[saveMaterialInline] background refetch failed:', err)
+      );
+    } else {
+      showToast(data.message || 'Failed.', 'error');
+    }
+  } catch {
+    showToast('Server error.', 'error');
+  }
 }
 /* ============================================================
    INLINE "NEW MATERIAL" — used by the green card in course editor

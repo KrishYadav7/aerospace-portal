@@ -5062,14 +5062,46 @@ app.put('/api/courses/:courseId/materials/:materialId', requireAdminAuth, async 
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+
     const mat = course.materials.id(req.params.materialId);
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+
     const fields = ['title', 'type', 'description', 'url', 'isPremium', 'price', 'previewPercent', 'fileData', 'fileName'];
     fields.forEach(f => { if (req.body[f] !== undefined) mat[f] = req.body[f]; });
+
     await course.save();
     cacheClear('courses:');
-    res.json({ success: true, message: 'Material updated successfully!' });
-  } catch (e) { res.status(500).json({ success: false, message: 'Error updating material: ' + e.message }); }
+
+    /* ⚡ ECHO THE SAVED DOCUMENT BACK
+       -----------------------------------------------------------------
+       The client uses this to patch its in-memory `liveCourses` array
+       and repaint the editor in the SAME tick — turning a "save then
+       wait for a refetch" flow into a fully optimistic one.
+
+       We intentionally return a LIGHT projection (no fileData, no
+       quiz array) so the response stays a few hundred bytes even for
+       a material with a 20 MB PDF attached.                          */
+    res.json({
+      success: true,
+      message: 'Material updated successfully!',
+      material: {
+        _id:            mat._id,
+        title:          mat.title,
+        type:           mat.type,
+        description:    mat.description || '',
+        url:            mat.url || '',
+        fileName:       mat.fileName || '',
+        isPremium:      !!mat.isPremium,
+        price:          mat.price || 0,
+        previewPercent: mat.previewPercent || 0,
+        examConfig:     mat.examConfig || {},
+        quizCount:      (mat.quiz || []).length
+      }
+    });
+  } catch (e) {
+    console.error('[materials/PUT]', e);
+    res.status(500).json({ success: false, message: 'Error updating material: ' + e.message });
+  }
 });
 
 app.delete('/api/courses/:courseId/materials/:materialId', requireAdminAuth, async (req, res) => {
