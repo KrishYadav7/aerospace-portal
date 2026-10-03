@@ -19129,10 +19129,14 @@ async function saveAdminCertificateTemplate() {
       if (t) t.innerHTML = '<i class="fas fa-chart-column"></i> Traffic Overview';
       const a = document.getElementById('adminHeaderActions');
       if (a) {
+        /* ⭐ Read the CURRENT status instead of resetting to "Connecting…".
+           This is what keeps the "Live" indicator stable across re-renders. */
+        const liveCls  = _trafficLiveIsLive ? ' is-live' : '';
+        const liveText = _trafficLiveStatus || 'Connecting…';
         a.innerHTML =
-          '<span class="traffic-live-pill" id="trafficLivePill">' +
+          '<span class="traffic-live-pill' + liveCls + '" id="trafficLivePill">' +
             '<span class="live-pulse-dot"></span>' +
-            ' <span id="trafficLiveStatus">Connecting…</span>' +
+            ' <span id="trafficLiveStatus">' + liveText + '</span>' +
           '</span>' +
           '<button class="btn btn-outline" onclick="renderAdminTraffic(true)">' +
             '<i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span>' +
@@ -19164,11 +19168,21 @@ let _trafficESFails = 0;
 let _trafficPollTimer = null;
 let _trafficLastData = null;
 
+/* ⭐ Persist the current connection status so it survives re-renders.
+   Without this, updateAdminTabUI() resets the pill back to
+   "Connecting…" every time renderApp() runs — which happens on every
+   hash change, SSE event, sync broadcast, etc. */
+let _trafficLiveStatus = 'Connecting…';
+let _trafficLiveIsLive = false;
+
 function _trafficSetStatus(label, isLive) {
+  _trafficLiveStatus = label || 'Connecting…';
+  _trafficLiveIsLive = !!isLive;
+
   const el  = document.getElementById('trafficLiveStatus');
   const pill = document.getElementById('trafficLivePill');
-  if (el) el.textContent = label;
-  if (pill) pill.classList.toggle('is-live', !!isLive);
+  if (el) el.textContent = _trafficLiveStatus;
+  if (pill) pill.classList.toggle('is-live', _trafficLiveIsLive);
 }
 
 function _trafficCloseStream() {
@@ -19181,6 +19195,9 @@ function _trafficStopPolling() {
 function _trafficStartPolling() {
   if (_trafficPollTimer) return;
   _trafficSetStatus('Polling', false);
+  /* ⭐ Fire one fetch immediately so the pill flips out of
+     "Connecting…" the moment we know SSE isn't available. */
+  renderAdminTraffic(true).catch(() => {});
   _trafficPollTimer = setInterval(() => {
     const host = document.getElementById('adminTabTraffic');
     if (!host || !host.classList.contains('active')) {
@@ -19202,20 +19219,50 @@ function _trafficOpenStream() {
     const es = new EventSource(url);
     _trafficES = es;
 
+    /* ⭐ Watchdog — if onopen hasn't fired within 4 s, treat it as a
+       failure so the UI doesn't sit on "Connecting…" forever. This is
+       what was happening behind a proxy that silently swallowed SSE. */
+    let openedAt = 0;
+    const openWatchdog = setTimeout(() => {
+      if (_trafficES !== es) return;   // already replaced
+      if (openedAt > 0) return;        // already opened
+      console.warn('[traffic] SSE did not open within 4s — retrying');
+      try { es.close(); } catch (e) {}
+      _trafficES = null;
+      _trafficESFails++;
+      if (_trafficESFails >= 3) {
+        _trafficStartPolling();
+      } else {
+        _trafficSetStatus('Reconnecting…', false);
+        setTimeout(_trafficOpenStream, 2000);
+      }
+    }, 4000);
+
     es.onopen = () => {
+      openedAt = Date.now();
+      clearTimeout(openWatchdog);
       _trafficESFails = 0;
       _trafficSetStatus('Live', true);
     };
+
     es.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
         if (data && data.success) {
           _trafficLastData = data;
           _trafficPaint(data);
+
+          /* ⭐ First real message = definitively connected. Some
+             intermediate proxies swallow the HTTP "open" event but
+             still pass through the data frames — this recovers from
+             that case. */
+          if (!_trafficLiveIsLive) _trafficSetStatus('Live', true);
         }
       } catch (e) { /* silent */ }
     };
+
     es.onerror = () => {
+      clearTimeout(openWatchdog);
       _trafficESFails++;
       _trafficSetStatus('Reconnecting…', false);
       if (_trafficESFails >= 3) {

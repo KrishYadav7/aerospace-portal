@@ -11428,6 +11428,14 @@ app.get('/api/admin/online-users/stream', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  /* ⭐ Same Nagle fix as the traffic stream. */
+  if (res.socket) {
+    try { res.socket.setNoDelay(true); } catch (e) {}
+    try { res.socket.setKeepAlive(true, 30000); } catch (e) {}
+  }
+
   res.flushHeaders?.();
 
   /* Evict oldest if we're at capacity */
@@ -11567,9 +11575,23 @@ app.get('/api/admin/visitor-analytics/stream', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  /* ⭐ Disable Nagle's algorithm on this socket. SSE sends many tiny
+     packets; without this, the OS buffers them and adds 40–200 ms of
+     latency to every event — making the "Live" badge feel sluggish
+     or, in some proxy setups, never flipping at all. */
+  if (res.socket) {
+    try { res.socket.setNoDelay(true); } catch (e) {}
+    try { res.socket.setKeepAlive(true, 30000); } catch (e) {}
+  }
+
   res.flushHeaders?.();
 
   trafficSseClients.add(res);
+
+  /* ⭐ Tell the browser to reconnect in 2 s on any drop. */
+  res.write('retry: 2000\n\n');
 
   /* Immediate snapshot so the UI paints instantly on connect. */
   try {
