@@ -19077,3 +19077,350 @@ async function saveAdminCertificateTemplate() {
     if (btn) { btn.disabled = false; btn.innerHTML = originalHTML || '<i class="fas fa-save"></i> Save template'; }
   }
 }
+
+/* ============================================================
+   ⭐ ADMIN — VISITOR ANALYTICS / TRAFFIC OVERVIEW
+   ------------------------------------------------------------
+   Injects a "Traffic" tab next to "Live Activity" in the admin
+   tab strip, wires it into the tab dispatcher, and streams live
+   snapshots from /api/admin/visitor-analytics/stream.
+
+   Nothing above this block is touched. Fully self-contained.
+   ============================================================ */
+
+/* ---- 1. Inject the tab button + container once ---- */
+(function ensureTrafficTab() {
+  const tabsEl = document.querySelector('.admin-tabs');
+  if (!tabsEl) return;
+  if (tabsEl.querySelector('[data-tab="traffic"]')) return;
+
+  const btn = document.createElement('button');
+  btn.className = 'admin-tab';
+  btn.dataset.tab = 'traffic';
+  btn.innerHTML = '<i class="fas fa-chart-column"></i> Traffic';
+  btn.setAttribute('onclick', "switchAdminTab('traffic')");
+
+  /* Place it right after the "Live Activity" tab */
+  const anchor = tabsEl.querySelector('[data-tab="live"]');
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+  else tabsEl.appendChild(btn);
+
+  const view = document.getElementById('adminView');
+  if (view && !document.getElementById('adminTabTraffic')) {
+    const c = document.createElement('div');
+    c.className = 'admin-tab-content';
+    c.id = 'adminTabTraffic';
+    view.appendChild(c);
+  }
+})();
+
+/* ---- 2. Extend the tab dispatcher ---- */
+(function wrapTrafficRouting() {
+  if (window.__aeroTrafficRoutingWrapped) return;
+  window.__aeroTrafficRoutingWrapped = true;
+
+  const _origUpdateAdminTabUI = window.updateAdminTabUI;
+  window.updateAdminTabUI = function () {
+    if (typeof _origUpdateAdminTabUI === 'function') {
+      _origUpdateAdminTabUI.apply(this, arguments);
+    }
+    if (adminTab === 'traffic') {
+      const t = document.getElementById('adminPageTitle');
+      if (t) t.innerHTML = '<i class="fas fa-chart-column"></i> Traffic Overview';
+      const a = document.getElementById('adminHeaderActions');
+      if (a) {
+        a.innerHTML =
+          '<span class="traffic-live-pill" id="trafficLivePill">' +
+            '<span class="live-pulse-dot"></span>' +
+            ' <span id="trafficLiveStatus">Connecting…</span>' +
+          '</span>' +
+          '<button class="btn btn-outline" onclick="renderAdminTraffic(true)">' +
+            '<i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span>' +
+          '</button>';
+      }
+    }
+  };
+
+  const _origRenderAdminDashboard = window.renderAdminDashboard;
+  window.renderAdminDashboard = function () {
+    if (adminTab === 'traffic') return renderAdminTraffic();
+    if (typeof _origRenderAdminDashboard === 'function') {
+      return _origRenderAdminDashboard.apply(this, arguments);
+    }
+  };
+})();
+
+/* ---- 3. SSE state ---- */
+let _trafficES = null;
+let _trafficESFails = 0;
+let _trafficPollTimer = null;
+let _trafficLastData = null;
+
+function _trafficSetStatus(label, isLive) {
+  const el  = document.getElementById('trafficLiveStatus');
+  const pill = document.getElementById('trafficLivePill');
+  if (el) el.textContent = label;
+  if (pill) pill.classList.toggle('is-live', !!isLive);
+}
+
+function _trafficCloseStream() {
+  if (_trafficES) { try { _trafficES.close(); } catch (e) {} _trafficES = null; }
+}
+function _trafficStopPolling() {
+  if (_trafficPollTimer) { clearInterval(_trafficPollTimer); _trafficPollTimer = null; }
+}
+
+function _trafficStartPolling() {
+  if (_trafficPollTimer) return;
+  _trafficSetStatus('Polling', false);
+  _trafficPollTimer = setInterval(() => {
+    const host = document.getElementById('adminTabTraffic');
+    if (!host || !host.classList.contains('active')) {
+      _trafficStopPolling();
+      return;
+    }
+    if (document.hidden) return;
+    renderAdminTraffic(true).catch(() => {});
+  }, 10000);
+}
+
+function _trafficOpenStream() {
+  _trafficCloseStream();
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    if (!token) { _trafficStartPolling(); return; }
+
+    const url = `${API_BASE}/admin/visitor-analytics/stream?auth=${encodeURIComponent(token)}`;
+    const es = new EventSource(url);
+    _trafficES = es;
+
+    es.onopen = () => {
+      _trafficESFails = 0;
+      _trafficSetStatus('Live', true);
+    };
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data && data.success) {
+          _trafficLastData = data;
+          _trafficPaint(data);
+        }
+      } catch (e) { /* silent */ }
+    };
+    es.onerror = () => {
+      _trafficESFails++;
+      _trafficSetStatus('Reconnecting…', false);
+      if (_trafficESFails >= 3) {
+        _trafficCloseStream();
+        _trafficStartPolling();
+      }
+    };
+  } catch (e) {
+    _trafficStartPolling();
+  }
+}
+
+/* ---- 4. Entry point — called by renderAdminDashboard ---- */
+async function renderAdminTraffic(forceRefresh) {
+  const host = document.getElementById('adminTabTraffic');
+  if (!host) return;
+
+  /* Skeleton on the very first paint */
+  if (!host.querySelector('.traffic-wrap')) {
+    host.innerHTML = `
+      <div class="traffic-wrap" id="trafficWrap">
+        <div class="traffic-loading">
+          <div class="pdfv-spinner"></div>
+          <p>Loading traffic data…</p>
+        </div>
+      </div>`;
+  }
+
+  /* Kick the stream (idempotent) */
+  if (!_trafficES && !_trafficPollTimer) _trafficOpenStream();
+
+  /* If we already have a snapshot, repaint instantly — no flicker
+     when switching back to the tab from another one. */
+  if (_trafficLastData && !forceRefresh) {
+    _trafficPaint(_trafficLastData);
+    return;
+  }
+
+  /* Otherwise fetch one snapshot immediately. */
+  try {
+    const token = sessionStorage.getItem('aero_token');
+    const res = await fetch(`${API_BASE}/admin/visitor-analytics?_t=${Date.now()}`, {
+      headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+      cache: 'no-store'
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      _trafficLastData = data;
+      _trafficPaint(data);
+    }
+  } catch (e) {
+    console.warn('[traffic] initial fetch failed:', e);
+  }
+}
+
+/* ---- 5. Paint the payload ---- */
+function _trafficPaint(data) {
+  const host = document.getElementById('trafficWrap');
+  if (!host) return;
+
+  const fmtNum = (n) => Number(n || 0).toLocaleString('en-IN');
+  const total = (Number(data.deviceCounts.desktop) || 0)
+              + (Number(data.deviceCounts.mobile)  || 0)
+              + (Number(data.deviceCounts.tablet)  || 0);
+  const pct = (v) => total > 0 ? Math.round((v / total) * 100) : 0;
+
+  /* Daily series — last 30 days, for the bar chart. */
+  const daily = Array.isArray(data.daily) ? data.daily : [];
+  const maxDaily = Math.max(1, ...daily.map(d => d.visits || 0));
+  const dailyBars = daily.map((d, i) => {
+    const h = Math.round((d.visits / maxDaily) * 100);
+    const [y, m, dd] = d.date.split('-');
+    const label = new Date(Number(y), Number(m) - 1, Number(dd))
+      .toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+    return `<div class="traffic-bar-wrap" title="${label} · ${fmtNum(d.visits)} visits · ${fmtNum(d.unique)} unique">
+      <div class="traffic-bar" style="height:${Math.max(2, h)}%"></div>
+    </div>`;
+  }).join('');
+
+  const deviceData = [
+    { key: 'desktop', label: 'Desktop',  icon: 'fa-desktop',             count: Number(data.deviceCounts.desktop) || 0 },
+    { key: 'mobile',  label: 'Mobile',   icon: 'fa-mobile-screen',       count: Number(data.deviceCounts.mobile)  || 0 },
+    { key: 'tablet',  label: 'Tablet',   icon: 'fa-tablet-screen-button',count: Number(data.deviceCounts.tablet)  || 0 }
+  ];
+
+  host.innerHTML = `
+    <!-- ============ 4 STAT TILES ============ -->
+    <div class="traffic-stats">
+      <div class="traffic-stat traffic-stat-active">
+        <div class="traffic-stat-icon tone-emerald"><i class="fas fa-signal"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.active)}</div>
+          <div class="traffic-stat-lbl">Active right now</div>
+          <div class="traffic-stat-hint">Last 5 minutes</div>
+        </div>
+      </div>
+      <div class="traffic-stat">
+        <div class="traffic-stat-icon tone-brand"><i class="fas fa-chart-simple"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.totalVisits)}</div>
+          <div class="traffic-stat-lbl">Total page views</div>
+          <div class="traffic-stat-hint">All time</div>
+        </div>
+      </div>
+      <div class="traffic-stat">
+        <div class="traffic-stat-icon tone-cyan"><i class="fas fa-calendar-day"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.today.visits)}</div>
+          <div class="traffic-stat-lbl">Views today</div>
+          <div class="traffic-stat-hint">Since midnight IST</div>
+        </div>
+      </div>
+      <div class="traffic-stat">
+        <div class="traffic-stat-icon tone-gold"><i class="fas fa-user-check"></i></div>
+        <div class="traffic-stat-body">
+          <div class="traffic-stat-num">${fmtNum(data.today.unique)}</div>
+          <div class="traffic-stat-lbl">Unique today</div>
+          <div class="traffic-stat-hint">Distinct sessions</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 30-DAY CHART + DEVICE SPLIT ============ -->
+    <div class="traffic-grid">
+      <section class="traffic-panel traffic-panel-wide">
+        <header class="traffic-panel-head">
+          <h3><i class="fas fa-chart-column"></i> Last 30 days</h3>
+          <span class="traffic-panel-sub">Daily page views</span>
+        </header>
+        <div class="traffic-chart">${dailyBars || '<div class="traffic-empty-chart">No data yet</div>'}</div>
+        <div class="traffic-chart-axis">
+          <span>30 days ago</span>
+          <span>Today</span>
+        </div>
+      </section>
+
+      <section class="traffic-panel">
+        <header class="traffic-panel-head">
+          <h3><i class="fas fa-mobile-screen"></i> Devices (all time)</h3>
+          <span class="traffic-panel-sub">${fmtNum(total)} total views</span>
+        </header>
+        <div class="traffic-devices">
+          ${deviceData.map(d => `
+            <div class="traffic-device-row">
+              <div class="traffic-device-icon tone-${d.key}">
+                <i class="fas ${d.icon}"></i>
+              </div>
+              <div class="traffic-device-info">
+                <div class="traffic-device-head">
+                  <strong>${d.label}</strong>
+                  <span class="traffic-device-pct">${pct(d.count)}%</span>
+                </div>
+                <div class="traffic-device-bar">
+                  <div class="traffic-device-fill fill-${d.key}" style="width:${pct(d.count)}%"></div>
+                </div>
+                <div class="traffic-device-count">${fmtNum(d.count)} views</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ RECENT DAILY BREAKDOWN ============ -->
+    <section class="traffic-panel traffic-panel-wide" style="margin-top:16px;">
+      <header class="traffic-panel-head">
+        <h3><i class="fas fa-list-ul"></i> Recent days</h3>
+        <span class="traffic-panel-sub">Latest 10 days at a glance</span>
+      </header>
+      <div class="traffic-table-wrap">
+        <table class="traffic-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Views</th>
+              <th>Unique</th>
+              <th>Desktop</th>
+              <th>Mobile</th>
+              <th>Tablet</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${daily.slice(-10).reverse().map(d => {
+              const [y, m, dd] = d.date.split('-');
+              const lbl = new Date(Number(y), Number(m) - 1, Number(dd))
+                .toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+              return `<tr>
+                <td><strong>${lbl}</strong></td>
+                <td>${fmtNum(d.visits)}</td>
+                <td>${fmtNum(d.unique)}</td>
+                <td>${fmtNum(d.devices.desktop)}</td>
+                <td>${fmtNum(d.devices.mobile)}</td>
+                <td>${fmtNum(d.devices.tablet)}</td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-tertiary);padding:24px;">No data yet</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+/* ---- 6. Stop the stream when leaving the tab or the page ---- */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  /* reconnect immediately if the tab is currently visible */
+  const host = document.getElementById('adminTabTraffic');
+  if (host && host.classList.contains('active') && !_trafficES) {
+    _trafficOpenStream();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  _trafficCloseStream();
+  _trafficStopPolling();
+});
