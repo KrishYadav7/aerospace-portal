@@ -4,15 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0b1226">
-<link rel="manifest" href="manifest.json?v=135">
+<link rel="manifest" href="manifest.json?v=136">
   <!-- Logo / Favicon -->
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=135">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=135">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=135">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=135">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=135">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=135">
-  <link rel="shortcut icon" href="/favicon-32.png?v=135">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=136">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=136">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=136">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=136">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=136">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=136">
+  <link rel="shortcut icon" href="/favicon-32.png?v=136">
   <title>AeroGyan Education – Course Portal</title>
 
   <!-- Critical preconnects (only 3 — extra ones waste time) -->
@@ -44,7 +44,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=135">
+  <link rel="stylesheet" href="styles.css?v=136">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -1825,9 +1825,9 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=135" defer></script>
-  <script src="document-viewer.js?v=135" defer></script>
-  <script src="app.js?v=135" defer></script>
+ 	<script src="media-viewer.js?v=136" defer></script>
+  <script src="document-viewer.js?v=136" defer></script>
+  <script src="app.js?v=136" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
@@ -1835,7 +1835,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=135', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=136', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 

@@ -566,6 +566,33 @@ app.use((req, res, next) => {
   next();
 });
 /* ============================================================
+   ⭐ VISITOR PRESENCE TRACKING — EARLY REGISTRATION
+   ------------------------------------------------------------
+   BUG FIX (moved from ~line 640):
+   The tracker used to be registered AFTER app.get('/'),
+   app.get('/landing.html'), app.get('/app') and
+   app.get('/index.html'). Those handlers call res.sendFile()
+   and never call next(), so Express never reached the tracker
+   for a landing-page load — leaving every metric on the admin
+   Traffic dashboard frozen.
+
+   Registered here, before any route, it fires on every request.
+   `_trackVisitorIfNeeded` is a hoisted function declaration and
+   every constant it reads (`TRACKED_PATHS`, `activeVisitors`,
+   `BOT_RE`, `ACTIVE_WINDOW_MS`) is a module-level const that is
+   initialised long before the first HTTP request arrives — so
+   there is no temporal-dead-zone problem.
+
+   Hot-path cost:
+     • non-tracked request → 1 early-return string comparison
+     • tracked page load   → 1 Map.set() (~200 bytes, bounded)
+   No allocations, no I/O, no async work.
+   ============================================================ */
+app.use((req, res, next) => {
+  try { _trackVisitorIfNeeded(req); } catch (_) { /* never block */ }
+  next();
+});
+/* ============================================================
    FILE UPLOADS — save to disk, serve from /uploads, never store in MongoDB
    ============================================================ */
 const ALLOWED_MIMES = new Set([
@@ -1196,8 +1223,11 @@ const recoveryLimiter = rateLimit({
        affect a page load.
    ============================================================ */
 
-/* Paths that count as "a page view" */
-const TRACKED_PATHS = new Set(['/', '/app', '/index.html', '/landing.html']);
+/* Paths that count as "a page view" OR refresh presence. */
+const TRACKED_PATHS = new Set([
+  '/', '/app', '/index.html', '/landing.html',
+  '/api/visitor-ping'          // ← lightweight heartbeat, GET, no-op response
+]);
 
 /* Last-seen timestamp per visitor (session hash → ms).
    5-minute window = "currently active". */
@@ -1250,10 +1280,10 @@ function _trackVisitorIfNeeded(req) {
   }
 }
 
-app.use((req, res, next) => {
-  _trackVisitorIfNeeded(req);
-  next();
-});
+/* NOTE: the tracking middleware is now registered near the top of
+   this file, BEFORE any route handler, so that it actually fires
+   for GET / , GET /landing.html , GET /app and GET /index.html.
+   Do not re-register it here. */
 
 /* ============================================================
    ⭐ ENGAGED-VIEW TRACKER — POST /api/track-view
@@ -1370,6 +1400,25 @@ app.post('/api/track-view', trackViewLimiter, (req, res) => {
     console.warn('[track-view] error:', e && e.message);
     res.json({ success: false });
   }
+});
+/* ============================================================
+   ⭐ GET /api/visitor-ping — anonymous presence heartbeat
+   ------------------------------------------------------------
+   The landing-page client calls this every 60 s (and on tab
+   focus) so an anonymous visitor who reads the page for 10
+   minutes still appears in the admin "Active right now" tile.
+
+   The tracker middleware (registered at the top of this file)
+   has already refreshed `activeVisitors` by the time this
+   handler runs, so all this needs to do is return 200.
+
+   Response: ~40 bytes. No DB, no allocation beyond the JSON
+   literal, cache-busted so intermediaries cannot swallow it.
+   ============================================================ */
+app.get('/api/visitor-ping', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.json({ ok: true, t: Date.now() });
 });
 
 /* Purge stale active visitors every 60 s. */

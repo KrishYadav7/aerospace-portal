@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0b1226">
   <meta name="description" content="AeroGyan Education — Your complete hub for engineering excellence. Video lectures, notes, PYQs, tutorials, slides, and an AI doubt solver. Built for IIT Kharagpur students.">
-  <link rel="manifest" href="manifest.json?v=135">
+  <link rel="manifest" href="manifest.json?v=136">
 
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=135">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=135">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=135">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=135">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=135">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=135">
-  <link rel="shortcut icon" href="/favicon-32.png?v=135">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=136">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=136">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=136">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=136">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=136">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=136">
+  <link rel="shortcut icon" href="/favicon-32.png?v=136">
 
   <title>AeroGyan Education — Your Complete Hub for Engineering Excellence</title>
 
@@ -31,7 +31,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- Same global stylesheet → 100% theme continuity with the app -->
-  <link rel="stylesheet" href="styles.css?v=135">
+  <link rel="stylesheet" href="styles.css?v=136">
 
   <style>
     /* ============================================================
@@ -4215,6 +4215,62 @@
 
   /* ── Kick the loop ─────────────────────────────────────── */
   setTimeout(tick, 1000);
+})();
+</script>
+<!-- ============================================================
+     ⭐ Anonymous presence heartbeat
+     ------------------------------------------------------------
+     Server-side, `GET /api/visitor-ping` refreshes the caller's
+     entry in the in-memory `activeVisitors` Map. That is what
+     keeps an anonymous landing-page reader on the admin's
+     "Active right now" tile for the whole time they are here —
+     not just for 5 minutes after the initial page load.
+
+     Cadence:
+       • one ping 3 s after load (so the tile fills instantly)
+       • every 60 s while the tab is visible
+       • immediately on tab focus, and on `online`
+     Cost: one 40-byte request per minute per open tab.
+     ============================================================ -->
+<script>
+(function anonymousVisitorHeartbeat() {
+  if (window.__aeroVisitorHeartbeat) return;
+  window.__aeroVisitorHeartbeat = true;
+
+  var PING_URL = '/api/visitor-ping';
+  var PING_MS  = 60000;
+  var lastPingAt = 0;
+
+  function ping(force) {
+    var now = Date.now();
+    if (!force && now - lastPingAt < 45000) return;   // 45 s throttle
+    lastPingAt = now;
+    try {
+      fetch(PING_URL + '?_t=' + now, {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        keepalive: true
+      }).catch(function () { /* silent — pure telemetry */ });
+    } catch (e) { /* older browsers: fail silently */ }
+  }
+
+  /* First ping — a hair after first paint so it never competes
+     with the hero image or the fonts. */
+  setTimeout(function () { ping(true); }, 3000);
+
+  /* Steady state — one ping per minute while visible. */
+  setInterval(function () {
+    if (!document.hidden) ping(false);
+  }, PING_MS);
+
+  /* Tab comes back into focus → refresh immediately. */
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) ping(true);
+  });
+
+  /* Network came back → refresh immediately. */
+  window.addEventListener('online', function () { ping(true); });
 })();
 </script>
 </body>
