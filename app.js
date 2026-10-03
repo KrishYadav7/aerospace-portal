@@ -19143,7 +19143,15 @@ async function saveAdminCertificateTemplate() {
 
   const _origRenderAdminDashboard = window.renderAdminDashboard;
   window.renderAdminDashboard = function () {
-    if (adminTab === 'traffic') return renderAdminTraffic();
+    if (adminTab === 'traffic') {
+      /* ⭐ FIX: activate the Traffic tab button + content div.
+         Without this call, updateAdminTabUI() is skipped because
+         we short-circuit the original renderAdminDashboard() — so
+         #adminTabTraffic never gets the .active class, stays
+         display:none, and the button appears dead. */
+      updateAdminTabUI();
+      return renderAdminTraffic();
+    }
     if (typeof _origRenderAdminDashboard === 'function') {
       return _origRenderAdminDashboard.apply(this, arguments);
     }
