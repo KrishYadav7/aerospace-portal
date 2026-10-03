@@ -4070,5 +4070,152 @@
   }
 })();
 </script>
+<!-- ============================================================
+     ⭐ Engaged-view tracker
+     ------------------------------------------------------------
+     Counts a "legitimate view" only after the visitor has spent
+     at least ENGAGED_MS of *visible* time on the page AND has
+     shown at least one real interaction (scroll, mousemove, tap,
+     click, or keypress).
+
+     What this filters out:
+       • bot prefetches and crawlers
+       • accidental clicks that bounce in < 2 s
+       • tabs left open in the background
+       • simple refreshes (6-hour session dedupe)
+       • DNT / GPC users
+     ============================================================ -->
+<script>
+(function () {
+  if (window.__aeroViewTracker) return;
+  window.__aeroViewTracker = true;
+
+  /* ── Tunables ──────────────────────────────────────────── */
+  const ENGAGED_MS    = 15000;                       // 15 s of visible time
+  const DEDUPE_KEY    = 'aero_view_counted';
+  const DEDUPE_TTL_MS = 6 * 60 * 60 * 1000;          // 6 h — re-count after that
+  const BEACON_URL    = '/api/track-view';
+
+  /* ── Guard: unsupported contexts ───────────────────────── */
+  if (typeof document === 'undefined' || !document.addEventListener) return;
+
+  /* ── Respect privacy signals ───────────────────────────── */
+  try {
+    if (navigator.doNotTrack === '1') return;
+    if (navigator.globalPrivacyControl === true) return;
+  } catch (e) {}
+
+  /* ── Session-level dedupe (refresh → no double-count) ──── */
+  try {
+    const last = Number(sessionStorage.getItem(DEDUPE_KEY) || '0');
+    if (last && (Date.now() - last) < DEDUPE_TTL_MS) return;
+  } catch (e) {}
+
+  /* ── Bot heuristic (mirror of server-side BOT_RE) ──────── */
+  const ua = (navigator.userAgent || '').toLowerCase();
+  if (/bot|crawl|spider|slurp|preview|facebookexternalhit|bing|yandex|baiduspider|headless|phantom/.test(ua)) return;
+  if (navigator.webdriver) return;
+
+  /* ── State ─────────────────────────────────────────────── */
+  let visibleMs       = 0;
+  let lastTickAt      = document.hidden ? 0 : Date.now();
+  let fired           = false;
+  let interactionSeen = false;
+
+  /* A view only counts if the visitor actually *did* something.
+     This stops a tab that was left open from ever firing. */
+  const INTERACTION_EVENTS = ['scroll', 'mousemove', 'touchstart', 'keydown', 'click'];
+  const onInteract = () => { interactionSeen = true; };
+  INTERACTION_EVENTS.forEach(evt => {
+    document.addEventListener(evt, onInteract, { passive: true });
+  });
+
+  function cleanup() {
+    INTERACTION_EVENTS.forEach(evt => {
+      document.removeEventListener(evt, onInteract);
+    });
+  }
+
+  /* ── Fire the beacon ───────────────────────────────────── */
+  function fire() {
+    if (fired) return;
+    fired = true;
+    cleanup();
+
+    try { sessionStorage.setItem(DEDUPE_KEY, String(Date.now())); } catch (e) {}
+
+    const payload = JSON.stringify({
+      durationMs: Math.round(visibleMs),
+      path:       location.pathname,
+      referrer:   document.referrer || '',
+      ts:         Date.now()
+    });
+
+    /* sendBeacon is the most reliable fire-and-forget API — it
+       works even while the page is being unloaded and is not
+       affected by tab throttling. */
+    let sent = false;
+    if (navigator.sendBeacon) {
+      try {
+        const blob = new Blob([payload], { type: 'application/json' });
+        sent = navigator.sendBeacon(BEACON_URL, blob);
+      } catch (e) { sent = false; }
+    }
+    if (!sent) {
+      try {
+        fetch(BEACON_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+          keepalive: true,
+          credentials: 'same-origin'
+        }).catch(() => {});
+      } catch (e) {}
+    }
+
+    if (window.console && console.debug) {
+      console.debug('[view-tracker] engaged view recorded (' + Math.round(visibleMs / 1000) + 's)');
+    }
+  }
+
+  /* ── 1 Hz tick loop ────────────────────────────────────── */
+  function tick() {
+    if (fired) return;
+    const now = Date.now();
+    if (!document.hidden && lastTickAt) {
+      visibleMs += now - lastTickAt;
+    }
+    lastTickAt = document.hidden ? 0 : now;
+
+    if (visibleMs >= ENGAGED_MS && interactionSeen) {
+      fire();
+      return;
+    }
+    setTimeout(tick, 1000);
+  }
+
+  /* ── Pause / resume on tab visibility ──────────────────── */
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (lastTickAt) {
+        visibleMs += Date.now() - lastTickAt;
+        lastTickAt = 0;
+      }
+    } else {
+      lastTickAt = Date.now();
+    }
+  });
+
+  /* ── Flush on unload if the threshold is already met ───── */
+  function onUnload() {
+    if (!fired && visibleMs >= ENGAGED_MS && interactionSeen) fire();
+  }
+  window.addEventListener('pagehide', onUnload);
+  window.addEventListener('beforeunload', onUnload);
+
+  /* ── Kick the loop ─────────────────────────────────────── */
+  setTimeout(tick, 1000);
+})();
+</script>
 </body>
 </html>

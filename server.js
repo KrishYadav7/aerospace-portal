@@ -1226,30 +1226,24 @@ function _trackVisitorIfNeeded(req) {
     const ua = String(req.headers['user-agent'] || '');
     if (!ua || BOT_RE.test(ua)) return;
 
-    const info = parseDeviceInfo(ua);
-    const device =
-      info.device === 'mobile' ? 'mobile' :
-      info.device === 'tablet' ? 'tablet' : 'desktop';
-
     const visitorHash = crypto
       .createHash('sha256')
       .update(String(req.ip || '') + '|' + ua + '|' + istDateKey())
       .digest('hex')
       .slice(0, 16);
 
-    /* Roll the buffer over at midnight (IST) — reset unique Set. */
-    const today = istDateKey();
-    if (_visitBuffer.date !== today) {
-      _visitBuffer.date = today;
-      _visitBuffer._uniqueToday.clear();
-      _visitBuffer._flushedCount = 0;
-    }
+    /* ⭐ PRESENCE-ONLY TRACKING.
+       ------------------------------------------------------------
+       A page load now records ONLY that this visitor is currently
+       on the site (feeds the "Active right now" tile). It does NOT
+       increment any view counter.
 
-    _visitBuffer.visits++;
-    _visitBuffer.devices[device]++;
-    if (_visitBuffer._uniqueToday.size < _visitBuffer.hardCap) {
-      _visitBuffer._uniqueToday.add(visitorHash);
-    }
+       Views are counted by POST /api/track-view, which the client
+       fires after the visitor has spent at least ENGAGED_MS of
+       *visible* time on the page AND shown at least one real
+       interaction (scroll / click / key / touch). That filters out
+       accidental clicks, background tabs, and bot prefetches.
+       ------------------------------------------------------------ */
     activeVisitors.set(visitorHash, Date.now());
   } catch (_) {
     /* tracker must NEVER break a page load */
@@ -1259,6 +1253,123 @@ function _trackVisitorIfNeeded(req) {
 app.use((req, res, next) => {
   _trackVisitorIfNeeded(req);
   next();
+});
+
+/* ============================================================
+   ⭐ ENGAGED-VIEW TRACKER — POST /api/track-view
+   ------------------------------------------------------------
+   Called by the client-side beacon ONLY AFTER the visitor has
+   spent at least MIN_ENGAGED_MS of *visible* time on the page
+   and shown at least one interaction. This is the ONLY write
+   path that increments the "views" counter.
+
+   The server re-verifies the client-reported duration so a
+   modified client cannot fake engagement.
+   ============================================================ */
+const MIN_ENGAGED_MS = 10000;   // server-side hard floor (10 s)
+const ENGAGED_MAP_MAX = 50000;
+
+/* In-memory dedupe — one engaged view per (visitor, day).
+   Bounded; purged on day roll and when capacity is reached. */
+const _engagedThisDay = new Map();  // visitorHash → dayKey
+let   _engagedDay = istDateKey();
+
+function _markEngaged(visitorHash) {
+  const today = istDateKey();
+  if (_engagedDay !== today) {
+    _engagedThisDay.clear();
+    _engagedDay = today;
+  }
+  if (_engagedThisDay.size >= ENGAGED_MAP_MAX) {
+    const drop = Math.floor(ENGAGED_MAP_MAX * 0.5);
+    const it = _engagedThisDay.keys();
+    for (let i = 0; i < drop; i++) {
+      const k = it.next().value;
+      if (k === undefined) break;
+      _engagedThisDay.delete(k);
+    }
+  }
+  _engagedThisDay.set(visitorHash, today);
+}
+function _alreadyEngaged(visitorHash) {
+  if (_engagedDay !== istDateKey()) return false;
+  return _engagedThisDay.get(visitorHash) === _engagedDay;
+}
+
+/* Cheap rate limit — a real visitor can only fire once anyway. */
+const trackViewLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: false,
+  legacyHeaders: false,
+  handler: (req, res) => res.json({ success: true, tracked: false, reason: 'rate-limit' })
+});
+
+app.post('/api/track-view', trackViewLimiter, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+
+  try {
+    const ua = String(req.headers['user-agent'] || '');
+    if (!ua || BOT_RE.test(ua)) {
+      return res.json({ success: true, tracked: false, reason: 'bot' });
+    }
+
+    const body = req.body || {};
+    const durationMs = Number(body.durationMs) || 0;
+
+    /* ⭐ Server-side re-verification of the threshold.
+       Even if a client lies about duration, we reject anything
+       below the hard floor. */
+    if (durationMs < MIN_ENGAGED_MS) {
+      return res.json({ success: true, tracked: false, reason: 'below-threshold' });
+    }
+
+    /* Same visitor-hash formula as the presence middleware — this is
+       what lets us dedupe beacons against the same real person on
+       the same day without storing any PII. */
+    const visitorHash = crypto
+      .createHash('sha256')
+      .update(String(req.ip || '') + '|' + ua + '|' + istDateKey())
+      .digest('hex')
+      .slice(0, 16);
+
+    if (_alreadyEngaged(visitorHash)) {
+      return res.json({ success: true, tracked: false, reason: 'duplicate' });
+    }
+    _markEngaged(visitorHash);
+
+    /* Roll the daily buffer if the clock crossed midnight IST since
+       the last write. The 5-second flush timer will have already
+       persisted yesterday's tail; the tiny <1 s race is acceptable
+       for a marketing counter. */
+    const today = istDateKey();
+    if (_visitBuffer.date !== today) {
+      _visitBuffer.date = today;
+      _visitBuffer.visits = 0;
+      _visitBuffer.devices = { desktop: 0, mobile: 0, tablet: 0 };
+      _visitBuffer._uniqueToday.clear();
+      _visitBuffer._flushedCount = 0;
+    }
+
+    const info = parseDeviceInfo(ua);
+    const device =
+      info.device === 'mobile' ? 'mobile' :
+      info.device === 'tablet' ? 'tablet' : 'desktop';
+
+    _visitBuffer.visits++;
+    _visitBuffer.devices[device]++;
+    if (_visitBuffer._uniqueToday.size < _visitBuffer.hardCap) {
+      _visitBuffer._uniqueToday.add(visitorHash);
+    }
+
+    console.log(
+      `[track-view] ✅ engaged view · ${req.ip} · ${device} · ${Math.round(durationMs / 1000)}s`
+    );
+    res.json({ success: true, tracked: true });
+  } catch (e) {
+    console.warn('[track-view] error:', e && e.message);
+    res.json({ success: false });
+  }
 });
 
 /* Purge stale active visitors every 60 s. */
