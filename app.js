@@ -17893,32 +17893,88 @@ async function loadDailyReport() {
 /* ------------------------------------------------------------
    openStudentUsageModal — per-student 7-day breakdown
    ------------------------------------------------------------ */
+/* ============================================================
+   LIVE ACTIVITY — STUDENT USAGE MODAL  (v2 — wide, structured)
+   ------------------------------------------------------------
+   Opens a large (~84 vw × 84 vh) dialog that presents one
+   student's activity in a clear three-zone hierarchy:
+
+     ① Header      — avatar · name · @username · lifetime totals
+     ② Summary row — Total time · Active days · Courses · Quizzes
+     ③ Two-column  — Course engagement (left)
+                     Daily timeline      (right)
+
+   The API contract is UNCHANGED — this reads the exact same
+   `data.days` + `data.totals` payload the previous version
+   consumed, so nothing server-side needs to change.
+   ============================================================ */
 async function openStudentUsageModal(userId, username) {
   const old = document.getElementById('studentUsageModal');
   if (old) old.remove();
 
+  const uname = String(username || 'student');
+
   const modal = document.createElement('div');
   modal.id = 'studentUsageModal';
-  modal.className = 'modal-overlay active';
+  modal.className = 'sum-overlay';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', 'Student usage details');
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:720px;">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;">
-        <div>
-          <h3 style="margin:0;"><i class="fas fa-chart-line"></i> @${escapeHtml(username || 'student')}</h3>
-          <p class="modal-sub" style="margin:6px 0 0;">Last 7 days of study activity</p>
+    <div class="sum-shell" role="document">
+      <header class="sum-header">
+        <div class="sum-avatar" id="sumAvatar">${escapeHtml(getInitials(uname).slice(0, 2))}</div>
+        <div class="sum-title-block">
+          <h2 class="sum-name">@${escapeHtml(uname)}</h2>
+          <div class="sum-meta" id="sumMeta">
+            <span class="sum-meta-pill"><i class="fas fa-circle-notch fa-spin"></i> Loading last 7 days…</span>
+          </div>
         </div>
-        <button class="email-modal-close" onclick="document.getElementById('studentUsageModal').remove()" aria-label="Close">
+        <button type="button" class="sum-close" id="sumClose" aria-label="Close" title="Close (Esc)">
           <i class="fas fa-times"></i>
         </button>
-      </div>
-      <div id="studentUsageBody">
-        <div class="live-empty"><i class="fas fa-spinner fa-spin"></i><p>Loading…</p></div>
+      </header>
+
+      <div class="sum-body" id="sumBody">
+        <div class="sum-loading">
+          <div class="pdfv-spinner"></div>
+          <p>Fetching this student's activity…</p>
+        </div>
       </div>
     </div>
   `;
-  document.body.appendChild(modal);
-  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 
+  document.body.appendChild(modal);
+
+  /* Lock background scroll while the dialog is open */
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+
+  /* ---- Close plumbing (three ways: X, overlay, Esc) ---- */
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    document.body.style.overflow = prevOverflow || '';
+    modal.classList.remove('active');
+    setTimeout(() => { try { modal.remove(); } catch (e) {} }, 220);
+    document.removeEventListener('keydown', onEsc, true);
+  };
+  const onEsc = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+  };
+  document.addEventListener('keydown', onEsc, true);
+
+  modal.querySelector('#sumClose').addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  /* Animate in on the next frame (avoids the "flash then animate" glitch) */
+  requestAnimationFrame(() => modal.classList.add('active'));
+
+  /* ------------------------------------------------------------
+     Fetch the same endpoint the old modal used — no change.
+     ------------------------------------------------------------ */
+  let data;
   try {
     const token = sessionStorage.getItem('aero_token');
     const res = await fetch(
@@ -17928,75 +17984,315 @@ async function openStudentUsageModal(userId, username) {
         cache: 'no-store'
       }
     );
-    const data = await res.json();
-
-    const body = document.getElementById('studentUsageBody');
-    if (!data || !data.success) {
-      body.innerHTML = `<div class="live-empty"><p>${escapeHtml((data && data.message) || 'Failed.')}</p></div>`;
-      return;
-    }
-
-    const fmtDur = (sec) => {
-      const s = Math.max(0, Math.floor(sec));
-      if (s < 60) return s + 's';
-      const m = Math.floor(s / 60);
-      if (m < 60) return m + 'm';
-      const h = Math.floor(m / 60);
-      return h + 'h ' + (m % 60) + 'm';
-    };
-
-    if (!data.days || data.days.length === 0) {
-      body.innerHTML = `<div class="live-empty"><i class="fas fa-inbox"></i><p>No activity recorded for this student yet.</p></div>`;
-      return;
-    }
-
-    body.innerHTML = `
-      <div class="student-usage-totals">
-        <div class="usage-total-item">
-          <div class="usage-total-num">${fmtDur(data.totals.totalSeconds)}</div>
-          <div class="usage-total-lbl">7-day total</div>
-        </div>
-        <div class="usage-total-item">
-          <div class="usage-total-num">${data.totals.daysWithActivity}</div>
-          <div class="usage-total-lbl">Active days</div>
-        </div>
-      </div>
-      <div class="usage-day-list">
-        ${data.days.map(d => `
-          <details class="usage-day-card" ${d.date === data.days[0].date ? 'open' : ''}>
-            <summary>
-              <div class="usage-day-head">
-                <strong>${d.date}</strong>
-                <span class="usage-day-time">${fmtDur(d.totalSeconds)}</span>
-              </div>
-            </summary>
-            <div class="usage-day-body">
-              <div class="usage-day-pills">
-                <span class="metric-pill"><i class="fas fa-book"></i> ${d.courses.length} courses</span>
-                <span class="metric-pill"><i class="fas fa-file"></i> ${d.materials.length} materials</span>
-                <span class="metric-pill"><i class="fas fa-check-circle"></i> ${d.materialsCompleted} done</span>
-                <span class="metric-pill"><i class="fas fa-question-circle"></i> ${d.quizzesTaken} quizzes</span>
-              </div>
-              ${d.courses.length > 0 ? `
-                <div class="usage-section-label">Courses</div>
-                <div class="usage-chips">
-                  ${d.courses.map(c => `<span class="usage-chip">${escapeHtml(c.name)} · ${fmtDur(c.seconds)}</span>`).join('')}
-                </div>` : ''}
-              ${d.materials.length > 0 ? `
-                <div class="usage-section-label">Materials viewed</div>
-                <div class="usage-chips">
-                  ${d.materials.slice(0, 12).map(m => `<span class="usage-chip small">${escapeHtml(m.title)} · ${fmtDur(m.seconds)}</span>`).join('')}
-                  ${d.materials.length > 12 ? `<span class="usage-chip small more">+${d.materials.length - 12} more</span>` : ''}
-                </div>` : ''}
-            </div>
-          </details>
-        `).join('')}
-      </div>
-    `;
+    data = await res.json();
   } catch (e) {
-    document.getElementById('studentUsageBody').innerHTML =
-      `<div class="live-empty"><p>Network error: ${escapeHtml(e.message)}</p></div>`;
+    document.getElementById('sumBody').innerHTML =
+      `<div class="sum-empty">
+         <i class="fas fa-triangle-exclamation"></i>
+         <p>Network error: ${escapeHtml(e.message)}</p>
+       </div>`;
+    return;
   }
+
+  /* ------------------------------------------------------------
+     Bail out early if the dialog was dismissed while fetching.
+     ------------------------------------------------------------ */
+  if (closed) return;
+
+  const body = document.getElementById('sumBody');
+  if (!body) return;
+
+  if (!data || !data.success) {
+    body.innerHTML = `
+      <div class="sum-empty">
+        <i class="fas fa-triangle-exclamation"></i>
+        <p>${escapeHtml((data && data.message) || 'Could not load usage data.')}</p>
+      </div>`;
+    return;
+  }
+
+  /* ============================================================
+     FORMATTING HELPERS
+     ============================================================ */
+  const fmtDur = (sec) => {
+    const s = Math.max(0, Math.floor(sec || 0));
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm';
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+  };
+
+  const fmtDurLong = (sec) => {
+    const s = Math.max(0, Math.floor(sec || 0));
+    if (s < 60) return `${s} second${s === 1 ? '' : 's'}`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m} minute${m === 1 ? '' : 's'}`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm > 0
+      ? `${h} hour${h === 1 ? '' : 's'} ${rm} min`
+      : `${h} hour${h === 1 ? '' : 's'}`;
+  };
+
+  const fmtDate = (key) => {
+    try {
+      const [y, m, d] = key.split('-').map(Number);
+      const dt = new Date(y, m - 1, d);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const diff = Math.round((today - dt) / 86400000);
+      const label = dt.toLocaleDateString('en-IN', {
+        weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
+      });
+      if (diff === 0) return { label, badge: 'Today' };
+      if (diff === 1) return { label, badge: 'Yesterday' };
+      return { label, badge: '' };
+    } catch (e) {
+      return { label: key, badge: '' };
+    }
+  };
+
+  /* ============================================================
+     AGGREGATE THE PAYLOAD
+     ============================================================ */
+  const days = Array.isArray(data.days) ? data.days : [];
+  const totals = data.totals || { totalSeconds: 0, daysWithActivity: 0 };
+
+  const courseAgg = new Map();
+  const materialIds = new Set();
+  let totalQuizzes = 0;
+  let totalCompletions = 0;
+
+  days.forEach((d) => {
+    (d.courses || []).forEach((c) => {
+      const key = c.courseId || c.name || 'unknown';
+      if (!courseAgg.has(key)) {
+        courseAgg.set(key, {
+          courseId: key,
+          name: c.name || '(removed)',
+          code: c.code || '',
+          seconds: 0,
+          days: 0
+        });
+      }
+      const a = courseAgg.get(key);
+      a.seconds += Number(c.seconds) || 0;
+      a.days += 1;
+    });
+    (d.materials || []).forEach((m) => {
+      if (m && m.materialId) materialIds.add(m.materialId);
+    });
+    totalQuizzes += Number(d.quizzesTaken) || 0;
+    totalCompletions += Number(d.materialsCompleted) || 0;
+  });
+
+  const courses = Array.from(courseAgg.values())
+    .sort((a, b) => b.seconds - a.seconds);
+  const topSeconds = courses.length ? courses[0].seconds : 1;
+
+  /* ============================================================
+     HEADER META PILLS (replace the "Loading…" placeholder)
+     ============================================================ */
+  const meta = document.getElementById('sumMeta');
+  if (meta) {
+    const activeDayCount = Number(totals.daysWithActivity) || 0;
+    meta.innerHTML = `
+      <span class="sum-meta-pill">
+        <i class="fas fa-clock"></i>
+        <strong>${fmtDur(totals.totalSeconds)}</strong> total
+      </span>
+      <span class="sum-meta-pill">
+        <i class="fas fa-calendar-check"></i>
+        <strong>${activeDayCount}</strong> active day${activeDayCount === 1 ? '' : 's'}
+      </span>
+      <span class="sum-meta-pill">
+        <i class="fas fa-layer-group"></i>
+        <strong>${courses.length}</strong> course${courses.length === 1 ? '' : 's'}
+      </span>
+      <span class="sum-meta-pill">
+        <i class="fas fa-file-pen"></i>
+        <strong>${totalQuizzes}</strong> quiz${totalQuizzes === 1 ? '' : 'zes'}
+      </span>
+    `;
+  }
+
+  /* ============================================================
+     EMPTY STATE
+     ============================================================ */
+  if (days.length === 0) {
+    body.innerHTML = `
+      <div class="sum-empty">
+        <i class="fas fa-inbox"></i>
+        <h3>No activity recorded yet</h3>
+        <p>This student hasn't opened any material, taken any quiz, or spent measurable time on the platform in the last 7 days.</p>
+      </div>`;
+    return;
+  }
+
+  /* ============================================================
+     SUMMARY STATS — four top tiles
+     ============================================================ */
+  const statsHtml = `
+    <div class="sum-stats">
+      <div class="sum-stat">
+        <div class="sum-stat-icon tone-brand"><i class="fas fa-clock"></i></div>
+        <div class="sum-stat-body">
+          <div class="sum-stat-num">${fmtDur(totals.totalSeconds)}</div>
+          <div class="sum-stat-lbl">Total study time</div>
+        </div>
+      </div>
+      <div class="sum-stat">
+        <div class="sum-stat-icon tone-emerald"><i class="fas fa-calendar-check"></i></div>
+        <div class="sum-stat-body">
+          <div class="sum-stat-num">${Number(totals.daysWithActivity) || 0}</div>
+          <div class="sum-stat-lbl">Days with activity</div>
+        </div>
+      </div>
+      <div class="sum-stat">
+        <div class="sum-stat-icon tone-cyan"><i class="fas fa-book-open-reader"></i></div>
+        <div class="sum-stat-body">
+          <div class="sum-stat-num">${courses.length}</div>
+          <div class="sum-stat-lbl">Courses studied</div>
+        </div>
+      </div>
+      <div class="sum-stat">
+        <div class="sum-stat-icon tone-gold"><i class="fas fa-circle-check"></i></div>
+        <div class="sum-stat-body">
+          <div class="sum-stat-num">${totalCompletions}</div>
+          <div class="sum-stat-lbl">Materials completed</div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  /* ============================================================
+     LEFT PANEL — COURSE ENGAGEMENT (bars, ranked by time)
+     ============================================================ */
+  let coursesHtml;
+  if (courses.length === 0) {
+    coursesHtml = `
+      <div class="sum-panel-empty">
+        <i class="fas fa-book"></i>
+        <p>No course activity recorded.</p>
+      </div>`;
+  } else {
+    coursesHtml = `<div class="sum-course-list">` + courses.map((c, i) => {
+      const pct = Math.round((c.seconds / topSeconds) * 100);
+      const rankTone = i === 0 ? 'top1' : i === 1 ? 'top2' : i === 2 ? 'top3' : '';
+      return `
+        <div class="sum-course-row">
+          <div class="sum-course-rank ${rankTone}">${i + 1}</div>
+          <div class="sum-course-info">
+            <div class="sum-course-head">
+              <strong>${escapeHtml(c.name)}</strong>
+              ${c.code ? `<span class="sum-course-code">${escapeHtml(c.code)}</span>` : ''}
+            </div>
+            <div class="sum-course-bar">
+              <div class="sum-course-fill" style="width:${pct}%"></div>
+            </div>
+            <div class="sum-course-meta">
+              <span><i class="fas fa-clock"></i> ${fmtDurLong(c.seconds)}</span>
+              <span><i class="fas fa-calendar-day"></i> ${c.days} active day${c.days === 1 ? '' : 's'}</span>
+            </div>
+          </div>
+        </div>`;
+    }).join('') + `</div>`;
+  }
+
+  /* ============================================================
+     RIGHT PANEL — DAILY TIMELINE (collapsible day cards)
+     ============================================================ */
+  let daysHtml = `<div class="sum-timeline">` + days.map((d, idx) => {
+    const { label, badge } = fmtDate(d.date);
+    const dayCourses = Array.isArray(d.courses) ? d.courses : [];
+    const dayMaterials = Array.isArray(d.materials) ? d.materials : [];
+    const daySeconds = Number(d.totalSeconds) || 0;
+    const isOpen = idx === 0;
+
+    const courseChips = dayCourses.length
+      ? dayCourses.map(c =>
+          `<span class="sum-chip">
+             <i class="fas fa-graduation-cap"></i>
+             ${escapeHtml(c.name || '(removed)')}
+             <em>${fmtDur(c.seconds)}</em>
+           </span>`).join('')
+      : '<span class="sum-chip muted">No course activity</span>';
+
+    const materialChips = dayMaterials.length
+      ? dayMaterials.slice(0, 12).map(m =>
+          `<span class="sum-chip small">
+             <i class="fas fa-file"></i>
+             ${escapeHtml(m.title || '(removed)')}
+             <em>${fmtDur(m.seconds)}</em>
+           </span>`).join('')
+        + (dayMaterials.length > 12
+            ? `<span class="sum-chip small more">+${dayMaterials.length - 12} more</span>`
+            : '')
+      : '<span class="sum-chip muted">No materials opened</span>';
+
+    const metrics = [
+      { icon: 'fa-clock',        label: fmtDur(daySeconds),                   tone: 'brand'   },
+      { icon: 'fa-book',         label: `${dayCourses.length} course${dayCourses.length === 1 ? '' : 's'}`, tone: 'cyan' },
+      { icon: 'fa-file',         label: `${dayMaterials.length} material${dayMaterials.length === 1 ? '' : 's'}`, tone: 'violet' },
+      { icon: 'fa-circle-check', label: `${Number(d.materialsCompleted) || 0} done`, tone: 'emerald' },
+      { icon: 'fa-file-pen',     label: `${Number(d.quizzesTaken) || 0} quiz${Number(d.quizzesTaken) === 1 ? '' : 'zes'}`, tone: 'gold' }
+    ];
+
+    const metricsHtml = metrics.map(m =>
+      `<span class="sum-day-metric tone-${m.tone}">
+         <i class="fas ${m.icon}"></i> ${escapeHtml(m.label)}
+       </span>`).join('');
+
+    return `
+      <details class="sum-day" ${isOpen ? 'open' : ''}>
+        <summary>
+          <div class="sum-day-summary">
+            <div class="sum-day-date">
+              ${badge ? `<span class="sum-day-badge">${badge}</span>` : ''}
+              <strong>${escapeHtml(label)}</strong>
+            </div>
+            <div class="sum-day-metrics">${metricsHtml}</div>
+            <i class="fas fa-chevron-down sum-day-chev"></i>
+          </div>
+        </summary>
+        <div class="sum-day-body">
+          <div class="sum-day-section">
+            <div class="sum-day-label"><i class="fas fa-graduation-cap"></i> Courses</div>
+            <div class="sum-chip-row">${courseChips}</div>
+          </div>
+          <div class="sum-day-section">
+            <div class="sum-day-label"><i class="fas fa-file"></i> Materials opened</div>
+            <div class="sum-chip-row">${materialChips}</div>
+          </div>
+        </div>
+      </details>`;
+  }).join('') + `</div>`;
+
+  /* ============================================================
+     FINAL LAYOUT
+     ============================================================ */
+  body.innerHTML = `
+    ${statsHtml}
+    <div class="sum-grid">
+      <section class="sum-panel">
+        <header class="sum-panel-head">
+          <h3><i class="fas fa-chart-simple"></i> Course engagement</h3>
+          <span class="sum-panel-sub">Ranked by time spent across the 7 days</span>
+        </header>
+        ${coursesHtml}
+      </section>
+
+      <section class="sum-panel">
+        <header class="sum-panel-head">
+          <h3><i class="fas fa-stream"></i> Daily timeline</h3>
+          <span class="sum-panel-sub">${days.length} day${days.length === 1 ? '' : 's'} recorded</span>
+        </header>
+        ${daysHtml}
+      </section>
+    </div>
+  `;
 }
 initApp();
 
