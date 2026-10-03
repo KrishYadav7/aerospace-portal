@@ -150,7 +150,14 @@ const playlistSchema = new mongoose.Schema({
   materialIds: { type: [String], default: [] },
   createdAt:   { type: Date, default: Date.now }
 });
-
+/* ---------- Certificate (per-course eligibility + toggle) ---------- */
+const certificateSchema = new mongoose.Schema({
+  enabled:               { type: Boolean, default: false },
+  minCompletionPercent:  { type: Number,  default: 100, min: 0, max: 100 },
+  minAverageQuizPercent: { type: Number,  default: 0,   min: 0, max: 100 },
+  minQuizzesPassed:      { type: Number,  default: 0,   min: 0 },
+  quizPassThreshold:     { type: Number,  default: 60,  min: 0, max: 100 }
+}, { _id: false });
 /* ---------- Course ---------- */
 const courseSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -171,6 +178,8 @@ const courseSchema = new mongoose.Schema({
 
   isPremium: { type: Boolean, default: false },
   price:     { type: Number, default: 0 },
+
+  certificate: { type: certificateSchema, default: () => ({}) },
 
   materials: [materialSchema],
   doubts:    [doubtSchema],

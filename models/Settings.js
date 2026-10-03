@@ -46,6 +46,23 @@ const brandingSchema = new mongoose.Schema({
 
   version:        { type: Number, default: 1 }
 }, { _id: false });
+/* ---------- Certificate Template (global design + text) ---------- */
+const certificateTemplateSchema = new mongoose.Schema({
+  orgName:       { type: String, default: 'Aero Gyan Education' },
+  orgSubtitle:   { type: String, default: 'IIT Kharagpur' },
+  title:         { type: String, default: 'Certificate' },
+  subtitle:      { type: String, default: 'of Completion' },
+  presentedText: { type: String, default: 'This certificate is proudly presented to' },
+  completedText: { type: String, default: 'for successfully completing' },
+  signatureName: { type: String, default: 'Krish Yadav' },
+  signatureRole: { type: String, default: 'Course Director' },
+  logoEmoji:     { type: String, default: '🚀' },
+  accentFrom:    { type: String, default: '#6366f1' },
+  accentTo:      { type: String, default: '#06b6d4' },
+  showCertId:    { type: Boolean, default: true },
+  showDate:      { type: Boolean, default: true },
+  updatedAt:     { type: Date,   default: Date.now }
+}, { _id: false });
 
 /* ---------- Subscription Plan (multi-tier) ---------- */
 const planSchema = new mongoose.Schema({
@@ -144,6 +161,12 @@ const settingsSchema = new mongoose.Schema({
 
   /* ⭐ NEW — Branding assets (favicon, logo, PWA icons) */
   branding: { type: brandingSchema, default: () => ({}) },
+
+  /* ⭐ NEW — Global certificate template (design + text) */
+  certificateTemplate: {
+    type: certificateTemplateSchema,
+    default: () => ({})
+  },
 
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });

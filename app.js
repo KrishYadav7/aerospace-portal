@@ -2,6 +2,111 @@
    API CONFIGURATION
    ============================================================ */
 const API_BASE = '/api';
+/* ============================================================
+   CERTIFICATE SYSTEM — global template cache + defaults
+   ============================================================ */
+const DEFAULT_CERT_TEMPLATE = {
+  orgName:       'Aero Gyan Education',
+  orgSubtitle:   'IIT Kharagpur',
+  title:         'Certificate',
+  subtitle:      'of Completion',
+  presentedText: 'This certificate is proudly presented to',
+  completedText: 'for successfully completing',
+  signatureName: 'Krish Yadav',
+  signatureRole: 'Course Director',
+  logoEmoji:     '🚀',
+  accentFrom:    '#6366f1',
+  accentTo:      '#06b6d4',
+  showCertId:    true,
+  showDate:      true
+};
+let _certTemplateCache = null;
+
+async function fetchCertificateTemplate(force) {
+  if (!force && _certTemplateCache) return _certTemplateCache;
+  try {
+    const data = await fetchJSON(`${API_BASE}/settings/certificate?_t=${Date.now()}`);
+    if (data && data.success && data.template) {
+      _certTemplateCache = data.template;
+      return _certTemplateCache;
+    }
+  } catch (e) { /* silent */ }
+  _certTemplateCache = { ...DEFAULT_CERT_TEMPLATE };
+  return _certTemplateCache;
+}
+
+/* Check whether a student meets a course's certificate criteria. */
+function checkCertificateEligibility(course) {
+  const cert = (course && course.certificate) || {};
+
+  if (!cert.enabled) {
+    return { eligible: false, reason: 'disabled', message: 'Certificates are not enabled for this course.' };
+  }
+  if (!currentUser) {
+    return { eligible: false, reason: 'login', message: 'Please log in.' };
+  }
+
+  const viewedCount = getProgress(course.id).length;
+  const totalMats   = (course.materials || []).length;
+  const completionPercent = totalMats > 0
+    ? Math.round((viewedCount / totalMats) * 100)
+    : 0;
+
+  const minCompletion = Math.max(0, Number(cert.minCompletionPercent) || 0);
+  if (completionPercent < minCompletion) {
+    return {
+      eligible: false,
+      reason: 'completion',
+      message:
+        `Complete ${minCompletion}% of materials to unlock the certificate ` +
+        `(you're at ${completionPercent}% — ${viewedCount}/${totalMats}).`,
+      stats: { completionPercent, minCompletion, viewedCount, totalMats }
+    };
+  }
+
+  const minAvgQuiz = Math.max(0, Number(cert.minAverageQuizPercent) || 0);
+  const minPassed  = Math.max(0, Number(cert.minQuizzesPassed) || 0);
+  const passAt     = Math.max(0, Math.min(100, Number(cert.quizPassThreshold) || 60));
+
+  if (minAvgQuiz > 0 || minPassed > 0) {
+    const quizMats = (course.materials || []).filter(m => (Number(m.quizCount) || 0) > 0);
+    const results  = (currentUser && currentUser.quizResults) || {};
+
+    let totalPct = 0, scored = 0, passed = 0;
+    quizMats.forEach(m => {
+      const r = results[m.id];
+      if (r && typeof r.percent === 'number') {
+        totalPct += r.percent;
+        scored++;
+        if (r.percent >= passAt) passed++;
+      }
+    });
+    const avgQuiz = scored > 0 ? Math.round(totalPct / scored) : 0;
+
+    if (minAvgQuiz > 0 && avgQuiz < minAvgQuiz) {
+      return {
+        eligible: false,
+        reason: 'avg-quiz',
+        message:
+          `Achieve an average quiz score of ${minAvgQuiz}% ` +
+          `(you have ${avgQuiz}% across ${scored} quiz${scored === 1 ? '' : 'zes'}).`,
+        stats: { avgQuiz, minAvgQuiz, scored, totalQuizzes: quizMats.length }
+      };
+    }
+    if (minPassed > 0 && passed < minPassed) {
+      return {
+        eligible: false,
+        reason: 'quizzes-passed',
+        message:
+          `Pass at least ${minPassed} quiz${minPassed === 1 ? '' : 'zes'} ` +
+          `with a score of ${passAt}% or more (you passed ${passed}).`,
+        stats: { passed, minPassed, passAt }
+      };
+    }
+  }
+
+  return { eligible: true, reason: 'met' };
+}
 
 /* ============================================================
    PDF.js PRELOAD ON INTENT
@@ -4168,7 +4273,8 @@ function updateAdminTabUI() {
     feedback:      { icon: 'fa-comment-dots',        text: 'Feedback Moderation' },
     contributions: { icon: 'fa-hand-holding-heart',  text: 'Student Contributions' },
     backup:        { icon: 'fa-database',            text: 'Backup & Restore' },
-    branding:      { icon: 'fa-palette',             text: 'Branding — Favicon & App Icons' }
+    branding:      { icon: 'fa-palette',             text: 'Branding — Favicon & App Icons' },
+    certificates:  { icon: 'fa-certificate',         text: 'Certificate Management' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -4204,6 +4310,9 @@ function updateAdminTabUI() {
       <button class="btn btn-primary" onclick="renderAdminContributions()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
     backup: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>`,
+    certificates: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminCertificates()"><i class="fas fa-rotate"></i> <span class="btn-text">Reload</span></button>`,
   };
   const meta = titleMap[adminTab] || titleMap.overview;
   if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
@@ -4226,6 +4335,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'contributions') renderAdminContributions();
   else if (adminTab === 'backup')        renderAdminBackup();
   else if (adminTab === 'branding')      renderAdminBranding();
+  else if (adminTab === 'certificates')  renderAdminCertificates();
 }
 
 /* ============================================================
@@ -6352,6 +6462,48 @@ function renderEditorDetails(course) {
       </div>
     </div>
     <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-certificate"></i> Certificate</h3>
+      <p class="editor-hint">
+        When enabled, students who meet the criteria below can download a
+        personalised certificate for this course. Leave a minimum at
+        <strong>0</strong> to skip that criterion.
+      </p>
+      <div class="editor-grid-2">
+        <div class="form-group">
+          <label>Enable certificate for this course</label>
+          <label class="toggle-box" style="margin-top:6px;">
+            <input type="checkbox" id="edCertEnabled" ${course.certificate && course.certificate.enabled ? 'checked' : ''}>
+            <span><i class="fas fa-certificate"></i> Issue certificate on completion</span>
+          </label>
+        </div>
+        <div class="form-group">
+          <label>Minimum materials completed (%)</label>
+          <input type="number" id="edCertMinCompletion" min="0" max="100" step="1"
+                 value="${Number((course.certificate && course.certificate.minCompletionPercent) ?? 100)}">
+          <span class="hint">100 = every material must be marked done.</span>
+        </div>
+        <div class="form-group">
+          <label>Minimum average quiz score (%)</label>
+          <input type="number" id="edCertMinAvgQuiz" min="0" max="100" step="1"
+                 value="${Number((course.certificate && course.certificate.minAverageQuizPercent) || 0)}">
+          <span class="hint">Average across every quiz in the course. 0 = ignore.</span>
+        </div>
+        <div class="form-group">
+          <label>Quizzes that must be passed</label>
+          <input type="number" id="edCertMinQuizzesPassed" min="0" max="99" step="1"
+                 value="${Number((course.certificate && course.certificate.minQuizzesPassed) || 0)}">
+          <span class="hint">Count of quizzes that must reach the pass score. 0 = ignore.</span>
+        </div>
+        <div class="form-group">
+          <label>Pass score for a single quiz (%)</label>
+          <input type="number" id="edCertQuizPassThreshold" min="0" max="100" step="1"
+                 value="${Number((course.certificate && course.certificate.quizPassThreshold) ?? 60)}">
+          <span class="hint">Used by “Quizzes that must be passed”.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-image"></i> Thumbnail</h3>
       <div class="thumbnail-editor">
         ${course.thumbnail ? `<img src="${course.thumbnail}" class="thumbnail-preview" alt="" loading="lazy" decoding="async">` : '<div class="thumbnail-preview-empty"><i class="fas fa-image"></i><span>No thumbnail</span></div>'}
@@ -6952,7 +7104,14 @@ async function saveCourseDetails(courseId) {
     status: $('edStatus').value,
     featured: $('edFeatured').checked,
     isPremium: $('edIsPremium').checked,
-    price: parseFloat($('edPrice').value) || 0
+    price: parseFloat($('edPrice').value) || 0,
+    certificate: {
+      enabled:               $('edCertEnabled')?.checked === true,
+      minCompletionPercent:  Math.max(0, Math.min(100, parseInt($('edCertMinCompletion')?.value, 10) || 0)),
+      minAverageQuizPercent: Math.max(0, Math.min(100, parseInt($('edCertMinAvgQuiz')?.value, 10) || 0)),
+      minQuizzesPassed:      Math.max(0, parseInt($('edCertMinQuizzesPassed')?.value, 10) || 0),
+      quizPassThreshold:     Math.max(0, Math.min(100, parseInt($('edCertQuizPassThreshold')?.value, 10) || 0))
+    }
   };
   try {
     const res = await fetch(`/api/courses/${courseId}`, {
@@ -8143,18 +8302,32 @@ function renderCourseDetail(courseId) {
   }
 
   if (currentUser.role === 'student') {
-    const viewedCount = getProgress(course.id).length;
-    const totalMats = (course.materials || []).length;
     const canAccess = !isPremiumCourse || isPurchased;
-    if (canAccess && totalMats > 0 && viewedCount >= totalMats) {
-      html += `<div class="cert-earned-banner">
-        <div class="cert-earned-icon"><i class="fas fa-award"></i></div>
-        <div class="cert-earned-info">
-          <h4>🎉 Course Completed!</h4>
-          <p>You've finished all ${totalMats} materials.</p>
-        </div>
-        <button class="btn btn-accent" onclick="generateCertificate('${course.id}')"><i class="fas fa-download"></i> Get Certificate</button>
-      </div>`;
+    const certEnabled = !!(course.certificate && course.certificate.enabled);
+
+    if (canAccess && certEnabled) {
+      const elig = checkCertificateEligibility(course);
+
+      if (elig.eligible) {
+        html += `<div class="cert-earned-banner">
+          <div class="cert-earned-icon"><i class="fas fa-award"></i></div>
+          <div class="cert-earned-info">
+            <h4>🎉 Certificate unlocked!</h4>
+            <p>You've met every requirement for this course.</p>
+          </div>
+          <button class="btn btn-accent" onclick="generateCertificate('${course.id}')">
+            <i class="fas fa-download"></i> Get Certificate
+          </button>
+        </div>`;
+      } else {
+        html += `<div class="cert-progress-banner">
+          <div class="cert-progress-icon"><i class="fas fa-certificate"></i></div>
+          <div class="cert-progress-info">
+            <h4>Certificate in progress</h4>
+            <p>${escapeHtml(elig.message || 'Keep going to unlock your certificate.')}</p>
+          </div>
+        </div>`;
+      }
     }
   }
 
@@ -8673,29 +8846,53 @@ async function openPlaylistPlayer(courseId, playlistId, startIndex = 0) {
 /* ============================================================
    CERTIFICATE
    ============================================================ */
-function generateCertificate(courseId) {
+async function generateCertificate(courseId) {
   const course = findCourse(courseId);
-  if (!course) return;
-  const viewedCount = getProgress(course.id).length;
-  const totalMats = (course.materials || []).length;
-  if (totalMats === 0 || viewedCount < totalMats) return showToast('Complete all materials first.', 'error');
+  if (!course) return showToast('Course not found.', 'error');
+
+  const elig = checkCertificateEligibility(course);
+  if (!elig.eligible) {
+    return showToast(elig.message || 'You are not eligible for this certificate yet.', 'error');
+  }
+
+  /* Open the window synchronously — browsers block window.open()
+     after an await, so we grab the handle first and fill it in later. */
+  const win = window.open('', '_blank');
+  if (!win) return showToast('Please allow popups to view your certificate.', 'error');
+  win.document.write(
+    '<html><head><title>Generating certificate…</title></head>' +
+    '<body style="font-family:Inter,system-ui,sans-serif;padding:60px 20px;text-align:center;color:#64748b;">' +
+    '<h2 style="font-weight:600;">Generating certificate…</h2>' +
+    '</body></html>'
+  );
+
+  /* Load the certificate template */
+  const tmpl = await fetchCertificateTemplate();
 
   const studentName = currentUser.fullName || currentUser.username;
-  const completionDate = new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  const certId = 'AERO-' + (course.code || 'CRS').toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' + String(currentUser._id).slice(-4).toUpperCase() + '-' + Date.now().toString(36).toUpperCase();
-  const acc = getCourseAccent(course.code || course.name);
+  const completionDate = new Date().toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'long', year: 'numeric'
+  });
+  const certId = 'AERO-' +
+    (course.code || 'CRS').toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' +
+    String(currentUser._id).slice(-4).toUpperCase() + '-' +
+    Date.now().toString(36).toUpperCase();
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Certificate — ${escapeHtml(course.name)}</title>
+  const from = tmpl.accentFrom || '#6366f1';
+  const to   = tmpl.accentTo   || '#06b6d4';
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <title>Certificate — ${escapeHtml(course.name)}</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800;900&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:'Inter',sans-serif;background:#f0f4f8;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px 20px}
     .toolbar{position:fixed;top:20px;right:20px;z-index:100}
-    .btn-print{padding:12px 22px;border:none;border-radius:10px;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;box-shadow:0 6px 18px rgba(79,70,229,.35)}
+    .btn-print{padding:12px 22px;border:none;border-radius:10px;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;background:linear-gradient(135deg,${from},${to});color:#fff;box-shadow:0 6px 18px rgba(79,70,229,.35)}
     .cert{position:relative;width:100%;max-width:1000px;aspect-ratio:1.414/1;background:#fff;box-shadow:0 20px 60px rgba(15,23,42,.15);overflow:hidden;border-radius:8px}
     .cert-inner{position:absolute;inset:20px;border:3px solid #0f172a;border-radius:6px;padding:40px 60px;display:flex;flex-direction:column;align-items:center;text-align:center;z-index:1}
     .cert-inner::before{content:"";position:absolute;inset:6px;border:1px solid #cbd5e1;border-radius:4px}
-    .cert-logo{width:52px;height:52px;border-radius:12px;background:linear-gradient(135deg,${acc.from},${acc.to});display:flex;align-items:center;justify-content:center;font-size:26px;color:#fff}
+    .cert-logo{width:52px;height:52px;border-radius:12px;background:linear-gradient(135deg,${from},${to});display:flex;align-items:center;justify-content:center;font-size:26px;color:#fff}
     .cert-header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
     .cert-dept{text-align:left}
     .cert-dept h1{font-size:20px;font-weight:800;color:#0f172a}
@@ -8703,7 +8900,7 @@ function generateCertificate(courseId) {
     .cert-title{font-family:'Playfair Display',serif;font-size:46px;font-weight:800;color:#0f172a;margin:22px 0 6px;line-height:1}
     .cert-subtitle{font-size:13px;color:#64748b;letter-spacing:3px;text-transform:uppercase;font-weight:600;margin-bottom:24px}
     .cert-presented{font-size:14px;color:#475569;margin-bottom:8px}
-    .cert-name{font-family:'Playfair Display',serif;font-size:42px;font-weight:700;color:${acc.solid};margin:4px 0 14px;padding-bottom:8px;border-bottom:2px solid #e2e8f0;min-width:400px;display:inline-block}
+    .cert-name{font-family:'Playfair Display',serif;font-size:42px;font-weight:700;color:${from};margin:4px 0 14px;padding-bottom:8px;border-bottom:2px solid #e2e8f0;min-width:400px;display:inline-block}
     .cert-completed{font-size:14px;color:#475569;margin-bottom:10px}
     .cert-course{font-size:22px;font-weight:700;color:#0f172a;margin-bottom:4px}
     .cert-code{font-size:12px;color:#64748b;letter-spacing:2px;text-transform:uppercase;font-weight:600;margin-bottom:34px}
@@ -8718,23 +8915,36 @@ function generateCertificate(courseId) {
   </style></head><body>
   <div class="toolbar"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
   <div class="cert"><div class="cert-inner">
-    <div class="cert-header"><div class="cert-logo">🚀</div><div class="cert-dept"><h1>Aerospace Department</h1><span>IIT Kharagpur</span></div></div>
-    <div class="cert-title">Certificate</div>
-    <div class="cert-subtitle">of Completion</div>
-    <div class="cert-presented">This certificate is proudly presented to</div>
+    <div class="cert-header">
+      <div class="cert-logo">${escapeHtml(tmpl.logoEmoji)}</div>
+      <div class="cert-dept">
+        <h1>${escapeHtml(tmpl.orgName)}</h1>
+        <span>${escapeHtml(tmpl.orgSubtitle)}</span>
+      </div>
+    </div>
+    <div class="cert-title">${escapeHtml(tmpl.title)}</div>
+    <div class="cert-subtitle">${escapeHtml(tmpl.subtitle)}</div>
+    <div class="cert-presented">${escapeHtml(tmpl.presentedText)}</div>
     <div class="cert-name">${escapeHtml(studentName)}</div>
-    <div class="cert-completed">for successfully completing</div>
+    <div class="cert-completed">${escapeHtml(tmpl.completedText)}</div>
     <div class="cert-course">${escapeHtml(course.name)}</div>
-    <div class="cert-code">${escapeHtml(course.code) || ''} · Completed on ${completionDate}</div>
+    <div class="cert-code">
+      ${escapeHtml(course.code) || ''}${tmpl.showDate ? ' · Completed on ' + completionDate : ''}
+    </div>
     <div class="cert-footer">
-      <div class="cert-meta">Certificate ID<br><strong>${certId}</strong></div>
-      <div class="cert-sign"><div class="cert-sign-line">Krish Yadav</div><div class="cert-sign-role">Course Director</div></div>
+      ${tmpl.showCertId ? `
+        <div class="cert-meta">Certificate ID<br><strong>${certId}</strong></div>
+      ` : '<div></div>'}
+      <div class="cert-sign">
+        <div class="cert-sign-line">${escapeHtml(tmpl.signatureName)}</div>
+        <div class="cert-sign-role">${escapeHtml(tmpl.signatureRole)}</div>
+      </div>
     </div>
   </div></div></body></html>`;
 
-  const win = window.open('', '_blank');
-  if (!win) return showToast('Please allow popups.', 'error');
-  win.document.write(html); win.document.close();
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
   showToast('🎓 Certificate generated!', 'success');
 }
 
@@ -12761,7 +12971,8 @@ function initApp() {
     fetchCoursesFromDB(),
     fetchProfessorsFromDB(),
     fetchSubscriptionSettings(),
-    fetchOwnerProfile()
+    fetchOwnerProfile(),
+    fetchCertificateTemplate(true)
   ]).then(results => {
     results.forEach((r, i) => {
       if (r.status === 'rejected') {
@@ -18250,3 +18461,218 @@ async function _applyCustomLogoIfAny() {
   } catch (_) { /* silent — cached state stays in place */ }
 }
 
+/* ============================================================
+   ADMIN — CERTIFICATE MANAGEMENT
+   ============================================================ */
+async function renderAdminCertificates() {
+  const host = document.getElementById('adminCertificatesContent');
+  if (!host) return;
+  host.innerHTML = `<div class="empty-state">
+    <i class="fas fa-spinner fa-spin"></i><p>Loading certificate template…</p>
+  </div>`;
+
+  let tmpl;
+  try {
+    tmpl = await fetchCertificateTemplate(true);
+  } catch (e) {
+    tmpl = { ...DEFAULT_CERT_TEMPLATE };
+  }
+
+  host.innerHTML = `
+    <div class="editor-section cert-tmpl-intro">
+      <div class="editor-section-title">
+        <i class="fas fa-certificate"></i> Certificate Template
+      </div>
+      <p class="editor-hint">
+        This text and design apply to <strong>every</strong> certificate the
+        platform issues. Toggle certificates on or off per course from the
+        <em>Courses → Edit → Certificate</em> panel — a course only issues
+        certificates after you enable it there and set its criteria.
+      </p>
+    </div>
+
+    <div class="cert-tmpl-grid">
+      <div class="editor-section cert-tmpl-form">
+        <h3 class="editor-section-title"><i class="fas fa-pen-fancy"></i> Text</h3>
+
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Organization name</label>
+            <input type="text" id="certOrgName" maxlength="80" value="${escapeHtml(tmpl.orgName)}">
+          </div>
+          <div class="form-group">
+            <label>Organization subtitle</label>
+            <input type="text" id="certOrgSubtitle" maxlength="80" value="${escapeHtml(tmpl.orgSubtitle)}">
+          </div>
+          <div class="form-group">
+            <label>Title</label>
+            <input type="text" id="certTitle" maxlength="60" value="${escapeHtml(tmpl.title)}">
+          </div>
+          <div class="form-group">
+            <label>Subtitle</label>
+            <input type="text" id="certSubtitle" maxlength="60" value="${escapeHtml(tmpl.subtitle)}">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Presented line</label>
+          <input type="text" id="certPresentedText" maxlength="120" value="${escapeHtml(tmpl.presentedText)}">
+        </div>
+        <div class="form-group">
+          <label>Completed line</label>
+          <input type="text" id="certCompletedText" maxlength="120" value="${escapeHtml(tmpl.completedText)}">
+        </div>
+
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label>Signature name</label>
+            <input type="text" id="certSignatureName" maxlength="80" value="${escapeHtml(tmpl.signatureName)}">
+          </div>
+          <div class="form-group">
+            <label>Signature role</label>
+            <input type="text" id="certSignatureRole" maxlength="80" value="${escapeHtml(tmpl.signatureRole)}">
+          </div>
+        </div>
+
+        <h3 class="editor-section-title" style="margin-top:20px;"><i class="fas fa-palette"></i> Design</h3>
+
+        <div class="editor-grid-3">
+          <div class="form-group">
+            <label>Logo emoji</label>
+            <input type="text" id="certLogoEmoji" maxlength="4" value="${escapeHtml(tmpl.logoEmoji)}">
+            <span class="hint">Shown in the top-left tile.</span>
+          </div>
+          <div class="form-group">
+            <label>Accent — from</label>
+            <input type="color" id="certAccentFrom" value="${escapeHtml(tmpl.accentFrom)}">
+          </div>
+          <div class="form-group">
+            <label>Accent — to</label>
+            <input type="color" id="certAccentTo" value="${escapeHtml(tmpl.accentTo)}">
+          </div>
+        </div>
+
+        <div class="editor-grid-2">
+          <div class="form-group">
+            <label class="toggle-box" style="margin-top:6px;">
+              <input type="checkbox" id="certShowId" ${tmpl.showCertId ? 'checked' : ''}>
+              <span><i class="fas fa-hashtag"></i> Show certificate ID</span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label class="toggle-box" style="margin-top:6px;">
+              <input type="checkbox" id="certShowDate" ${tmpl.showDate ? 'checked' : ''}>
+              <span><i class="fas fa-calendar"></i> Show completion date</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="editor-footer" style="position:static;box-shadow:none;padding:14px 0 0;border:none;background:none;">
+          <div class="editor-footer-left">
+            <span class="editor-hint"><i class="fas fa-info-circle"></i> Applies to every certificate immediately.</span>
+          </div>
+          <div class="editor-footer-right">
+            <button class="btn btn-primary" onclick="saveAdminCertificateTemplate()">
+              <i class="fas fa-save"></i> Save template
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="editor-section cert-tmpl-preview-wrap">
+        <h3 class="editor-section-title"><i class="fas fa-eye"></i> Live preview</h3>
+        <div class="cert-preview" id="certPreviewHost"></div>
+      </div>
+    </div>
+  `;
+
+  /* Live preview — rebuild whenever any field changes */
+  const rerender = () => _paintCertPreview();
+  ['certOrgName','certOrgSubtitle','certTitle','certSubtitle','certPresentedText',
+   'certCompletedText','certSignatureName','certSignatureRole','certLogoEmoji',
+   'certAccentFrom','certAccentTo','certShowId','certShowDate'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', rerender);
+  });
+  rerender();
+}
+
+function _readCertTemplateFromForm() {
+  return {
+    orgName:       ($('certOrgName')?.value       || '').trim(),
+    orgSubtitle:   ($('certOrgSubtitle')?.value   || '').trim(),
+    title:         ($('certTitle')?.value         || '').trim(),
+    subtitle:      ($('certSubtitle')?.value      || '').trim(),
+    presentedText: ($('certPresentedText')?.value || '').trim(),
+    completedText: ($('certCompletedText')?.value || '').trim(),
+    signatureName: ($('certSignatureName')?.value || '').trim(),
+    signatureRole: ($('certSignatureRole')?.value || '').trim(),
+    logoEmoji:     ($('certLogoEmoji')?.value     || '').trim(),
+    accentFrom:    $('certAccentFrom')?.value || '#6366f1',
+    accentTo:      $('certAccentTo')?.value   || '#06b6d4',
+    showCertId:    $('certShowId')?.checked === true,
+    showDate:      $('certShowDate')?.checked === true
+  };
+}
+
+function _paintCertPreview() {
+  const host = document.getElementById('certPreviewHost');
+  if (!host) return;
+  const t = _readCertTemplateFromForm();
+  const from = t.accentFrom || '#6366f1';
+  const to   = t.accentTo   || '#06b6d4';
+
+  host.innerHTML = `
+    <div class="cert-preview-frame">
+      <div class="cert-preview-inner">
+        <div class="cert-preview-head">
+          <div class="cert-preview-logo" style="background:linear-gradient(135deg,${from},${to});">${escapeHtml(t.logoEmoji || '🚀')}</div>
+          <div>
+            <div class="cert-preview-org">${escapeHtml(t.orgName || 'Organization')}</div>
+            <div class="cert-preview-org-sub">${escapeHtml(t.orgSubtitle || '')}</div>
+          </div>
+        </div>
+        <div class="cert-preview-title">${escapeHtml(t.title || 'Certificate')}</div>
+        <div class="cert-preview-subtitle">${escapeHtml(t.subtitle || '')}</div>
+        <div class="cert-preview-presented">${escapeHtml(t.presentedText || '')}</div>
+        <div class="cert-preview-name" style="color:${from};">Student Name</div>
+        <div class="cert-preview-completed">${escapeHtml(t.completedText || '')}</div>
+        <div class="cert-preview-course">Course Name</div>
+        <div class="cert-preview-code">CODE${t.showDate ? ' · Completed on 01 Jan 2026' : ''}</div>
+        <div class="cert-preview-foot">
+          ${t.showCertId ? '<div class="cert-preview-id">AERO-CRS-XXXX-XXX</div>' : '<div></div>'}
+          <div class="cert-preview-sign">
+            <div class="cert-preview-sign-name">${escapeHtml(t.signatureName || '')}</div>
+            <div class="cert-preview-sign-role">${escapeHtml(t.signatureRole || '')}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function saveAdminCertificateTemplate() {
+  const btn = document.querySelector('#adminCertificatesContent .btn-primary');
+  const originalHTML = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+
+  const payload = _readCertTemplateFromForm();
+
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/settings/certificate`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (data && data.success) {
+      _certTemplateCache = data.template || payload;
+      showToast('✅ Certificate template saved.', 'success');
+    } else {
+      showToast((data && data.message) || 'Failed to save.', 'error');
+    }
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHTML || '<i class="fas fa-save"></i> Save template'; }
+  }
+}

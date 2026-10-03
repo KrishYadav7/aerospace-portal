@@ -4748,6 +4748,7 @@ app.get('/api/courses', async (req, res) => {
             category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
             learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
             isPremium: 1, price: 1, announcements: 1, playlists: 1,
+            certificate: 1,
             createdAt: 1, updatedAt: 1,
             doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
             materials: {
@@ -4964,6 +4965,7 @@ app.get('/api/courses/:id', async (req, res) => {
           category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
           learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
           isPremium: 1, price: 1, announcements: 1, playlists: 1, doubts: 1,
+          certificate: 1,
           createdAt: 1, updatedAt: 1,
           materials: {
             $map: {
@@ -5019,7 +5021,7 @@ app.post('/api/courses', requireAdminAuth, async (req, res) => {
 
 app.put('/api/courses/:id', requireAdminAuth, async (req, res) => {
   try {
-    const allowed = ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price'];
+    const allowed = ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price','certificate'];
     const update = {};
     allowed.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
     const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
@@ -6593,6 +6595,80 @@ app.get('/api/settings/subscription', async (req, res) => {
     res.json(payload);
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
+  }
+});
+/* ============================================================
+   CERTIFICATE TEMPLATE — public read + admin edit
+   ============================================================ */
+app.get('/api/settings/certificate', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    const s = await getGlobalSettings();
+    const t = s.certificateTemplate || {};
+    res.json({
+      success: true,
+      template: {
+        orgName:       t.orgName       || 'Aero Gyan Education',
+        orgSubtitle:   t.orgSubtitle   || 'IIT Kharagpur',
+        title:         t.title         || 'Certificate',
+        subtitle:      t.subtitle      || 'of Completion',
+        presentedText: t.presentedText || 'This certificate is proudly presented to',
+        completedText: t.completedText || 'for successfully completing',
+        signatureName: t.signatureName || 'Krish Yadav',
+        signatureRole: t.signatureRole || 'Course Director',
+        logoEmoji:     t.logoEmoji     || '🚀',
+        accentFrom:    t.accentFrom    || '#6366f1',
+        accentTo:      t.accentTo      || '#06b6d4',
+        showCertId:    t.showCertId !== false,
+        showDate:      t.showDate     !== false
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+app.put('/api/admin/settings/certificate', requireAdminAuth, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const s = await getGlobalSettings();
+    if (!s.certificateTemplate) s.certificateTemplate = {};
+
+    const str = (v, fallback) => typeof v === 'string' ? v.trim().slice(0, 200) : fallback;
+    const hex = (v, fallback) => /^#[0-9a-fA-F]{6}$/.test(String(v || '').trim())
+      ? String(v).trim()
+      : fallback;
+
+    s.certificateTemplate.orgName       = str(b.orgName,       s.certificateTemplate.orgName       || 'Aero Gyan Education');
+    s.certificateTemplate.orgSubtitle   = str(b.orgSubtitle,   s.certificateTemplate.orgSubtitle   || 'IIT Kharagpur');
+    s.certificateTemplate.title         = str(b.title,         s.certificateTemplate.title         || 'Certificate');
+    s.certificateTemplate.subtitle      = str(b.subtitle,      s.certificateTemplate.subtitle      || 'of Completion');
+    s.certificateTemplate.presentedText = str(b.presentedText, s.certificateTemplate.presentedText || 'This certificate is proudly presented to');
+    s.certificateTemplate.completedText = str(b.completedText, s.certificateTemplate.completedText || 'for successfully completing');
+    s.certificateTemplate.signatureName = str(b.signatureName, s.certificateTemplate.signatureName || 'Krish Yadav');
+    s.certificateTemplate.signatureRole = str(b.signatureRole, s.certificateTemplate.signatureRole || 'Course Director');
+    s.certificateTemplate.logoEmoji     = str(b.logoEmoji,     s.certificateTemplate.logoEmoji     || '🚀');
+    s.certificateTemplate.accentFrom    = hex(b.accentFrom,    s.certificateTemplate.accentFrom    || '#6366f1');
+    s.certificateTemplate.accentTo      = hex(b.accentTo,      s.certificateTemplate.accentTo      || '#06b6d4');
+
+    if (typeof b.showCertId === 'boolean') s.certificateTemplate.showCertId = b.showCertId;
+    if (typeof b.showDate   === 'boolean') s.certificateTemplate.showDate   = b.showDate;
+
+    s.certificateTemplate.updatedAt = new Date();
+    s.markModified('certificateTemplate');
+    s.updatedAt = new Date();
+    await s.save();
+
+    cacheClear('settings:');
+    invalidateGlobalSettingsCache();
+
+    res.json({ success: true, message: 'Certificate template saved.', template: s.certificateTemplate });
+  } catch (e) {
+    console.error('[admin/settings/certificate]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
 
