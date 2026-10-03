@@ -13233,3 +13233,23 @@ body:has(.doc-viewer-modal.active) .aero-to-top {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+/* ============================================================
+   ⭐ LOGIN PAGE — minimal top bar (theme toggle only)
+   When logged out, the header shows only the brand and the
+   theme switcher. Search, notifications, settings, streak,
+   profile and the main nav stay hidden until the user logs in.
+   ============================================================ */
+body.aero-logged-out #mainNav,
+body.aero-logged-out #navToggle,
+body.aero-logged-out #globalSearchTrigger,
+body.aero-logged-out #notifWrap,
+body.aero-logged-out #settingsBtn,
+body.aero-logged-out #streakBadge,
+body.aero-logged-out #userProfileWrap {
+  display: none !important;
+}
+body.aero-logged-out .user-info {
+  margin-left: auto;
+  gap: 0 !important;
+}
+body.aero-logged-out #appHeader .brand { cursor: default; }

@@ -3932,12 +3932,15 @@ function renderApp() {
 function _enforceViewInvariant() {
   const loginView = document.getElementById('loginView');
   if (!loginView) return;
+  const header = document.getElementById('appHeader');
 
   if (currentUser) {
     // ── Logged in ──
+    document.body.classList.remove('aero-logged-out');
     if (loginView.classList.contains('active')) {
       loginView.classList.remove('active');
     }
+    if (header) header.style.display = 'flex';
     // Reset the login button if it's stuck on "Signing in…"
     const submitBtn = document.querySelector('#loginForm button[type="submit"]');
     if (submitBtn && submitBtn.disabled) {
@@ -3946,9 +3949,11 @@ function _enforceViewInvariant() {
     }
   } else {
     // ── Logged out ──
+    document.body.classList.add('aero-logged-out');
     if (!loginView.classList.contains('active')) {
       loginView.classList.add('active');
     }
+    if (header) header.style.display = 'flex';
     document.querySelectorAll('.view').forEach(function (v) {
       if (v.id !== 'loginView' && v.classList.contains('active')) {
         v.classList.remove('active');
@@ -3978,8 +3983,14 @@ function _renderAppNow() {
   $('appHeader').style.display = 'none';
   $('appFooter').style.display = 'none';
 
-  if (!currentUser) { $('loginView').classList.add('active'); return; }
+  if (!currentUser) {
+    $('loginView').classList.add('active');
+    document.body.classList.add('aero-logged-out');
+    $('appHeader').style.display = 'flex';
+    return;
+  }
 
+  document.body.classList.remove('aero-logged-out');
   $('appHeader').style.display = 'flex';
   $('appFooter').style.display = 'block';
   $('userDisplay').textContent = currentUser.username;

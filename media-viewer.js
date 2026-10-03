@@ -285,7 +285,7 @@ class VideoPlayer {
 
     document.removeEventListener('keydown', this._onKeyDown, true);
     document.removeEventListener('mousemove', this._onMouseMove);
-    document.removeEventListener('mousemove', this._onMouseLeave);
+    if (this.modal) this.modal.removeEventListener('mouseleave', this._onMouseLeave);
     document.removeEventListener('fullscreenchange', this._onFsChange);
     document.removeEventListener('webkitfullscreenchange', this._onFsChange);
     document.body.style.overflow = '';
