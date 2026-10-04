@@ -147,6 +147,21 @@ const userSchema = new mongoose.Schema({
   },
 
   /* ============================================================
+     ⭐ CONTENT-SHIELD AUDIT (2026-10-04) — screenshot / print /
+     screen-record attempts reported by content-shield.js
+     ============================================================ */
+  security: {
+    captureAttempts: { type: Number, default: 0 },
+    lastCaptureAt:   { type: Date,   default: null },
+    log: [{
+      _id:  false,
+      at:   { type: Date, default: Date.now },
+      kind: { type: String, default: '' },
+      path: { type: String, default: '' }
+    }]
+  },
+
+  /* ============================================================
      ⭐ ACCOUNT SUSPENSION (admin tool, 2026-10-04)
      ============================================================ */
   suspended: {

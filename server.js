@@ -719,6 +719,205 @@ const brandingUpload = multer({
 /* ============================================================
    HYBRID STATIC FILE SERVING — PREMIUM GATED + NO-CACHE
    ============================================================ */
+/* ============================================================
+   ⭐ OFFICE → PDF RENDERER (2026-10-04)
+   ------------------------------------------------------------
+   PowerPoint / Word / Excel files are converted ONCE on the
+   server with LibreOffice (headless) and then shown in the same
+   protected in-app PDF viewer as every other paper: watermark,
+   no download, no print, preview limits, signed URLs.
+
+   Naming (single extension — Hostinger blocks "a.pdf.tmp" style
+   names):   1789-ab12.pptx  →  1789-ab12_pptx-render.pdf
+
+   The ORIGINAL office file is never sent to students any more;
+   only admins can fetch it. LibreOffice must be installed on the
+   server:   sudo apt-get install -y libreoffice-impress libreoffice-writer libreoffice-calc
+   (or set SOFFICE_PATH to the binary).
+   ============================================================ */
+const OFFICE_RENDER_EXTS = new Set(['.ppt', '.pptx', '.pps', '.ppsx', '.pot', '.potx', '.odp',
+                                    '.doc', '.docx', '.odt', '.rtf',
+                                    '.xls', '.xlsx', '.ods']);
+const RENDER_SUFFIX_RE = /^(.+)_([a-z0-9]{2,5})-render\.pdf(\.preview)?$/;
+
+function isOfficeFile(name) {
+  return OFFICE_RENDER_EXTS.has(path.extname(String(name || '')).toLowerCase());
+}
+function renderNameFor(diskName) {
+  const ext = path.extname(diskName).toLowerCase().replace('.', '');
+  return diskName.slice(0, -(ext.length + 1)) + '_' + ext + '-render.pdf';
+}
+/* "1789-ab12_pptx-render.pdf[.preview]" → "1789-ab12.pptx" (or null) */
+function originalNameForRender(name) {
+  const m = RENDER_SUFFIX_RE.exec(String(name || ''));
+  return m ? (m[1] + '.' + m[2]) : null;
+}
+
+let _sofficeBin = null;          // resolved binary, false = unavailable
+async function getSofficeBinary() {
+  if (_sofficeBin !== null) return _sofficeBin;
+  const candidates = [process.env.SOFFICE_PATH, 'soffice', 'libreoffice',
+    '/usr/bin/soffice', '/usr/lib/libreoffice/program/soffice',
+    '/opt/libreoffice/program/soffice', '/Applications/LibreOffice.app/Contents/MacOS/soffice'].filter(Boolean);
+  for (const bin of candidates) {
+    const ok = await new Promise(resolve => {
+      execFile(bin, ['--version'], { timeout: 20000 }, (err) => resolve(!err));
+    });
+    if (ok) { _sofficeBin = bin; console.log('[render] ✅ LibreOffice found:', bin); return bin; }
+  }
+  _sofficeBin = false;
+  console.error('[render] ❌ LibreOffice is NOT installed — PowerPoint/Word/Excel files cannot be shown in the viewer. ' +
+                'Install it: sudo apt-get install -y libreoffice-impress libreoffice-writer libreoffice-calc');
+  return false;
+}
+setTimeout(() => { getSofficeBinary().catch(() => {}); }, 3000).unref();
+
+/* Make sure the original is on local disk (re-download from the Cloudinary
+   backup after a redeploy wiped the uploads folder). */
+async function _ensureLocalOriginal(diskName, cloudUrl) {
+  const fp = path.join(UPLOAD_DIR, diskName);
+  if (fs.existsSync(fp)) return fp;
+  const src = cloudUrl || readCloudSidecar(diskName);
+  if (!src || !/^https:\/\//.test(src)) return null;
+  try {
+    const r = await fetch(src);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const buf = Buffer.from(await r.arrayBuffer());
+    await fs.promises.writeFile(fp, buf);
+    console.log('[render] ☁️  restored original from Cloudinary:', diskName);
+    return fp;
+  } catch (e) {
+    console.warn('[render] could not restore', diskName, e.message);
+    return null;
+  }
+}
+
+/* One LibreOffice process at a time (it shares a profile and is memory
+   hungry); duplicate requests for the same file share one job. */
+let _renderChain = Promise.resolve();
+const _renderJobs = new Map();
+
+function renderOfficeToPdf(diskName, cloudUrl) {
+  if (!/^[A-Za-z0-9._-]+$/.test(diskName) || !isOfficeFile(diskName)) {
+    return Promise.reject(new Error('Not a convertible file.'));
+  }
+  const outName = renderNameFor(diskName);
+  const outPath = path.join(UPLOAD_DIR, outName);
+  if (fs.existsSync(outPath)) return Promise.resolve(outName);
+  if (_renderJobs.has(diskName)) return _renderJobs.get(diskName);
+
+  const job = (_renderChain = _renderChain.catch(() => {}).then(async () => {
+    if (fs.existsSync(outPath)) return outName;
+    const bin = await getSofficeBinary();
+    if (!bin) throw Object.assign(new Error('Presentation viewer is not set up on the server yet.'), { code: 'NO_RENDERER' });
+    const src = await _ensureLocalOriginal(diskName, cloudUrl);
+    if (!src) throw new Error('Original file is missing on the server.');
+
+    const workDir = path.join(require('os').tmpdir(), 'aero-render-' + crypto.randomBytes(6).toString('hex'));
+    await fs.promises.mkdir(workDir, { recursive: true });
+    const profile = 'file://' + path.join(require('os').tmpdir(), 'aero-lo-profile');
+    const t0 = Date.now();
+    try {
+      await new Promise((resolve, reject) => {
+        execFile(bin, ['-env:UserInstallation=' + profile, '--headless', '--norestore', '--nolockcheck',
+                       '--convert-to', 'pdf', '--outdir', workDir, src],
+          { timeout: 180000, maxBuffer: 8 * 1024 * 1024 },
+          (err, _o, stderr) => err ? reject(new Error((stderr || err.message || '').trim().split('\n')[0] || 'convert failed')) : resolve());
+      });
+      const produced = (await fs.promises.readdir(workDir)).find(f => f.toLowerCase().endsWith('.pdf'));
+      if (!produced) throw new Error('LibreOffice produced no PDF.');
+      const tmpFinal = path.join(UPLOAD_DIR, outName.replace(/\.pdf$/, '') + '-tmp' + crypto.randomBytes(3).toString('hex') + '.pdf');
+      await fs.promises.copyFile(path.join(workDir, produced), tmpFinal);
+      await fs.promises.rename(tmpFinal, outPath);
+      console.log(`[render] ✅ ${diskName} → ${outName} in ${Date.now() - t0} ms`);
+      linearizePdf(outPath).catch(() => {});
+      return outName;
+    } finally {
+      fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }));
+  _renderJobs.set(diskName, job);
+  job.finally(() => _renderJobs.delete(diskName)).catch(() => {});
+  return job;
+}
+
+/* Fire-and-forget pre-render right after an admin uploads an office file,
+   so the first student never waits. */
+function queueOfficeRender(diskName) {
+  if (!isOfficeFile(diskName)) return;
+  setTimeout(() => {
+    renderOfficeToPdf(diskName).catch(e => console.warn('[render] pre-render skipped:', e.message));
+  }, 800);
+}
+
+/* GET /api/courses/:courseId/materials/:materialId/render
+   → { success, url, pages?, previewOnly } — a signed URL to the
+     rendered PDF (or its preview slice) for the in-app viewer. */
+app.get('/api/courses/:courseId/materials/:materialId/render', attachUserFromToken, async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store, private');
+    if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
+      return res.status(400).json({ success: false, message: 'Invalid course ID.' });
+    }
+    const course = await Course.findById(req.params.courseId).select('isPremium price materials').lean();
+    if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+    const mat = (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
+    if (!mat) return res.status(404).json({ success: false, message: 'Material not found.' });
+
+    const access = evaluateMaterialAccess(req.authUser, course, mat);
+    if (!access.allowed && !access.canPreview) {
+      return res.status(403).json({ success: false, code: access.reason, message: 'This file is part of premium content. Purchase it or subscribe to unlock.' });
+    }
+    const rawUrl = String(mat.url || '');
+    if (!rawUrl.startsWith('/uploads/')) {
+      return res.status(400).json({ success: false, message: 'This material has no uploaded file.' });
+    }
+    const diskName = path.basename(rawUrl);
+    if (!isOfficeFile(diskName)) {
+      return res.status(400).json({ success: false, message: 'Only PowerPoint, Word and Excel files are rendered.' });
+    }
+
+    let outName;
+    try {
+      outName = await renderOfficeToPdf(diskName, mat.cloudUrl);
+    } catch (e) {
+      console.warn('[render] failed for', diskName, '·', e.message);
+      return res.status(e.code === 'NO_RENDERER' ? 503 : 500).json({
+        success: false, code: e.code || 'RENDER_FAILED',
+        message: e.code === 'NO_RENDERER'
+          ? 'This presentation can’t be displayed yet — the server is missing its document renderer. Please tell the admin.'
+          : 'Could not prepare this file for viewing. Please try again in a minute.'
+      });
+    }
+
+    let serveName = outName;
+    let previewOnly = false;
+    if (!access.allowed && access.canPreview) {
+      const pv = await generatePreviewPdf(outName, access.previewPercent);
+      if (!pv) return res.status(403).json({ success: false, message: 'Preview is not available for this file.' });
+      previewOnly = true;     // the /uploads route swaps in the .preview slice
+    }
+
+    let url = '/uploads/' + encodeURIComponent(serveName);
+    if (req.authUser) {
+      const tok = signUploadToken(serveName, String(req.authUser._id));
+      url += `?su=${encodeURIComponent(String(req.authUser._id))}&st=${encodeURIComponent(tok)}`;
+      if (previewOnly) url = '/uploads/' + encodeURIComponent(serveName + '.preview') +
+        `?su=${encodeURIComponent(String(req.authUser._id))}&st=${encodeURIComponent(signUploadToken(serveName + '.preview', String(req.authUser._id)))}`;
+    }
+    res.json({
+      success: true, url, previewOnly,
+      hasFullAccess: !!access.allowed,
+      previewPercent: access.canPreview ? access.previewPercent : 0,
+      kind: /\.(pptx?|ppsx?|potx?|odp)$/i.test(diskName) ? 'presentation'
+          : /\.(xlsx?|ods)$/i.test(diskName) ? 'spreadsheet' : 'document'
+    });
+  } catch (e) {
+    console.error('[render]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
 app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
   const filename = req.params.filename;
 
@@ -726,6 +925,14 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
   if (!/^[A-Za-z0-9._-]+$/.test(filename) ||
       filename === '.' || filename === '..') {
     return res.status(400).send('Invalid filename');
+  }
+
+  /* ⭐ Original PowerPoint / Word / Excel files are NEVER downloadable by
+     students — they are shown through the rendered, watermarked PDF.
+     Only admins (who manage the files) can fetch the original. */
+  if (isOfficeFile(filename) && !_isAdminUser(req.authUser)) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(403).json({ success: false, message: 'This file can only be viewed inside AeroGyan.' });
   }
 
   /* ============================================================
@@ -758,7 +965,9 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
 
   if (owner === null) {
     try {
-      const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      /* Rendered copies inherit the access rules of their original file */
+      const lookupName = originalNameForRender(filename) || filename;
+      const escaped = lookupName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       owner = await Course.findOne({
         'materials.url': { $regex: '/uploads/' + escaped + '$' }
       }).select('isPremium price materials').lean();
@@ -773,8 +982,9 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
   /* ── Single-pass access evaluation ── */
   let wantsPreviewOnly = false;
   if (owner && owner !== false) {
+    const _lookup = originalNameForRender(filename) || filename;
     const mat = (owner.materials || []).find(m =>
-      m.url && m.url.endsWith('/' + filename)
+      m.url && m.url.endsWith('/' + _lookup)
     );
     if (mat) {
       const access = evaluateMaterialAccess(req.authUser, owner, mat);
@@ -849,6 +1059,7 @@ async function handleSingleUpload(req, res) {
           .catch(() => {});
       }, 500);
     }
+    queueOfficeRender(diskName);
     if (cloud) {
       writeCloudSidecar(diskName, cloud.url);
       console.log('[upload] ☁️  Cloudinary backup:', cloud.url);
@@ -1084,6 +1295,7 @@ app.post('/api/upload/complete', requireUser, async (req, res) => {
     const diskUrl = '/uploads/' + diskName;
     console.log('[chunked] ✅ Disk saved:', diskName,
                 '(' + Math.round(session.fileSize / 1024 / 1024) + ' MB)');
+    queueOfficeRender(diskName);
     if (diskName.toLowerCase().endsWith('.pdf')) {
       setTimeout(() => {
         linearizePdf(finalPath)
@@ -1165,7 +1377,7 @@ app.use((err, req, res, next) => {
    the background) instead of gzip-on-every-request: ~20 % fewer
    bytes on slow connections and no per-request CPU.
    ============================================================ */
-const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js'];
+const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js'];
 const _assetHashCache = new Map();   // file → { key, hash }
 function assetHash(file) {
   try {
@@ -1293,7 +1505,7 @@ function sendImmutableAsset(res, filename) {
 }
 /* Warm the compressed copies right after boot so the first visitor is fast too. */
 setTimeout(() => {
-  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js',
+  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js',
    'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'].forEach(f => {
     try {
       const fp = path.join(__dirname, f);
@@ -1306,6 +1518,7 @@ app.get('/app.js',             (req, res) => sendImmutableAsset(res, 'app.js'));
 app.get('/styles.css',         (req, res) => sendImmutableAsset(res, 'styles.css'));
 app.get('/media-viewer.js',    (req, res) => sendImmutableAsset(res, 'media-viewer.js'));
 app.get('/document-viewer.js', (req, res) => sendImmutableAsset(res, 'document-viewer.js'));
+app.get('/content-shield.js', (req, res) => sendImmutableAsset(res, 'content-shield.js'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 
 /* ⭐ PDF.js — self-hosted so campus / corporate proxies that
@@ -1825,7 +2038,7 @@ app.use('/api/', (req, res, next) => {
    reloads automatically the moment it changes.
    ============================================================ */
 const APP_BUNDLE_FILES = [
-  'app.js', 'media-viewer.js', 'styles.css',
+  'app.js', 'media-viewer.js', 'styles.css', 'content-shield.js', 'document-viewer.js',
   'sw.js', 'index.html', 'landing.html'
 ];
 
@@ -5511,7 +5724,7 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
 
           /* ⭐ Issue a signed URL when full access is granted.
                 This eliminates per-range-request auth overhead. */
-          if (diskFileExists && access.allowed && req.authUser) {
+          if (diskFileExists && access.allowed && req.authUser && !isOfficeFile(fn)) {
             try {
               const tok = signUploadToken(fn, String(req.authUser._id));
               fileUrl = `/uploads/${encodeURIComponent(fn)}` +
@@ -5541,7 +5754,9 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
           reason:          access.reason || null,
           requiresLogin:   !req.authUser,
           isCoursePremium: !!(course.isPremium === true || course.isPremium === 'true'),
-          isMatPremium:    !!(mat.isPremium    === true || mat.isPremium    === 'true')
+          isMatPremium:    !!(mat.isPremium    === true || mat.isPremium    === 'true'),
+          /* ⭐ Office files are viewed via /render (in-app, no download) */
+          renderable:      rawUrl.startsWith('/uploads/') && isOfficeFile(path.basename(rawUrl))
         });
       }
 
@@ -9770,7 +9985,7 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
        activityLog / quizResults / notifications cuts the payload
        from tens of MB down to a few hundred KB. */
     const students = await User.find({ role: 'student' })
-      .select('username fullName email phone role createdAt subscription suspended purchases activeSession.lastSeenAt activeSession.sessionId')
+      .select('username fullName email phone role createdAt subscription suspended purchases activeSession.lastSeenAt activeSession.sessionId security.captureAttempts')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -9801,6 +10016,7 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
         purchases: Array.isArray(s.purchases) ? s.purchases : [],
         lastSeenAt: (s.activeSession && s.activeSession.lastSeenAt) || null,
         signedIn: !!(s.activeSession && s.activeSession.sessionId),
+        captureAttempts: (s.security && s.security.captureAttempts) || 0,
         premium: {
           active: premiumActive,
           status: sub.status || 'none',
@@ -9935,7 +10151,7 @@ app.get('/api/admin/students/:userId/overview', requireAdminAuth, async (req, re
   try {
     if (!_validId(req.params.userId)) return res.status(400).json({ success: false, message: 'Invalid user id.' });
     const u = await User.findById(req.params.userId)
-      .select('username fullName email phone createdAt purchases progress videoProgress quizResults streakCount longestStreak xp level suspended activeSession subscription')
+      .select('username fullName email phone createdAt purchases progress videoProgress quizResults streakCount longestStreak xp level suspended activeSession subscription security')
       .lean();
     if (!u) return res.status(404).json({ success: false, message: 'Student not found.' });
     const courses = await Course.find().select('name code materials._id materials.type').lean();
@@ -9966,13 +10182,45 @@ app.get('/api/admin/students/:userId/overview', requireAdminAuth, async (req, re
         quizzesTaken: Object.keys(u.quizResults || {}).length,
         videosStarted: vpVals.length,
         videosCompleted: vpVals.filter(v => v && v.completed).length,
-        subscription: u.subscription ? { status: u.subscription.status, expiresAt: u.subscription.expiresAt } : null
+        subscription: u.subscription ? { status: u.subscription.status, expiresAt: u.subscription.expiresAt } : null,
+        captureAttempts: (u.security && u.security.captureAttempts) || 0,
+        lastCaptureAt: (u.security && u.security.lastCaptureAt) || null,
+        captureLog: ((u.security && u.security.log) || []).slice(-5).reverse()
       },
       courses: perCourse
     });
   } catch (e) {
     console.error('[admin-users/overview]', e);
     res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ============================================================
+   ⭐ CONTENT SHIELD — capture-attempt audit (2026-10-04)
+   content-shield.js reports PrintScreen / screenshot shortcuts /
+   print / screen-record attempts. Kept per student (last 20) so
+   admins can see repeat offenders in Students → Manage.
+   ============================================================ */
+const captureLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 12,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many reports.' }
+});
+const CAPTURE_KINDS = new Set(['printscreen', 'shortcut', 'print', 'screen-record']);
+app.post('/api/security/capture-attempt', requireUser, captureLimiter, async (req, res) => {
+  try {
+    if (_isAdminUser(req.authUser)) return res.json({ success: true });
+    const kind = CAPTURE_KINDS.has(String((req.body || {}).kind)) ? String(req.body.kind) : 'shortcut';
+    const where = String((req.body || {}).path || '').replace(/[^\w#\/\-.?=&]/g, '').slice(0, 120);
+    await User.updateOne({ _id: req.authUserId }, {
+      $inc: { 'security.captureAttempts': 1 },
+      $set: { 'security.lastCaptureAt': new Date() },
+      $push: { 'security.log': { $each: [{ at: new Date(), kind, path: where }], $slice: -20 } }
+    });
+    console.warn(`[shield] ${req.authUser.username} · ${kind} · ${where}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false });
   }
 });
 

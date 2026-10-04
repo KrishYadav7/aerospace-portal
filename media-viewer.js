@@ -1463,8 +1463,11 @@ class VideoPlayer {
          handler to show the correct message and route the user
          to either login or the payment modal. */
       this.lockReason     = opts.lockReason || null;
+      /* ⭐ 'slides' = rendered PowerPoint → fit whole slide, highlight Present */
+      this.viewMode       = opts.mode === 'slides' ? 'slides' : 'document';
 
       this._buildUI();
+      if (this.viewMode === 'slides') this.modal.classList.add('pdfv-slides-mode');
       this._loadHighlights();
       this._renderWatermark();
 
@@ -1498,6 +1501,10 @@ class VideoPlayer {
 
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
+        if (this.viewMode === 'slides') {
+          try { await this._fitToPage(); } catch (e) {}
+          userToast('Tip: press P (or the Present button) for a full-screen slideshow.', 'info');
+        }
       } catch (err) {
         console.error('[PDFViewer]', err);
         if (this.loaderEl) {
@@ -1726,6 +1733,8 @@ class VideoPlayer {
               '<button type="button" class="pdfv-btn" data-act="zoomin" title="Zoom in"><i class="fas fa-search-plus"></i></button>' +
               '<button type="button" class="pdfv-btn" data-act="fit" title="Fit to width (W)"><i class="fas fa-arrows-alt-h"></i></button>' +
               '<button type="button" class="pdfv-btn" data-act="fitpage" title="Fit whole page (F)"><i class="fas fa-expand"></i></button>' +
+              '<span class="pdfv-divider"></span>' +
+              '<button type="button" class="pdfv-btn pdfv-present-btn" data-act="present" title="Present full screen (P)"><i class="fas fa-display"></i><span>Present</span></button>' +
             '</div>' +
             '<div class="pdfv-toolbar-right">' +
               '<div class="pdfv-hl-colors" id="pdfvColors">' + colorBtns + '</div>' +
@@ -1812,6 +1821,7 @@ class VideoPlayer {
       if (act === 'zoomout') return this._changeZoom(-0.15);
       if (act === 'fit') return this._fitToWidth();
       if (act === 'fitpage') return this._fitToPage();
+      if (act === 'present') return this._startPresentation(this.currentPage || 1);
       if (act === 'clear-page') return this._clearPageHighlights(this.currentPage);
       if (act === 'clear-all') return this._clearAllHighlights();
     }
@@ -2797,6 +2807,156 @@ class VideoPlayer {
       }
     }
 
+    /* ============================================================
+       ⭐ PRESENTATION MODE (2026-10-04)
+       Full-screen, one slide at a time — for rendered PowerPoint
+       decks (and any PDF). Keyboard: → ← Space PgUp/PgDn Home End,
+       Esc to exit. Click right/left half or swipe on touch.
+       The same watermark + screenshot shield stay on top.
+       ============================================================ */
+    async _startPresentation(startPage) {
+      if (!this.pdfDoc || this._present) return;
+      const max = this.previewLimit || this.pdfDoc.numPages;
+      const ov = document.createElement('div');
+      ov.className = 'pdfv-present';
+      ov.setAttribute('role', 'dialog');
+      ov.setAttribute('aria-label', 'Slideshow');
+      ov.innerHTML =
+        '<div class="pdfv-present-stage"><canvas></canvas></div>' +
+        '<div class="pdfv-present-wm" aria-hidden="true"></div>' +
+        '<div class="pdfv-present-bar">' +
+          '<button type="button" data-p="prev" aria-label="Previous slide"><i class="fas fa-chevron-left"></i></button>' +
+          '<span class="pdfv-present-count"></span>' +
+          '<button type="button" data-p="next" aria-label="Next slide"><i class="fas fa-chevron-right"></i></button>' +
+          '<span class="pdfv-present-sep"></span>' +
+          '<button type="button" data-p="exit" aria-label="Exit slideshow"><i class="fas fa-compress"></i> Exit</button>' +
+        '</div>' +
+        '<div class="pdfv-present-progress"><span></span></div>';
+      ov.addEventListener('contextmenu', e => e.preventDefault());
+      ov.addEventListener('dragstart', e => e.preventDefault());
+      document.body.appendChild(ov);
+
+      const wmSrc = this.modal && this.modal.querySelector('#pdfvWatermark');
+      if (wmSrc) {
+        const wm = ov.querySelector('.pdfv-present-wm');
+        wm.style.backgroundImage = wmSrc.style.backgroundImage;
+        wm.style.opacity = '0.9';
+      }
+
+      const st = this._present = {
+        ov, page: Math.max(1, Math.min(max, startPage || 1)), max,
+        canvas: ov.querySelector('canvas'), task: null, hideTimer: null, touchX: null
+      };
+
+      const go = (n) => { n = Math.max(1, Math.min(st.max, n)); if (n !== st.page) { st.page = n; this._presentRender(); } };
+      st.go = go;
+      st.onKey = (e) => {
+        if (!this._present) return;
+        const k = e.key;
+        if (['ArrowRight', 'ArrowDown', 'PageDown', ' ', 'Enter', 'n', 'N'].includes(k)) { e.preventDefault(); e.stopPropagation(); go(st.page + 1); }
+        else if (['ArrowLeft', 'ArrowUp', 'PageUp', 'Backspace', 'p', 'P'].includes(k)) { e.preventDefault(); e.stopPropagation(); go(st.page - 1); }
+        else if (k === 'Home') { e.preventDefault(); go(1); }
+        else if (k === 'End') { e.preventDefault(); go(st.max); }
+        else if (k === 'Escape') { e.preventDefault(); e.stopPropagation(); this._endPresentation(); }
+      };
+      document.addEventListener('keydown', st.onKey, true);
+
+      ov.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-p]');
+        if (b) {
+          if (b.dataset.p === 'prev') go(st.page - 1);
+          else if (b.dataset.p === 'next') go(st.page + 1);
+          else this._endPresentation();
+          return;
+        }
+        if (e.target.closest('.pdfv-present-bar')) return;
+        const r = ov.getBoundingClientRect();
+        go(st.page + (e.clientX > r.left + r.width / 3 ? 1 : -1));
+      });
+      ov.addEventListener('touchstart', e => { st.touchX = e.touches[0].clientX; }, { passive: true });
+      ov.addEventListener('touchend', e => {
+        if (st.touchX == null) return;
+        const dx = e.changedTouches[0].clientX - st.touchX;
+        st.touchX = null;
+        if (Math.abs(dx) > 40) go(st.page + (dx < 0 ? 1 : -1));
+      });
+      /* Auto-hide the control bar while presenting */
+      st.onMove = () => {
+        ov.classList.add('show-ui');
+        clearTimeout(st.hideTimer);
+        st.hideTimer = setTimeout(() => ov.classList.remove('show-ui'), 2200);
+      };
+      ov.addEventListener('mousemove', st.onMove);
+      st.onMove();
+
+      st.onResize = () => this._presentRender();
+      window.addEventListener('resize', st.onResize);
+      st.onFs = () => {
+        if (!document.fullscreenElement && !document.webkitFullscreenElement && this._present && st.wasFs) {
+          this._endPresentation();
+        }
+      };
+      document.addEventListener('fullscreenchange', st.onFs);
+      document.addEventListener('webkitfullscreenchange', st.onFs);
+
+      try {
+        const req = ov.requestFullscreen || ov.webkitRequestFullscreen;
+        if (req) { await req.call(ov); st.wasFs = true; }
+      } catch (e) { /* fullscreen refused — overlay still covers the window */ }
+      requestAnimationFrame(() => ov.classList.add('active'));
+      await this._presentRender();
+    }
+
+    async _presentRender() {
+      const st = this._present;
+      if (!st || !this.pdfDoc) return;
+      const n = st.page;
+      st.ov.querySelector('.pdfv-present-count').textContent = n + ' / ' + st.max;
+      st.ov.querySelector('.pdfv-present-progress span').style.width = (n / st.max * 100) + '%';
+      st.ov.querySelector('[data-p="prev"]').disabled = n <= 1;
+      st.ov.querySelector('[data-p="next"]').disabled = n >= st.max;
+      try {
+        if (st.task) { try { st.task.cancel(); } catch (e) {} }
+        const page = await this.pdfDoc.getPage(n);
+        if (!this._present || st.page !== n) return;
+        const base = page.getViewport({ scale: 1 });
+        const W = window.innerWidth, H = window.innerHeight;
+        const fit = Math.min(W / base.width, H / base.height);
+        const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+        const vp = page.getViewport({ scale: fit * dpr });
+        const c = st.canvas;
+        c.width = Math.floor(vp.width);
+        c.height = Math.floor(vp.height);
+        c.style.width = Math.floor(vp.width / dpr) + 'px';
+        c.style.height = Math.floor(vp.height / dpr) + 'px';
+        st.task = page.render({ canvasContext: c.getContext('2d', { alpha: false }), viewport: vp });
+        await st.task.promise;
+        /* warm the next slide */
+        if (n < st.max) this.pdfDoc.getPage(n + 1).catch(() => {});
+      } catch (e) {
+        if (e && e.name === 'RenderingCancelledException') return;
+        console.warn('[present]', e && e.message);
+      }
+    }
+
+    _endPresentation(silent) {
+      const st = this._present;
+      if (!st) return;
+      this._present = null;
+      document.removeEventListener('keydown', st.onKey, true);
+      window.removeEventListener('resize', st.onResize);
+      document.removeEventListener('fullscreenchange', st.onFs);
+      document.removeEventListener('webkitfullscreenchange', st.onFs);
+      clearTimeout(st.hideTimer);
+      try { if (st.task) st.task.cancel(); } catch (e) {}
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (e) {}
+      }
+      st.ov.classList.remove('active');
+      setTimeout(() => { try { st.ov.remove(); } catch (e) {} }, 200);
+      if (!silent && this.active) { try { this._scrollToPage(st.page); } catch (e) {} }
+    }
+
     _renderWatermark() {
       if (!this.modal) return;
       const wm = this.modal.querySelector('#pdfvWatermark');
@@ -2811,10 +2971,16 @@ class VideoPlayer {
     }
     _onKeyDown(e) {
       if (!this.active) return;
+      if (this._present) return;          // slideshow owns the keyboard
       if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
 
       const inField = e.target && e.target.matches &&
                       e.target.matches('input, textarea, [contenteditable="true"]');
+      if (!inField && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        this._startPresentation(this.currentPage || 1);
+        return;
+      }
 
       /* Navigation shortcuts (plain keys, not typing) */
       if (!inField && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -2866,6 +3032,7 @@ class VideoPlayer {
 
     close() {
       if (!this.active) return;
+      if (this._present) { try { this._endPresentation(true); } catch (e) {} }
 
       /* ⭐ Persist the last read page synchronously before the DOM
          is torn down. This is what makes "Back" and Esc restore

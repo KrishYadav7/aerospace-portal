@@ -153,12 +153,6 @@
               <span class="docv-title" id="docvTitle">${_esc(this.title)}</span>
             </div>
             <div class="docv-toolbar-right">
-              <a class="docv-btn" id="docvOpenExternal"
-                 href="${_esc(this.fileUrl)}"
-                 target="_blank" rel="noopener noreferrer"
-                 title="Open in a new tab">
-                <i class="fas fa-external-link-alt"></i>
-              </a>
               <button type="button" class="docv-btn" data-act="close" title="Close (Esc)">
                 <i class="fas fa-times"></i>
               </button>
@@ -231,28 +225,20 @@
        the browser renders raw PPTX/DOCX text vertically, which looks
        broken. Instead, we show a clean "Download to view" card.
        ------------------------------------------------------------ */
+    /* ⭐ 2026-10-04: no download / open-in-new-tab anywhere. Office files
+       are rendered server-side and shown in the protected PDF viewer
+       (see openRenderedOfficeFile in app.js); this card only appears if
+       something routes an office file here by mistake. */
     _renderOffice() {
       const body = this.modal.querySelector('#docvBody');
-      const ext = this.fileName ? this.fileName.split('.').pop().toUpperCase() : 'FILE';
-      
       body.innerHTML = `
         <div class="docv-unsupported">
-          <i class="fas fa-file-powerpoint" style="color: #d24726;"></i>
-          <h3>Preview not available for ${ext} files</h3>
-          <p>
-            Due to security restrictions, this file cannot be previewed directly in the browser.
-            Please download it to view it on your device.
-          </p>
-          <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:6px;">
-            <a href="${_esc(this.fileUrl)}" download="${_esc(this.fileName)}"
-               class="btn btn-primary btn-lg">
-              <i class="fas fa-download"></i> Download File
-            </a>
-            <a href="${_esc(this.fileUrl)}" target="_blank" rel="noopener noreferrer"
-               class="btn btn-outline btn-lg">
-              <i class="fas fa-external-link-alt"></i> Open in new tab
-            </a>
-          </div>
+          <i class="fas fa-person-chalkboard" style="color:#d24726;"></i>
+          <h3>Opening in the AeroGyan viewer</h3>
+          <p>This file is shown inside the app only. Please close this window and press <strong>Read</strong> again.</p>
+          <button type="button" class="btn btn-primary btn-lg" onclick="window.DocumentViewer.close()">
+            <i class="fas fa-arrow-left"></i> Back
+          </button>
         </div>`;
     }
 
@@ -262,21 +248,11 @@
       body.innerHTML = `
         <div class="docv-unsupported">
           <i class="fas fa-file"></i>
-          <h3>Preview not available in-app</h3>
-          <p>
-            Both the Microsoft and Google viewers were unable to display this file.
-            You can open it in a new tab or download it to view on your device.
-          </p>
-          <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:6px;">
-            <a href="${_esc(this.fileUrl)}" target="_blank" rel="noopener noreferrer"
-               class="btn btn-primary btn-lg">
-              <i class="fas fa-external-link-alt"></i> Open in new tab
-            </a>
-            <button type="button" class="btn btn-outline btn-lg"
-                    onclick="window.DocumentViewer._retryViewers()">
-              <i class="fas fa-rotate"></i> Retry viewers
-            </button>
-          </div>
+          <h3>Preview not available</h3>
+          <p>This file can only be viewed inside AeroGyan and could not be displayed right now. Please try again later.</p>
+          <button type="button" class="btn btn-outline btn-lg" onclick="window.DocumentViewer.close()">
+            <i class="fas fa-arrow-left"></i> Back
+          </button>
         </div>`;
     }
 
@@ -292,10 +268,9 @@
           <i class="fas fa-triangle-exclamation"></i>
           <h3>Could not load document</h3>
           <p>${_esc(msg)}</p>
-          <a href="${_esc(this.fileUrl)}" target="_blank" rel="noopener noreferrer"
-             class="btn btn-primary">
-            <i class="fas fa-external-link-alt"></i> Open in a new tab
-          </a>
+          <button type="button" class="btn btn-primary" onclick="window.DocumentViewer.close()">
+            <i class="fas fa-arrow-left"></i> Back
+          </button>
         </div>`;
     }
 

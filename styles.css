@@ -14811,3 +14811,58 @@ body.aero-logged-out #appHeader .user-info {
 .cd-panel > summary small { margin-top: -4px; }
 .cd-panel > summary::after { order: 1; }
 .cd-panel > summary small { order: 2; }
+
+/* ============================================================
+   ⭐ PDF VIEWER — PRESENT button + slideshow (2026-10-04)
+   ============================================================ */
+.pdfv-present-btn { width: auto !important; padding: 0 12px !important; gap: 6px; display: inline-flex !important; align-items: center; font-weight: 600; font-size: 13px; }
+.pdfv-present-btn span { font-size: 13px; }
+.pdfv-slides-mode .pdfv-present-btn { background: linear-gradient(135deg, #6366f1, #06b6d4) !important; color: #fff !important; border-color: transparent !important; }
+@media (max-width: 640px) { .pdfv-present-btn span { display: none; } .pdfv-present-btn { padding: 0 10px !important; } }
+
+.pdfv-present {
+  position: fixed; inset: 0; z-index: 2147483000; background: #000;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .2s ease; cursor: none; user-select: none; -webkit-user-select: none;
+}
+.pdfv-present.active { opacity: 1; }
+.pdfv-present.show-ui { cursor: default; }
+.pdfv-present-stage { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.pdfv-present-stage canvas { display: block; box-shadow: 0 0 60px rgba(0,0,0,.6); pointer-events: none; }
+.pdfv-present-wm { position: absolute; inset: 0; pointer-events: none; background-repeat: repeat; }
+.pdfv-present-bar {
+  position: absolute; left: 50%; bottom: 22px; transform: translate(-50%, 12px);
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 999px;
+  background: rgba(17,24,39,.82); backdrop-filter: blur(8px); color: #fff;
+  opacity: 0; transition: opacity .2s ease, transform .2s ease; pointer-events: none;
+}
+.pdfv-present.show-ui .pdfv-present-bar { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.pdfv-present-bar button {
+  min-width: 40px; height: 40px; border: 0; border-radius: 999px; background: transparent; color: #fff; cursor: pointer;
+  font: 600 13px Inter, sans-serif; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px;
+}
+.pdfv-present-bar button:hover:not(:disabled) { background: rgba(255,255,255,.14); }
+.pdfv-present-bar button:disabled { opacity: .35; cursor: default; }
+.pdfv-present-bar button:focus-visible { outline: 2px solid #a5b4fc; }
+.pdfv-present-count { min-width: 64px; text-align: center; font: 600 14px Inter, sans-serif; font-variant-numeric: tabular-nums; }
+.pdfv-present-sep { width: 1px; height: 22px; background: rgba(255,255,255,.2); margin: 0 4px; }
+.pdfv-present-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255,255,255,.08); }
+.pdfv-present-progress span { display: block; height: 100%; background: linear-gradient(90deg, #6366f1, #06b6d4); transition: width .25s ease; }
+
+/* ⭐ "Preparing slides…" overlay while the server renders an office file */
+.render-overlay { position: fixed; inset: 0; z-index: 9000; display: flex; align-items: center; justify-content: center; background: rgba(10,14,31,.55); backdrop-filter: blur(4px); opacity: 0; transition: opacity .2s; }
+.render-overlay.active { opacity: 1; }
+.render-card { width: min(360px, calc(100% - 32px)); background: var(--bg-surface); border-radius: 18px; padding: 26px 24px; text-align: center; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.render-icon { width: 58px; height: 58px; border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; background: linear-gradient(135deg, #f97316, #ef4444); margin-bottom: 4px; }
+.render-card strong { font-size: 16px; color: var(--text-primary); }
+.render-card span { font-size: 13.5px; color: var(--text-secondary); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.render-card small { font-size: 12px; color: var(--text-tertiary); }
+.render-bar { width: 100%; height: 5px; border-radius: 999px; background: var(--bg-surface-3); overflow: hidden; margin: 6px 0 2px; }
+.render-bar i { display: block; width: 40%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--brand-500), #06b6d4); animation: renderSlide 1.1s ease-in-out infinite; }
+@keyframes renderSlide { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
+@media (prefers-reduced-motion: reduce) { .render-bar i { animation: none; width: 100%; } }
+.student-status-badge.capture { background: rgba(245,158,11,.14); color: #b45309; }
+[data-theme="dark"] .student-status-badge.capture, [data-theme="dim"] .student-status-badge.capture { color: #fcd34d; }
+.ms-alert--warn { background: rgba(245,158,11,.12) !important; color: #92400e !important; margin-top: 10px; }
+[data-theme="dark"] .ms-alert--warn, [data-theme="dim"] .ms-alert--warn { color: #fcd34d !important; }
+.ms-capture-log { margin: 6px 0 0 18px; padding: 0; font-weight: 500; font-size: 12.5px; }

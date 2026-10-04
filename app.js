@@ -5924,6 +5924,7 @@ function renderStudentListFromCache() {
             ${_studentIsSuspended(s)
               ? `<span class="student-status-badge suspended" title="${escapeHtml((s.suspended && s.suspended.reason) || 'Suspended')}"><i class="fas fa-ban"></i> Suspended</span>`
               : (s.signedIn ? `<span class="student-status-badge online" title="Has an active session"><span class="dot"></span> Signed in</span>` : '')}
+            ${s.captureAttempts ? `<span class="student-status-badge capture" title="Screenshot / print attempts blocked"><i class="fas fa-camera"></i> ${s.captureAttempts}</span>` : ''}
           </div>
           ${s.lastSeenAt ? `<div class="student-meta-row student-lastseen"><i class="fas fa-clock"></i><span>Last active ${escapeHtml(timeAgo(s.lastSeenAt))}</span></div>` : ''}
         </div>
@@ -6800,6 +6801,7 @@ function renderManageStudentBody(data) {
       <div><strong>${st.videosCompleted}/${st.videosStarted}</strong><span>Videos finished</span></div>
       <div><strong>${st.quizzesTaken}</strong><span>Quizzes</span></div>
     </div>
+    ${st.captureAttempts ? `<div class="ms-alert ms-alert--warn"><i class="fas fa-camera"></i> ${st.captureAttempts} screenshot / print attempt${st.captureAttempts === 1 ? '' : 's'} blocked${st.lastCaptureAt ? ' · last ' + escapeHtml(timeAgo(st.lastCaptureAt)) : ''}${(st.captureLog || []).length ? `<ul class="ms-capture-log">${st.captureLog.map(l => `<li>${escapeHtml(new Date(l.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))} · ${escapeHtml(l.kind)}${l.path ? ' · ' + escapeHtml(l.path) : ''}</li>`).join('')}</ul>` : ''}</div>` : ''}
 
     <section class="ms-section">
       <h4><i class="fas fa-shield-halved"></i> Account</h4>
@@ -13125,6 +13127,69 @@ function _detectDocumentKind(fileName, url) {
      ③ Use meta's hasFullAccess + previewPercent in the viewer.
      ④ Fall back to client-side access only if meta is unreachable.
    ============================================================ */
+/* ============================================================
+   ⭐ OFFICE FILES → IN-APP VIEWER (2026-10-04)
+   Asks the server for a rendered PDF of the PowerPoint / Word /
+   Excel file (first open may take a few seconds while it's
+   converted), then opens it in the protected PDF viewer.
+   ============================================================ */
+let _renderOverlayEl = null;
+function _showRenderOverlay(title, kind) {
+  _hideRenderOverlay();
+  const el = document.createElement('div');
+  el.className = 'render-overlay';
+  el.setAttribute('role', 'status');
+  el.innerHTML = `
+    <div class="render-card">
+      <div class="render-icon"><i class="fas ${kind === 'presentation' ? 'fa-person-chalkboard' : kind === 'spreadsheet' ? 'fa-table' : 'fa-file-lines'}"></i></div>
+      <strong>${kind === 'presentation' ? 'Preparing slides…' : 'Preparing document…'}</strong>
+      <span>${escapeHtml(title || '')}</span>
+      <div class="render-bar"><i></i></div>
+      <small>The first opening can take a few seconds.</small>
+    </div>`;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('active'));
+  _renderOverlayEl = el;
+}
+function _hideRenderOverlay() {
+  if (_renderOverlayEl) { const e = _renderOverlayEl; _renderOverlayEl = null; e.classList.remove('active'); setTimeout(() => e.remove(), 200); }
+}
+
+async function openRenderedOfficeFile(course, mat, meta, pdfJsPromise) {
+  const kind = _detectDocumentKind(mat.fileName || '', mat.url || '');
+  _showRenderOverlay(mat.title, kind);
+  let data;
+  try {
+    const [, d] = await Promise.all([
+      pdfJsPromise.catch(() => null),
+      fetchJSON(`${API_BASE}/courses/${course.id}/materials/${mat.id}/render?_t=${Date.now()}`)
+    ]);
+    data = d;
+  } catch (e) {
+    _hideRenderOverlay();
+    return showToast(e.message || 'Could not open this file.', 'error');
+  }
+  _hideRenderOverlay();
+  if (!data || !data.success || !data.url) {
+    return showToast((data && data.message) || 'Could not open this file.', 'error');
+  }
+  if (!window.pdfjsLib) return showToast('Could not load the viewer. Please refresh.', 'error');
+
+  window.PDFViewer.open({
+    url:            data.url,
+    materialId:     mat.id,
+    courseId:       course.id,
+    title:          mat.title,
+    mode:           data.kind === 'presentation' ? 'slides' : 'document',
+    username:       currentUser
+                      ? (currentUser.fullName || currentUser.username || 'Student')
+                      : 'Guest · ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    hasFullAccess:  data.hasFullAccess === true,
+    previewPercent: data.hasFullAccess ? 0 : (Number(data.previewPercent) || 0),
+    lockReason:     (meta && meta.reason) || null
+  });
+}
+
 async function viewFileOnline(courseId, materialId) {
   const course = findCourse(courseId);
   if (!course) return showToast('Course not found.', 'error');
@@ -13278,6 +13343,13 @@ async function viewFileOnline(courseId, materialId) {
        • Falls through to a clean "Preview unavailable" toast
          for unknown formats rather than a misleading error.
        ============================================================ */
+    /* ⭐ PowerPoint / Word / Excel → rendered on the server to a protected
+       PDF and shown in the in-app viewer (slideshow for presentations).
+       The original file is never downloaded. */
+    if (!isPdf && meta && meta.renderable) {
+      return openRenderedOfficeFile(course, mat, meta, pdfJsPromise);
+    }
+
     if (!isPdf && (isDiskUrl || isExternalUrl)) {
       const _docKind = _detectDocumentKind(fileName, serverFileUrl);
 
