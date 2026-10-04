@@ -200,3 +200,25 @@ client_max_body_size 20m;      # attachments (default 1m would reject them)
 proxy_read_timeout   120s;     # long derivations (the server also sends keep-alive pings every 8 s)
 ```
 Streaming needs no extra nginx setting — the response sends `X-Accel-Buffering: no`.
+
+---
+
+## 11. Login pop-up — greetings & announcements (2026-10-04)
+
+**Admin → Login Pop-up** (new tab, icon 📢)
+- **New pop-up** → pick a starting design (Diwali, Holi, Exam wishes, Important notice, National festival, Blank).
+- **Editor** — type straight into a live preview of the card:
+  - text style (title / heading / paragraph), font, size, bold / italic / underline / strike, text colour, highlight, alignment, lists, links, divider, emoji, undo/redo;
+  - **images**: upload, paste or drag in (PNG/JPG/WebP/GIF, ≤ 10 MB — resized and stored on the server, backed up to Cloudinary); click an image to set 25–100 % width, alignment, rounded corners or remove it;
+  - **design**: background colour or two-colour gradient, text colour, button/timer colour, Small / Medium / Large;
+  - optional **button** (text + link);
+  - **auto-close** after 3 / 5 / 10 / 15 / 30 s, a custom number of seconds (1–120) or **Never** (student closes it);
+  - **show on**: website (landing) + login, website only, or login only;
+  - **how often**: once per visit (default), every time the page opens, or only once per device;
+  - optional **start / end** date-time (e.g. switch a Diwali greeting on for 3 days only).
+- **Preview** shows the real pop-up. **Save**, or **Save & go live**.
+- The list shows every saved pop-up with an **Enabled / Disabled** switch. Only one is live at a time — enabling one switches the others off. **Duplicate** reuses any pop-up as a template.
+
+**What students see**: a centred card over a dimmed page with a ✕ button and a thin countdown bar. It closes on its own after the chosen time, or with ✕, Esc or a tap outside. Students already logged in never see it. If the admin edits the live pop-up or switches it on again, students see the new version once more.
+
+**Safety**: the pop-up's HTML is cleaned twice — on save (server) and before display (browser) — so no script, frames or event handlers can ever run on the login page. Admin routes require the admin login.

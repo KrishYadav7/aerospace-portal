@@ -471,6 +471,9 @@
           <button class="admin-tab" data-tab="certificates" onclick="switchAdminTab('certificates')">
             <i class="fas fa-certificate"></i> Certificates
           </button>
+          <button class="admin-tab" data-tab="popup" onclick="switchAdminTab('popup')">
+            <i class="fas fa-bullhorn"></i> Login Pop-up
+          </button>
         </div>
 
         <!-- ============================================================
@@ -702,6 +705,9 @@
         </div>
         <div id="adminTabCertificates" class="admin-tab-content">
           <div id="adminCertificatesContent"></div>
+        </div>
+        <div id="adminTabPopup" class="admin-tab-content">
+          <div id="adminPopupContent"></div>
         </div>
       </section>
 
@@ -1809,6 +1815,7 @@
        Just bump the number (v=29, v=30...) to force fresh files. -->
  	<script src="media-viewer.js?v=138" defer></script>
   <script src="content-shield.js?v=138" defer></script>
+  <script src="login-popup.js?v=1" defer></script>
   <script src="document-viewer.js?v=138" defer></script>
   <script src="app.js?v=138" defer></script>
   <!-- Service worker registration -->

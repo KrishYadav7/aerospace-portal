@@ -350,6 +350,7 @@ const Coupon       = require('./models/Coupon');
 const DailyUsage   = require('./models/DailyUsage');
 const Visit = require('./models/Visit');
 const AccessLog = require('./models/AccessLog');
+const LoginPopup = require('./models/LoginPopup');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
@@ -1756,7 +1757,7 @@ app.use((err, req, res, next) => {
    the background) instead of gzip-on-every-request: ~20 % fewer
    bytes on slow connections and no per-request CPU.
    ============================================================ */
-const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js'];
+const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js'];
 const _assetHashCache = new Map();   // file → { key, hash }
 function assetHash(file) {
   try {
@@ -1884,7 +1885,7 @@ function sendImmutableAsset(res, filename) {
 }
 /* Warm the compressed copies right after boot so the first visitor is fast too. */
 setTimeout(() => {
-  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js',
+  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js',
    'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'].forEach(f => {
     try {
       const fp = path.join(__dirname, f);
@@ -1898,6 +1899,7 @@ app.get('/styles.css',         (req, res) => sendImmutableAsset(res, 'styles.css
 app.get('/media-viewer.js',    (req, res) => sendImmutableAsset(res, 'media-viewer.js'));
 app.get('/document-viewer.js', (req, res) => sendImmutableAsset(res, 'document-viewer.js'));
 app.get('/content-shield.js', (req, res) => sendImmutableAsset(res, 'content-shield.js'));
+app.get('/login-popup.js',    (req, res) => sendImmutableAsset(res, 'login-popup.js'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 
 /* ⭐ PDF.js — self-hosted so campus / corporate proxies that
@@ -2417,7 +2419,7 @@ app.use('/api/', (req, res, next) => {
    reloads automatically the moment it changes.
    ============================================================ */
 const APP_BUNDLE_FILES = [
-  'app.js', 'media-viewer.js', 'styles.css', 'content-shield.js', 'document-viewer.js',
+  'app.js', 'media-viewer.js', 'styles.css', 'content-shield.js', 'document-viewer.js', 'login-popup.js',
   'sw.js', 'index.html', 'landing.html'
 ];
 
@@ -12757,6 +12759,258 @@ async function _aiChatHandler(req, res) {
   }
   res.end();
 }
+
+/* ============================================================
+   ⭐ LOGIN / LANDING ANNOUNCEMENT POP-UP (2026-10-04)
+   ------------------------------------------------------------
+   Admin designs a pop-up (rich text + images) and switches it on;
+   students see it on the landing page and/or the login page.
+
+   Public:  GET  /api/login-popup                 → the live pop-up (or none)
+            GET  /popup-media/:file               → images used in pop-ups
+   Admin:   GET  /api/admin/login-popups          → all saved pop-ups
+            POST /api/admin/login-popups          → create
+            PUT  /api/admin/login-popups/:id      → update
+            POST /api/admin/login-popups/:id/active   { active } (one live at a time)
+            POST /api/admin/login-popups/:id/duplicate
+            DELETE /api/admin/login-popups/:id
+            POST /api/admin/login-popup/image     → upload an image (multipart "file")
+   ============================================================ */
+const POPUP_MEDIA_DIR = path.join(UPLOAD_DIR, 'popup');
+try { fs.mkdirSync(POPUP_MEDIA_DIR, { recursive: true }); } catch (_) {}
+
+/* ---- HTML sanitiser (whitelist). The browser sanitises again before
+   showing it, so even a bypass here would not run script. ---- */
+const POPUP_TAGS = new Set(['p', 'br', 'div', 'span', 'b', 'strong', 'i', 'em', 'u', 's', 'strike', 'sub', 'sup',
+  'h1', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'a', 'img', 'blockquote', 'hr', 'font', 'small', 'big', 'mark']);
+const POPUP_DROP_WITH_CONTENT = new Set(['script', 'style', 'iframe', 'object', 'embed', 'template', 'noscript',
+  'svg', 'math', 'textarea', 'select', 'button', 'form', 'title', 'head', 'link', 'meta', 'frame', 'frameset', 'applet']);
+const POPUP_STYLE_PROPS = new Set(['color', 'background-color', 'background', 'font-size', 'font-weight', 'font-style',
+  'font-family', 'text-decoration', 'text-align', 'line-height', 'letter-spacing', 'margin', 'margin-top',
+  'margin-bottom', 'margin-left', 'margin-right', 'padding', 'width', 'max-width', 'height', 'border-radius',
+  'display', 'vertical-align', 'text-transform']);
+function _popupSafeUrl(u, forImg) {
+  const v = String(u || '').trim().replace(/&amp;/g, '&');
+  if (!v || /[\u0000-\u001f<>"'`\\]/.test(v)) return '';
+  if (forImg) return /^(https:\/\/|\/popup-media\/|\/uploads\/)/i.test(v) ? v : '';
+  return /^(https?:\/\/|mailto:|\/|#)/i.test(v) && !/^\/\//.test(v) ? v : '';
+}
+function _popupSafeStyle(style) {
+  const out = [];
+  String(style || '').split(';').forEach(decl => {
+    const i = decl.indexOf(':');
+    if (i < 0) return;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim();
+    if (!POPUP_STYLE_PROPS.has(prop) || !val || val.length > 200) return;
+    if (/url\s*\(|expression|javascript:|[<>{}\\]|@import|behavior/i.test(val)) return;
+    if (prop === 'display' && !/^(block|inline|inline-block|none)$/.test(val)) return;
+    out.push(prop + ': ' + val);
+  });
+  return out.join('; ');
+}
+function sanitizePopupHtml(input) {
+  let html = String(input || '').slice(0, 100000);
+  html = html.replace(/<!--[\s\S]*?-->/g, '');
+  /* remove dangerous elements together with everything inside them */
+  POPUP_DROP_WITH_CONTENT.forEach(tag => {
+    html = html.replace(new RegExp('<' + tag + '\\b[\\s\\S]*?<\\/' + tag + '\\s*>', 'gi'), '');
+    html = html.replace(new RegExp('<\\/?' + tag + '\\b[^>]*>', 'gi'), '');
+  });
+  return html.replace(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)([^>]*)>/g, (m, close, tagRaw, attrs) => {
+    const tag = tagRaw.toLowerCase();
+    if (!POPUP_TAGS.has(tag)) return '';
+    if (close) return '</' + tag + '>';
+    const kept = [];
+    const re = /([a-zA-Z_:][a-zA-Z0-9_:.-]*)\s*(?:=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+    let a;
+    while ((a = re.exec(attrs))) {
+      const name = a[1].toLowerCase();
+      const val = a[3] != null ? a[3] : a[4] != null ? a[4] : (a[5] || '');
+      if (name.startsWith('on')) continue;
+      if (name === 'style') { const st = _popupSafeStyle(val); if (st) kept.push('style="' + st.replace(/"/g, '&quot;') + '"'); }
+      else if (name === 'href' && tag === 'a') { const u = _popupSafeUrl(val, false); if (u) kept.push('href="' + u.replace(/"/g, '&quot;') + '"', 'target="_blank"', 'rel="noopener noreferrer"'); }
+      else if (name === 'src' && tag === 'img') { const u = _popupSafeUrl(val, true); if (u) kept.push('src="' + u.replace(/"/g, '&quot;') + '"'); }
+      else if ((name === 'alt' || name === 'title') && val.length < 200) kept.push(name + '="' + val.replace(/[<>"]/g, '') + '"');
+      else if ((name === 'width' || name === 'height') && /^\d{1,4}%?$/.test(val)) kept.push(name + '="' + val + '"');
+      else if (name === 'color' && tag === 'font' && /^#?[a-z0-9]{3,20}$/i.test(val)) kept.push('color="' + val + '"');
+      else if (name === 'size' && tag === 'font' && /^[1-7]$/.test(val)) kept.push('size="' + val + '"');
+      else if (name === 'align' && /^(left|right|center|justify)$/i.test(val)) kept.push('align="' + val.toLowerCase() + '"');
+    }
+    if (tag === 'img' && !kept.some(k => k.startsWith('src='))) return '';
+    return '<' + tag + (kept.length ? ' ' + kept.join(' ') : '') + (tag === 'img' || tag === 'br' || tag === 'hr' ? '>' : '>');
+  });
+}
+
+function _popupColor(v, dflt) {
+  const s = String(v || '').trim();
+  return /^#[0-9a-f]{3,8}$/i.test(s) || /^rgba?\([\d\s.,%]+\)$/i.test(s) ? s : dflt;
+}
+function _popupClean(body) {
+  const b = body || {};
+  const d = b.design || {};
+  const btn = b.button || {};
+  const dur = Math.round(Number(b.durationSec));
+  const date = (v) => { if (!v) return null; const t = new Date(v); return isNaN(t.getTime()) ? null : t; };
+  return {
+    name: String(b.name || 'Untitled pop-up').trim().slice(0, 120) || 'Untitled pop-up',
+    html: sanitizePopupHtml(b.html),
+    design: {
+      bg1: _popupColor(d.bg1, '#ffffff'),
+      bg2: d.bg2 ? _popupColor(d.bg2, '') : '',
+      textColor: _popupColor(d.textColor, '#0f172a'),
+      accent: _popupColor(d.accent, '#4f46e5'),
+      width: ['sm', 'md', 'lg'].includes(d.width) ? d.width : 'md'
+    },
+    button: {
+      text: String(btn.text || '').trim().slice(0, 60),
+      url: _popupSafeUrl(String(btn.url || '').slice(0, 500), false)
+    },
+    durationSec: Number.isFinite(dur) ? Math.max(0, Math.min(120, dur)) : 5,
+    showOn: ['both', 'landing', 'login'].includes(b.showOn) ? b.showOn : 'both',
+    frequency: ['session', 'always', 'once'].includes(b.frequency) ? b.frequency : 'session',
+    startAt: date(b.startAt),
+    endAt: date(b.endAt)
+  };
+}
+
+/* ---- public: the live pop-up ---- */
+let _popupCache = { at: 0, data: undefined };
+function _popupInvalidate() { _popupCache = { at: 0, data: undefined }; }
+app.get('/api/login-popup', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-cache');
+    const now = Date.now();
+    if (_popupCache.data === undefined || now - _popupCache.at > 20000) {
+      const p = await LoginPopup.findOne({ active: true }).sort({ updatedAt: -1 }).lean();
+      _popupCache = { at: now, data: p || null };
+    }
+    const p = _popupCache.data;
+    const live = p && (!p.startAt || new Date(p.startAt).getTime() <= now) && (!p.endAt || new Date(p.endAt).getTime() > now);
+    if (!live) return res.json({ success: true, popup: null });
+    res.json({ success: true, popup: {
+      id: String(p._id), version: p.version || 1, html: p.html || '', design: p.design || {}, button: p.button || {},
+      durationSec: p.durationSec, showOn: p.showOn, frequency: p.frequency
+    } });
+  } catch (e) {
+    console.warn('[login-popup]', e.message);
+    res.json({ success: true, popup: null });            // never break the login page
+  }
+});
+
+/* ---- admin CRUD ---- */
+app.get('/api/admin/login-popups', requireAdminAuth, async (req, res) => {
+  try {
+    const list = await LoginPopup.find({}).sort({ active: -1, updatedAt: -1 }).limit(200).lean();
+    res.json({ success: true, popups: list });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+});
+app.post('/api/admin/login-popups', requireAdminAuth, async (req, res) => {
+  try {
+    const doc = await LoginPopup.create(Object.assign(_popupClean(req.body), {
+      active: false, updatedBy: (req.authUser && req.authUser.username) || 'admin'
+    }));
+    res.json({ success: true, popup: doc.toObject() });
+  } catch (e) { res.status(500).json({ success: false, message: 'Could not save: ' + e.message }); }
+});
+app.put('/api/admin/login-popups/:id', requireAdminAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid id.' });
+    const doc = await LoginPopup.findByIdAndUpdate(req.params.id,
+      { $set: Object.assign(_popupClean(req.body), { updatedBy: (req.authUser && req.authUser.username) || 'admin' }), $inc: { version: 1 } },
+      { new: true }).lean();
+    if (!doc) return res.status(404).json({ success: false, message: 'Pop-up not found.' });
+    _popupInvalidate();
+    res.json({ success: true, popup: doc });
+  } catch (e) { res.status(500).json({ success: false, message: 'Could not save: ' + e.message }); }
+});
+app.post('/api/admin/login-popups/:id/active', requireAdminAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid id.' });
+    const on = !!(req.body && req.body.active);
+    const doc = await LoginPopup.findById(req.params.id);
+    if (!doc) return res.status(404).json({ success: false, message: 'Pop-up not found.' });
+    if (on) {
+      if (!String(doc.html || '').replace(/<[^>]*>/g, '').trim() && !/<img\b/i.test(doc.html || '')) {
+        return res.status(400).json({ success: false, message: 'This pop-up is empty — add some text or an image first.' });
+      }
+      await LoginPopup.updateMany({ _id: { $ne: doc._id }, active: true }, { $set: { active: false } });
+    }
+    doc.active = on;
+    if (on) doc.version = (doc.version || 1) + 1;        // a re-activated greeting shows again
+    await doc.save();
+    _popupInvalidate();
+    console.log(`[login-popup] ${on ? '🟢 LIVE' : '⚪ off'}: ${doc.name}`);
+    res.json({ success: true, popup: doc.toObject() });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+});
+app.post('/api/admin/login-popups/:id/duplicate', requireAdminAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid id.' });
+    const src = await LoginPopup.findById(req.params.id).lean();
+    if (!src) return res.status(404).json({ success: false, message: 'Pop-up not found.' });
+    const copy = _popupClean(Object.assign({}, src, { name: (src.name || 'Pop-up').slice(0, 110) + ' (copy)' }));
+    const doc = await LoginPopup.create(Object.assign(copy, { active: false, updatedBy: (req.authUser && req.authUser.username) || 'admin' }));
+    res.json({ success: true, popup: doc.toObject() });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+});
+app.delete('/api/admin/login-popups/:id', requireAdminAuth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid id.' });
+    await LoginPopup.deleteOne({ _id: req.params.id });
+    _popupInvalidate();
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+});
+
+/* ---- images for pop-ups (public, they appear before login) ---- */
+const popupImageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
+app.post('/api/admin/login-popup/image', requireAdminAuth, (req, res) => {
+  popupImageUpload.single('file')(req, res, async (err) => {
+    try {
+      if (err) return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ success: false, message: err.code === 'LIMIT_FILE_SIZE' ? 'Image is larger than 10 MB.' : 'Upload failed.' });
+      const f = req.file;
+      if (!f || !f.buffer) return res.status(400).json({ success: false, message: 'No image received.' });
+      const h = f.buffer.subarray(0, 12).toString('latin1');
+      const kind = f.buffer[0] === 0x89 && h.slice(1, 4) === 'PNG' ? 'png'
+        : (f.buffer[0] === 0xFF && f.buffer[1] === 0xD8) ? 'jpg'
+        : (h.slice(0, 4) === 'RIFF' && h.slice(8, 12) === 'WEBP') ? 'webp'
+        : h.slice(0, 4) === 'GIF8' ? 'gif' : '';
+      if (!kind) return res.status(415).json({ success: false, message: 'Please upload a PNG, JPG, WebP or GIF image.' });
+      let out = f.buffer, ext = kind, width = 0, height = 0;
+      try {
+        const sharp = getSharp();
+        const img = sharp(f.buffer, { animated: kind === 'gif' || kind === 'webp' });
+        out = await img.rotate().resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+          .webp({ quality: 86 }).toBuffer();
+        ext = 'webp';
+        const m = await getSharp()(out).metadata();
+        width = m.width || 0; height = m.pageHeight || m.height || 0;
+      } catch (e) { /* sharp missing — keep the validated original */ }
+      const name = 'pp-' + Date.now().toString(36) + '-' + crypto.randomBytes(5).toString('hex') + '.' + ext;
+      await fs.promises.writeFile(path.join(POPUP_MEDIA_DIR, name), out);
+      uploadToCloudinary(path.join(POPUP_MEDIA_DIR, name), name)
+        .then(c => { if (c && c.url) writeCloudSidecar('popup/' + name, c.url); })
+        .catch(() => {});
+      res.json({ success: true, url: '/popup-media/' + name, width, height, size: out.length });
+    } catch (e) {
+      console.error('[login-popup/image]', e);
+      res.status(500).json({ success: false, message: 'Could not save the image.' });
+    }
+  });
+});
+app.get('/popup-media/:file', async (req, res) => {
+  const f = String(req.params.file || '');
+  if (!/^pp-[a-z0-9]+-[a-f0-9]{10}\.(webp|png|jpg|gif)$/.test(f)) return res.status(404).end();
+  const fp = path.join(POPUP_MEDIA_DIR, f);
+  if (fs.existsSync(fp)) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    return res.sendFile(fp);
+  }
+  const cloud = readCloudSidecar('popup/' + f);          // disk wiped → Cloudinary backup
+  if (cloud && /^https:\/\//.test(cloud)) return res.redirect(302, cloud);
+  res.status(404).end();
+});
 /* ============================================================
    ════════════════════════════════════════════════════════════
    /* ============================================================

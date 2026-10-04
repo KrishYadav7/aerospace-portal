@@ -5081,7 +5081,8 @@ function updateAdminTabUI() {
     contributions: { icon: 'fa-hand-holding-heart',  text: 'Student Contributions' },
     backup:        { icon: 'fa-database',            text: 'Backup & Restore' },
     branding:      { icon: 'fa-palette',             text: 'Branding — Favicon & App Icons' },
-    certificates:  { icon: 'fa-certificate',         text: 'Certificate Management' }
+    certificates:  { icon: 'fa-certificate',         text: 'Certificate Management' },
+    popup:         { icon: 'fa-bullhorn',            text: 'Login Pop-up — Greetings & Announcements' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -5120,6 +5121,9 @@ function updateAdminTabUI() {
     certificates: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
       <button class="btn btn-primary" onclick="renderAdminCertificates()"><i class="fas fa-rotate"></i> <span class="btn-text">Reload</span></button>`,
+    popup: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="lpOpenTemplates()"><i class="fas fa-plus"></i> <span class="btn-text">New pop-up</span></button>`,
   };
   const meta = titleMap[adminTab] || titleMap.overview;
   if (titleEl) titleEl.innerHTML = `<i class="fas ${meta.icon}"></i> ${meta.text}`;
@@ -5143,6 +5147,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'backup')        renderAdminBackup();
   else if (adminTab === 'branding')      renderAdminBranding();
   else if (adminTab === 'certificates')  renderAdminCertificates();
+  else if (adminTab === 'popup')         renderAdminLoginPopup();
 }
 
 /* ============================================================
@@ -21392,3 +21397,726 @@ window.addEventListener('beforeunload', () => {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
+
+/* ============================================================
+   ⭐ ADMIN — LOGIN POP-UP DESIGNER (2026-10-04)
+   ------------------------------------------------------------
+   Design a greeting / announcement (rich text, colours, images,
+   optional button), choose how long it stays and where it shows,
+   then switch it Live. Only one pop-up is live at a time; every
+   saved pop-up doubles as a reusable template (Duplicate).
+   Students see it through login-popup.js on the landing page
+   and/or the login page.
+   ============================================================ */
+let _lpList = [];
+let _lpLoaded = false;
+let _lpEdit = null;          // the pop-up being edited (null = list view)
+let _lpDirty = false;
+let _lpRange = null;         // last selection inside the canvas
+let _lpSelImg = null;
+
+const LP_FONTS = [
+  ['', 'Default font'], ['Georgia, "Times New Roman", serif', 'Serif'], ['"Trebuchet MS", "Segoe UI", sans-serif', 'Rounded'],
+  ['"Courier New", monospace', 'Typewriter'], ['"Brush Script MT", "Segoe Script", cursive', 'Handwriting'],
+  ['Impact, "Arial Black", sans-serif', 'Poster']
+];
+const LP_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 56];
+const LP_EMOJI = ['🪔', '✨', '🎉', '🎊', '🎆', '🎇', '🌸', '🌼', '🌺', '🙏', '📚', '📝', '🎓', '🏆', '💐', '🇮🇳',
+  '🌙', '⭐', '❤️', '🎂', '🕉️', '☪️', '✝️', '🎄', '🥳', '👏', '📢', '⚠️', '✅', '📅', '🚀', '✈️'];
+
+function lpTemplates() {
+  return [
+    { key: 'diwali', label: 'Diwali greeting', emoji: '🪔', popup: {
+      name: 'Happy Diwali', durationSec: 8,
+      design: { bg1: '#1e1b4b', bg2: '#9a3412', textColor: '#fde68a', accent: '#f59e0b', width: 'md' },
+      html: '<h1 style="text-align: center;">🪔 Happy Diwali! 🪔</h1><p style="text-align: center; font-size: 18px;">May the festival of lights fill your life with joy, success and the light of knowledge.</p><p style="text-align: center; color: #fff7ed;">— Team AeroGyan ✨</p>' } },
+    { key: 'holi', label: 'Holi greeting', emoji: '🎨', popup: {
+      name: 'Happy Holi', durationSec: 8,
+      design: { bg1: '#db2777', bg2: '#f59e0b', textColor: '#ffffff', accent: '#7c3aed', width: 'md' },
+      html: '<h1 style="text-align: center;">🌸 Happy Holi! 🌼</h1><p style="text-align: center; font-size: 18px;">Wishing you a festival full of colours, laughter and good friends.</p><p style="text-align: center;">— Team AeroGyan</p>' } },
+    { key: 'exams', label: 'Exam wishes', emoji: '📚', popup: {
+      name: 'All the best for exams', durationSec: 10,
+      design: { bg1: '#0ea5e9', bg2: '#4f46e5', textColor: '#ffffff', accent: '#0f172a', width: 'md' },
+      html: '<h2 style="text-align: center;">📚 All the best for your exams!</h2><p style="text-align: center; font-size: 17px;">You have prepared well — stay calm and give it your best.</p><ul><li>Revise formulas from the <b>Notes</b> section</li><li>Solve one PYQ paper every day</li><li>Sleep well the night before 😴</li></ul>',
+      button: { text: 'Open PYQs', url: '/app#/courses' } } },
+    { key: 'notice', label: 'Important notice', emoji: '📢', popup: {
+      name: 'Important announcement', durationSec: 0,
+      design: { bg1: '#ffffff', bg2: '', textColor: '#0f172a', accent: '#dc2626', width: 'md' },
+      html: '<h2><span style="color: #dc2626;">📢 Important Announcement</span></h2><p>Write the announcement here — for example a change in the class schedule or a new course launch.</p><p><b>Date:</b> …</p>',
+      button: { text: 'Read more', url: '/app' } } },
+    { key: 'national', label: 'National festival', emoji: '🇮🇳', popup: {
+      name: 'Happy Independence Day', durationSec: 8,
+      design: { bg1: '#fff7ed', bg2: '#ecfdf5', textColor: '#0f172a', accent: '#138808', width: 'md' },
+      html: '<h1 style="text-align: center;"><span style="color: #ff9933;">Happy</span> Independence <span style="color: #138808;">Day</span> 🇮🇳</h1><p style="text-align: center; font-size: 17px;">Let us keep reaching for the skies — Jai Hind!</p>' } },
+    { key: 'blank', label: 'Blank', emoji: '📝', popup: {
+      name: 'New pop-up', durationSec: 5,
+      design: { bg1: '#ffffff', bg2: '', textColor: '#0f172a', accent: '#4f46e5', width: 'md' },
+      html: '<h2 style="text-align: center;">Your heading</h2><p style="text-align: center;">Type your message here…</p>' } }
+  ];
+}
+
+function _lpDefaults(p) {
+  p = p || {};
+  return {
+    _id: p._id || null,
+    name: p.name || 'New pop-up',
+    html: p.html || '',
+    design: Object.assign({ bg1: '#ffffff', bg2: '', textColor: '#0f172a', accent: '#4f46e5', width: 'md' }, p.design || {}),
+    button: Object.assign({ text: '', url: '' }, p.button || {}),
+    durationSec: p.durationSec == null ? 5 : Number(p.durationSec),
+    showOn: p.showOn || 'both',
+    frequency: p.frequency || 'session',
+    startAt: p.startAt || null,
+    endAt: p.endAt || null,
+    active: !!p.active
+  };
+}
+
+function _lpStatus(p) {
+  if (!p.active) return { cls: 'off', text: 'Off' };
+  const now = Date.now();
+  if (p.startAt && new Date(p.startAt).getTime() > now) return { cls: 'sched', text: 'Scheduled' };
+  if (p.endAt && new Date(p.endAt).getTime() <= now) return { cls: 'ended', text: 'Ended' };
+  return { cls: 'live', text: 'Live' };
+}
+function _lpBg(d) { return d.bg2 ? `linear-gradient(135deg, ${d.bg1}, ${d.bg2})` : d.bg1; }
+function _lpPlain(html) { const t = document.createElement('div'); t.innerHTML = html || ''; return (t.textContent || '').replace(/\s+/g, ' ').trim(); }
+function _lpDT(v) {   // Date → value for <input type="datetime-local">
+  if (!v) return '';
+  const d = new Date(v); if (isNaN(d)) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+async function _lpLoad() {
+  const data = await fetchJSON(`${API_BASE}/admin/login-popups?_t=${Date.now()}`);
+  if (!data || !data.success) throw new Error((data && data.message) || 'Could not load pop-ups.');
+  _lpList = data.popups || [];
+  _lpLoaded = true;
+}
+
+async function renderAdminLoginPopup() {
+  const el = document.getElementById('adminPopupContent');
+  if (!el) return;
+  if (_lpEdit) return _lpRenderEditor();
+  if (!_lpLoaded) {
+    el.innerHTML = '<div class="empty-state" style="padding:40px"><i class="fas fa-spinner fa-spin"></i><p>Loading pop-ups…</p></div>';
+    try { await _lpLoad(); } catch (e) {
+      el.innerHTML = `<div class="empty-state" style="padding:40px"><i class="fas fa-triangle-exclamation"></i><p>${escapeHtml(e.message)}</p><button class="btn btn-primary" onclick="_lpLoaded=false;renderAdminLoginPopup()">Try again</button></div>`;
+      return;
+    }
+    if (_lpEdit) return _lpRenderEditor();
+  }
+  const live = _lpList.find(p => _lpStatus(p).cls === 'live');
+  const cards = _lpList.map(p => {
+    const st = _lpStatus(p);
+    const d = Object.assign({ bg1: '#fff', textColor: '#0f172a' }, p.design || {});
+    const firstImg = (/<img[^>]+src="([^"]+)"/i.exec(p.html || '') || [])[1] || '';
+    const when = [
+      p.durationSec ? `closes after ${p.durationSec}s` : 'stays until closed',
+      p.showOn === 'both' ? 'landing + login' : p.showOn === 'landing' ? 'landing page' : 'login page',
+      p.frequency === 'always' ? 'every visit' : p.frequency === 'once' ? 'once per device' : 'once per session'
+    ].join(' · ');
+    const sched = (p.startAt || p.endAt)
+      ? `<div class="lp-card-sched"><i class="fas fa-calendar"></i> ${p.startAt ? new Date(p.startAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'now'} → ${p.endAt ? new Date(p.endAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : 'until switched off'}</div>` : '';
+    return `
+      <div class="lp-card ${p.active ? 'is-active' : ''}">
+        <div class="lp-card-thumb" style="background:${escapeHtml(_lpBg(d))};color:${escapeHtml(d.textColor)}">
+          ${firstImg ? `<img src="${escapeHtml(firstImg)}" alt="" loading="lazy">` : ''}
+          <span>${escapeHtml(_lpPlain(p.html).slice(0, 90) || '(empty)')}</span>
+        </div>
+        <div class="lp-card-body">
+          <div class="lp-card-top">
+            <strong title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</strong>
+            <span class="lp-badge lp-badge-${st.cls}">${st.text}</span>
+          </div>
+          <div class="lp-card-meta">${escapeHtml(when)}</div>
+          ${sched}
+          <div class="lp-card-actions">
+            <label class="lp-switch" title="${p.active ? 'Switch off' : 'Go live'}">
+              <input type="checkbox" ${p.active ? 'checked' : ''} onchange="lpSetActive('${p._id}', this.checked, this)">
+              <span class="lp-switch-track"><span class="lp-switch-knob"></span></span>
+              <span class="lp-switch-label">${p.active ? 'Enabled' : 'Disabled'}</span>
+            </label>
+            <span class="lp-card-btns">
+              <button class="btn btn-outline btn-sm" onclick="lpPreview('${p._id}')" title="Preview"><i class="fas fa-eye"></i></button>
+              <button class="btn btn-outline btn-sm" onclick="lpEdit('${p._id}')"><i class="fas fa-pen"></i> Edit</button>
+              <button class="btn btn-outline btn-sm" onclick="lpDuplicate('${p._id}')" title="Duplicate (use as template)"><i class="fas fa-clone"></i></button>
+              <button class="btn btn-outline btn-sm lp-del" onclick="lpDelete('${p._id}')" title="Delete"><i class="fas fa-trash"></i></button>
+            </span>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="lp-admin">
+      <div class="lp-hero section-card">
+        <div>
+          <h2><i class="fas fa-bullhorn"></i> Login page pop-up</h2>
+          <p>Design a festival greeting, exam wish or announcement. When it is <b>enabled</b>, students see it as soon as they open the website / login page; it closes by itself after the time you choose.</p>
+          <div class="lp-live-line">${live
+            ? `<span class="lp-dot lp-dot-live"></span> Live now: <b>${escapeHtml(live.name)}</b>`
+            : '<span class="lp-dot"></span> No pop-up is live right now.'}</div>
+        </div>
+        <button class="btn btn-primary" onclick="lpOpenTemplates()"><i class="fas fa-plus"></i> New pop-up</button>
+      </div>
+      ${_lpList.length ? `<div class="lp-grid">${cards}</div>` : `
+        <div class="empty-state section-card" style="padding:40px 20px">
+          <i class="fas fa-wand-magic-sparkles"></i>
+          <p>No pop-ups yet. Start from a ready-made design.</p>
+          <button class="btn btn-primary" onclick="lpOpenTemplates()"><i class="fas fa-plus"></i> Create the first pop-up</button>
+        </div>`}
+    </div>`;
+}
+
+function lpOpenTemplates() {
+  if (adminTab !== 'popup') { switchAdminTab('popup'); }
+  let m = document.getElementById('lpTemplateModal');
+  if (m) m.remove();
+  m = document.createElement('div');
+  m.className = 'modal-overlay active';
+  m.id = 'lpTemplateModal';
+  m.innerHTML = `
+    <div class="modal-box" style="max-width:760px">
+      <h3 style="margin-bottom:6px"><i class="fas fa-wand-magic-sparkles"></i> Start from a design</h3>
+      <p class="modal-sub" style="margin-bottom:16px">Pick a starting point — everything can be changed in the editor.</p>
+      <div class="lp-tpl-grid">
+        ${lpTemplates().map(t => `
+          <button type="button" class="lp-tpl" data-key="${t.key}" style="--lp-bg:${escapeHtml(_lpBg(t.popup.design))};--lp-fg:${escapeHtml(t.popup.design.textColor)}">
+            <span class="lp-tpl-art"><span>${t.emoji}</span></span>
+            <span class="lp-tpl-name">${escapeHtml(t.label)}</span>
+          </button>`).join('')}
+      </div>
+      <div class="modal-actions"><button class="btn btn-outline" type="button" data-close="1">Cancel</button></div>
+    </div>`;
+  m.addEventListener('click', (e) => {
+    if (e.target === m || e.target.closest('[data-close]')) return m.remove();
+    const b = e.target.closest('.lp-tpl');
+    if (!b) return;
+    const t = lpTemplates().find(x => x.key === b.dataset.key);
+    m.remove();
+    if (t) { _lpEdit = _lpDefaults(Object.assign({}, t.popup)); _lpDirty = true; _lpRenderEditor(); }
+  });
+  document.body.appendChild(m);
+}
+
+function lpEdit(id) {
+  const p = _lpList.find(x => x._id === id);
+  if (!p) return;
+  _lpEdit = _lpDefaults(p);
+  _lpDirty = false;
+  _lpRenderEditor();
+}
+
+function lpPreview(id) {
+  const p = id ? _lpList.find(x => x._id === id) : _lpCollect();
+  if (!p) return;
+  if (!window.AeroLoginPopup) return showToast('Preview is still loading — try again in a second.', 'info');
+  window.AeroLoginPopup.preview(p);
+}
+
+async function lpSetActive(id, on, input) {
+  try {
+    if (input) input.disabled = true;
+    const res = await fetchJSON(`${API_BASE}/admin/login-popups/${id}/active`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: !!on })
+    });
+    if (!res.success) throw new Error(res.message || 'Could not change the status.');
+    showToast(on ? '🟢 Pop-up is live — students will see it now.' : 'Pop-up switched off.', on ? 'success' : 'info');
+    await _lpLoad();
+    if (_lpEdit && _lpEdit._id === id) { _lpEdit.active = !!on; _lpRenderEditorStatus(); }
+    else renderAdminLoginPopup();
+  } catch (e) {
+    showToast(e.message, 'error');
+    if (input) { input.checked = !on; input.disabled = false; }
+  }
+}
+
+async function lpDuplicate(id) {
+  try {
+    const res = await fetchJSON(`${API_BASE}/admin/login-popups/${id}/duplicate`, { method: 'POST' });
+    if (!res.success) throw new Error(res.message || 'Could not duplicate.');
+    showToast('Copy created — edit it to make a new version.', 'success');
+    await _lpLoad(); renderAdminLoginPopup();
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function lpDelete(id) {
+  const p = _lpList.find(x => x._id === id);
+  if (!confirm(`Delete "${p ? p.name : 'this pop-up'}"? This cannot be undone.`)) return;
+  try {
+    const res = await fetchJSON(`${API_BASE}/admin/login-popups/${id}`, { method: 'DELETE' });
+    if (!res.success) throw new Error(res.message || 'Could not delete.');
+    showToast('Pop-up deleted.', 'info');
+    await _lpLoad(); renderAdminLoginPopup();
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+/* ---------------- editor ---------------- */
+function _lpRenderEditor() {
+  const el = document.getElementById('adminPopupContent');
+  if (!el || !_lpEdit) return;
+  const p = _lpEdit, d = p.design;
+  const durChips = [3, 5, 10, 15, 30, 0].map(s =>
+    `<button type="button" class="lp-chip ${p.durationSec === s ? 'is-on' : ''}" data-dur="${s}">${s ? s + ' s' : 'Never'}</button>`).join('');
+  el.innerHTML = `
+    <div class="lp-editor">
+      <div class="lp-ed-head section-card">
+        <button class="btn btn-outline btn-sm" type="button" id="lpBack"><i class="fas fa-arrow-left"></i> All pop-ups</button>
+        <input class="lp-name" id="lpName" maxlength="120" value="${escapeHtml(p.name)}" aria-label="Pop-up name" placeholder="Pop-up name (only you see this)">
+        <span id="lpEdStatus"></span>
+        <div class="lp-ed-actions">
+          <button class="btn btn-outline btn-sm" type="button" id="lpPreviewBtn"><i class="fas fa-eye"></i> Preview</button>
+          <button class="btn btn-primary btn-sm" type="button" id="lpSaveBtn"><i class="fas fa-floppy-disk"></i> Save</button>
+          <button class="btn btn-success btn-sm" type="button" id="lpLiveBtn"><i class="fas fa-tower-broadcast"></i> Save &amp; go live</button>
+        </div>
+      </div>
+
+      <div class="lp-ed-grid">
+        <div class="lp-ed-main section-card">
+          <div class="lp-toolbar" id="lpToolbar" role="toolbar" aria-label="Formatting">
+            <select id="lpBlock" title="Text style">
+              <option value="p">Paragraph</option><option value="h1">Title</option><option value="h2">Heading</option><option value="h3">Sub-heading</option>
+            </select>
+            <select id="lpFont" title="Font">${LP_FONTS.map(([v, l]) => `<option value="${escapeHtml(v)}">${l}</option>`).join('')}</select>
+            <select id="lpSize" title="Font size"><option value="">Size</option>${LP_SIZES.map(s => `<option value="${s}">${s}px</option>`).join('')}</select>
+            <span class="lp-tb-sep"></span>
+            <button type="button" data-cmd="bold" title="Bold (Ctrl+B)"><i class="fas fa-bold"></i></button>
+            <button type="button" data-cmd="italic" title="Italic (Ctrl+I)"><i class="fas fa-italic"></i></button>
+            <button type="button" data-cmd="underline" title="Underline (Ctrl+U)"><i class="fas fa-underline"></i></button>
+            <button type="button" data-cmd="strikeThrough" title="Strike-through"><i class="fas fa-strikethrough"></i></button>
+            <label class="lp-color" title="Text colour"><i class="fas fa-font"></i><input type="color" id="lpFore" value="#dc2626"></label>
+            <label class="lp-color" title="Highlight"><i class="fas fa-highlighter"></i><input type="color" id="lpHili" value="#fde047"></label>
+            <span class="lp-tb-sep"></span>
+            <button type="button" data-cmd="justifyLeft" title="Align left"><i class="fas fa-align-left"></i></button>
+            <button type="button" data-cmd="justifyCenter" title="Centre"><i class="fas fa-align-center"></i></button>
+            <button type="button" data-cmd="justifyRight" title="Align right"><i class="fas fa-align-right"></i></button>
+            <button type="button" data-cmd="insertUnorderedList" title="Bullet list"><i class="fas fa-list-ul"></i></button>
+            <button type="button" data-cmd="insertOrderedList" title="Numbered list"><i class="fas fa-list-ol"></i></button>
+            <span class="lp-tb-sep"></span>
+            <button type="button" data-act="image" title="Insert image"><i class="fas fa-image"></i></button>
+            <button type="button" data-act="emoji" title="Emoji"><i class="far fa-face-smile"></i></button>
+            <button type="button" data-act="link" title="Link"><i class="fas fa-link"></i></button>
+            <button type="button" data-cmd="insertHorizontalRule" title="Divider"><i class="fas fa-minus"></i></button>
+            <button type="button" data-cmd="removeFormat" title="Clear formatting"><i class="fas fa-text-slash"></i></button>
+            <button type="button" data-cmd="undo" title="Undo (Ctrl+Z)"><i class="fas fa-rotate-left"></i></button>
+            <button type="button" data-cmd="redo" title="Redo"><i class="fas fa-rotate-right"></i></button>
+            <input type="file" id="lpImgInput" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+          </div>
+          <div class="lp-emoji" id="lpEmoji" hidden>${LP_EMOJI.map(e => `<button type="button" data-emoji="${e}">${e}</button>`).join('')}</div>
+          <div class="lp-imgbar" id="lpImgBar" hidden>
+            <span><i class="fas fa-image"></i> Image:</span>
+            ${[25, 50, 75, 100].map(w => `<button type="button" data-imgw="${w}">${w}%</button>`).join('')}
+            <span class="lp-tb-sep"></span>
+            <button type="button" data-imga="left" title="Left"><i class="fas fa-align-left"></i></button>
+            <button type="button" data-imga="center" title="Centre"><i class="fas fa-align-center"></i></button>
+            <button type="button" data-imga="right" title="Right"><i class="fas fa-align-right"></i></button>
+            <button type="button" data-imgr="1" title="Rounded corners"><i class="far fa-square"></i></button>
+            <button type="button" data-imgdel="1" class="lp-danger" title="Remove image"><i class="fas fa-trash"></i></button>
+          </div>
+          <div class="lp-stage">
+            <div class="lp-canvas-card lp-w-${d.width}" id="lpCard">
+              <div class="lp-canvas" id="lpCanvas" contenteditable="true" spellcheck="true" aria-label="Pop-up content"></div>
+              <div class="lp-canvas-btn" id="lpCanvasBtn" hidden></div>
+            </div>
+          </div>
+          <p class="lp-hint"><i class="fas fa-circle-info"></i> Type straight into the card. Paste or drag images in, or use <i class="fas fa-image"></i>. Click an image to resize or align it.</p>
+        </div>
+
+        <aside class="lp-ed-side">
+          <div class="section-card lp-panel">
+            <h4><i class="fas fa-palette"></i> Design</h4>
+            <div class="lp-field-row">
+              <label class="lp-field"><span>Background</span><input type="color" id="lpBg1" value="${escapeHtml(d.bg1.slice(0, 7))}"></label>
+              <label class="lp-field"><span><input type="checkbox" id="lpGrad" ${d.bg2 ? 'checked' : ''}> Gradient</span><input type="color" id="lpBg2" value="${escapeHtml((d.bg2 || '#7c3aed').slice(0, 7))}" ${d.bg2 ? '' : 'disabled'}></label>
+            </div>
+            <div class="lp-field-row">
+              <label class="lp-field"><span>Text colour</span><input type="color" id="lpText" value="${escapeHtml(d.textColor.slice(0, 7))}"></label>
+              <label class="lp-field"><span>Button &amp; timer</span><input type="color" id="lpAccent" value="${escapeHtml(d.accent.slice(0, 7))}"></label>
+            </div>
+            <div class="lp-field"><span>Size</span>
+              <div class="lp-seg" id="lpWidth">${[['sm', 'Small'], ['md', 'Medium'], ['lg', 'Large']].map(([v, l]) => `<button type="button" data-w="${v}" class="${d.width === v ? 'is-on' : ''}">${l}</button>`).join('')}</div>
+            </div>
+          </div>
+
+          <div class="section-card lp-panel">
+            <h4><i class="fas fa-hand-pointer"></i> Button <small>(optional)</small></h4>
+            <label class="lp-field"><span>Button text</span><input type="text" id="lpBtnText" maxlength="60" placeholder="e.g. View timetable" value="${escapeHtml(p.button.text)}"></label>
+            <label class="lp-field"><span>Opens link</span><input type="text" id="lpBtnUrl" maxlength="500" placeholder="https://… or /app#/courses" value="${escapeHtml(p.button.url)}"></label>
+          </div>
+
+          <div class="section-card lp-panel">
+            <h4><i class="fas fa-stopwatch"></i> Behaviour</h4>
+            <div class="lp-field"><span>Close automatically after</span>
+              <div class="lp-chips" id="lpDur">${durChips}</div>
+              <label class="lp-inline">or <input type="number" id="lpDurCustom" min="1" max="120" placeholder="custom" value="${[3, 5, 10, 15, 30, 0].includes(p.durationSec) ? '' : p.durationSec}"> seconds</label>
+            </div>
+            <div class="lp-field"><span>Show on</span>
+              <div class="lp-seg" id="lpShowOn">${[['both', 'Website + Login'], ['landing', 'Website only'], ['login', 'Login only']].map(([v, l]) => `<button type="button" data-v="${v}" class="${p.showOn === v ? 'is-on' : ''}">${l}</button>`).join('')}</div>
+            </div>
+            <div class="lp-field"><span>How often</span>
+              <select id="lpFreq">
+                <option value="session" ${p.frequency === 'session' ? 'selected' : ''}>Once per visit (recommended)</option>
+                <option value="always" ${p.frequency === 'always' ? 'selected' : ''}>Every time the page opens</option>
+                <option value="once" ${p.frequency === 'once' ? 'selected' : ''}>Only once per device</option>
+              </select>
+            </div>
+            <div class="lp-field-row">
+              <label class="lp-field"><span>Start <small>(optional)</small></span><input type="datetime-local" id="lpStart" value="${_lpDT(p.startAt)}"></label>
+              <label class="lp-field"><span>End <small>(optional)</small></span><input type="datetime-local" id="lpEnd" value="${_lpDT(p.endAt)}"></label>
+            </div>
+            <p class="lp-hint">Leave Start/End empty to control it only with the Enable switch.</p>
+          </div>
+        </aside>
+      </div>
+    </div>`;
+
+  const canvas = document.getElementById('lpCanvas');
+  canvas.innerHTML = window.AeroLoginPopup ? window.AeroLoginPopup.sanitize(p.html) : p.html;
+  _lpApplyDesign();
+  _lpRenderEditorStatus();
+  _lpWireEditor();
+  try { document.execCommand('styleWithCSS', false, true); } catch (_) {}
+}
+
+function _lpRenderEditorStatus() {
+  const s = document.getElementById('lpEdStatus');
+  if (!s || !_lpEdit) return;
+  if (!_lpEdit._id) { s.innerHTML = '<span class="lp-badge lp-badge-off">Not saved yet</span>'; return; }
+  const st = _lpStatus(_lpEdit);
+  s.innerHTML = `<label class="lp-switch"><input type="checkbox" ${_lpEdit.active ? 'checked' : ''} onchange="lpSetActive('${_lpEdit._id}', this.checked, this)"><span class="lp-switch-track"><span class="lp-switch-knob"></span></span><span class="lp-switch-label">${_lpEdit.active ? 'Enabled' : 'Disabled'}</span></label> <span class="lp-badge lp-badge-${st.cls}">${st.text}</span>`;
+}
+
+function _lpApplyDesign() {
+  const card = document.getElementById('lpCard');
+  if (!card || !_lpEdit) return;
+  const d = _lpEdit.design;
+  card.style.background = _lpBg(d);
+  card.style.color = d.textColor;
+  card.className = 'lp-canvas-card lp-w-' + d.width;
+  const b = document.getElementById('lpCanvasBtn');
+  const t = (_lpEdit.button.text || '').trim();
+  if (b) {
+    b.hidden = !t;
+    b.innerHTML = t ? `<span style="background:${escapeHtml(d.accent)}">${escapeHtml(t)}</span>` : '';
+  }
+}
+
+function _lpCollect() {
+  const p = _lpEdit;
+  if (!p) return null;
+  const canvas = document.getElementById('lpCanvas');
+  if (canvas) {
+    canvas.querySelectorAll('img.lp-img-selected').forEach(i => i.classList.remove('lp-img-selected'));
+    p.html = canvas.innerHTML;
+    if (_lpSelImg) _lpSelImg.classList.add('lp-img-selected');
+  }
+  const v = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  p.name = v('lpName').trim() || 'Untitled pop-up';
+  p.button = { text: v('lpBtnText').trim(), url: v('lpBtnUrl').trim() };
+  p.frequency = v('lpFreq') || 'session';
+  const s = v('lpStart'), e = v('lpEnd');
+  p.startAt = s ? new Date(s).toISOString() : null;
+  p.endAt = e ? new Date(e).toISOString() : null;
+  return { _id: p._id, name: p.name, html: p.html, design: Object.assign({}, p.design), button: p.button,
+    durationSec: p.durationSec, showOn: p.showOn, frequency: p.frequency, startAt: p.startAt, endAt: p.endAt,
+    id: p._id || 'preview', version: 1 };
+}
+
+async function _lpSave(goLive) {
+  const data = _lpCollect();
+  if (!data) return;
+  if (!_lpPlain(data.html) && !/<img\b/i.test(data.html)) return showToast('The pop-up is empty — add some text or an image.', 'error');
+  if (data.startAt && data.endAt && new Date(data.endAt) <= new Date(data.startAt)) return showToast('The end time must be after the start time.', 'error');
+  const btnUrl = data.button.url;
+  if (data.button.text && !/^(https?:\/\/|\/|#|mailto:)/i.test(btnUrl)) return showToast('Button link must start with https://, / or #.', 'error');
+  const saveBtns = ['lpSaveBtn', 'lpLiveBtn'].map(id => document.getElementById(id)).filter(Boolean);
+  saveBtns.forEach(b => { b.disabled = true; });
+  try {
+    const isNew = !data._id;
+    const res = await fetchJSON(isNew ? `${API_BASE}/admin/login-popups` : `${API_BASE}/admin/login-popups/${data._id}`, {
+      method: isNew ? 'POST' : 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+    });
+    if (!res.success) throw new Error(res.message || 'Could not save.');
+    _lpEdit._id = res.popup._id;
+    _lpEdit.active = !!res.popup.active;
+    _lpDirty = false;
+    if (goLive) {
+      const r2 = await fetchJSON(`${API_BASE}/admin/login-popups/${_lpEdit._id}/active`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active: true })
+      });
+      if (!r2.success) throw new Error(r2.message || 'Saved, but could not go live.');
+      _lpEdit.active = true;
+      showToast('🟢 Saved and live — students will see it now.', 'success');
+    } else {
+      showToast(_lpEdit.active ? '✓ Saved — the live pop-up was updated.' : '✓ Saved.', 'success');
+    }
+    await _lpLoad();
+    _lpRenderEditorStatus();
+  } catch (e) {
+    showToast(e.message, 'error');
+  } finally {
+    saveBtns.forEach(b => { b.disabled = false; });
+  }
+}
+
+function _lpRestoreRange() {
+  const canvas = document.getElementById('lpCanvas');
+  if (!canvas) return;
+  canvas.focus({ preventScroll: true });
+  if (_lpRange) {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(_lpRange);
+  }
+}
+function _lpExec(cmd, val) {
+  _lpRestoreRange();
+  try { document.execCommand(cmd, false, val == null ? null : val); } catch (_) {}
+  _lpDirty = true;
+  _lpRememberRange();
+}
+function _lpRememberRange() {
+  const canvas = document.getElementById('lpCanvas');
+  const sel = window.getSelection();
+  if (canvas && sel && sel.rangeCount && canvas.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+    _lpRange = sel.getRangeAt(0).cloneRange();
+  }
+}
+function _lpInsertHtml(html) {
+  const canvas = document.getElementById('lpCanvas');
+  if (!canvas) return;
+  _lpRestoreRange();
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !canvas.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+    const r = document.createRange(); r.selectNodeContents(canvas); r.collapse(false);
+    sel.removeAllRanges(); sel.addRange(r);
+  }
+  try { document.execCommand('insertHTML', false, html); } catch (_) { canvas.insertAdjacentHTML('beforeend', html); }
+  _lpDirty = true;
+  _lpRememberRange();
+}
+
+function _lpInsertNode(node) {
+  const canvas = document.getElementById('lpCanvas');
+  _lpRestoreRange();
+  const sel = window.getSelection();
+  let r = sel.rangeCount ? sel.getRangeAt(0) : null;
+  if (!r || !canvas.contains(r.commonAncestorContainer)) {
+    r = document.createRange(); r.selectNodeContents(canvas); r.collapse(false);
+  }
+  r.deleteContents();
+  r.insertNode(node);
+  r.setStartAfter(node); r.collapse(true);
+  sel.removeAllRanges(); sel.addRange(r);
+  _lpRange = r.cloneRange();
+  _lpDirty = true;
+  return node;
+}
+
+function _lpSetFontSize(px) {
+  _lpRestoreRange();
+  const canvas = document.getElementById('lpCanvas');
+  try {
+    document.execCommand('styleWithCSS', false, false);
+    document.execCommand('fontSize', false, '7');
+    document.execCommand('styleWithCSS', false, true);
+  } catch (_) {}
+  canvas.querySelectorAll('font[size="7"]').forEach(f => {
+    const span = document.createElement('span');
+    span.style.fontSize = px + 'px';
+    if (f.getAttribute('color')) span.style.color = f.getAttribute('color');
+    while (f.firstChild) span.appendChild(f.firstChild);
+    f.replaceWith(span);
+  });
+  /* execCommand may use a keyword size with CSS on — normalise those too */
+  canvas.querySelectorAll('span[style*="xxx-large"]').forEach(s => { s.style.fontSize = px + 'px'; });
+  _lpDirty = true;
+  _lpRememberRange();
+}
+
+async function _lpUploadImages(files) {
+  const imgs = Array.from(files || []).filter(f => /^image\/(png|jpe?g|webp|gif)$/i.test(f.type));
+  if (!imgs.length) return showToast('Please choose a PNG, JPG, WebP or GIF image.', 'error');
+  for (const f of imgs) {
+    if (f.size > 10 * 1024 * 1024) { showToast(`"${f.name}" is larger than 10 MB.`, 'error'); continue; }
+    /* A real DOM node (not insertHTML, which can drop the id) marks
+       where the picture will go while it uploads. */
+    const ph = _lpInsertNode(Object.assign(document.createElement('span'), { className: 'lp-uploading', textContent: '⏳ Uploading image…' }));
+    try {
+      const fd = new FormData();
+      fd.append('file', f, f.name || 'image.png');
+      const res = await fetchJSON(`${API_BASE}/admin/login-popup/image`, { method: 'POST', body: fd });
+      if (!res.success) throw new Error(res.message || 'Upload failed.');
+      const img = document.createElement('img');
+      img.src = res.url; img.alt = '';
+      img.setAttribute('style', 'max-width: 100%; width: 100%; border-radius: 14px; display: block; margin-left: auto; margin-right: auto;');
+      if (ph && ph.isConnected) ph.replaceWith(img); else document.getElementById('lpCanvas').appendChild(img);
+      _lpDirty = true;
+    } catch (e) {
+      if (ph && ph.isConnected) ph.remove();
+      showToast(e.message, 'error');
+    }
+  }
+}
+
+function _lpSelectImage(img) {
+  const canvas = document.getElementById('lpCanvas');
+  if (!canvas) return;
+  canvas.querySelectorAll('img.lp-img-selected').forEach(i => i.classList.remove('lp-img-selected'));
+  _lpSelImg = img || null;
+  const bar = document.getElementById('lpImgBar');
+  if (img) img.classList.add('lp-img-selected');
+  if (bar) bar.hidden = !img;
+}
+
+function _lpWireEditor() {
+  const canvas = document.getElementById('lpCanvas');
+  const tb = document.getElementById('lpToolbar');
+  const imgIn = document.getElementById('lpImgInput');
+  const emoji = document.getElementById('lpEmoji');
+  const markDirty = () => { _lpDirty = true; };
+
+  document.getElementById('lpBack').addEventListener('click', () => {
+    if (_lpDirty && !confirm('Leave without saving your changes?')) return;
+    _lpEdit = null; _lpSelImg = null; _lpRange = null;
+    renderAdminLoginPopup();
+  });
+  document.getElementById('lpPreviewBtn').addEventListener('click', () => lpPreview(null));
+  document.getElementById('lpSaveBtn').addEventListener('click', () => _lpSave(false));
+  document.getElementById('lpLiveBtn').addEventListener('click', () => _lpSave(true));
+
+  ['keyup', 'mouseup', 'input', 'focus'].forEach(ev => canvas.addEventListener(ev, _lpRememberRange));
+  canvas.addEventListener('input', markDirty);
+  canvas.addEventListener('click', (e) => {
+    const img = e.target.closest && e.target.closest('img');
+    _lpSelectImage(img && canvas.contains(img) ? img : null);
+  });
+  canvas.addEventListener('keydown', (e) => {
+    if ((e.key === 'Delete' || e.key === 'Backspace') && _lpSelImg) { e.preventDefault(); _lpSelImg.remove(); _lpSelectImage(null); _lpDirty = true; }
+  });
+  canvas.addEventListener('paste', (e) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const files = Array.from(cd.files || []).filter(f => /^image\//.test(f.type));
+    if (files.length) { e.preventDefault(); _lpRememberRange(); _lpUploadImages(files); return; }
+    const html = cd.getData('text/html');
+    if (html && window.AeroLoginPopup) {
+      e.preventDefault();
+      /* pasted pictures from other sites are not kept (they may vanish) */
+      const clean = window.AeroLoginPopup.sanitize(html.replace(/<img\b[^>]*>/gi, ''));
+      _lpInsertHtml(clean);
+    }
+  });
+  canvas.addEventListener('dragover', (e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) e.preventDefault(); });
+  canvas.addEventListener('drop', (e) => {
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    e.preventDefault();
+    try {
+      const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+      if (r) _lpRange = r;
+    } catch (_) {}
+    _lpUploadImages(files);
+  });
+
+  /* keep the canvas selection when clicking toolbar buttons */
+  tb.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
+  document.getElementById('lpImgBar').addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
+  emoji.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });
+
+  tb.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.cmd) return _lpExec(b.dataset.cmd);
+    const act = b.dataset.act;
+    if (act === 'image') { _lpRememberRange(); imgIn.click(); }
+    else if (act === 'emoji') { emoji.hidden = !emoji.hidden; }
+    else if (act === 'link') {
+      _lpRememberRange();
+      const url = prompt('Link address (https://…)', 'https://');
+      if (!url || url === 'https://') return;
+      if (!/^(https?:\/\/|\/|mailto:)/i.test(url)) return showToast('Links must start with https:// or /', 'error');
+      _lpExec('createLink', url);
+    }
+  });
+  emoji.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-emoji]');
+    if (b) { _lpExec('insertText', b.dataset.emoji); }
+  });
+  imgIn.addEventListener('change', () => { _lpUploadImages(imgIn.files); imgIn.value = ''; });
+
+  document.getElementById('lpBlock').addEventListener('change', (e) => { _lpExec('formatBlock', '<' + e.target.value + '>'); });
+  document.getElementById('lpFont').addEventListener('change', (e) => {
+    if (e.target.value) _lpExec('fontName', e.target.value);
+    else _lpExec('fontName', 'Inter, system-ui, sans-serif');
+  });
+  document.getElementById('lpSize').addEventListener('change', (e) => { if (e.target.value) _lpSetFontSize(e.target.value); e.target.value = ''; });
+  document.getElementById('lpFore').addEventListener('input', (e) => _lpExec('foreColor', e.target.value));
+  document.getElementById('lpHili').addEventListener('input', (e) => {
+    _lpRestoreRange();
+    try { if (!document.execCommand('hiliteColor', false, e.target.value)) document.execCommand('backColor', false, e.target.value); } catch (_) {}
+    _lpDirty = true;
+  });
+
+  /* image bar */
+  document.getElementById('lpImgBar').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || !_lpSelImg) return;
+    const img = _lpSelImg;
+    if (b.dataset.imgw) { img.style.width = b.dataset.imgw + '%'; img.style.maxWidth = '100%'; img.removeAttribute('width'); img.removeAttribute('height'); }
+    if (b.dataset.imga) {
+      img.style.display = 'block';
+      img.style.marginLeft = b.dataset.imga === 'left' ? '0' : 'auto';
+      img.style.marginRight = b.dataset.imga === 'right' ? '0' : 'auto';
+    }
+    if (b.dataset.imgr) img.style.borderRadius = img.style.borderRadius && img.style.borderRadius !== '0px' ? '0px' : '14px';
+    if (b.dataset.imgdel) { img.remove(); _lpSelectImage(null); }
+    _lpDirty = true;
+  });
+
+  /* design + settings */
+  const d = _lpEdit.design;
+  const bindColor = (id, key) => document.getElementById(id).addEventListener('input', (e) => { d[key] = e.target.value; _lpApplyDesign(); markDirty(); });
+  bindColor('lpBg1', 'bg1'); bindColor('lpText', 'textColor'); bindColor('lpAccent', 'accent');
+  const bg2 = document.getElementById('lpBg2');
+  bg2.addEventListener('input', (e) => { d.bg2 = e.target.value; _lpApplyDesign(); markDirty(); });
+  document.getElementById('lpGrad').addEventListener('change', (e) => {
+    bg2.disabled = !e.target.checked;
+    d.bg2 = e.target.checked ? bg2.value : '';
+    _lpApplyDesign(); markDirty();
+  });
+  document.getElementById('lpWidth').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-w]'); if (!b) return;
+    d.width = b.dataset.w;
+    document.querySelectorAll('#lpWidth button').forEach(x => x.classList.toggle('is-on', x === b));
+    _lpApplyDesign(); markDirty();
+  });
+  document.getElementById('lpShowOn').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-v]'); if (!b) return;
+    _lpEdit.showOn = b.dataset.v;
+    document.querySelectorAll('#lpShowOn button').forEach(x => x.classList.toggle('is-on', x === b));
+    markDirty();
+  });
+  document.getElementById('lpDur').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-dur]'); if (!b) return;
+    _lpEdit.durationSec = Number(b.dataset.dur);
+    document.querySelectorAll('#lpDur .lp-chip').forEach(x => x.classList.toggle('is-on', x === b));
+    document.getElementById('lpDurCustom').value = '';
+    markDirty();
+  });
+  document.getElementById('lpDurCustom').addEventListener('input', (e) => {
+    const n = Math.round(Number(e.target.value));
+    if (n >= 1 && n <= 120) {
+      _lpEdit.durationSec = n;
+      document.querySelectorAll('#lpDur .lp-chip').forEach(x => x.classList.toggle('is-on', Number(x.dataset.dur) === n));
+      markDirty();
+    }
+  });
+  ['lpBtnText', 'lpBtnUrl'].forEach(id => document.getElementById(id).addEventListener('input', () => {
+    _lpEdit.button = { text: document.getElementById('lpBtnText').value, url: document.getElementById('lpBtnUrl').value };
+    _lpApplyDesign(); markDirty();
+  }));
+  ['lpName', 'lpFreq', 'lpStart', 'lpEnd'].forEach(id => document.getElementById(id).addEventListener('change', markDirty));
+}

@@ -30,6 +30,7 @@ const NEVER_CACHE_PATTERNS = [
   /\/media-viewer\.js$/,
    /\/document-viewer\.js$/,
   /\/content-shield\.js$/,
+  /\/login-popup\.js$/,
   /\/sw\.js$/
 ];
 
