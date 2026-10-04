@@ -10724,6 +10724,10 @@ app.get('/api/feedback', async (req, res) => {
       .sort({ approvedAt: -1 })
       .limit(60)
       .lean();
+    /* Public (also shown on the landing page): short shared cache so a
+       traffic spike doesn't hit Mongo, while a newly approved review
+       still appears within a minute. */
+    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
     res.json({ success: true, feedback: list });
   } catch (e) {
     console.error('[feedback/list]', e);
