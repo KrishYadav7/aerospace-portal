@@ -189,7 +189,10 @@
   }, true);
   ['copy', 'cut'].forEach(evt => document.addEventListener(evt, (e) => {
     if (inField(e.target)) return;
-    if (document.querySelector('#pdfViewerModal.active') && allowedSelection()) return;   // PDF viewer has its own copy rules
+    /* Text the student may copy: their own typing, the AI Doubt Solver's
+       answers (.allow-select) and the PDF viewer, which applies its own
+       copy rules on top. */
+    if (allowedSelection()) return;
     e.preventDefault();
   }, true));
   window.addEventListener('beforeprint', () => { report('print'); });

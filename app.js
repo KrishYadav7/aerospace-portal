@@ -16171,11 +16171,36 @@ async function handleCSVImport(input) {
   }
 }
 /* ============================================================
-   AI HOME PAGE — Chat-style Doubt Solver
+   AI HOME PAGE — Chat-style Doubt Solver  (v2 · 2026-10-04)
+   ------------------------------------------------------------
+   • Attach images, PDFs, Word/PowerPoint/Excel and text/code
+     files (button, camera, drag & drop, or paste).
+   • Paste screenshots straight into the box; very long pasted
+     text becomes a .txt attachment automatically.
+   • Answers stream in live, with Stop, Regenerate, Edit,
+     Continue, Copy and one-tap follow-ups.
+   • Maths: symbol palette + live LaTeX preview; voice typing.
+   • Conversation survives a page reload (this tab only).
    ============================================================ */
-let _aiHomeChat = [];   // [{ role: 'user'|'assistant', text, ts, error? }]
+let _aiHomeChat = [];   // [{ role, text, ts, files?, model?, error?, streaming?, partial?, stopped? }]
 let _aiHomeBusy = false;
 let _aiHomeRendered = false;
+let _aiPending = [];    // attachments waiting in the composer
+let _aiConvId = '';
+let _aiHadFiles = false;
+let _aiAbort = null;
+let _aiLastSent = null; // { text, files } — for Try again / Regenerate
+let _aiLoadedFor = '';
+
+const AI_MAX_CHARS = 8000;
+const AI_MAX_FILES = 6;
+const AI_MAX_FILE_BYTES = 15 * 1024 * 1024;
+const AI_MAX_TOTAL_BYTES = 14 * 1024 * 1024;
+const AI_IMG_EXT = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'heic', 'heif', 'avif', 'tif', 'tiff'];
+const AI_DOC_EXT = ['doc', 'docx', 'odt', 'rtf', 'ppt', 'pptx', 'odp', 'xls', 'xlsx', 'ods'];
+const AI_TXT_EXT = ['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'tex', 'bib', 'log', 'xml', 'yaml', 'yml',
+  'py', 'm', 'c', 'h', 'cpp', 'hpp', 'java', 'js', 'ts', 'html', 'css', 'f', 'f90', 'r', 'sql', 'sh', 'ipynb'];
+const AI_ACCEPT = 'image/*,.pdf,' + AI_DOC_EXT.map(e => '.' + e).join(',') + ',' + AI_TXT_EXT.map(e => '.' + e).join(',');
 
 const AI_HOME_SUGGESTIONS = [
   { icon: 'fa-atom',        text: "Explain Bernoulli's equation with a real-world example" },
@@ -16185,13 +16210,85 @@ const AI_HOME_SUGGESTIONS = [
   { icon: 'fa-satellite',   text: "Summarize the key concepts of orbital mechanics" },
   { icon: 'fa-gauge-high',  text: "What is Mach number and why does it matter?" }
 ];
+const AI_FOLLOWUPS = [
+  { icon: 'fa-child',          text: 'Explain that more simply' },
+  { icon: 'fa-list-ol',        text: 'Show another worked example' },
+  { icon: 'fa-clipboard-question', text: 'Give me a practice question on this' }
+];
+const AI_MATH_KEYS = [
+  ['x²', '^{2}'], ['xₙ', '_{n}'], ['a⁄b', '\\frac{a}{b}'], ['√', '\\sqrt{x}'], ['∫', '\\int_{a}^{b} f(x)\\,dx'],
+  ['∑', '\\sum_{i=1}^{n}'], ['∂', '\\partial'], ['d/dx', '\\frac{d}{dx}'], ['lim', '\\lim_{x \\to 0}'], ['v⃗', '\\vec{v}'],
+  ['α', '\\alpha'], ['β', '\\beta'], ['γ', '\\gamma'], ['δ', '\\delta'], ['θ', '\\theta'], ['λ', '\\lambda'],
+  ['μ', '\\mu'], ['ν', '\\nu'], ['ρ', '\\rho'], ['σ', '\\sigma'], ['τ', '\\tau'], ['ω', '\\omega'], ['Δ', '\\Delta'],
+  ['∞', '\\infty'], ['≈', '\\approx'], ['≤', '\\le'], ['≥', '\\ge'], ['≠', '\\ne'], ['×', '\\times'], ['·', '\\cdot'],
+  ['°', '^{\\circ}'], ['→', '\\rightarrow']
+];
+
+/* ---------- small helpers ---------- */
+function _aiExt(name) { const m = /\.([a-z0-9]+)$/i.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+function _aiKindOf(file) {
+  const ext = _aiExt(file.name);
+  const type = String(file.type || '').toLowerCase();
+  if (type.startsWith('image/') || AI_IMG_EXT.includes(ext)) return 'image';
+  if (type === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (AI_DOC_EXT.includes(ext)) return 'doc';
+  if (AI_TXT_EXT.includes(ext) || type.startsWith('text/')) return 'text';
+  return '';
+}
+function _aiFmtSize(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+function _aiFileIcon(kind, name) {
+  const ext = _aiExt(name);
+  if (kind === 'pdf') return 'fa-file-pdf';
+  if (kind === 'image') return 'fa-file-image';
+  if (/^(ppt|pptx|odp)$/.test(ext)) return 'fa-file-powerpoint';
+  if (/^(xls|xlsx|ods|csv|tsv)$/.test(ext)) return 'fa-file-excel';
+  if (/^(doc|docx|odt|rtf)$/.test(ext)) return 'fa-file-word';
+  if (kind === 'text') return /^(py|m|c|h|cpp|hpp|java|js|ts|html|css|f|f90|r|sql|sh|ipynb)$/.test(ext) ? 'fa-file-code' : 'fa-file-lines';
+  return 'fa-file';
+}
+function _aiNewConvId() {
+  try { if (crypto && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, ''); } catch (_) {}
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+}
+
+/* ---------- persistence (this tab only, like the login) ---------- */
+function _aiStoreKey() { return (currentUser && currentUser._id) ? 'aero_ai_chat_' + currentUser._id : ''; }
+function _aiSave() {
+  const key = _aiStoreKey();
+  if (!key) return;
+  const pack = (withThumbs) => JSON.stringify({
+    convId: _aiConvId, hadFiles: _aiHadFiles,
+    msgs: _aiHomeChat.filter(m => !m.streaming).slice(-40).map(m => ({
+      role: m.role, text: String(m.text || '').slice(0, 30000), ts: m.ts,
+      model: m.model || '', error: !!m.error, partial: !!m.partial, stopped: !!m.stopped,
+      files: (m.files || []).map(f => ({ name: f.name, kind: f.kind, size: f.size,
+        thumb: withThumbs && f.thumb && f.thumb.length < 60000 ? f.thumb : '' }))
+    }))
+  });
+  try { sessionStorage.setItem(key, pack(true)); }
+  catch (_) { try { sessionStorage.setItem(key, pack(false)); } catch (__) {} }
+}
+function _aiLoad() {
+  const key = _aiStoreKey();
+  if (!key || _aiLoadedFor === key) return;
+  _aiLoadedFor = key;
+  try {
+    const d = JSON.parse(sessionStorage.getItem(key) || 'null');
+    if (d && Array.isArray(d.msgs)) {
+      _aiHomeChat = d.msgs.filter(m => m && (m.role === 'user' || m.role === 'assistant'));
+      _aiConvId = typeof d.convId === 'string' ? d.convId : '';
+      _aiHadFiles = !!d.hadFiles;
+    }
+  } catch (_) {}
+}
+
 /* ============================================================
-   ENSURE AI HOME SECTION EXISTS
-   ------------------------------------------------------------
-   If the HTML file doesn't contain <section id="studentAIHomeView">,
-   this creates it on-the-fly and injects it into the DOM.
-   This way, even if the deployed index.html is stale, the AI
-   home page still works.
+   ENSURE AI HOME SECTION EXISTS (stale index.html self-heal)
    ============================================================ */
 function ensureStudentAIHomeView() {
   if (document.getElementById('studentAIHomeView')) return;
@@ -16204,84 +16301,479 @@ function ensureStudentAIHomeView() {
       <div class="ai-home-orb ai-home-orb-1"></div>
       <div class="ai-home-orb ai-home-orb-2"></div>
       <div class="ai-home-orb ai-home-orb-3"></div>
-
       <div class="ai-home-brand">
         <div class="ai-home-icon">
           <i class="fas fa-robot"></i>
           <span class="ai-home-pulse"></span>
         </div>
         <div class="ai-home-title-block">
-          <span class="ai-home-badge">
-            <i class="fas fa-bolt"></i> Powered by AI
-          </span>
+          <span class="ai-home-badge"><i class="fas fa-bolt"></i> Powered by AI</span>
           <h1>AI Doubt Solver</h1>
-          <p>Ask anything about your aerospace courses — get step-by-step solutions, clear explanations, and real-world context in seconds.</p>
+          <p>Ask anything about your aerospace courses — type, paste a screenshot, or attach a PDF and get step-by-step solutions in seconds.</p>
         </div>
       </div>
     </div>
-
     <div class="ai-chat-shell">
       <div class="ai-chat-messages" id="aiChatMessages"></div>
+      <div class="ai-chat-composer" id="aiComposer"></div>
+    </div>`;
 
-      <div class="ai-chat-composer">
-        <textarea
-          id="aiHomeInput"
-          class="ai-composer-input"
-          placeholder="Ask a doubt… e.g. Explain Bernoulli's equation with an example"
-          rows="1"
-          maxlength="2000"
-          oninput="aiHomeAutoGrow(this)"
-          onkeydown="aiHomeKeydown(event)"></textarea>
-        <div class="ai-composer-row">
-          <span class="ai-composer-hint">
-            <i class="fas fa-keyboard"></i>
-            <strong>Enter</strong> to send · <strong>Shift+Enter</strong> for new line
-          </span>
-          <div class="ai-composer-btns">
-            <button type="button" class="ai-clear-btn" onclick="resetAIHomeChat()" title="Clear conversation">
-              <i class="fas fa-trash-alt"></i>
-            </button>
-            <button type="button" class="ai-send-btn" id="aiHomeSendBtn" onclick="askAIDoubtHome()">
-              <i class="fas fa-paper-plane"></i> Ask AI
-            </button>
-          </div>
-        </div>
+  const mainContent = document.querySelector('.main-content');
+  if (!mainContent) { console.error('[nav] .main-content not found — cannot inject AI home'); return; }
+  const loginView = document.getElementById('loginView');
+  if (loginView && loginView.parentNode === mainContent) loginView.insertAdjacentElement('afterend', section);
+  else mainContent.insertBefore(section, mainContent.firstChild);
+}
+
+/* The composer is built here (one source of truth). Any older
+   markup from a cached index.html is replaced on first render. */
+function _aiComposerHTML() {
+  const mathKeys = AI_MATH_KEYS.map(([label, tex]) =>
+    `<button type="button" class="ai-math-key" data-tex="${escapeHtml(tex)}" title="${escapeHtml(tex)}">${escapeHtml(label)}</button>`).join('');
+  return `
+    <div class="ai-attach-tray" id="aiAttachTray" hidden></div>
+    <div class="ai-math-palette" id="aiMathPalette" hidden>
+      <div class="ai-math-palette-head">
+        <span><i class="fas fa-square-root-variable"></i> Insert maths (LaTeX)</span>
+        <button type="button" class="ai-math-close" data-ai-act="math" aria-label="Close maths keys"><i class="fas fa-xmark"></i></button>
+      </div>
+      <div class="ai-math-keys">${mathKeys}</div>
+    </div>
+    <textarea id="aiHomeInput" class="ai-composer-input"
+      placeholder="${(window.matchMedia && matchMedia('(max-width: 520px)').matches) ? 'Ask a doubt or attach a file…' : 'Ask a doubt, paste a screenshot, or attach a file…'}"
+      rows="1" maxlength="${AI_MAX_CHARS}" aria-label="Your question"></textarea>
+    <div class="ai-math-preview" id="aiMathPreview" hidden aria-live="polite"></div>
+    <div class="ai-composer-row">
+      <div class="ai-tools">
+        <button type="button" class="ai-tool-btn" data-ai-act="attach" title="Attach images, PDFs or documents">
+          <i class="fas fa-paperclip"></i><span>Attach</span>
+        </button>
+        <button type="button" class="ai-tool-btn ai-tool-camera" data-ai-act="camera" title="Take a photo of your question">
+          <i class="fas fa-camera"></i><span>Photo</span>
+        </button>
+        <button type="button" class="ai-tool-btn" data-ai-act="math" title="Maths symbols" aria-expanded="false">
+          <i class="fas fa-square-root-variable"></i><span>Maths</span>
+        </button>
+        <button type="button" class="ai-tool-btn ai-tool-voice" data-ai-act="voice" title="Speak your question" hidden>
+          <i class="fas fa-microphone"></i><span>Voice</span>
+        </button>
+        <input type="file" id="aiFileInput" multiple accept="${AI_ACCEPT}" hidden>
+        <input type="file" id="aiCameraInput" accept="image/*" capture="environment" hidden>
+      </div>
+      <div class="ai-composer-btns">
+        <span class="ai-char-count" id="aiCharCount" aria-live="polite"></span>
+        <button type="button" class="ai-clear-btn" data-ai-act="clear" title="New conversation">
+          <i class="fas fa-trash-alt"></i>
+        </button>
+        <button type="button" class="ai-send-btn" id="aiHomeSendBtn" data-ai-act="send">
+          <i class="fas fa-paper-plane"></i> <span>Ask AI</span>
+        </button>
       </div>
     </div>
-  `;
+    <div class="ai-composer-hint">
+      <i class="fas fa-keyboard"></i>
+      <span><strong>Enter</strong> to send · <strong>Shift+Enter</strong> new line · paste or drop screenshots, PDFs &amp; documents</span>
+    </div>`;
+}
 
-  // Inject right after loginView (or at the top of main-content)
-  const mainContent = document.querySelector('.main-content');
-  if (!mainContent) {
-    console.error('[nav] .main-content not found — cannot inject AI home');
+function _aiEnsureComposer() {
+  const shell = document.querySelector('#studentAIHomeView .ai-chat-shell');
+  if (!shell) return null;
+  let comp = shell.querySelector('.ai-chat-composer');
+  if (!comp) { comp = document.createElement('div'); comp.className = 'ai-chat-composer'; shell.appendChild(comp); }
+  if (comp.dataset.v2 !== '1') {
+    comp.id = 'aiComposer';
+    comp.innerHTML = _aiComposerHTML();
+    comp.dataset.v2 = '1';
+    _aiWireComposer(comp);
+  }
+  if (!shell.querySelector('.ai-drop-overlay')) {
+    const ov = document.createElement('div');
+    ov.className = 'ai-drop-overlay';
+    ov.innerHTML = '<div><i class="fas fa-cloud-arrow-up"></i><strong>Drop files to attach</strong><span>Images, PDFs, Word, PowerPoint, Excel or text</span></div>';
+    shell.appendChild(ov);
+  }
+  return comp;
+}
+
+function _aiViewActive() {
+  const v = document.getElementById('studentAIHomeView');
+  return !!(v && v.classList.contains('active'));
+}
+
+function _aiWireComposer(comp) {
+  const input = comp.querySelector('#aiHomeInput');
+  const fileIn = comp.querySelector('#aiFileInput');
+  const camIn = comp.querySelector('#aiCameraInput');
+
+  comp.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ai-act]');
+    if (b) {
+      const act = b.dataset.aiAct;
+      if (act === 'attach') fileIn.click();
+      else if (act === 'camera') camIn.click();
+      else if (act === 'math') _aiToggleMath();
+      else if (act === 'voice') _aiToggleVoice();
+      else if (act === 'clear') resetAIHomeChat();
+      else if (act === 'send') { if (_aiHomeBusy) stopAIAnswer(); else askAIDoubtHome(); }
+      return;
+    }
+    const key = e.target.closest('.ai-math-key');
+    if (key) { _aiInsertTex(key.dataset.tex || ''); return; }
+    const rm = e.target.closest('[data-ai-remove]');
+    if (rm) { _aiRemovePending(rm.dataset.aiRemove); return; }
+    const pv = e.target.closest('[data-ai-preview]');
+    if (pv) { const a = _aiPending.find(x => x.id === pv.dataset.aiPreview); if (a) _aiOpenImage(a.url || a.thumb, a.name); }
+  });
+
+  fileIn.addEventListener('change', () => { _aiAddFiles(fileIn.files); fileIn.value = ''; });
+  camIn.addEventListener('change', () => { _aiAddFiles(camIn.files); camIn.value = ''; });
+
+  input.addEventListener('input', () => { aiHomeAutoGrow(input); _aiUpdateCount(); _aiSchedulePreview(); });
+  input.addEventListener('keydown', aiHomeKeydown);
+  input.addEventListener('paste', _aiOnPaste);
+
+  if (window.SpeechRecognition || window.webkitSpeechRecognition) {
+    const v = comp.querySelector('.ai-tool-voice');
+    if (v) v.hidden = false;
+  }
+  _aiUpdateCount();
+}
+
+/* Page-level paste & drag-drop (only while the AI page is open) */
+(function _aiGlobalInputs() {
+  if (window.__aeroAiGlobalInputs) return;
+  window.__aeroAiGlobalInputs = true;
+
+  document.addEventListener('paste', (e) => {
+    if (!_aiViewActive()) return;
+    const t = e.target;
+    if (t && t.id === 'aiHomeInput') return;                         // handled by the box itself
+    if (t && t.closest && t.closest('input, textarea, [contenteditable="true"]')) return;
+    const files = _aiClipboardFiles(e.clipboardData);
+    const text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+    if (!files.length && !text) return;
+    e.preventDefault();
+    const input = document.getElementById('aiHomeInput');
+    if (files.length) _aiAddFiles(files);
+    else if (input) { input.focus(); _aiInsertText(text); }
+  });
+
+  let depth = 0;
+  const hasFiles = (e) => { try { return Array.from(e.dataTransfer.types || []).includes('Files'); } catch (_) { return false; } };
+  const shellOn = (on) => {
+    const s = document.querySelector('#studentAIHomeView .ai-chat-shell');
+    if (s) s.classList.toggle('ai-dragging', on);
+  };
+  document.addEventListener('dragenter', (e) => {
+    if (!_aiViewActive() || !hasFiles(e)) return;
+    e.preventDefault(); depth++; shellOn(true);
+  });
+  document.addEventListener('dragover', (e) => {
+    if (!_aiViewActive() || !hasFiles(e)) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'copy'; } catch (_) {}
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!_aiViewActive() || !hasFiles(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (!depth) shellOn(false);
+  });
+  document.addEventListener('drop', (e) => {
+    if (!_aiViewActive() || !hasFiles(e)) return;
+    e.preventDefault();                                                // never navigate away to the file
+    depth = 0; shellOn(false);
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) _aiAddFiles(e.dataTransfer.files);
+  });
+})();
+
+function _aiClipboardFiles(cd) {
+  const out = [];
+  if (!cd) return out;
+  try {
+    Array.from(cd.items || []).forEach(it => {
+      if (it.kind === 'file') { const f = it.getAsFile(); if (f) out.push(f); }
+    });
+    if (!out.length && cd.files) Array.from(cd.files).forEach(f => out.push(f));
+  } catch (_) {}
+  return out;
+}
+
+function _aiOnPaste(e) {
+  const cd = e.clipboardData;
+  if (!cd) return;
+  const text = cd.getData('text/plain') || '';
+  const files = _aiClipboardFiles(cd);
+  /* Office apps put a picture of the selection on the clipboard as
+     well as the text — when there is text, paste the text. */
+  if (!text && files.length) { e.preventDefault(); _aiAddFiles(files); return; }
+  if (!text) return;
+  const input = e.target;
+  const selLen = Math.abs((input.selectionEnd || 0) - (input.selectionStart || 0));
+  if (input.value.length - selLen + text.length > AI_MAX_CHARS) {
+    e.preventDefault();
+    const blob = new File([text], 'pasted-text.txt', { type: 'text/plain' });
+    _aiAddFiles([blob]);
+    showToast('That text is long, so it was attached as pasted-text.txt.', 'info');
+  }
+  /* otherwise: normal paste (keeps every symbol and line break) */
+}
+
+function _aiInsertText(text) {
+  const input = document.getElementById('aiHomeInput');
+  if (!input) return;
+  const s = input.selectionStart ?? input.value.length;
+  const e = input.selectionEnd ?? input.value.length;
+  const next = input.value.slice(0, s) + text + input.value.slice(e);
+  if (next.length > AI_MAX_CHARS) {
+    _aiAddFiles([new File([text], 'pasted-text.txt', { type: 'text/plain' })]);
+    showToast('That text is long, so it was attached as pasted-text.txt.', 'info');
     return;
   }
-
-  const loginView = document.getElementById('loginView');
-  if (loginView && loginView.parentNode === mainContent) {
-    loginView.insertAdjacentElement('afterend', section);
-  } else {
-    mainContent.insertBefore(section, mainContent.firstChild);
-  }
-
-  console.log('[nav] ✅ studentAIHomeView injected dynamically');
+  input.value = next;
+  const pos = s + text.length;
+  try { input.setSelectionRange(pos, pos); } catch (_) {}
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
-function renderStudentAIHome() {
-  // ⚠️ FIX: Self-heal — if the section is missing (e.g. stale deployed
-  // index.html, or fresh login without initApp running), inject it now.
-  ensureStudentAIHomeView();
 
+/* ---------- attachments ---------- */
+async function _aiAddFiles(list) {
+  const files = Array.from(list || []);
+  if (!files.length) return;
+  _aiEnsureComposer();
+  for (const file of files) {
+    if (_aiPending.length >= AI_MAX_FILES) {
+      showToast(`You can attach up to ${AI_MAX_FILES} files per message.`, 'error');
+      break;
+    }
+    const kind = _aiKindOf(file);
+    if (!kind) { showToast(`"${file.name || 'File'}" isn't supported. Attach images, PDFs, documents or text files.`, 'error'); continue; }
+    if (file.size > AI_MAX_FILE_BYTES && kind !== 'image') { showToast(`"${file.name}" is larger than 15 MB.`, 'error'); continue; }
+    if (!file.size) { showToast(`"${file.name}" is empty.`, 'error'); continue; }
+    const item = {
+      id: 'a' + Math.random().toString(36).slice(2, 10),
+      name: file.name || (kind === 'image' ? 'pasted-image.png' : 'file'),
+      kind, size: file.size, blob: file, status: kind === 'image' ? 'processing' : 'ready', thumb: '', url: ''
+    };
+    if (item.name === 'image.png') item.name = 'screenshot-' + new Date().toTimeString().slice(0, 8).replace(/:/g, '') + '.png';
+    _aiPending.push(item);
+    _aiRenderTray();
+    if (kind === 'image') {
+      _aiPrepareImage(file).then(r => {
+        item.blob = r.blob; item.size = r.blob.size; item.thumb = r.thumb; item.url = r.url;
+        if (item.size > AI_MAX_FILE_BYTES) { item.status = 'error'; item.errorText = 'Too large'; }
+        else item.status = 'ready';
+        _aiRenderTray();
+      });
+    }
+  }
+}
+
+/* Phone photos are 5–12 MB; 2048 px JPEG keeps the text sharp at a
+   fraction of the size. Small screenshots stay untouched (PNG). */
+async function _aiPrepareImage(file) {
+  const out = { blob: file, thumb: '', url: '' };
+  let src = null, w = 0, h = 0, objUrl = '';
+  try {
+    if (window.createImageBitmap) {
+      src = await createImageBitmap(file);
+      w = src.width; h = src.height;
+    }
+  } catch (_) { src = null; }
+  if (!src) {
+    try {
+      objUrl = URL.createObjectURL(file);
+      src = await new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = reject;
+        im.src = objUrl;
+      });
+      w = src.naturalWidth; h = src.naturalHeight;
+    } catch (_) {
+      if (objUrl) URL.revokeObjectURL(objUrl);
+      return out;                                     // e.g. HEIC on Chrome: send as is, the server reads it
+    }
+  }
+  try {
+    const MAX = 2048;
+    const scale = Math.min(1, MAX / Math.max(w, h));
+    const keep = scale === 1 && file.size <= 3 * 1024 * 1024 && /^image\/(png|jpeg|webp)$/.test(file.type);
+    if (!keep) {
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * scale)); c.height = Math.max(1, Math.round(h * scale));
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);   // transparent PNG → white, not black
+      ctx.drawImage(src, 0, 0, c.width, c.height);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.86));
+      if (blob && blob.size) {
+        const base = String(file.name || 'image').replace(/\.[a-z0-9]+$/i, '');
+        out.blob = new File([blob], base + '.jpg', { type: 'image/jpeg' });
+      }
+    }
+    const tw = 160, ts = Math.min(1, tw / Math.max(w, h));
+    const t = document.createElement('canvas');
+    t.width = Math.max(1, Math.round(w * ts)); t.height = Math.max(1, Math.round(h * ts));
+    const tctx = t.getContext('2d');
+    tctx.fillStyle = '#ffffff'; tctx.fillRect(0, 0, t.width, t.height);
+    tctx.drawImage(src, 0, 0, t.width, t.height);
+    out.thumb = t.toDataURL('image/jpeg', 0.72);
+    out.url = URL.createObjectURL(out.blob);
+  } catch (_) { /* keep original */ }
+  finally {
+    try { if (src && src.close) src.close(); } catch (_) {}
+    if (objUrl) URL.revokeObjectURL(objUrl);
+  }
+  return out;
+}
+
+function _aiRemovePending(id) {
+  const i = _aiPending.findIndex(a => a.id === id);
+  if (i < 0) return;
+  const [a] = _aiPending.splice(i, 1);
+  if (a && a.url) { try { URL.revokeObjectURL(a.url); } catch (_) {} }
+  _aiRenderTray();
+}
+
+function _aiRenderTray() {
+  const tray = document.getElementById('aiAttachTray');
+  if (!tray) return;
+  if (!_aiPending.length) { tray.hidden = true; tray.innerHTML = ''; _aiUpdateCount(); return; }
+  tray.hidden = false;
+  tray.innerHTML = _aiPending.map(a => {
+    const media = a.thumb
+      ? `<button type="button" class="ai-att-thumb" data-ai-preview="${a.id}" aria-label="View ${escapeHtml(a.name)}"><img src="${a.thumb}" alt=""></button>`
+      : `<span class="ai-att-icon"><i class="fas ${_aiFileIcon(a.kind, a.name)}"></i></span>`;
+    const state = a.status === 'processing' ? '<i class="fas fa-spinner fa-spin"></i> preparing…'
+      : a.status === 'error' ? `<span class="ai-att-err">${escapeHtml(a.errorText || 'Error')}</span>`
+      : _aiFmtSize(a.size);
+    return `<div class="ai-att-chip ${a.status === 'error' ? 'is-error' : ''}">
+        ${media}
+        <span class="ai-att-meta"><span class="ai-att-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span><span class="ai-att-size">${state}</span></span>
+        <button type="button" class="ai-att-remove" data-ai-remove="${a.id}" aria-label="Remove ${escapeHtml(a.name)}"><i class="fas fa-xmark"></i></button>
+      </div>`;
+  }).join('');
+  _aiUpdateCount();
+}
+
+function _aiOpenImage(src, name) {
+  if (!src) return;
+  const ov = document.createElement('div');
+  ov.className = 'ai-lightbox';
+  ov.setAttribute('role', 'dialog');
+  ov.innerHTML = `<figure><img src="${src}" alt="${escapeHtml(name || '')}"><figcaption>${escapeHtml(name || '')}</figcaption></figure>
+    <button type="button" class="ai-lightbox-close" aria-label="Close"><i class="fas fa-xmark"></i></button>`;
+  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('.ai-lightbox-close')) close(); });
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(ov);
+}
+
+/* ---------- maths palette + live preview ---------- */
+function _aiToggleMath(force) {
+  const pal = document.getElementById('aiMathPalette');
+  if (!pal) return;
+  const open = typeof force === 'boolean' ? force : pal.hidden;
+  pal.hidden = !open;
+  document.querySelectorAll('#aiComposer [data-ai-act="math"].ai-tool-btn').forEach(b => {
+    b.classList.toggle('is-on', open); b.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  if (open) { const i = document.getElementById('aiHomeInput'); if (i) i.focus(); }
+}
+function _aiInsertTex(tex) {
+  const input = document.getElementById('aiHomeInput');
+  if (!input || !tex) return;
+  const s = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, s);
+  const inMath = ((before.match(/(^|[^\\])\$/g) || []).length % 2) === 1;   // caret already inside $…$
+  const piece = inMath ? tex : '$' + tex + '$';
+  input.focus();
+  _aiInsertText(piece);
+  if (!inMath) { const p = s + piece.length - 1; try { input.setSelectionRange(p, p); } catch (_) {} }
+}
+let _aiPreviewTimer = null;
+function _aiSchedulePreview() {
+  clearTimeout(_aiPreviewTimer);
+  _aiPreviewTimer = setTimeout(_aiRenderPreview, 350);
+}
+function _aiRenderPreview() {
+  const input = document.getElementById('aiHomeInput');
+  const box = document.getElementById('aiMathPreview');
+  if (!input || !box) return;
+  const v = input.value;
+  if (!/\$[^$]+\$|\\\(|\\\[/.test(v)) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = '<span class="ai-math-preview-label"><i class="fas fa-eye"></i> Preview</span><div class="ai-math-preview-body">' + renderMarkdown(v) + '</div>';
+  if (typeof renderMathIn === 'function') renderMathIn(box.querySelector('.ai-math-preview-body'));
+}
+
+/* ---------- voice typing (Chrome, Edge, Android, Safari) ---------- */
+let _aiRec = null;
+function _aiToggleVoice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const btn = document.querySelector('#aiComposer .ai-tool-voice');
+  if (!SR) return;
+  if (_aiRec) { try { _aiRec.stop(); } catch (_) {} return; }
+  const input = document.getElementById('aiHomeInput');
+  const base = input.value ? input.value.replace(/\s*$/, ' ') : '';
+  const rec = new SR();
+  rec.lang = 'en-IN';
+  rec.interimResults = true;
+  rec.continuous = true;
+  rec.onresult = (ev) => {
+    let said = '';
+    for (let i = 0; i < ev.results.length; i++) said += ev.results[i][0].transcript;
+    input.value = (base + said).slice(0, AI_MAX_CHARS);
+    aiHomeAutoGrow(input); _aiUpdateCount();
+  };
+  rec.onerror = (ev) => { if (ev && ev.error === 'not-allowed') showToast('Microphone permission was denied.', 'error'); };
+  rec.onend = () => { _aiRec = null; if (btn) btn.classList.remove('is-on', 'is-recording'); input.focus(); };
+  try { rec.start(); _aiRec = rec; if (btn) btn.classList.add('is-on', 'is-recording'); }
+  catch (_) { _aiRec = null; }
+}
+
+/* ---------- composer state ---------- */
+function _aiUpdateCount() {
+  const input = document.getElementById('aiHomeInput');
+  const el = document.getElementById('aiCharCount');
+  if (!input || !el) return;
+  const n = input.value.length;
+  el.textContent = n > AI_MAX_CHARS * 0.6 ? `${n.toLocaleString('en-IN')} / ${AI_MAX_CHARS.toLocaleString('en-IN')}` : '';
+  el.classList.toggle('is-near', n > AI_MAX_CHARS * 0.9);
+}
+function _aiSetBusyUI(busy) {
+  const btn = document.getElementById('aiHomeSendBtn');
+  if (!btn) return;
+  btn.classList.toggle('is-stop', busy);
+  btn.innerHTML = busy ? '<i class="fas fa-stop"></i> <span>Stop</span>' : '<i class="fas fa-paper-plane"></i> <span>Ask AI</span>';
+  btn.title = busy ? 'Stop the answer' : 'Send';
+}
+
+/* ============================================================
+   RENDERING
+   ============================================================ */
+function renderStudentAIHome() {
+  ensureStudentAIHomeView();
   const messagesEl = document.getElementById('aiChatMessages');
   if (!messagesEl) return;
-
-  // Wire the input once
+  _aiEnsureComposer();
+  _aiLoad();
   if (!_aiHomeRendered) {
     _aiHomeRendered = true;
+    messagesEl.addEventListener('click', _aiOnMessagesClick);
     const input = document.getElementById('aiHomeInput');
-    if (input) setTimeout(() => input.focus(), 80);
+    if (input && !matchMedia('(pointer: coarse)').matches) setTimeout(() => input.focus(), 80);
   }
-
   renderAIHomeChat();
+}
+
+function _aiFilesHTML(files) {
+  if (!files || !files.length) return '';
+  return '<div class="ai-msg-files">' + files.map((f, j) => f.thumb
+    ? `<button type="button" class="ai-msg-file is-image" data-ai-img="${j}" title="${escapeHtml(f.name)}"><img src="${f.thumb}" alt="${escapeHtml(f.name)}"></button>`
+    : `<span class="ai-msg-file" title="${escapeHtml(f.name)}"><i class="fas ${_aiFileIcon(f.kind, f.name)}"></i><span>${escapeHtml(f.name)}</span></span>`
+  ).join('') + '</div>';
 }
 
 function renderAIHomeChat() {
@@ -16293,60 +16785,62 @@ function renderAIHomeChat() {
     return;
   }
 
+  const lastAssistant = (() => { for (let i = _aiHomeChat.length - 1; i >= 0; i--) if (_aiHomeChat[i].role === 'assistant') return i; return -1; })();
+  const lastUser = (() => { for (let i = _aiHomeChat.length - 1; i >= 0; i--) if (_aiHomeChat[i].role === 'user') return i; return -1; })();
   let html = '';
   _aiHomeChat.forEach((m, i) => {
     if (m.role === 'user') {
       html += `
         <div class="ai-msg ai-msg-user">
           <div class="ai-msg-avatar"><i class="fas fa-user"></i></div>
-          <div class="ai-msg-bubble">${escapeHtml(m.text)}</div>
+          <div class="ai-msg-bubble allow-select" data-msg="${i}">
+            ${_aiFilesHTML(m.files)}
+            ${m.text ? `<div class="ai-user-text">${escapeHtml(m.text)}</div>` : ''}
+            ${i === lastUser && !_aiHomeBusy ? `<div class="ai-msg-actions ai-msg-actions-user"><button type="button" class="ai-msg-action" data-ai-edit="${i}" title="Edit and resend"><i class="fas fa-pen"></i> Edit</button></div>` : ''}
+          </div>
         </div>`;
     } else if (m.error) {
       html += `
         <div class="ai-msg ai-msg-assistant ai-msg-error">
           <div class="ai-msg-avatar ai-avatar-error"><i class="fas fa-triangle-exclamation"></i></div>
           <div class="ai-msg-bubble">
-            <div class="ai-msg-error-title">Couldn't fetch a response</div>
+            <div class="ai-msg-error-title">Couldn't get an answer</div>
             <div class="ai-msg-error-body">${escapeHtml(m.text)}</div>
-            <button class="ai-retry-btn" onclick="retryAILastMessage()">
-              <i class="fas fa-rotate-right"></i> Try again
-            </button>
+            ${i === _aiHomeChat.length - 1 ? `<button class="ai-retry-btn" onclick="retryAILastMessage()"><i class="fas fa-rotate-right"></i> Try again</button>` : ''}
           </div>
         </div>`;
-    } else {
+    } else if (m.streaming) {
+      const reading = (_aiHomeChat[i - 1] && _aiHomeChat[i - 1].files && _aiHomeChat[i - 1].files.length) ? 'Reading your files…' : 'Thinking…';
       html += `
         <div class="ai-msg ai-msg-assistant">
           <div class="ai-msg-avatar"><i class="fas fa-robot"></i></div>
-          <div class="ai-msg-bubble">
+          <div class="ai-msg-bubble allow-select">
+            <div class="ai-stream-body" id="aiStreamBody">${m.text ? renderMarkdown(m.text) : `<span class="ai-typing-inline"><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-label">${reading}</span></span>`}</div>
+          </div>
+        </div>`;
+    } else {
+      const isLast = i === lastAssistant && i === _aiHomeChat.length - 1;
+      html += `
+        <div class="ai-msg ai-msg-assistant">
+          <div class="ai-msg-avatar"><i class="fas fa-robot"></i></div>
+          <div class="ai-msg-bubble allow-select">
             <div class="ai-answer-body" id="aiHomeMsg-${i}">${renderMarkdown(m.text)}</div>
+            ${m.stopped ? '<div class="ai-msg-note"><i class="fas fa-circle-stop"></i> You stopped this answer.</div>' : ''}
+            ${m.partial && !m.stopped ? '<div class="ai-msg-note"><i class="fas fa-scissors"></i> The answer was cut short.</div>' : ''}
             <div class="ai-msg-actions">
-              <button class="ai-msg-action" onclick="copyAIHomeMessage(${i})" title="Copy">
-                <i class="fas fa-copy"></i> Copy
-              </button>
+              <button type="button" class="ai-msg-action" data-ai-copy="${i}" title="Copy"><i class="fas fa-copy"></i> Copy</button>
+              ${isLast && !_aiHomeBusy ? `<button type="button" class="ai-msg-action" data-ai-regen="${i}" title="Get a new answer"><i class="fas fa-rotate"></i> Regenerate</button>` : ''}
+              ${isLast && !_aiHomeBusy && (m.partial || m.stopped) ? `<button type="button" class="ai-msg-action" data-ai-continue="1"><i class="fas fa-forward"></i> Continue</button>` : ''}
               <span class="ai-msg-model">${escapeHtml(m.model || 'AI')}</span>
             </div>
+            ${isLast && !_aiHomeBusy ? `<div class="ai-followups">${AI_FOLLOWUPS.map(f => `<button type="button" class="ai-followup" data-ai-follow="${escapeHtml(f.text)}"><i class="fas ${f.icon}"></i> ${escapeHtml(f.text)}</button>`).join('')}</div>` : ''}
           </div>
         </div>`;
     }
   });
 
-  if (_aiHomeBusy) {
-    html += `
-      <div class="ai-msg ai-msg-assistant">
-        <div class="ai-msg-avatar"><i class="fas fa-robot"></i></div>
-        <div class="ai-msg-bubble ai-typing-bubble">
-          <span class="ai-typing-dot"></span>
-          <span class="ai-typing-dot"></span>
-          <span class="ai-typing-dot"></span>
-          <span class="ai-typing-label">Thinking…</span>
-        </div>
-      </div>`;
-  }
-
   messagesEl.innerHTML = html;
 
-  // Render LaTeX AFTER the browser actually paints the new HTML.
-  // Double rAF ensures MathJax measures correct widths.
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       if (typeof renderMathIn === 'function') {
@@ -16354,11 +16848,43 @@ function renderAIHomeChat() {
       }
     });
   });
+  requestAnimationFrame(() => { messagesEl.scrollTop = messagesEl.scrollHeight; });
+}
 
-  // Smooth scroll to bottom
-  requestAnimationFrame(() => {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  });
+/* Live text while the answer streams in — only this bubble is
+   repainted (≈ 12×/s), maths is typeset once at the end. */
+let _aiPaintPending = false;
+function _aiPaintStream(msg) {
+  if (_aiPaintPending) return;
+  _aiPaintPending = true;
+  setTimeout(() => {
+    _aiPaintPending = false;
+    const el = document.getElementById('aiStreamBody');
+    const box = document.getElementById('aiChatMessages');
+    if (!el || !box) return;
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 140;
+    el.innerHTML = renderMarkdown(msg.text) + '<span class="ai-caret" aria-hidden="true"></span>';
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  }, 80);
+}
+
+function _aiOnMessagesClick(e) {
+  const t = e.target;
+  const copy = t.closest('[data-ai-copy]');
+  if (copy) return copyAIHomeMessage(Number(copy.dataset.aiCopy));
+  if (t.closest('[data-ai-regen]')) return regenerateAIAnswer();
+  if (t.closest('[data-ai-continue]')) return askAIDoubtHome({ text: 'Please continue exactly from where you stopped.', files: [] });
+  const fu = t.closest('[data-ai-follow]');
+  if (fu) return askAIDoubtHome({ text: fu.dataset.aiFollow, files: [] });
+  const ed = t.closest('[data-ai-edit]');
+  if (ed) return editLastAIQuestion();
+  const img = t.closest('[data-ai-img]');
+  if (img) {
+    const bubble = img.closest('[data-msg]');
+    const m = bubble && _aiHomeChat[Number(bubble.dataset.msg)];
+    const f = m && m.files && m.files[Number(img.dataset.aiImg)];
+    if (f) _aiOpenImage(f.url || f.thumb, f.name);
+  }
 }
 
 function renderAIWelcomeState() {
@@ -16370,22 +16896,16 @@ function renderAIWelcomeState() {
         <span>${escapeHtml(s.text)}</span>
       </button>`;
   });
-
   return `
     <div class="ai-welcome">
       <div class="ai-welcome-icon"><i class="fas fa-comments"></i></div>
       <h2>What would you like to learn today?</h2>
-      <p>Ask a question below or pick one of these to get started.</p>
+      <p>Ask a question, paste a screenshot of a problem, or attach your notes.</p>
       <div class="ai-suggestions">${chips}</div>
       <div class="ai-welcome-tips">
-        <div class="ai-tip">
-          <i class="fas fa-lightbulb"></i>
-          <span>Be specific — mention the topic, formulas, or units involved.</span>
-        </div>
-        <div class="ai-tip">
-          <i class="fas fa-superscript"></i>
-          <span>LaTeX is supported: use <code>$x^2$</code> or <code>$$\\int$$</code>.</span>
-        </div>
+        <div class="ai-tip"><i class="fas fa-paperclip"></i><span>Attach images, PDFs, Word, PowerPoint or Excel files — or just paste a screenshot (Ctrl+V).</span></div>
+        <div class="ai-tip"><i class="fas fa-camera"></i><span>On your phone, tap <strong>Photo</strong> to snap a question from your book.</span></div>
+        <div class="ai-tip"><i class="fas fa-superscript"></i><span>Maths works: type <code>$x^2$</code> or use the <strong>Maths</strong> keys — you'll see a live preview.</span></div>
       </div>
     </div>`;
 }
@@ -16395,111 +16915,233 @@ function suggestAIPrompt(text) {
   if (!input) return;
   input.value = text;
   aiHomeAutoGrow(input);
+  _aiUpdateCount();
   input.focus();
 }
 
 function aiHomeAutoGrow(el) {
   if (!el) return;
   el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 220) + 'px';
+  el.style.height = Math.min(el.scrollHeight, 240) + 'px';
 }
 
 function aiHomeKeydown(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
     e.preventDefault();
-    askAIDoubtHome();
+    if (!_aiHomeBusy) askAIDoubtHome();
   }
 }
 
-async function askAIDoubtHome() {
+/* ============================================================
+   SENDING + STREAMING
+   ============================================================ */
+async function askAIDoubtHome(opts) {
+  opts = opts || {};
   if (_aiHomeBusy) return;
-
+  _aiEnsureComposer();
   const input = document.getElementById('aiHomeInput');
-  if (!input) return;
+  const fromComposer = opts.text == null;
+  let text = fromComposer ? (input ? input.value.trim() : '') : String(opts.text).trim();
 
-  const question = input.value.trim();
-  if (!question) return;
+  if (fromComposer && _aiPending.some(a => a.status === 'processing')) {
+    return showToast('Still preparing your attachment — one moment…', 'info');
+  }
+  const files = fromComposer ? _aiPending.filter(a => a.status === 'ready') : (opts.files || []);
+  if (!text && !files.length) {
+    if (input) input.focus();
+    return;
+  }
+  if (text.length > AI_MAX_CHARS) return showToast(`Message too long (max ${AI_MAX_CHARS} characters).`, 'error');
+  const total = files.reduce((n, f) => n + (f.size || 0), 0);
+  if (total > AI_MAX_TOTAL_BYTES) return showToast('Attachments are too large together (max about 14 MB). Remove a file or attach fewer pages.', 'error');
 
-  if (question.length > 2000) {
-    return showToast('Question too long (max 2000 characters).', 'error');
+  if (!_aiConvId) _aiConvId = _aiNewConvId();
+  if (_aiRec) { try { _aiRec.stop(); } catch (_) {} }
+
+  const history = _aiHomeChat
+    .filter(m => !m.error && !m.streaming && String(m.text || '').trim())
+    .slice(-12)
+    .map(m => ({
+      role: m.role,
+      text: (m.role === 'user' && m.files && m.files.length)
+        ? m.text + '\n[Attached: ' + m.files.map(f => f.name).join(', ') + ']'
+        : m.text
+    }));
+
+  const userMsg = {
+    role: 'user', text, ts: Date.now(),
+    files: files.map(f => ({ name: f.name, kind: f.kind, size: f.size, thumb: f.thumb || '', url: f.url || '' }))
+  };
+  _aiHomeChat.push(userMsg);
+  const msg = { role: 'assistant', text: '', streaming: true, ts: Date.now() };
+  _aiHomeChat.push(msg);
+  _aiLastSent = { text, files: files.slice() };
+
+  if (fromComposer && input) {
+    input.value = '';
+    input.style.height = 'auto';
+    _aiPending = [];
+    _aiRenderTray();
+    _aiToggleMath(false);
+    _aiRenderPreview();
   }
 
-  // Append user message
-  _aiHomeChat.push({ role: 'user', text: question, ts: Date.now() });
-
-  // Clear + reset input
-  input.value = '';
-  input.style.height = 'auto';
+  const fd = new FormData();
+  fd.append('question', text);
+  fd.append('history', JSON.stringify(history));
+  fd.append('convId', _aiConvId);
+  if (_aiHadFiles && !files.length) fd.append('hadFiles', '1');
+  files.forEach(f => fd.append('files', f.blob, f.name));
+  if (files.length) _aiHadFiles = true;
 
   _aiHomeBusy = true;
+  _aiSetBusyUI(true);
   renderAIHomeChat();
+  _aiAbort = new AbortController();
 
   try {
-    const res = await fetchJSON(`${API_BASE}/ai/solve-doubt`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        question,
-        userId: currentUser ? currentUser._id : null
-      })
-    });
-
-    if (res.success) {
-      _aiHomeChat.push({
-        role: 'assistant',
-        text: res.answer,
-        model: res.model,
-        ts: Date.now()
-      });
-    } else {
-      _aiHomeChat.push({
-        role: 'assistant',
-        text: res.message || 'Unknown error.',
-        error: true,
-        ts: Date.now()
-      });
+    const res = await fetch(`${API_BASE}/ai/chat`, { method: 'POST', body: fd, signal: _aiAbort.signal });
+    const ct = String(res.headers.get('content-type') || '');
+    if (!ct.includes('ndjson')) {
+      const raw = await res.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch (_) {}
+      throw new Error((data && data.message) ||
+        (res.status === 413 ? 'The attachments are too large. Try fewer or smaller files.'
+          : res.status === 429 ? 'Too many questions in a minute — please wait a moment.'
+          : `The server could not answer (HTTP ${res.status}). Please try again.`));
     }
+    await _aiReadStream(res, msg);
   } catch (err) {
-    console.error('[askAIDoubtHome]', err);
-    _aiHomeChat.push({
-      role: 'assistant',
-      text: err.message || 'Network error. Please check your connection.',
-      error: true,
-      ts: Date.now()
-    });
+    if (err && err.name === 'AbortError') {
+      msg.stopped = true;
+      if (!msg.text) msg.text = '_Stopped before the answer started._';
+    } else {
+      console.warn('[ai/chat]', err);
+      if (msg.text) { msg.partial = true; }
+      else {
+        msg.error = true;
+        msg.text = (err && err.message && !/Failed to fetch|NetworkError|Load failed/i.test(err.message))
+          ? err.message : 'Network error — please check your connection and try again.';
+      }
+    }
   } finally {
+    msg.streaming = false;
     _aiHomeBusy = false;
+    _aiAbort = null;
+    _aiSetBusyUI(false);
     renderAIHomeChat();
-    const btn = document.getElementById('aiHomeSendBtn');
-    if (btn) btn.disabled = false;
-    if (input) input.focus();
+    _aiSave();
+    if (input && !matchMedia('(pointer: coarse)').matches) input.focus();
   }
+}
+
+async function _aiReadStream(res, msg) {
+  if (!res.body || !res.body.getReader) {               // very old browser: no streaming, read it all
+    const raw = await res.text();
+    raw.split('\n').forEach(l => { try { if (l.trim()) _aiHandleEvent(JSON.parse(l), msg); } catch (_) {} });
+  } else {
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try { _aiHandleEvent(JSON.parse(line), msg); } catch (_) {}
+      }
+    }
+    if (buf.trim()) { try { _aiHandleEvent(JSON.parse(buf.trim()), msg); } catch (_) {} }
+  }
+  if (!msg._ended) {
+    if (msg.text) msg.partial = true;
+    else throw new Error('The connection was interrupted. Please try again.');
+  }
+}
+
+function _aiHandleEvent(ev, msg) {
+  if (!ev || !ev.t) return;
+  if (ev.t === 'delta' && typeof ev.text === 'string') {
+    msg.text += ev.text;
+    _aiPaintStream(msg);
+  } else if (ev.t === 'done') {
+    msg._ended = true;
+    msg.model = ev.model || '';
+    msg.partial = !!ev.partial;
+    if (ev.filesExpired) showToast('Files from earlier in this chat have expired — attach them again if the AI needs them.', 'info');
+  } else if (ev.t === 'error') {
+    msg._ended = true;
+    if (msg.text) { msg.partial = true; showToast(ev.message || 'The answer stopped early.', 'error'); }
+    else { msg.error = true; msg.text = ev.message || 'The AI could not answer.'; }
+  } else if (ev.t === 'meta' && Array.isArray(ev.files)) {
+    const conv = ev.files.filter(f => f.converted).length;
+    const cut = ev.files.filter(f => f.truncated).map(f => f.name);
+    if (cut.length) showToast(`Only the first part of ${cut.join(', ')} was read (very long file).`, 'info');
+    if (conv) { /* office files were converted to PDF on the server — nothing to show */ }
+  }
+}
+
+function stopAIAnswer() {
+  if (_aiAbort) { try { _aiAbort.abort(); } catch (_) {} }
+}
+
+function _aiPopLastExchange() {
+  while (_aiHomeChat.length && _aiHomeChat[_aiHomeChat.length - 1].role === 'assistant') _aiHomeChat.pop();
+  return (_aiHomeChat.length && _aiHomeChat[_aiHomeChat.length - 1].role === 'user') ? _aiHomeChat.pop() : null;
 }
 
 function retryAILastMessage() {
-  // Find the last user message and re-ask
-  const lastUser = [..._aiHomeChat].reverse().find(m => m.role === 'user');
-  if (!lastUser) return;
-  // Remove the error assistant message
-  while (_aiHomeChat.length && _aiHomeChat[_aiHomeChat.length - 1].error) {
-    _aiHomeChat.pop();
-  }
-  // Remove the user message (we'll re-add it inside askAIDoubtHome)
-  if (_aiHomeChat.length && _aiHomeChat[_aiHomeChat.length - 1].role === 'user') {
-    _aiHomeChat.pop();
-  }
+  if (_aiHomeBusy) return;
+  const user = _aiPopLastExchange();
+  if (!user) return;
+  const files = (_aiLastSent && _aiLastSent.text === user.text) ? _aiLastSent.files : [];
+  askAIDoubtHome({ text: user.text, files });
+}
+
+function regenerateAIAnswer() {
+  if (_aiHomeBusy) return;
+  const user = _aiPopLastExchange();
+  if (!user) return;
+  /* The server still remembers this chat's files, so a text-only resend
+     sees them; resend the exact files when we still have them. */
+  const files = (_aiLastSent && _aiLastSent.text === user.text) ? _aiLastSent.files : [];
+  askAIDoubtHome({ text: user.text, files });
+}
+
+function editLastAIQuestion() {
+  if (_aiHomeBusy) return;
+  const user = _aiPopLastExchange();
+  if (!user) return;
   const input = document.getElementById('aiHomeInput');
-  if (input) input.value = lastUser.text;
-  askAIDoubtHome();
+  if (_aiLastSent && _aiLastSent.text === user.text && _aiLastSent.files.length) {
+    _aiPending = _aiLastSent.files.slice(0, AI_MAX_FILES);
+    _aiRenderTray();
+  }
+  if (input) { input.value = user.text; aiHomeAutoGrow(input); _aiUpdateCount(); _aiSchedulePreview(); input.focus(); }
+  renderAIHomeChat();
+  _aiSave();
 }
 
 function resetAIHomeChat() {
-  if (_aiHomeChat.length === 0) return;
-  if (!confirm('Clear the entire conversation?')) return;
+  if (_aiHomeBusy) stopAIAnswer();
+  if (_aiHomeChat.length === 0 && !_aiPending.length) return;
+  if (_aiHomeChat.length && !confirm('Start a new conversation? This clears the current chat.')) return;
   _aiHomeChat = [];
+  _aiPending.forEach(a => { if (a.url) { try { URL.revokeObjectURL(a.url); } catch (_) {} } });
+  _aiPending = [];
+  _aiConvId = '';
+  _aiHadFiles = false;
+  _aiLastSent = null;
+  _aiRenderTray();
   renderAIHomeChat();
+  _aiSave();
   const input = document.getElementById('aiHomeInput');
-  if (input) { input.value = ''; input.focus(); }
+  if (input) { input.value = ''; aiHomeAutoGrow(input); _aiUpdateCount(); _aiRenderPreview(); input.focus(); }
 }
 
 function copyAIHomeMessage(idx) {

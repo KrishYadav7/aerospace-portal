@@ -508,6 +508,8 @@ app.use(compression({
   filter: (req, res) => {
     // Never compress SSE — it manages its own streaming
     if (res.getHeader('Content-Type') === 'text/event-stream') return false;
+    // …nor the AI answer stream (compression would hold chunks back)
+    if (req.path === '/api/ai/chat') return false;
 
     // Never compress any uploaded binary
     if (req.path && req.path.startsWith('/uploads/')) return false;
@@ -12143,11 +12145,11 @@ const aiDoubtLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  // Prefer userId (from body) → per-user limit. Fall back to IP.
+  // Per signed-in user (from the verified token, never from the body). Fall back to IP.
   // This stops one abusive student from rate-limiting the whole hostel/campus.
   keyGenerator: (req) => {
     try {
-      if (req.body && req.body.userId) return 'u:' + String(req.body.userId).slice(0, 60);
+      if (req.authUserId) return 'u:' + req.authUserId;      // set by requireUser (runs first)
       const auth = req.headers.authorization || '';
       if (auth.startsWith('Bearer ')) {
         const decoded = jwt.verify(auth.slice(7), JWT_SECRET, JWT_VERIFY_OPTS);
@@ -12187,8 +12189,8 @@ app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) =>
     if (!question || !String(question).trim()) {
       return res.status(400).json({ success: false, message: 'Question is required.' });
     }
-    if (String(question).length > 2000) {
-      return res.status(400).json({ success: false, message: 'Question too long (max 2000 chars).' });
+    if (String(question).length > 8000) {
+      return res.status(400).json({ success: false, message: 'Question too long (max 8000 chars).' });
     }
     if (!process.env.GEMINI_API_KEY) {
       console.error('[ai] ❌ GEMINI_API_KEY is not set');
@@ -12239,36 +12241,8 @@ app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) =>
     /* ---------- 5. Model fallback chain (auto-discovered) ---------- */
     // Ask Google what models your key can actually use.
     // Cache the result for 10 minutes so we don't hit the API every request.
-    let MODELS = [];
-    try {
-      const now = Date.now();
-      if (!global.__aeroAiModelCache || (now - global.__aeroAiModelCache.at) > 10 * 60 * 1000) {
-        const listResp = await getGeminiClient().models.list();
-        const discovered = [];
-        for await (const m of listResp) {
-          const raw = String(m.name || '');           // e.g. "models/gemini-2.5-flash"
-          const id  = raw.replace(/^models\//, '');
-          if (!id) continue;
-          // Only keep generateContent-capable gemini models
-          const methods = m.supportedActions || m.supportedGenerationMethods || [];
-          const canGenerate = Array.isArray(methods)
-            ? methods.some(x => /generateContent/i.test(x))
-            : true;
-          if (canGenerate && /^gemini/i.test(id)) discovered.push(id);
-        }
-        // Prefer pro > flash > any
-        discovered.sort((a, b) => {
-          const rank = s => /pro/.test(s) ? 3 : /flash/.test(s) ? 2 : 1;
-          return rank(b) - rank(a);
-        });
-        global.__aeroAiModelCache = { at: now, models: discovered };
-        console.log('[ai] Discovered models:', discovered.join(', '));
-      }
-      MODELS = global.__aeroAiModelCache.models || [];
-    } catch (e) {
-      console.warn('[ai] Model discovery failed, using static fallback:', e.message);
-      MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
-    }
+    /* Shared with /api/ai/chat — filtered, ranked, cached 10 min. */
+    const MODELS = await aiModelChain();
 
     if (MODELS.length === 0) {
       return res.status(503).json({
@@ -12294,7 +12268,7 @@ app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) =>
           config: {
             systemInstruction,
             temperature: 0.5,
-            maxOutputTokens: 2048
+            maxOutputTokens: 8192        // 2.5 models count "thinking" here — 2048 cut answers short
           }
         });
 
@@ -12355,6 +12329,434 @@ app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) =>
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
   }
 });
+
+/* ============================================================
+   ⭐ AI DOUBT SOLVER v2 — chat with attachments + live streaming
+   (2026-10-04)
+   ------------------------------------------------------------
+   POST /api/ai/chat   (multipart/form-data)
+     fields: question  — the student's message (≤ 8000 chars)
+             history   — JSON [{role:'user'|'assistant', text}]
+             convId    — random id of this conversation
+             courseId  — optional, adds course context
+     files:  files[]   — up to 6: images (PNG/JPEG/WebP/HEIC; GIF/BMP
+                         are converted), PDF, Word/PowerPoint/Excel
+                         (converted to PDF by LibreOffice), and plain
+                         text / code / CSV / LaTeX files
+   Response: NDJSON stream, one JSON object per line
+     {t:'meta', files:[…]}          what the server accepted
+     {t:'delta', text}               answer text as it is written
+     {t:'ping'}                      keep-alive while the model thinks
+     {t:'done', model, partial, filesExpired}
+     {t:'error', message}
+   Validation problems are answered with ordinary JSON + 4xx.
+
+   Uploads stay in memory only — nothing is written to disk. The
+   files of a conversation are kept (in memory, ≤ 30 min) so follow-up
+   questions like "now explain part (b)" still see the picture.
+   ============================================================ */
+const AI_LIMITS = {
+  files:         6,
+  fileBytes:     15 * 1024 * 1024,     // per uploaded file
+  inlineBytes:   14 * 1024 * 1024,     // images + PDFs sent to the model per request
+  questionChars: 8000,
+  historyItems:  16,
+  historyChars:  60000,
+  fileTextChars: 60000                 // per text/code file
+};
+const AI_TEXT_EXTS = new Set(['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.tex', '.bib', '.log', '.xml',
+  '.yaml', '.yml', '.ini', '.py', '.m', '.c', '.h', '.cpp', '.hpp', '.java', '.js', '.ts', '.html', '.css',
+  '.f', '.f90', '.r', '.sql', '.sh', '.ipynb']);
+const AI_OFFICE_EXTS = new Set(['.doc', '.docx', '.odt', '.rtf', '.ppt', '.pptx', '.odp', '.xls', '.xlsx', '.ods']);
+
+const aiUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: AI_LIMITS.fileBytes, files: AI_LIMITS.files, fields: 12, fieldSize: 256 * 1024, parts: 24 }
+});
+
+/* ---- Which Gemini models to try, best first (cached 10 min) ----
+   AI_MODELS in .env (comma separated) overrides the automatic order. */
+const AI_SKIP_MODEL_RE = /(tts|image|embedding|live|audio|veo|imagen|aqa|robotics|computer-use|learnlm|gemma|nano)/i;
+async function aiModelChain() {
+  const forced = String(process.env.AI_MODELS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (forced.length) return forced;
+  const now = Date.now();
+  if (!global.__aeroAiModelCache || (now - global.__aeroAiModelCache.at) > 10 * 60 * 1000) {
+    try {
+      const listResp = await getGeminiClient().models.list();
+      const discovered = [];
+      for await (const m of listResp) {
+        const id = String(m.name || '').replace(/^models\//, '');
+        if (!id || !/^gemini/i.test(id) || AI_SKIP_MODEL_RE.test(id)) continue;
+        const methods = m.supportedActions || m.supportedGenerationMethods || [];
+        const canGenerate = Array.isArray(methods) ? methods.some(x => /generateContent/i.test(x)) : true;
+        if (canGenerate) discovered.push(id);
+      }
+      const rank = (s) => {
+        let r = /pro/.test(s) ? 30 : /flash-lite|lite/.test(s) ? 10 : /flash/.test(s) ? 20 : 0;
+        const v = (s.match(/(\d+(?:\.\d+)?)/) || [])[1];
+        r += v ? Math.min(9, parseFloat(v)) : 0;             // newer generation first
+        if (/latest/.test(s)) r += 0.5;
+        if (/preview|exp/.test(s)) r -= 3;                    // stable before preview
+        return r;
+      };
+      discovered.sort((a, b) => rank(b) - rank(a) || a.length - b.length);
+      global.__aeroAiModelCache = { at: now, models: discovered };
+      console.log('[ai] Discovered models:', discovered.join(', '));
+    } catch (e) {
+      console.warn('[ai] Model discovery failed, using static fallback:', e.message);
+      global.__aeroAiModelCache = { at: now - 9 * 60 * 1000, models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'] };
+    }
+  }
+  return (global.__aeroAiModelCache.models || []).slice(0, 4);
+}
+
+function aiFriendlyError(lastError) {
+  let friendly = 'AI is temporarily unavailable. Please try again in a moment.';
+  if (!lastError) return friendly;
+  const status = Number(lastError.status) || 0;
+  const msg = String(lastError.message || '');
+  if (status === 401 || status === 403) friendly = 'AI authentication failed. Please ask the admin to verify GEMINI_API_KEY.';
+  else if (status === 429 || /quota|RESOURCE_EXHAUSTED/i.test(msg)) friendly = 'The AI is busy right now (rate limit reached). Please wait a minute and try again.';
+  else if (status === 413 || /too large|payload size|exceeds the maximum/i.test(msg)) friendly = 'The attachments are too large for the AI. Try fewer pages or smaller images.';
+  else if (status === 400) friendly = 'The AI could not process that request. Try rephrasing, or attach the file as a PDF or image.';
+  else if (status === 404) friendly = 'AI model unavailable. Please ask the admin to update the model name.';
+  else if (/network|fetch|ENOTFOUND|ETIMEDOUT|ECONNREFUSED|socket/i.test(msg)) friendly = 'Network error reaching the AI service. Please try again.';
+  else if (/api key|API_KEY_INVALID|invalid.*key/i.test(msg)) friendly = 'AI API key is invalid. Please ask the admin to check GEMINI_API_KEY.';
+  else if (/safety|blocked/i.test(msg)) friendly = 'The AI declined to answer this request. Please rephrase your question.';
+  return friendly;
+}
+
+/* ---- What is this file really? (by content, not by name) ---- */
+function aiSniffFile(f) {
+  const buf = f.buffer || Buffer.alloc(0);
+  const name = String(f.originalname || 'file').slice(0, 120);
+  const ext = path.extname(name).toLowerCase();
+  const head = buf.subarray(0, 16);
+  const ascii = head.toString('latin1');
+  if (buf.indexOf('%PDF-', 0, 'latin1') !== -1 && buf.indexOf('%PDF-', 0, 'latin1') < 1024) return { kind: 'pdf', mime: 'application/pdf', name };
+  if (head[0] === 0x89 && ascii.slice(1, 4) === 'PNG') return { kind: 'image', mime: 'image/png', name };
+  if (head[0] === 0xFF && head[1] === 0xD8 && head[2] === 0xFF) return { kind: 'image', mime: 'image/jpeg', name };
+  if (ascii.slice(0, 4) === 'RIFF' && ascii.slice(8, 12) === 'WEBP') return { kind: 'image', mime: 'image/webp', name };
+  if (ascii.slice(4, 8) === 'ftyp') {
+    const brand = ascii.slice(8, 12);
+    if (/^(heic|heix|hevc|hevx|heim|heis)$/.test(brand)) return { kind: 'image', mime: 'image/heic', name };
+    if (/^(mif1|msf1|heif)$/.test(brand)) return { kind: 'image', mime: 'image/heif', name };
+    if (/^avi[fs]$/.test(brand)) return { kind: 'convert-image', mime: 'image/avif', name };
+  }
+  if (ascii.slice(0, 4) === 'GIF8' || ascii.slice(0, 2) === 'BM' || ascii.slice(0, 4) === 'II*\u0000' || ascii.slice(0, 4) === 'MM\u0000*') {
+    return { kind: 'convert-image', mime: 'image/other', name };
+  }
+  const isZip = ascii.slice(0, 4) === 'PK\u0003\u0004';
+  const isOle = head[0] === 0xD0 && head[1] === 0xCF && head[2] === 0x11 && head[3] === 0xE0;
+  if ((isZip || isOle || ascii.slice(0, 5) === '{\\rtf') && AI_OFFICE_EXTS.has(ext)) return { kind: 'office', mime: 'office', name, ext };
+  if (AI_TEXT_EXTS.has(ext) || (!ext && buf.length < 512 * 1024)) {
+    const probe = buf.subarray(0, 8192);
+    if (probe.indexOf(0) === -1) return { kind: 'text', mime: 'text/plain', name, ext };
+  }
+  return { kind: 'unsupported', name, ext };
+}
+
+/* Office document → PDF with the same LibreOffice used by the viewer
+   (shares its one-at-a-time queue so the server is never overloaded). */
+function aiOfficeToPdf(buf, ext) {
+  const job = (_renderChain = _renderChain.catch(() => {}).then(async () => {
+    const bin = await getSofficeBinary();
+    if (!bin) throw Object.assign(new Error('no renderer'), { code: 'NO_RENDERER' });
+    const workDir = path.join(_LO_TMP, 'aero-ai-' + crypto.randomBytes(6).toString('hex'));
+    await fs.promises.mkdir(workDir, { recursive: true });
+    try {
+      const src = path.join(workDir, 'upload' + ext);
+      await fs.promises.writeFile(src, buf);
+      await _runSoffice(bin, ['-env:UserInstallation=file://' + _LO_PROFILE_DIR, '--headless', '--invisible',
+        '--norestore', '--nolockcheck', '--nodefault', '--nofirststartwizard',
+        '--convert-to', 'pdf', '--outdir', workDir, src], 90000);
+      const out = (await fs.promises.readdir(workDir)).find(f => f.toLowerCase().endsWith('.pdf'));
+      if (!out) throw new Error('conversion produced no PDF');
+      return await fs.promises.readFile(path.join(workDir, out));
+    } finally {
+      fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }));
+  return job;
+}
+
+/* Turn the uploads into model input parts. Throws {status, message}. */
+async function aiPrepareParts(files) {
+  const parts = [];
+  const accepted = [];
+  let inlineBytes = 0;
+  for (const f of files) {
+    const s = aiSniffFile(f);
+    let buf = f.buffer;
+    let mime = s.mime;
+    if (s.kind === 'unsupported') {
+      throw { status: 415, message: `"${s.name}" is not a supported file. Attach images, PDFs, Word/PowerPoint/Excel files or text files.` };
+    }
+    if (s.kind === 'text') {
+      let txt = buf.toString('utf8').replace(/^﻿/, '');
+      if (s.ext === '.ipynb') {
+        try {
+          const nb = JSON.parse(txt);
+          txt = (nb.cells || []).map(c => (c.cell_type === 'code' ? '```\n' : '') + [].concat(c.source || []).join('') + (c.cell_type === 'code' ? '\n```' : '')).join('\n\n');
+        } catch (_) { /* keep raw JSON */ }
+      }
+      const cut = txt.length > AI_LIMITS.fileTextChars;
+      if (cut) txt = txt.slice(0, AI_LIMITS.fileTextChars);
+      parts.push({ text: `\n[Attached file: ${s.name}]\n${txt}\n[End of ${s.name}${cut ? ' — truncated' : ''}]\n` });
+      accepted.push({ name: s.name, kind: 'text', truncated: cut });
+      continue;
+    }
+    if (s.kind === 'convert-image') {
+      try {
+        buf = await getSharp()(buf, { animated: false }).rotate().resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+        mime = 'image/png';
+      } catch (e) {
+        throw { status: 415, message: `"${s.name}" could not be read. Please attach it as PNG or JPG.` };
+      }
+    } else if (s.kind === 'image' && buf.length > 4 * 1024 * 1024 && /jpeg|png|webp/.test(mime)) {
+      /* Phones send 5–12 MB photos; 2048 px is plenty to read a question. */
+      try {
+        buf = await getSharp()(buf).rotate().resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+        mime = 'image/jpeg';
+      } catch (_) { /* sharp missing — send as is */ }
+    } else if (s.kind === 'office') {
+      try {
+        buf = await aiOfficeToPdf(buf, s.ext);
+        mime = 'application/pdf';
+      } catch (e) {
+        throw { status: 415, message: e.code === 'NO_RENDERER'
+          ? `"${s.name}": Word/PowerPoint/Excel files can't be read on this server yet. Please attach it as a PDF or a screenshot.`
+          : `"${s.name}" could not be opened (it may be damaged or password-protected). Please attach it as a PDF.` };
+      }
+    }
+    inlineBytes += buf.length;
+    if (inlineBytes > AI_LIMITS.inlineBytes) {
+      throw { status: 413, message: 'The attachments are too large together (max about 14 MB). Remove a file or attach fewer pages.' };
+    }
+    parts.push({ inlineData: { mimeType: mime, data: buf.toString('base64') } });
+    accepted.push({ name: s.name, kind: mime === 'application/pdf' ? 'pdf' : 'image', converted: s.kind === 'office' || s.kind === 'convert-image' });
+  }
+  return { parts, accepted, inlineBytes };
+}
+
+/* ---- Per-conversation file memory (bounded, in RAM only) ---- */
+const _aiConvFiles = new Map();          // `${userId}:${convId}` → { parts, names, bytes, at }
+const AI_CONV_TTL_MS = 30 * 60 * 1000;
+const AI_CONV_MAX_TOTAL = 80 * 1024 * 1024;
+function _aiConvSweep() {
+  const now = Date.now();
+  let total = 0;
+  for (const [k, v] of _aiConvFiles) {
+    if (now - v.at > AI_CONV_TTL_MS) _aiConvFiles.delete(k); else total += v.bytes;
+  }
+  if (total > AI_CONV_MAX_TOTAL) {
+    const byAge = [..._aiConvFiles.entries()].sort((a, b) => a[1].at - b[1].at);
+    for (const [k, v] of byAge) {
+      if (total <= AI_CONV_MAX_TOTAL) break;
+      _aiConvFiles.delete(k); total -= v.bytes;
+    }
+  }
+}
+setInterval(_aiConvSweep, 5 * 60 * 1000).unref();
+
+function _aiCleanHistory(raw) {
+  let list = [];
+  try { list = JSON.parse(String(raw || '[]')); } catch (_) { list = []; }
+  if (!Array.isArray(list)) list = [];
+  list = list.slice(-AI_LIMITS.historyItems)
+    .filter(h => h && (h.role === 'user' || h.role === 'assistant') && typeof h.text === 'string' && h.text.trim())
+    .map(h => ({ role: h.role === 'assistant' ? 'model' : 'user', text: h.text.slice(0, 8000) }));
+  let total = 0;
+  for (let i = list.length - 1; i >= 0; i--) {          // keep the most recent turns
+    total += list[i].text.length;
+    if (total > AI_LIMITS.historyChars) { list = list.slice(i + 1); break; }
+  }
+  const merged = [];
+  for (const h of list) {                                 // Gemini wants alternating turns
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === h.role) prev.parts[0].text += '\n\n' + h.text;
+    else merged.push({ role: h.role, parts: [{ text: h.text }] });
+  }
+  while (merged.length && merged[0].role !== 'user') merged.shift();
+  if (merged.length && merged[merged.length - 1].role === 'user') merged.pop();   // current turn is added separately
+  return merged;
+}
+
+const AI_SYSTEM_V2 =
+  'You are AeroGyan\'s AI Doubt Solver — an expert teaching assistant for aerospace engineering students ' +
+  '(IIT Kharagpur level): aerodynamics, propulsion, flight mechanics, structures, orbital mechanics, ' +
+  'and the maths and physics behind them.\n' +
+  '• Explain clearly and correctly. For numerical or derivation questions, list the given data, state the ' +
+  'principle used, then solve step by step with units, and box or bold the final answer.\n' +
+  '• When the student attaches images or documents, read them carefully — including handwriting, diagrams, ' +
+  'tables and figure labels. If a question has several parts, answer each part in order. If something in an ' +
+  'attachment is unreadable, say exactly what you could not read instead of guessing.\n' +
+  '• Use Markdown (headings, lists, tables, code blocks) and LaTeX: $...$ inline and $$...$$ for display maths.\n' +
+  '• Reply in the language the student writes in (English, Hindi or Hinglish).\n' +
+  '• If you are not sure, say so honestly. Keep answers focused; go long only when the problem needs it.';
+
+app.post('/api/ai/chat', requireUser, aiDoubtLimiter, (req, res) => {
+  aiUpload.array('files', AI_LIMITS.files)(req, res, (upErr) => {
+    if (upErr) {
+      const code = upErr.code || '';
+      const message = code === 'LIMIT_FILE_SIZE' ? 'One of the files is larger than 15 MB. Please attach a smaller file.'
+        : code === 'LIMIT_FILE_COUNT' || code === 'LIMIT_UNEXPECTED_FILE' ? `You can attach up to ${AI_LIMITS.files} files per message.`
+        : 'Could not read the upload. Please try again.';
+      return res.status(code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({ success: false, message });
+    }
+    _aiChatHandler(req, res).catch((e) => {
+      console.error('[ai/chat] Fatal:', e);
+      if (!res.headersSent) res.status(500).json({ success: false, message: 'Server error. Please try again.' });
+      else { try { res.write(JSON.stringify({ t: 'error', message: 'Server error. Please try again.' }) + '\n'); res.end(); } catch (_) {} }
+    });
+  });
+});
+
+async function _aiChatHandler(req, res) {
+  res.setHeader('Cache-Control', 'no-store, private');
+  const body = req.body || {};
+  const files = Array.isArray(req.files) ? req.files : [];
+  let question = String(body.question || '').replace(/\r\n/g, '\n').trim();
+
+  if (!question && files.length === 0) {
+    return res.status(400).json({ success: false, message: 'Type a question or attach a file.' });
+  }
+  if (question.length > AI_LIMITS.questionChars) {
+    return res.status(400).json({ success: false, message: `Message too long (max ${AI_LIMITS.questionChars} characters). Attach long text as a .txt file instead.` });
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ success: false, message: 'AI is not configured. Please ask the admin to set GEMINI_API_KEY.' });
+  }
+  const convId = /^[A-Za-z0-9_-]{8,64}$/.test(String(body.convId || '')) ? String(body.convId) : '';
+  const convKey = convId ? req.authUserId + ':' + convId : '';
+
+  /* 1. Attachments */
+  let prepared = { parts: [], accepted: [], inlineBytes: 0 };
+  if (files.length) {
+    try { prepared = await aiPrepareParts(files); }
+    catch (e) {
+      if (e && e.status) return res.status(e.status).json({ success: false, message: e.message });
+      throw e;
+    }
+  }
+
+  /* 2. Conversation memory for files */
+  let earlierParts = [];
+  let filesExpired = false;
+  if (convKey) {
+    if (prepared.parts.length) {
+      const bytes = prepared.inlineBytes + prepared.parts.reduce((n, p) => n + (p.text ? p.text.length : 0), 0);
+      if (bytes <= AI_LIMITS.inlineBytes) {
+        _aiConvFiles.set(convKey, { parts: prepared.parts, names: prepared.accepted.map(a => a.name), bytes, at: Date.now() });
+        _aiConvSweep();
+      }
+    } else {
+      const c = _aiConvFiles.get(convKey);
+      if (c && Date.now() - c.at <= AI_CONV_TTL_MS) {
+        c.at = Date.now();
+        earlierParts = [{ text: `[Files the student attached earlier in this conversation: ${c.names.join(', ')}]` }].concat(c.parts);
+      } else if (String(body.hadFiles) === '1') {
+        filesExpired = true;
+      }
+    }
+  }
+
+  /* 3. Optional course context */
+  let contextText = '';
+  if (body.courseId && mongoose.Types.ObjectId.isValid(String(body.courseId))) {
+    try {
+      const course = await Course.findById(String(body.courseId)).select('name code description').lean();
+      if (course) contextText = `[Course context: ${course.name} (${course.code}). ${(course.description || '').slice(0, 400)}]\n`;
+    } catch (_) {}
+  }
+
+  /* 4. Build the conversation */
+  const contents = _aiCleanHistory(body.history);
+  const userParts = [].concat(earlierParts);
+  if (prepared.accepted.length) {
+    userParts.push({ text: `[The student attached: ${prepared.accepted.map(a => `${a.name} (${a.kind})`).join(', ')}]` });
+  }
+  userParts.push(...prepared.parts);
+  userParts.push({ text: contextText + (question || 'Please read the attached file(s) and solve / explain the question(s) in them step by step.') });
+  contents.push({ role: 'user', parts: userParts });
+
+  /* 5. Stream the answer */
+  const chain = await aiModelChain();
+  if (!chain.length) {
+    return res.status(503).json({ success: false, message: 'AI is not configured — no usable Gemini models were found for this API key.' });
+  }
+
+  res.status(200);
+  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');           // nginx: don't hold the stream back
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+  const send = (obj) => {
+    if (res.writableEnded || res.destroyed) return;
+    try { res.write(JSON.stringify(obj) + '\n'); if (typeof res.flush === 'function') res.flush(); } catch (_) {}
+  };
+  const ac = new AbortController();
+  let clientGone = false;
+  res.on('close', () => { if (!res.writableEnded) { clientGone = true; ac.abort(); } });
+  const ping = setInterval(() => send({ t: 'ping' }), 8000);
+
+  send({ t: 'meta', files: prepared.accepted, earlierFiles: earlierParts.length ? earlierParts.length - 1 : 0 });
+
+  const ai = getGeminiClient();
+  let usedModel = null;
+  let lastError = null;
+  let partial = false;
+  let total = 0;
+  const t0 = Date.now();
+  try {
+    for (const model of chain) {
+      if (clientGone) break;
+      let got = 0;
+      try {
+        const stream = await ai.models.generateContentStream({
+          model, contents,
+          config: { systemInstruction: AI_SYSTEM_V2, temperature: 0.4, maxOutputTokens: 8192, abortSignal: ac.signal }
+        });
+        let finish = '';
+        for await (const chunk of stream) {
+          if (clientGone) break;
+          let t = '';
+          try { t = chunk && chunk.text; } catch (_) { t = ''; }
+          if (t) { got += t.length; send({ t: 'delta', text: t }); }
+          const c0 = chunk && chunk.candidates && chunk.candidates[0];
+          if (c0 && c0.finishReason) finish = String(c0.finishReason);
+          if (!t && chunk && chunk.promptFeedback && chunk.promptFeedback.blockReason) finish = 'SAFETY';
+        }
+        if (got) {
+          usedModel = model; total = got;
+          if (finish === 'MAX_TOKENS') partial = true;
+          break;
+        }
+        lastError = { model, message: finish === 'SAFETY' ? 'blocked by safety' : 'Empty response' };
+        if (finish === 'SAFETY') break;                    // another model would refuse too
+      } catch (err) {
+        if (clientGone) break;
+        const msg = err && err.message ? err.message : String(err);
+        const status = err && (err.status || err.statusCode || (err.error && err.error.code));
+        console.error(`[ai/chat] ❌ ${model}:`, msg.slice(0, 300));
+        lastError = { model, message: msg, status };
+        if (got) { usedModel = model; total = got; partial = true; break; }   // keep what was written
+      }
+    }
+  } finally {
+    clearInterval(ping);
+  }
+  if (clientGone) { console.log('[ai/chat] client stopped the answer'); return; }
+  if (usedModel) {
+    console.log(`[ai/chat] ✅ ${usedModel} · ${total} chars · ${prepared.accepted.length} file(s) · ${Date.now() - t0} ms`);
+    send({ t: 'done', model: usedModel, partial, filesExpired });
+  } else {
+    send({ t: 'error', message: aiFriendlyError(lastError) });
+  }
+  res.end();
+}
 /* ============================================================
    ════════════════════════════════════════════════════════════
    /* ============================================================

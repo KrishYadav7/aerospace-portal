@@ -172,3 +172,31 @@ pm2 reload all                    # graceful reload (use restart only if reload 
 Check: log in as admin, open a PowerPoint material. The server log shows `[render] ✅ LibreOffice found` and `[render] ✅ … → …_pptx-render.pdf`.
 Admin diagnostic (JSON): `GET /api/admin/render/status` (with the admin token).
 Optional env: `SOFFICE_PATH=/path/to/soffice`, `RENDER_TIMEOUT_MS=300000`.
+
+---
+
+## 10. AI Doubt Solver v2 (2026-10-04)
+
+### What students get
+- **Attach files**: images (PNG/JPG/WebP/HEIC; GIF/BMP converted), PDFs, Word/PowerPoint/Excel (converted to PDF by the same LibreOffice the viewer uses) and text/code/CSV/LaTeX/notebooks. Up to 6 files, 15 MB each, ~14 MB together.
+- **Paste & drop**: paste a screenshot straight into the box (Ctrl/Cmd+V), drag files onto the chat, or tap **Photo** on a phone to snap a question. Big phone photos are shrunk in the browser before upload.
+- **Long text**: up to 8,000 characters typed or pasted; anything longer is attached automatically as `pasted-text.txt`.
+- **Maths**: a symbol palette that inserts LaTeX, plus a live preview of the maths while typing.
+- **Voice typing** (Chrome / Edge / Android / Safari).
+- **Live answers**: the answer streams in as it is written; **Stop**, **Regenerate**, **Edit** the last question, **Continue** a cut-off answer, **Copy**, and one-tap follow-ups ("Explain more simply", "Another worked example", "Practice question").
+- **Real conversations**: earlier messages are sent as context, and the files of a chat stay available for follow-ups ("now part (b)") for 30 minutes.
+- Answers can now be selected and copied (the rest of the site stays copy-protected).
+- The chat survives a page reload (same tab only, cleared when the tab closes).
+
+### Server
+- New `POST /api/ai/chat` (multipart, streamed NDJSON). Files are checked by their actual content (not by name), kept only in memory, never written to disk.
+- The AI rate limit (10/min) now counts per signed-in account. It used to trust a `userId` sent in the request body, which could be faked.
+- Model list filters out models that cannot answer (TTS, image-generation, embeddings…). Order: Pro → Flash → older. Override with `AI_MODELS=gemini-2.5-flash,gemini-2.5-pro` in `.env`.
+- Longer answers allowed (8192 output tokens; Gemini 2.5 counts its "thinking" in that budget, so 2048 cut answers short). The old `/api/ai/solve-doubt` (course-page box) gets the same fixes.
+
+### nginx (only if your config overrides the defaults)
+```nginx
+client_max_body_size 20m;      # attachments (default 1m would reject them)
+proxy_read_timeout   120s;     # long derivations (the server also sends keep-alive pings every 8 s)
+```
+Streaming needs no extra nginx setting — the response sends `X-Accel-Buffering: no`.

@@ -306,30 +306,9 @@
         <div class="ai-chat-shell">
           <div class="ai-chat-messages" id="aiChatMessages"></div>
 
-          <div class="ai-chat-composer">
-            <textarea
-              id="aiHomeInput"
-              class="ai-composer-input"
-              placeholder="Ask a doubt… e.g. Explain Bernoulli's equation with an example"
-              rows="1"
-              maxlength="2000"
-              oninput="aiHomeAutoGrow(this)"
-              onkeydown="aiHomeKeydown(event)"></textarea>
-            <div class="ai-composer-row">
-              <span class="ai-composer-hint">
-                <i class="fas fa-keyboard"></i>
-                <strong>Enter</strong> to send · <strong>Shift+Enter</strong> for new line
-              </span>
-              <div class="ai-composer-btns">
-                <button type="button" class="ai-clear-btn" onclick="resetAIHomeChat()" title="Clear conversation">
-                  <i class="fas fa-trash-alt"></i>
-                </button>
-                <button type="button" class="ai-send-btn" id="aiHomeSendBtn" onclick="askAIDoubtHome()">
-                  <i class="fas fa-paper-plane"></i> Ask AI
-                </button>
-              </div>
-            </div>
-          </div>
+          <!-- Composer is built by app.js (_aiComposerHTML): attachments,
+               paste/drop, camera, maths keys + preview, voice, stop. -->
+          <div class="ai-chat-composer" id="aiComposer"></div>
         </div>
       </section>
       <!-- STUDENT HOME -->
