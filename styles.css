@@ -14856,7 +14856,8 @@ body.aero-logged-out #appHeader .user-info {
 .render-icon { width: 58px; height: 58px; border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; background: linear-gradient(135deg, #f97316, #ef4444); margin-bottom: 4px; }
 .render-card strong { font-size: 16px; color: var(--text-primary); }
 .render-card span { font-size: 13.5px; color: var(--text-secondary); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.render-card small { font-size: 12px; color: var(--text-tertiary); }
+.render-card small { font-size: 12px; color: var(--text-tertiary); line-height: 1.45; }
+.render-card .render-cancel { margin-top: 6px; min-width: 110px; }
 .render-bar { width: 100%; height: 5px; border-radius: 999px; background: var(--bg-surface-3); overflow: hidden; margin: 6px 0 2px; }
 .render-bar i { display: block; width: 40%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--brand-500), #06b6d4); animation: renderSlide 1.1s ease-in-out infinite; }
 @keyframes renderSlide { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
@@ -14894,4 +14895,111 @@ body.aero-logged-out #appHeader .user-info {
   .ms-viewers-row { grid-template-columns: minmax(0, 1fr) auto; }
   .ms-viewers-row > span:nth-child(4), .ms-viewers-head > span:nth-child(4) { display: none; }
   .ms-viewers-row > span:nth-child(2) { display: none; }
+}
+
+/* ============================================================
+   ⭐ MOBILE / TABLET HEADER + HAMBURGER  (2026-10-04b)
+   ------------------------------------------------------------
+   ≤ 860px only — desktop is untouched.
+   • Row 1: brand on the left, ☰ pinned to the top-RIGHT corner.
+   • Row 2: search / bell / theme / streak / avatar (unchanged).
+   • The menu is a floating panel under the header: it fades and
+     slides in (opacity + transform only — no layout reflow, no
+     page jump) and closes on choice / outside tap / Esc.
+   • The ☰ is drawn with CSS bars (morphs to ✕), so it is always
+     centred and never shows an empty box while icon fonts load.
+   ============================================================ */
+.nav-toggle-bars { position: relative; display: block; width: 20px; height: 14px; pointer-events: none; }
+.nav-toggle-bars > span {
+  position: absolute; left: 0; width: 100%; height: 2px; border-radius: 2px;
+  background: currentColor;
+  transition: transform .25s cubic-bezier(.4,0,.2,1), opacity .2s ease, top .25s cubic-bezier(.4,0,.2,1);
+}
+.nav-toggle-bars > span:nth-child(1) { top: 0; }
+.nav-toggle-bars > span:nth-child(2) { top: 6px; }
+.nav-toggle-bars > span:nth-child(3) { top: 12px; }
+.nav-toggle.is-open .nav-toggle-bars > span:nth-child(1) { top: 6px; transform: rotate(45deg); }
+.nav-toggle.is-open .nav-toggle-bars > span:nth-child(2) { opacity: 0; transform: scaleX(.3); }
+.nav-toggle.is-open .nav-toggle-bars > span:nth-child(3) { top: 6px; transform: rotate(-45deg); }
+
+@media (max-width: 860px) {
+  /* Row 1 — brand left, toggle hard right */
+  #appHeader .brand { flex: 1 1 auto !important; min-width: 0; }   /* order stays 0 → always first */
+  #appHeader .brand-text { min-width: 0; }
+  #appHeader .brand-text h1,
+  #appHeader .brand-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #appHeader #navToggle {
+    order: 2;
+    margin: 0 0 0 auto;
+    flex: 0 0 44px;
+    width: 44px; height: 44px; min-width: 44px; min-height: 44px;
+    padding: 0;
+    align-items: center; justify-content: center;
+    border-radius: 12px;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  #appHeader #navToggle:focus-visible { outline: 2px solid var(--accent-400, #22d3ee); outline-offset: 2px; }
+  #appHeader #navToggle.is-open { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.3); }
+
+  /* Row 2 — the icon cluster */
+  #appHeader .user-info { order: 3; }
+
+  /* The menu panel */
+  #appHeader #mainNav {
+    position: absolute !important;
+    top: 100%; left: 0; right: 0;
+    z-index: 190;
+    order: 4;
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    justify-content: flex-start !important;
+    align-items: stretch !important;
+    gap: 6px !important;
+    margin: 0 !important;
+    padding: 12px 14px 16px !important;
+    max-height: min(72vh, 520px) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    background: #0d1124;
+    border-bottom: 1px solid var(--header-border);
+    border-radius: 0 0 18px 18px;
+    box-shadow: 0 18px 40px rgba(2,6,23,.45);
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-8px);
+    pointer-events: none;
+    transition: opacity .22s ease, transform .22s cubic-bezier(.4,0,.2,1), visibility 0s linear .22s;
+    will-change: opacity, transform;
+  }
+  [data-theme="dark"] #appHeader #mainNav { background: #12141a; }
+  [data-theme="dim"]  #appHeader #mainNav { background: #191924; }
+  #appHeader #mainNav.open {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+    pointer-events: auto;
+    transition: opacity .22s ease, transform .22s cubic-bezier(.4,0,.2,1), visibility 0s;
+  }
+  #appHeader #mainNav a {
+    width: 100%;
+    flex: 0 0 auto !important;
+    justify-content: flex-start;
+    padding: 12px 16px !important;
+    min-height: 46px;
+    font-size: 15px !important;
+    border-radius: 12px;
+    margin: 0 !important;
+    background: rgba(255,255,255,.06);
+  }
+  #appHeader #mainNav a:hover { background: rgba(255,255,255,.12); }
+  #appHeader #mainNav a.active {
+    background: linear-gradient(135deg, var(--brand-500), var(--brand-600));
+  }
+  #appHeader #mainNav a i { width: 20px; text-align: center; }
+  #appHeader #mainNav a.nav-ai-btn { margin-left: 0 !important; }
+}
+@media (max-width: 860px) and (prefers-reduced-motion: reduce) {
+  #appHeader #mainNav, #appHeader #mainNav.open, .nav-toggle-bars > span { transition: none !important; }
 }

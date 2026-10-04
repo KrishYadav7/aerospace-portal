@@ -846,22 +846,62 @@ function originalNameForRender(name) {
   return m ? (m[1] + '.' + m[2]) : null;
 }
 
-let _sofficeBin = null;          // resolved binary, false = unavailable
+/* ---- LibreOffice discovery ---------------------------------------
+   Found once and cached. If it is missing we re-check at most once a
+   minute (it used to be cached as "missing" until the next restart,
+   so installing LibreOffice on a running server did nothing). */
+let _sofficeBin = null;            // resolved binary path once found
+let _sofficeVersion = '';
+let _sofficeMissingAt = 0;         // last time a full search found nothing
+let _sofficeSearch = null;         // in-flight search (shared)
+
+/* LibreOffice needs a writable HOME (fontconfig cache, temp files).
+   pm2 / systemd sometimes start Node with HOME unset or read-only. */
+const _LO_TMP = require('os').tmpdir();
+function _sofficeEnv() {
+  let home = process.env.HOME || '';
+  let writable = false;
+  try { if (home) { fs.accessSync(home, fs.constants.W_OK); writable = true; } } catch (_) {}
+  if (writable) return process.env;
+  home = path.join(_LO_TMP, 'aero-lo-home');
+  try { fs.mkdirSync(home, { recursive: true }); } catch (_) {}
+  return Object.assign({}, process.env, { HOME: home });
+}
+
 async function getSofficeBinary() {
-  if (_sofficeBin !== null) return _sofficeBin;
-  const candidates = [process.env.SOFFICE_PATH, 'soffice', 'libreoffice',
-    '/usr/bin/soffice', '/usr/lib/libreoffice/program/soffice',
-    '/opt/libreoffice/program/soffice', '/Applications/LibreOffice.app/Contents/MacOS/soffice'].filter(Boolean);
-  for (const bin of candidates) {
-    const ok = await new Promise(resolve => {
-      execFile(bin, ['--version'], { timeout: 20000 }, (err) => resolve(!err));
-    });
-    if (ok) { _sofficeBin = bin; console.log('[render] ✅ LibreOffice found:', bin); return bin; }
-  }
-  _sofficeBin = false;
-  console.error('[render] ❌ LibreOffice is NOT installed — PowerPoint/Word/Excel files cannot be shown in the viewer. ' +
-                'Install it: sudo apt-get install -y libreoffice-impress libreoffice-writer libreoffice-calc');
-  return false;
+  if (_sofficeBin) return _sofficeBin;
+  if (_sofficeSearch) return _sofficeSearch;
+  if (_sofficeMissingAt && Date.now() - _sofficeMissingAt < 60 * 1000) return false;
+  _sofficeSearch = (async () => {
+    const candidates = [process.env.SOFFICE_PATH, 'soffice', 'libreoffice',
+      '/usr/bin/soffice', '/usr/bin/libreoffice', '/usr/local/bin/soffice',
+      '/usr/lib/libreoffice/program/soffice', '/usr/lib64/libreoffice/program/soffice',
+      '/opt/libreoffice/program/soffice', '/snap/bin/libreoffice',
+      '/Applications/LibreOffice.app/Contents/MacOS/soffice'];
+    try {
+      for (const d of fs.readdirSync('/opt')) {
+        if (/^libreoffice/i.test(d)) candidates.push(path.join('/opt', d, 'program', 'soffice'));
+      }
+    } catch (_) {}
+    for (const bin of [...new Set(candidates.filter(Boolean))]) {
+      const out = await new Promise(resolve => {
+        execFile(bin, ['--version'], { timeout: 30000, env: _sofficeEnv() },
+          (err, stdout) => resolve(err ? null : (String(stdout || '').trim() || 'LibreOffice')));
+      });
+      if (out) {
+        _sofficeBin = bin;
+        _sofficeVersion = out.split('\n')[0].slice(0, 120);
+        _sofficeMissingAt = 0;
+        console.log('[render] ✅ LibreOffice found:', bin, '·', _sofficeVersion);
+        return bin;
+      }
+    }
+    _sofficeMissingAt = Date.now();
+    console.error('[render] ❌ LibreOffice is NOT installed — PowerPoint/Word/Excel files cannot be shown in the viewer. ' +
+                  'Install it: sudo apt-get install -y libreoffice-impress libreoffice-writer libreoffice-calc');
+    return false;
+  })();
+  try { return await _sofficeSearch; } finally { _sofficeSearch = null; }
 }
 setTimeout(() => { getSofficeBinary().catch(() => {}); }, 3000).unref();
 
@@ -872,65 +912,245 @@ async function _ensureLocalOriginal(diskName, cloudUrl) {
   if (fs.existsSync(fp)) return fp;
   const src = cloudUrl || readCloudSidecar(diskName);
   if (!src || !/^https:\/\//.test(src)) return null;
+  return (await _downloadTo(src, fp)) ? fp : null;
+}
+
+/* Download a remote file to `destPath` (atomic: temp file + rename).
+   Refuses HTML pages (e.g. a Google-Drive "share" link instead of the
+   file itself) and anything over 150 MB. */
+const OFFICE_MAX_REMOTE_BYTES = 150 * 1024 * 1024;
+async function _downloadTo(srcUrl, destPath) {
+  const tmp = destPath + '.dl' + crypto.randomBytes(3).toString('hex');
   try {
-    const r = await fetch(src);
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 120000);
+    let r;
+    try { r = await fetch(srcUrl, { signal: ac.signal, redirect: 'follow' }); }
+    finally { clearTimeout(t); }
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    const ct = String(r.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('text/html')) throw Object.assign(new Error('link is a web page, not a file'), { code: 'NOT_A_FILE' });
+    const len = Number(r.headers.get('content-length') || 0);
+    if (len && len > OFFICE_MAX_REMOTE_BYTES) throw new Error('file too large');
     const buf = Buffer.from(await r.arrayBuffer());
-    await fs.promises.writeFile(fp, buf);
-    console.log('[render] ☁️  restored original from Cloudinary:', diskName);
-    return fp;
+    if (buf.length > OFFICE_MAX_REMOTE_BYTES) throw new Error('file too large');
+    if (!buf.length) throw new Error('empty file');
+    await fs.promises.writeFile(tmp, buf);
+    await fs.promises.rename(tmp, destPath);
+    console.log('[render] ☁️  fetched original:', path.basename(destPath), '(' + Math.round(buf.length / 1024) + ' KB)');
+    return true;
   } catch (e) {
-    console.warn('[render] could not restore', diskName, e.message);
-    return null;
+    fs.promises.rm(tmp, { force: true }).catch(() => {});
+    console.warn('[render] could not fetch', path.basename(destPath), '·', e.message);
+    if (e.code === 'NOT_A_FILE') throw e;
+    return false;
   }
 }
 
-/* One LibreOffice process at a time (it shares a profile and is memory
-   hungry); duplicate requests for the same file share one job. */
-let _renderChain = Promise.resolve();
-const _renderJobs = new Map();
+/* ---- Where is this material's office file? -----------------------
+   • /uploads/<name>.pptx                → the file on disk (normal case)
+   • https://…/deck.pptx (Cloudinary etc) → fetched once to a private,
+     unguessable local name  ro-<hmac>.pptx
+   • legacy base64 `fileData`            → decoded once to ro-<hmac>.pptx
+   Returns null when the material has no office file at all. */
+const DERIVED_OFFICE_RE = /^ro-[a-f0-9]{24}[._]/;
+function _officeExtOf(str) {
+  const clean = String(str || '').split('?')[0].split('#')[0];
+  const ext = path.extname(clean).toLowerCase();
+  return OFFICE_RENDER_EXTS.has(ext) ? ext : '';
+}
+function _derivedOfficeName(seed, ext) {
+  const h = crypto.createHmac('sha256', String(JWT_SECRET)).update('office-src:' + seed).digest('hex').slice(0, 24);
+  return 'ro-' + h + ext;
+}
+function describeOfficeSource(mat) {
+  if (!mat) return null;
+  const rawUrl = String(mat.url || '').trim();
+  if (rawUrl.startsWith('/uploads/')) {
+    const diskName = path.basename(rawUrl.split('?')[0]);
+    if (isOfficeFile(diskName) && /^[A-Za-z0-9._-]+$/.test(diskName)) {
+      return { kind: 'disk', diskName, cloudUrl: String(mat.cloudUrl || '') };
+    }
+    return null;
+  }
+  if (/^https?:\/\//i.test(rawUrl)) {
+    let ext = '';
+    try { ext = _officeExtOf(new URL(rawUrl).pathname); } catch (_) {}
+    if (!ext) ext = _officeExtOf(mat.fileName);
+    if (ext) return { kind: 'remote', diskName: _derivedOfficeName('url:' + rawUrl, ext), remoteUrl: rawUrl };
+    return null;
+  }
+  const fd = typeof mat.fileData === 'string' ? mat.fileData : '';
+  const fdExt = _officeExtOf(mat.fileName);
+  if (fd && fdExt) {
+    return { kind: 'inline', diskName: _derivedOfficeName('inline:' + String(mat._id) + ':' + fd.length, fdExt), fileData: fd };
+  }
+  if (/^https:\/\//i.test(String(mat.cloudUrl || ''))) {
+    let ext = '';
+    try { ext = _officeExtOf(new URL(mat.cloudUrl).pathname); } catch (_) {}
+    if (!ext) ext = _officeExtOf(mat.fileName);
+    if (ext) return { kind: 'remote', diskName: _derivedOfficeName('url:' + mat.cloudUrl, ext), remoteUrl: String(mat.cloudUrl) };
+  }
+  return null;
+}
 
-function renderOfficeToPdf(diskName, cloudUrl) {
-  if (!/^[A-Za-z0-9._-]+$/.test(diskName) || !isOfficeFile(diskName)) {
-    return Promise.reject(new Error('Not a convertible file.'));
+/* Put the original on local disk; resolves to its path or throws. */
+async function _materializeOfficeSource(src) {
+  const fp = path.join(UPLOAD_DIR, src.diskName);
+  if (fs.existsSync(fp)) return fp;
+  if (src.kind === 'disk') {
+    const p = await _ensureLocalOriginal(src.diskName, src.cloudUrl);
+    if (p) return p;
+    throw Object.assign(new Error('Original file is missing on the server.'), { code: 'SOURCE_MISSING' });
+  }
+  if (src.kind === 'remote') {
+    let ok = false;
+    try { ok = await _downloadTo(src.remoteUrl, fp); }
+    catch (e) { if (e.code === 'NOT_A_FILE') throw Object.assign(new Error(e.message), { code: 'NOT_A_FILE' }); }
+    if (ok) return fp;
+    throw Object.assign(new Error('Could not fetch the original file.'), { code: 'SOURCE_MISSING' });
+  }
+  if (src.kind === 'inline') {
+    const b64 = src.fileData.replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
+    const buf = Buffer.from(b64, 'base64');
+    if (!buf.length) throw Object.assign(new Error('Stored file is empty.'), { code: 'SOURCE_MISSING' });
+    const tmp = fp + '.dl' + crypto.randomBytes(3).toString('hex');
+    await fs.promises.writeFile(tmp, buf);
+    await fs.promises.rename(tmp, fp);
+    return fp;
+  }
+  throw Object.assign(new Error('Unknown source.'), { code: 'SOURCE_MISSING' });
+}
+
+/* Run soffice in its own process group so a hung conversion can be
+   killed completely (soffice is a wrapper around soffice.bin — killing
+   only the wrapper left the real process holding the profile lock and
+   every later conversion hung). */
+const { spawn: _spawnProc } = require('child_process');
+const _LO_PROFILE_DIR = path.join(_LO_TMP, 'aero-lo-profile');
+function _runSoffice(bin, args, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let child;
+    let finished = false;
+    let stderr = '';
+    try {
+      child = _spawnProc(bin, args, {
+        env: _sofficeEnv(),
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'ignore', 'pipe']
+      });
+    } catch (e) { return reject(e); }
+    const killAll = () => {
+      try {
+        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch (_) { try { child.kill('SIGKILL'); } catch (__) {} }
+    };
+    const timer = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      killAll();
+      reject(Object.assign(new Error('Conversion took too long and was stopped.'), { code: 'RENDER_TIMEOUT' }));
+    }, timeoutMs);
+    if (child.stderr) child.stderr.on('data', d => { if (stderr.length < 4000) stderr += String(d); });
+    child.on('error', (e) => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error((stderr.trim().split('\n')[0] || ('soffice exited with code ' + code)).slice(0, 300)));
+    });
+  });
+}
+
+/* One LibreOffice process at a time (it shares a profile and is memory
+   hungry); duplicate requests for the same file share one job. A failed
+   file is remembered for 2 minutes so polling clients get the error
+   instead of starting the same doomed conversion again and again. */
+let _renderChain = Promise.resolve();
+const _renderJobs = new Map();          // diskName → Promise<outName>
+const _renderFailures = new Map();      // diskName → { at, code, message }
+const RENDER_FAIL_TTL_MS = 2 * 60 * 1000;
+const RENDER_TIMEOUT_MS = Math.max(60000, Number(process.env.RENDER_TIMEOUT_MS) || 300000);
+const _renderStats = { ok: 0, failed: 0, lastOkAt: null, lastError: null };
+
+function _recentRenderFailure(diskName) {
+  const f = _renderFailures.get(diskName);
+  if (!f) return null;
+  if (Date.now() - f.at > RENDER_FAIL_TTL_MS) { _renderFailures.delete(diskName); return null; }
+  return f;
+}
+
+/* `src` is a describeOfficeSource() result, or a bare disk name (legacy
+   callers / pre-render after upload). */
+function renderOfficeToPdf(src, cloudUrl) {
+  if (typeof src === 'string') src = { kind: 'disk', diskName: src, cloudUrl: cloudUrl || '' };
+  const diskName = src && src.diskName;
+  if (!diskName || !/^[A-Za-z0-9._-]+$/.test(diskName) || !isOfficeFile(diskName)) {
+    return Promise.reject(Object.assign(new Error('Not a convertible file.'), { code: 'NOT_RENDERABLE' }));
   }
   const outName = renderNameFor(diskName);
   const outPath = path.join(UPLOAD_DIR, outName);
   if (fs.existsSync(outPath)) return Promise.resolve(outName);
   if (_renderJobs.has(diskName)) return _renderJobs.get(diskName);
+  const recent = _recentRenderFailure(diskName);
+  if (recent) return Promise.reject(Object.assign(new Error(recent.message), { code: recent.code }));
 
   const job = (_renderChain = _renderChain.catch(() => {}).then(async () => {
     if (fs.existsSync(outPath)) return outName;
     const bin = await getSofficeBinary();
     if (!bin) throw Object.assign(new Error('Presentation viewer is not set up on the server yet.'), { code: 'NO_RENDERER' });
-    const src = await _ensureLocalOriginal(diskName, cloudUrl);
-    if (!src) throw new Error('Original file is missing on the server.');
+    const srcPath = await _materializeOfficeSource(src);
 
-    const workDir = path.join(require('os').tmpdir(), 'aero-render-' + crypto.randomBytes(6).toString('hex'));
+    const workDir = path.join(_LO_TMP, 'aero-render-' + crypto.randomBytes(6).toString('hex'));
     await fs.promises.mkdir(workDir, { recursive: true });
-    const profile = 'file://' + path.join(require('os').tmpdir(), 'aero-lo-profile');
+    /* Convert a COPY with a plain ASCII name inside the work dir, so odd
+       characters in the stored name can never confuse LibreOffice. */
+    const workSrc = path.join(workDir, 'source' + path.extname(diskName).toLowerCase());
     const t0 = Date.now();
     try {
-      await new Promise((resolve, reject) => {
-        execFile(bin, ['-env:UserInstallation=' + profile, '--headless', '--norestore', '--nolockcheck',
-                       '--convert-to', 'pdf', '--outdir', workDir, src],
-          { timeout: 180000, maxBuffer: 8 * 1024 * 1024 },
-          (err, _o, stderr) => err ? reject(new Error((stderr || err.message || '').trim().split('\n')[0] || 'convert failed')) : resolve());
-      });
+      await fs.promises.copyFile(srcPath, workSrc);
+      await _runSoffice(bin, ['-env:UserInstallation=file://' + _LO_PROFILE_DIR, '--headless', '--invisible',
+                              '--norestore', '--nolockcheck', '--nodefault', '--nofirststartwizard',
+                              '--convert-to', 'pdf', '--outdir', workDir, workSrc], RENDER_TIMEOUT_MS);
       const produced = (await fs.promises.readdir(workDir)).find(f => f.toLowerCase().endsWith('.pdf'));
-      if (!produced) throw new Error('LibreOffice produced no PDF.');
+      if (!produced) throw new Error('LibreOffice produced no PDF (the file may be damaged or password-protected).');
+      const st = await fs.promises.stat(path.join(workDir, produced));
+      if (!st.size) throw new Error('LibreOffice produced an empty PDF.');
       const tmpFinal = path.join(UPLOAD_DIR, outName.replace(/\.pdf$/, '') + '-tmp' + crypto.randomBytes(3).toString('hex') + '.pdf');
       await fs.promises.copyFile(path.join(workDir, produced), tmpFinal);
       await fs.promises.rename(tmpFinal, outPath);
       console.log(`[render] ✅ ${diskName} → ${outName} in ${Date.now() - t0} ms`);
+      _renderStats.ok++; _renderStats.lastOkAt = new Date();
       linearizePdf(outPath).catch(() => {});
       return outName;
+    } catch (e) {
+      /* A crashed / killed run can leave a broken profile behind — start
+         the next conversion with a fresh one. */
+      if (e.code === 'RENDER_TIMEOUT' || !/no pdf|empty pdf/i.test(e.message || '')) {
+        fs.promises.rm(_LO_PROFILE_DIR, { recursive: true, force: true }).catch(() => {});
+      }
+      throw e;
     } finally {
       fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
     }
   }));
   _renderJobs.set(diskName, job);
-  job.finally(() => _renderJobs.delete(diskName)).catch(() => {});
+  job.then(() => { _renderFailures.delete(diskName); }, (e) => {
+    _renderStats.failed++;
+    _renderStats.lastError = { at: new Date(), file: diskName, message: String(e && e.message || e).slice(0, 300) };
+    console.warn('[render] ❌', diskName, '·', e && e.message);
+    /* "LibreOffice missing" is not remembered per file — the binary
+       check has its own 1-minute retry, so installing it takes effect
+       without waiting for every file's failure memo to expire. */
+    if (!(e && e.code === 'NO_RENDERER')) {
+      _renderFailures.set(diskName, { at: Date.now(), code: (e && e.code) || 'RENDER_FAILED', message: String(e && e.message || 'Render failed') });
+    }
+  }).finally(() => _renderJobs.delete(diskName));
   return job;
 }
 
@@ -943,9 +1163,26 @@ function queueOfficeRender(diskName) {
   }, 800);
 }
 
+function _renderErrorPayload(e) {
+  const code = (e && e.code) || 'RENDER_FAILED';
+  const map = {
+    NO_RENDERER:    [503, 'This presentation can’t be displayed yet — the server is missing its document renderer. Please tell the admin.'],
+    SOURCE_MISSING: [404, 'The original file for this material is missing on the server. Please ask the admin to upload it again.'],
+    NOT_A_FILE:     [422, 'This material links to a web page, not to the file itself. Please ask the admin to upload the PowerPoint file directly.'],
+    NOT_RENDERABLE: [400, 'This material has no PowerPoint, Word or Excel file attached.'],
+    RENDER_TIMEOUT: [500, 'This file is very large and could not be prepared in time. Please ask the admin to upload it as a PDF.']
+  };
+  const [status, message] = map[code] || [500, 'Could not prepare this file for viewing. The file may be damaged or password-protected — please tell the admin.'];
+  return { status, body: { success: false, code, message } };
+}
+
 /* GET /api/courses/:courseId/materials/:materialId/render
-   → { success, url, pages?, previewOnly } — a signed URL to the
-     rendered PDF (or its preview slice) for the in-app viewer. */
+   → 200 { success, url, previewOnly, kind, … } — a signed URL to the
+     rendered PDF (or its preview slice) for the in-app viewer.
+   → 202 { pending: true, retryAfter } — still converting; the client
+     asks again. Every request answers within ~20 s, so a slow first
+     conversion can never hit the reverse-proxy timeout (that used to
+     surface as "Server returned HTML instead of JSON (HTTP 504)"). */
 app.get('/api/courses/:courseId/materials/:materialId/render', attachUserFromToken, async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, private');
@@ -961,11 +1198,13 @@ app.get('/api/courses/:courseId/materials/:materialId/render', attachUserFromTok
     if (!access.allowed && !access.canPreview) {
       return res.status(403).json({ success: false, code: access.reason, message: 'This file is part of premium content. Purchase it or subscribe to unlock.' });
     }
-    const rawUrl = String(mat.url || '');
-    if (!rawUrl.startsWith('/uploads/')) {
-      return res.status(400).json({ success: false, message: 'This material has no uploaded file.' });
+    const src = describeOfficeSource(mat);
+    if (!src) {
+      const p = _renderErrorPayload({ code: 'NOT_RENDERABLE' });
+      return res.status(p.status).json(p.body);
     }
-    const diskName = path.basename(rawUrl);
+    const diskName = src.diskName;
+    const isSlides = /\.(pptx?|ppsx?|potx?|odp)$/i.test(diskName);
     {
       const g = checkBulkAccess(req.authUser, mat._id);
       if (g.paused) {
@@ -973,48 +1212,77 @@ app.get('/api/courses/:courseId/materials/:materialId/render', attachUserFromTok
           message: `You've opened a lot of materials very quickly. Please wait ${g.minutes} minute(s) and try again.` });
       }
     }
-    logMaterialAccess(req, course, mat, /\.(pptx?|ppsx?|potx?|odp)$/i.test(diskName) ? 'slides' : 'document', !access.allowed);
-    if (!isOfficeFile(diskName)) {
-      return res.status(400).json({ success: false, message: 'Only PowerPoint, Word and Excel files are rendered.' });
+    logMaterialAccess(req, course, mat, isSlides ? 'slides' : 'document', !access.allowed);
+
+    let outName = renderNameFor(diskName);
+    if (!fs.existsSync(path.join(UPLOAD_DIR, outName))) {
+      const waitMs = Math.min(25000, Math.max(0, Number.isFinite(Number(req.query.wait)) ? Number(req.query.wait) : 20000));
+      let outcome;
+      const job = renderOfficeToPdf(src);
+      job.catch(() => {});                                     // never an unhandled rejection
+      let waitTimer;
+      try {
+        outcome = await Promise.race([
+          job.then(name => ({ name }), err => ({ err })),
+          new Promise(resolve => { waitTimer = setTimeout(() => resolve({ pending: true }), waitMs); })
+        ]);
+      } finally { clearTimeout(waitTimer); }
+      if (outcome.pending) {
+        return res.status(202).json({
+          success: false, pending: true, code: 'RENDERING', retryAfter: 2,
+          kind: isSlides ? 'presentation' : 'document',
+          message: 'This file is still being prepared — please press Read again in a few seconds.'
+        });
+      }
+      if (outcome.err) {
+        const p = _renderErrorPayload(outcome.err);
+        return res.status(p.status).json(p.body);
+      }
+      outName = outcome.name;
     }
 
-    let outName;
-    try {
-      outName = await renderOfficeToPdf(diskName, mat.cloudUrl);
-    } catch (e) {
-      console.warn('[render] failed for', diskName, '·', e.message);
-      return res.status(e.code === 'NO_RENDERER' ? 503 : 500).json({
-        success: false, code: e.code || 'RENDER_FAILED',
-        message: e.code === 'NO_RENDERER'
-          ? 'This presentation can’t be displayed yet — the server is missing its document renderer. Please tell the admin.'
-          : 'Could not prepare this file for viewing. Please try again in a minute.'
-      });
-    }
-
-    let serveName = outName;
     let previewOnly = false;
     if (!access.allowed && access.canPreview) {
       const pv = await generatePreviewPdf(outName, access.previewPercent);
       if (!pv) return res.status(403).json({ success: false, message: 'Preview is not available for this file.' });
-      previewOnly = true;     // the /uploads route swaps in the .preview slice
+      previewOnly = true;
     }
 
-    let url = '/uploads/' + encodeURIComponent(serveName);
-    if (req.authUser) {
-      const tok = signUploadToken(serveName, String(req.authUser._id));
-      url += `?su=${encodeURIComponent(String(req.authUser._id))}&st=${encodeURIComponent(tok)}`;
-      if (previewOnly) url = '/uploads/' + encodeURIComponent(serveName + '.preview') +
-        `?su=${encodeURIComponent(String(req.authUser._id))}&st=${encodeURIComponent(signUploadToken(serveName + '.preview', String(req.authUser._id)))}`;
-    }
+    /* Always a signed URL (guests sign with a fixed id) — derived files
+       are ONLY reachable through a valid signature. */
+    const signId = req.authUser ? String(req.authUser._id) : '000000000000000000000000';
+    const serveName = previewOnly ? outName + '.preview' : outName;
+    const url = '/uploads/' + encodeURIComponent(serveName) +
+      `?su=${encodeURIComponent(signId)}&st=${encodeURIComponent(signUploadToken(serveName, signId))}`;
+
     res.json({
       success: true, url, previewOnly,
       hasFullAccess: !!access.allowed,
       previewPercent: access.canPreview ? access.previewPercent : 0,
-      kind: /\.(pptx?|ppsx?|potx?|odp)$/i.test(diskName) ? 'presentation'
+      kind: isSlides ? 'presentation'
           : /\.(xlsx?|ods)$/i.test(diskName) ? 'spreadsheet' : 'document'
     });
   } catch (e) {
     console.error('[render]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* Admin: is the document renderer working? */
+app.get('/api/admin/render/status', requireAdminAuth, async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const bin = await getSofficeBinary();
+    res.json({
+      success: true,
+      libreoffice: bin ? { path: bin, version: _sofficeVersion } : null,
+      installHint: bin ? '' : 'sudo apt-get install -y libreoffice-impress libreoffice-writer libreoffice-calc fonts-crosextra-carlito fonts-crosextra-caladea fonts-liberation fonts-dejavu',
+      inProgress: _renderJobs.size,
+      recentFailures: [..._renderFailures.entries()].slice(-10).map(([file, f]) => ({ file, code: f.code, message: f.message, at: new Date(f.at) })),
+      stats: _renderStats,
+      timeoutMs: RENDER_TIMEOUT_MS
+    });
+  } catch (e) {
     res.status(500).json({ success: false, message: 'Server error.' });
   }
 });
@@ -1056,6 +1324,14 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
       return serveUploadFile(filename, req, res);
     }
     console.warn('[uploads] ⚠️ invalid signed token for', filename);
+  }
+
+  /* Files fetched / decoded for the in-app viewer (ro-…) have no course
+     record to check against, so they are reachable ONLY through the
+     signed URL issued by /render (or by an admin). */
+  if (DERIVED_OFFICE_RE.test(filename) && !_isAdminUser(req.authUser)) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(403).json({ success: false, message: 'This link has expired. Please open the file again from the course page.' });
   }
 
   /* ============================================================
@@ -5799,7 +6075,8 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
       }
 
       /* ⭐ Invisible tracing + bulk guard (office files are handled by /render) */
-      if (req.query.meta === '1' && !isOfficeFile(path.basename(String(mat.url || '')))) {
+      const _officeSrc = describeOfficeSource(mat);
+      if (req.query.meta === '1' && !_officeSrc) {
         const g = checkBulkAccess(req.authUser, mat._id);
         if (g.paused) {
           return res.status(429).json({ success: false, code: 'BULK_PAUSE',
@@ -5867,12 +6144,17 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
           isCoursePremium: !!(course.isPremium === true || course.isPremium === 'true'),
           isMatPremium:    !!(mat.isPremium    === true || mat.isPremium    === 'true'),
           /* ⭐ Office files are viewed via /render (in-app, no download) */
-          renderable:      rawUrl.startsWith('/uploads/') && isOfficeFile(path.basename(rawUrl))
+          renderable:      !!_officeSrc
         });
       }
 
       if (!mat.fileData) {
         return res.status(404).json({ success: false, message: 'No file attached.' });
+      }
+      /* Stored PowerPoint / Word / Excel data is shown through /render —
+         never handed out raw (that would be a download). */
+      if (_officeSrc && !_isAdminUser(req.authUser)) {
+        return res.status(403).json({ success: false, code: 'VIEW_IN_APP', message: 'This file can only be viewed inside AeroGyan.' });
       }
 
       res.json({

@@ -140,3 +140,35 @@ After deploy, run `BASE_URL=https://<your-domain> npm run smoke` against product
 - Add a real `Content-Security-Policy` once the inline `onclick=` handlers are migrated.
 - Delete `server.js.bak`, `server.js.before-dedup` and `server.js.broken-*` from the project folder. They are now git-ignored but still on disk.
 - Run `npm audit` on your machine (it was blocked here).
+
+---
+
+## 9. Update 2026-10-04b — screenshot popup, mobile menu, PowerPoint loading
+
+### What changed
+| Area | Before | Now |
+|---|---|---|
+| "Content protected" window | Also appeared on tab switch, app switch, notifications, focus loss (looked random, repeated) | Appears **only** on a capture attempt: PrintScreen, Cmd/Ctrl+Shift+3/4/5/6/S, Ctrl/Cmd+P, screen-recording API, and the 3-finger screenshot gesture on Android phones. One attempt = one window (no extra toasts). |
+| Mobile/tablet ☰ menu | Button had no click handler; floated next to the logo | Pinned to the top-right corner; CSS-drawn icon (morphs to ✕); menu fades/slides in; closes on choice, outside tap, Esc, or growing to desktop. Same fix on the landing page. |
+| PowerPoint / Word / Excel | One long request — slow first conversion hit the proxy timeout ("Server returned HTML instead of JSON (HTTP 504)"); Cloudinary/base64 files never opened; LibreOffice "missing" cached until restart | Converts in the background; the app shows "Preparing slides…" and asks again every few seconds. Cloudinary links and old base64 files are converted too. LibreOffice is re-detected every minute. Hung conversions are killed cleanly. Clear messages for missing/damaged files. |
+| Slides viewer on phones | Oversized blank slide placeholders / duplicated slides | Slides laid out once at the right size |
+
+### Honest limit
+A website is never told when a phone takes a screenshot with its hardware buttons (Power + Volume) or its built-in screen recorder — on Android or iPhone. No web code can block or detect that. Only a native app can (Android `FLAG_SECURE`). The invisible access log still records who opened every file.
+
+### Deploy (no downtime)
+```bash
+# on the VPS, in the project folder
+git pull
+npm install                       # pdf-lib (preview slices) — safe to re-run
+# one-time: the document renderer + fonts that match Office documents
+sudo apt-get update
+sudo apt-get install -y libreoffice-impress libreoffice-writer libreoffice-calc \
+     fonts-crosextra-carlito fonts-crosextra-caladea fonts-liberation fonts-dejavu
+soffice --version                 # should print "LibreOffice 7.x/24.x …"
+npm test
+pm2 reload all                    # graceful reload (use restart only if reload is unavailable)
+```
+Check: log in as admin, open a PowerPoint material. The server log shows `[render] ✅ LibreOffice found` and `[render] ✅ … → …_pptx-render.pdf`.
+Admin diagnostic (JSON): `GET /api/admin/render/status` (with the admin token).
+Optional env: `SOFFICE_PATH=/path/to/soffice`, `RENDER_TIMEOUT_MS=300000`.

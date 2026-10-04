@@ -1,28 +1,31 @@
 /* ============================================================
    AEROGYAN CONTENT SHIELD — site-wide capture deterrence
-   (2026-10-04)
+   (rev. 2026-10-04b)
    ------------------------------------------------------------
-   What a web page CAN do, and this file does:
-     1. Black-out cover the instant a screenshot shortcut is
-        pressed (PrintScreen, Win+Shift+S, Cmd+Shift+3/4/5/6,
-        Ctrl+Shift+S) and poison the clipboard.
-     2. Cover all content while the window loses focus or the
-        tab is hidden (Snipping Tool / screen-capture overlays
-        take focus; mobile app-switcher thumbnails are blank).
-     3. (No visible watermarks — removed at the owner's request.
-        Leak tracing is done invisibly by the server access log.)
-     4. Printing disabled (Ctrl/Cmd+P and the print stylesheet).
-     5. No right-click, text selection, drag-to-desktop, copy,
-        view-source or DevTools shortcuts outside form fields.
-     6. Browser screen-recording API (getDisplayMedia) blocked.
-     7. Every capture attempt is logged on the server against
-        the student's account (visible to admins).
+   The "Content protected" window appears ONLY at the moment a
+   capture is attempted — never on tab switches, app switches,
+   notifications or focus changes (that behaviour was removed).
 
-   What NO website can do: stop a phone camera, stop OS-level
-   capture on every device (e.g. Android/iOS screenshot buttons,
-   macOS Cmd+Shift+3 fires before the page is told), or remove
-   hardware/HDMI capture. The server-side access log records who
-   opened which paper and when, so a leak can still be traced.
+   Triggers:
+     1. Screenshot shortcuts — PrintScreen, Cmd+Shift+3/4/5/6,
+        Ctrl/Cmd+Shift+S — black-out cover + clipboard poisoned.
+     2. Three-finger touch — the screenshot gesture on many Android
+        phones (Xiaomi/Redmi/POCO, OnePlus, Oppo, Realme, Vivo…).
+        The cover goes up on the first touch, before the OS saves
+        the image.
+     3. Print (Ctrl/Cmd+P) and the browser screen-recording API
+        (getDisplayMedia).
+   Always on: no right-click, text selection, drag-to-desktop,
+   copy, view-source or DevTools shortcuts outside form fields;
+   printing blanked by the print stylesheet. No visible
+   watermarks (removed at the owner's request). Every attempt is
+   logged on the server against the student's account.
+
+   What NO website can do: detect or block the hardware-button
+   screenshot on a phone (Power+Volume on Android/iPhone) or a
+   phone's built-in screen recorder — the browser is never told.
+   Only a native app can (Android FLAG_SECURE). The server-side
+   access log still records who opened which file and when.
    ============================================================ */
 (function () {
   'use strict';
@@ -30,7 +33,6 @@
   window.__AERO_SHIELD__ = true;
 
   const CFG = Object.assign({
-    coverOnBlur: true,        // hide content when the window loses focus
     report: true              // log capture attempts to the server
   }, window.AERO_SHIELD_CONFIG || {});
 
@@ -83,7 +85,7 @@
     cover.id = 'aeroShieldCover';
     cover.setAttribute('role', 'alert');
     cover.innerHTML = '<div class="s-ic">🔒</div><strong>Content protected</strong><small id="aeroShieldMsg"></small>';
-    cover.addEventListener('click', () => hide(true));
+    cover.addEventListener('click', () => hide());
     document.body.appendChild(cover);
     return cover;
   }
@@ -92,17 +94,14 @@
     coverReason = reason;
     const msg = cover.querySelector('#aeroShieldMsg');
     if (msg) {
-      msg.textContent = reason === 'capture'
-        ? 'Screenshots and screen recording are not permitted on AeroGyan. This attempt has been recorded.'
-        : 'Content is hidden while AeroGyan is not the active window. Click here or return to continue.';
+      msg.textContent = 'Screenshots and screen recording are not permitted on AeroGyan. This attempt has been recorded.';
     }
     cover.classList.add('on');
     clearTimeout(coverTimer);
-    if (ms) coverTimer = setTimeout(() => hide(false), ms);
+    if (ms) coverTimer = setTimeout(hide, ms);
   }
-  function hide(force) {
+  function hide() {
     if (!cover) return;
-    if (!force && coverReason === 'capture' && coverTimer) return;
     clearTimeout(coverTimer); coverTimer = null;
     cover.classList.remove('on');
     coverReason = '';
@@ -136,8 +135,13 @@
     } catch (e) {}
   }
 
+  /* One capture attempt = one cover. Key auto-repeat and the
+     PrintScreen keydown+keyup pair only extend the cover that is
+     already showing; they never stack a second popup. */
   function onCapture(kind) {
+    const already = !!(cover && cover.classList.contains('on') && coverReason === 'capture');
     show('capture', 2500);
+    if (already) return;
     poisonClipboard();
     report(kind);
   }
@@ -150,10 +154,10 @@
     const k = e.key || '';
     const mod = e.metaKey || e.ctrlKey;
     if (k === 'PrintScreen' || e.keyCode === 44) { e.preventDefault(); onCapture('printscreen'); return; }
-    if (e.shiftKey && (e.metaKey || e.ctrlKey) && ['3', '4', '5', '6', 's', 'S'].includes(k)) {
+    if (e.shiftKey && (e.metaKey || e.ctrlKey) && ['3', '4', '5', '6', 's', 'S', '#', '$', '%', '^'].includes(k)) {
       e.preventDefault(); e.stopPropagation(); onCapture('shortcut'); return;
     }
-    if (mod && (k === 'p' || k === 'P')) { e.preventDefault(); e.stopPropagation(); onCapture('print'); return; }
+    if (mod && !e.shiftKey && (k === 'p' || k === 'P')) { e.preventDefault(); e.stopPropagation(); onCapture('print'); return; }
     if (mod && !e.shiftKey && (k === 's' || k === 'S' || k === 'u' || k === 'U')) { e.preventDefault(); e.stopPropagation(); return; }
     if (k === 'F12' || (mod && e.shiftKey && ['I', 'J', 'C', 'i', 'j', 'c'].includes(k)) ||
         (e.metaKey && e.altKey && ['I', 'J', 'C', 'i', 'j', 'c'].includes(k))) {
@@ -190,43 +194,33 @@
   }, true));
   window.addEventListener('beforeprint', () => { report('print'); });
 
-  /* ---------- 6. Focus / visibility ---------- */
-  let lastFsChange = 0;
-  ['fullscreenchange', 'webkitfullscreenchange'].forEach(ev =>
-    document.addEventListener(ev, () => { lastFsChange = Date.now(); }));
-  let suspendedUntil = 0;
-
-  function blurCoverAllowed() {
-    if (!CFG.coverOnBlur) return false;
-    if (isAdmin()) return false;                       // admins manage files / open pickers all day
-    if (Date.now() < suspendedUntil) return false;
-    if (Date.now() - lastFsChange < 1200) return false; // fullscreen toggles fire blur+focus
-    return true;
+  /* ---------- 6. Mobile screenshot gesture ----------
+     Many Android skins take a screenshot with a three-finger
+     swipe. The page still receives the touchstart, so the cover
+     goes up instantly and is what ends up in the saved image.
+     Nothing else (tab/app switch, notifications, focus loss)
+     shows the cover any more. */
+  let multiTouchActive = false;
+  /* iPhone / iPad: three fingers mean copy / paste / undo there, never
+     a screenshot — so no cover on Apple touch devices (it would only be
+     a false alarm). */
+  const IS_APPLE_TOUCH = /iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
+    (/Macintosh/.test(navigator.userAgent || '') && (navigator.maxTouchPoints || 0) > 1);
+  document.addEventListener('touchstart', (e) => {
+    if (IS_APPLE_TOUCH) return;
+    if (!e.touches || e.touches.length < 3) return;
+    if (inField(e.target)) return;
+    multiTouchActive = true;
+    onCapture('touch-gesture');
+  }, { capture: true, passive: true });
+  function endMultiTouch(e) {
+    if (!multiTouchActive) return;
+    if (e.touches && e.touches.length >= 3) return;
+    multiTouchActive = false;
+    show('capture', 1500);          // keep covered briefly while the OS saves
   }
-  window.addEventListener('blur', () => {
-    if (!blurCoverAllowed()) return;
-    /* Clicking into an embedded player (YouTube iframe) also blurs the
-       window — that's not leaving the site, so don't cover. */
-    setTimeout(() => {
-      const a = document.activeElement;
-      if (a && a.tagName === 'IFRAME') return;
-      if (document.hasFocus && document.hasFocus()) return;
-      show('focus');
-    }, 0);
-  });
-  window.addEventListener('focus', () => { if (coverReason === 'focus') hide(true); });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { if (blurCoverAllowed() || CFG.coverOnBlur) show('focus'); }
-    else if (coverReason === 'focus') setTimeout(() => hide(true), 120);
-  });
-  /* File pickers blur the window — callers can pause the focus cover. */
-  document.addEventListener('click', (e) => {
-    const t = e.target && e.target.closest && e.target.closest('input[type="file"], label');
-    if (t && (t.matches('input[type="file"]') || t.querySelector('input[type="file"]'))) suspendedUntil = Date.now() + 60000;
-  }, true);
-  document.addEventListener('change', (e) => {
-    if (e.target && e.target.matches && e.target.matches('input[type="file"]')) suspendedUntil = Date.now() + 1500;
-  }, true);
+  document.addEventListener('touchend', endMultiTouch, { capture: true, passive: true });
+  document.addEventListener('touchcancel', endMultiTouch, { capture: true, passive: true });
 
   /* ---------- 7. Screen-recording API ---------- */
   try {
@@ -250,7 +244,7 @@
   else boot();
 
   window.AeroShield = {
-    cover: show, uncover: () => hide(true),
-    suspend(ms) { suspendedUntil = Date.now() + (ms || 30000); }
+    cover: show, uncover: () => hide(),
+    suspend() { /* kept for backward compatibility — focus cover removed */ }
   };
 })();

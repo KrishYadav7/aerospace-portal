@@ -13182,6 +13182,7 @@ function _detectDocumentKind(fileName, url) {
    converted), then opens it in the protected PDF viewer.
    ============================================================ */
 let _renderOverlayEl = null;
+let _renderSession = 0;          // bumped on every open / cancel — a stale poll loop stops itself
 function _showRenderOverlay(title, kind) {
   _hideRenderOverlay();
   const el = document.createElement('div');
@@ -13193,35 +13194,74 @@ function _showRenderOverlay(title, kind) {
       <strong>${kind === 'presentation' ? 'Preparing slides…' : 'Preparing document…'}</strong>
       <span>${escapeHtml(title || '')}</span>
       <div class="render-bar"><i></i></div>
-      <small>The first opening can take a few seconds.</small>
+      <small class="render-note">The first opening can take a few seconds.</small>
+      <button type="button" class="btn btn-outline btn-sm render-cancel">Cancel</button>
     </div>`;
+  el.querySelector('.render-cancel').addEventListener('click', () => { _renderSession++; _hideRenderOverlay(); });
   document.body.appendChild(el);
   requestAnimationFrame(() => el.classList.add('active'));
   _renderOverlayEl = el;
+}
+function _setRenderOverlayNote(text) {
+  const n = _renderOverlayEl && _renderOverlayEl.querySelector('.render-note');
+  if (n) n.textContent = text;
 }
 function _hideRenderOverlay() {
   if (_renderOverlayEl) { const e = _renderOverlayEl; _renderOverlayEl = null; e.classList.remove('active'); setTimeout(() => e.remove(), 200); }
 }
 
+/* Office files are converted on the server the first time they are
+   opened. The server answers within ~20 s either with the ready file
+   or with "still preparing" (HTTP 202) — we simply ask again until it
+   is ready, so a big deck never runs into a proxy time-out. */
 async function openRenderedOfficeFile(course, mat, meta, pdfJsPromise) {
-  const kind = _detectDocumentKind(mat.fileName || '', mat.url || '');
-  _showRenderOverlay(mat.title, kind);
-  let data;
-  try {
-    const [, d] = await Promise.all([
-      pdfJsPromise.catch(() => null),
-      fetchJSON(`${API_BASE}/courses/${course.id}/materials/${mat.id}/render?_t=${Date.now()}`)
-    ]);
-    data = d;
-  } catch (e) {
-    _hideRenderOverlay();
-    return showToast(e.message || 'Could not open this file.', 'error');
+  const kind = _detectDocumentKind(mat.fileName || (meta && meta.fileName) || '', mat.url || '');
+  _showRenderOverlay(mat.title, kind === 'unknown' ? 'presentation' : kind);
+  const session = ++_renderSession;
+  const cancelled = () => session !== _renderSession;
+  const started = Date.now();
+  const MAX_WAIT_MS = 6 * 60 * 1000;
+  const endpoint = `${API_BASE}/courses/${course.id}/materials/${mat.id}/render`;
+  let data = null;
+  let transientErrors = 0;
+  pdfJsPromise.catch(() => null);
+  while (true) {
+    if (cancelled()) return;
+    try {
+      data = await fetchJSON(`${endpoint}?wait=20000&_t=${Date.now()}`);
+      transientErrors = 0;
+    } catch (e) {
+      /* Network blip or a proxy error page (502/503/504): the conversion
+         keeps running on the server — try again a few times. */
+      const msg = String((e && e.message) || '');
+      transientErrors++;
+      if (transientErrors > 4 || !/network|HTTP 50[234]|empty response/i.test(msg)) {
+        _hideRenderOverlay();
+        return showToast(msg || 'Could not open this file.', 'error');
+      }
+      data = { pending: true, retryAfter: 3 };
+    }
+    if (cancelled()) return;
+    if (data && data.success && data.url) break;
+    if (!(data && data.pending)) break;
+    const waited = Date.now() - started;
+    if (waited > MAX_WAIT_MS) {
+      _hideRenderOverlay();
+      return showToast('This file is taking unusually long to prepare. Please try again in a few minutes.', 'error');
+    }
+    _setRenderOverlayNote(waited < 25000
+      ? 'Converting for the in-app viewer — large files take a little longer the first time.'
+      : `Still preparing… ${Math.round(waited / 1000)} s (this happens only on the first opening).`);
+    await new Promise(r => setTimeout(r, Math.max(1, Number(data.retryAfter) || 2) * 1000));
   }
+  if (cancelled()) return;
+
+  try { await pdfJsPromise; } catch (_) {}
   _hideRenderOverlay();
   if (!data || !data.success || !data.url) {
     return showToast((data && data.message) || 'Could not open this file.', 'error');
   }
-  if (!window.pdfjsLib) return showToast('Could not load the viewer. Please refresh.', 'error');
+  if (!window.pdfjsLib || !window.PDFViewer) return showToast('Could not load the viewer. Please refresh the page.', 'error');
 
   window.PDFViewer.open({
     url:            data.url,
@@ -13396,6 +13436,16 @@ async function viewFileOnline(courseId, materialId) {
        The original file is never downloaded. */
     if (!isPdf && meta && meta.renderable) {
       return openRenderedOfficeFile(course, mat, meta, pdfJsPromise);
+    }
+    /* Older server, or the meta call failed: any PowerPoint / Word / Excel
+       file still goes to the in-app renderer — never to the external
+       DocumentViewer, which cannot show protected office files. */
+    {
+      const _k = _detectDocumentKind(fileName, serverFileUrl || mat.url || '');
+      if (!isPdf && (_k === 'presentation' || _k === 'document' || _k === 'spreadsheet') &&
+          !/\.(csv)(\?|$)/i.test(String(fileName || serverFileUrl || ''))) {
+        return openRenderedOfficeFile(course, mat, meta, pdfJsPromise);
+      }
     }
 
     if (!isPdf && (isDiskUrl || isExternalUrl)) {
@@ -20526,3 +20576,90 @@ window.addEventListener('beforeunload', () => {
   _trafficCloseStream();
   _trafficStopPolling();
 });
+/* ============================================================
+   ⭐ MOBILE / TABLET NAVIGATION (hamburger) — 2026-10-04b
+   ------------------------------------------------------------
+   The ☰ button (#navToggle) previously had no click handler, so
+   on phones and tablets the menu could never open. This wires it
+   up: tap toggles the drop-down panel, which closes again on a
+   menu choice, a tap outside, Esc, a route change, or when the
+   window grows back to desktop width. Desktop (> 860px) never
+   sees the button, so nothing changes there.
+   ============================================================ */
+(function initMobileNav() {
+  if (window.__aeroMobileNav) return;
+  window.__aeroMobileNav = true;
+
+  var MOBILE_MQ = window.matchMedia ? window.matchMedia('(max-width: 860px)') : null;
+
+  function els() {
+    return { btn: document.getElementById('navToggle'), nav: document.getElementById('mainNav') };
+  }
+  function isOpen() {
+    var e = els();
+    return !!(e.nav && e.nav.classList.contains('open'));
+  }
+  function setOpen(open) {
+    var e = els();
+    if (!e.btn || !e.nav) return;
+    e.nav.classList.toggle('open', open);
+    e.btn.classList.toggle('is-open', open);
+    e.btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    e.btn.setAttribute('aria-label', open ? 'Close navigation menu' : 'Open navigation menu');
+    document.body.classList.toggle('aero-nav-open', open);
+  }
+
+  function boot() {
+    var e = els();
+    if (!e.btn || !e.nav) return;
+    e.btn.setAttribute('type', 'button');
+    e.btn.setAttribute('aria-controls', 'mainNav');
+    e.btn.setAttribute('aria-expanded', 'false');
+
+    e.btn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      setOpen(!isOpen());
+    });
+
+    /* Choosing a menu item closes the panel (the item's own
+       onclick still runs — this listener only closes). */
+    e.nav.addEventListener('click', function (ev) {
+      if (ev.target && ev.target.closest && ev.target.closest('a')) setOpen(false);
+    });
+
+    /* Tap / click anywhere else closes it. A tap on the page
+       content underneath only dismisses the menu (it does not also
+       open whatever card was under the finger); taps on the other
+       header buttons (search, bell, profile…) still work. */
+    document.addEventListener('click', function (ev) {
+      if (!isOpen()) return;
+      var t = ev.target;
+      var x = els();
+      if (t && ((x.nav && x.nav.contains(t)) || (x.btn && x.btn.contains(t)))) return;
+      setOpen(false);
+      var header = document.getElementById('appHeader');
+      if (!(header && t && header.contains(t))) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    }, true);
+
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && isOpen()) {
+        setOpen(false);
+        try { els().btn.focus(); } catch (_) {}
+      }
+    });
+    window.addEventListener('hashchange', function () { if (isOpen()) setOpen(false); });
+
+    var onBreakpoint = function () { if (MOBILE_MQ && !MOBILE_MQ.matches && isOpen()) setOpen(false); };
+    if (MOBILE_MQ) {
+      if (MOBILE_MQ.addEventListener) MOBILE_MQ.addEventListener('change', onBreakpoint);
+      else if (MOBILE_MQ.addListener) MOBILE_MQ.addListener(onBreakpoint);
+    }
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();

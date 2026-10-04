@@ -146,20 +146,11 @@
                       ['3','4','5','s','S'].includes(key);
     if (!isPrint && !isMacShot) return;
 
+    /* The site-wide content shield (content-shield.js) shows the single
+       "Content protected" window and poisons the clipboard; here we only
+       blur an open viewer underneath it. No extra toast — one attempt,
+       one message. */
     fireProtectionBlur();
-
-    if (isPrint) {
-      // Poison the clipboard so the OS screenshot paste is useless
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(
-            '⚠️ Content protected — screenshots are not permitted.\n' +
-            'Session: ' + (sessionStorage.getItem('aero_user') ? 'tracked' : 'guest')
-          );
-        }
-      } catch(_) {}
-    }
-    userToast('Screenshots are disabled for this document.', 'error');
   }, true);
 
   /* ------------------------------------------------------------
@@ -1237,8 +1228,7 @@ class VideoPlayer {
     if (key === 'PrintScreen' || e.keyCode === 44) {
       e.preventDefault();
       try { navigator.clipboard.writeText('Screenshots disabled.'); } catch (_) {}
-      this._flashBlur();
-      this._showToast('Screenshots are disabled for this video.');
+      this._flashBlur();   // shield shows the warning — no second toast
       return;
     }
 
@@ -1491,10 +1481,27 @@ class VideoPlayer {
         this.pdfDoc = await pdfjsLib.getDocument(source).promise;
         if (!this.active) return;
 
+        /* Slides: pick the "whole slide fits the screen" zoom BEFORE the
+           first layout, so pages are laid out once at the right size
+           (re-zooming straight after the first pass left oversized blank
+           placeholders and duplicated slides on phones). */
+        if (this.viewMode === 'slides') {
+          try {
+            const p1 = await this.pdfDoc.getPage(1);
+            const vp = p1.getViewport({ scale: 1 });
+            const fit = Math.min((this.bodyEl.clientWidth - 60) / vp.width,
+                                 (this.bodyEl.clientHeight - 60) / vp.height);
+            if (isFinite(fit) && fit > 0) {
+              this.scale = Math.max(0.4, Math.min(3.5, fit));
+              this._updateZoomLabel();
+            }
+          } catch (e) { /* keep default zoom */ }
+          if (!this.active) return;
+        }
+
         await this._renderAllPages();
         this.loaderEl.style.display = 'none';
         if (this.viewMode === 'slides') {
-          try { await this._fitToPage(); } catch (e) {}
           userToast('Tip: press P (or the Present button) for a full-screen slideshow.', 'info');
         }
       } catch (err) {
@@ -1825,6 +1832,10 @@ class VideoPlayer {
       });
     }
     async _renderAllPages() {
+      /* Generation token: if a newer layout pass starts (zoom, fit,
+         resize) while this one is still awaiting, this one stops and
+         never appends its stale placeholders. */
+      const gen = (this._layoutGen = (this._layoutGen || 0) + 1);
       this.pagesEl.innerHTML = '';
       this.pageEls.clear();
       this.textLayers.clear();
@@ -1896,7 +1907,7 @@ class VideoPlayer {
         console.warn('[PDFViewer] placeholder probe failed:', e);
       }
 
-      if (!this.active) return;
+      if (!this.active || gen !== this._layoutGen) return;
 
       /* Create page 1's placeholder */
       const page1El = document.createElement('div');
@@ -1911,7 +1922,7 @@ class VideoPlayer {
 
       /* Render page 1 */
       await this._renderPage(1);
-      if (!this.active) return;
+      if (!this.active || gen !== this._layoutGen) return;
       page1El.dataset.rendered = '1';
 
       /* ⚡ Prefetch page 2 while page 1 is still on screen.
@@ -1942,7 +1953,7 @@ class VideoPlayer {
       if (renderLimit <= 1) return;
 
       const buildRest = () => {
-        if (!this.active) return;
+        if (!this.active || gen !== this._layoutGen) return;
 
         /* Build all placeholder divs in ONE batch via a document
            fragment. This is ~10× faster than appending each div
@@ -2977,22 +2988,18 @@ class VideoPlayer {
       /* Screenshot blocking (unchanged) */
       if (e.key === 'PrintScreen' || e.keyCode === 44) {
         e.preventDefault();
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText('Screenshots disabled.');
-        }
-        userToast('Screenshots are disabled for this document.', 'error');
-        this._flashBlur();
+        this._flashBlur();   // shield shows the warning — no second toast
         return;
       }
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && ['3','4','5','s','S'].includes(e.key)) {
         e.preventDefault(); e.stopPropagation();
-        userToast('Screenshots are disabled.', 'error');
         this._flashBlur();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'p' || e.key === 'S' || e.key === 'P')) {
         e.preventDefault(); e.stopPropagation();
-        userToast('Downloading and printing are disabled.', 'error');
+        /* Ctrl/Cmd+P is already answered by the shield's cover */
+        if (e.key === 's' || e.key === 'S') userToast('Downloading is disabled.', 'error');
         return;
       }
       if (e.key === 'F12' ||
