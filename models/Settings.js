@@ -61,6 +61,35 @@ const certificateTemplateSchema = new mongoose.Schema({
   accentTo:      { type: String, default: '#06b6d4' },
   showCertId:    { type: Boolean, default: true },
   showDate:      { type: Boolean, default: true },
+
+  /* ⭐ v2 designer (2026-10-04) — every field optional, defaults in
+     normalizeCertTemplate() (server.js) so old documents keep working. */
+  preset:             { type: String,  default: 'indigo' },
+  logoType:           { type: String,  default: 'emoji' },   // emoji | image | none
+  logoUrl:            { type: String,  default: '' },
+  logoShape:          { type: String,  default: 'rounded' }, // rounded | circle | square
+  logoTile:           { type: Boolean, default: true },      // gradient tile behind the logo
+  bgStyle:            { type: String,  default: 'solid' },   // solid | gradient | radial | pattern
+  bgColor:            { type: String,  default: '#ffffff' },
+  bgColor2:           { type: String,  default: '#eef2ff' },
+  textColor:          { type: String,  default: '#0f172a' },
+  mutedColor:         { type: String,  default: '#64748b' },
+  nameColor:          { type: String,  default: '#6366f1' },
+  borderColor:        { type: String,  default: '#0f172a' },
+  borderStyle:        { type: String,  default: 'classic' }, // classic | ornate | modern | minimal | none
+  orientation:        { type: String,  default: 'landscape' },
+  titleFont:          { type: String,  default: 'playfair' },
+  nameFont:           { type: String,  default: 'playfair' },
+  showCourseCode:     { type: Boolean, default: true },
+  showSeal:           { type: Boolean, default: false },
+  sealText:           { type: String,  default: 'Verified' },
+  showWatermark:      { type: Boolean, default: false },
+  signatureImageUrl:  { type: String,  default: '' },
+  showSignature2:     { type: Boolean, default: false },
+  signature2Name:     { type: String,  default: '' },
+  signature2Role:     { type: String,  default: '' },
+  signature2ImageUrl: { type: String,  default: '' },
+
   updatedAt:     { type: Date,   default: Date.now }
 }, { _id: false });
 

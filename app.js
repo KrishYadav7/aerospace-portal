@@ -3,37 +3,782 @@
    ============================================================ */
 const API_BASE = '/api';
 /* ============================================================
-   CERTIFICATE SYSTEM — global template cache + defaults
+   ⭐ CERTIFICATE DESIGNER v2 (2026-10-04)
+   ------------------------------------------------------------
+   ONE renderer — buildCertificateHtml() — produces the exact same
+   document for the admin live preview (iframe) and for the
+   certificate a student downloads, so what the admin sees is
+   precisely what gets printed.
+
+   Canvas: A4 at 96 dpi (1123 × 794 landscape / 794 × 1123
+   portrait) so "Print → Save as PDF" is 1:1 with the design.
    ============================================================ */
+const CERT_DESIGN_W = { landscape: 1123, portrait: 794 };
+const CERT_DESIGN_H = { landscape: 794, portrait: 1123 };
+
+const CERT_FONT_STACKS = {
+  playfair:     { family: "'Playfair Display', Georgia, serif",   google: 'Playfair+Display:ital,wght@0,600;0,700;0,800;1,600', label: 'Playfair Display — classic serif' },
+  cinzel:       { family: "'Cinzel', 'Times New Roman', serif",   google: 'Cinzel:wght@500;600;700',                            label: 'Cinzel — engraved capitals' },
+  cormorant:    { family: "'Cormorant Garamond', Georgia, serif", google: 'Cormorant+Garamond:ital,wght@0,600;0,700;1,600',    label: 'Cormorant Garamond — elegant' },
+  merriweather: { family: "'Merriweather', Georgia, serif",       google: 'Merriweather:wght@700;900',                          label: 'Merriweather — sturdy serif' },
+  greatvibes:   { family: "'Great Vibes', cursive",               google: 'Great+Vibes',                                        label: 'Great Vibes — handwritten script' },
+  inter:        { family: "'Inter', system-ui, sans-serif",       google: 'Inter:wght@400;500;600;700;800',                     label: 'Inter — modern sans' }
+};
+
+/* Ready-made colour combinations. Each one sets every colour at once;
+   the admin can then fine-tune any single swatch. */
+const CERT_PRESETS = [
+  { id: 'indigo',   name: 'Royal Indigo',  bgStyle: 'solid',    bgColor: '#ffffff', bgColor2: '#eef2ff', textColor: '#0f172a', mutedColor: '#64748b', nameColor: '#4f46e5', borderColor: '#0f172a', accentFrom: '#6366f1', accentTo: '#06b6d4' },
+  { id: 'ivory',    name: 'Classic Gold',  bgStyle: 'radial',   bgColor: '#fffdf6', bgColor2: '#f5ecd7', textColor: '#2b2118', mutedColor: '#7c6a55', nameColor: '#8a6a2f', borderColor: '#b08d57', accentFrom: '#b08d57', accentTo: '#e6c88a' },
+  { id: 'midnight', name: 'Midnight Gold', bgStyle: 'gradient', bgColor: '#0f172a', bgColor2: '#1e293b', textColor: '#f8fafc', mutedColor: '#cbd5e1', nameColor: '#fbbf24', borderColor: '#f59e0b', accentFrom: '#f59e0b', accentTo: '#fde68a' },
+  { id: 'tiranga',  name: 'Tiranga',       bgStyle: 'solid',    bgColor: '#fffaf3', bgColor2: '#f0fdf4', textColor: '#1e293b', mutedColor: '#64748b', nameColor: '#1e3a8a', borderColor: '#1e3a8a', accentFrom: '#ff9933', accentTo: '#138808' },
+  { id: 'emerald',  name: 'Emerald',       bgStyle: 'gradient', bgColor: '#f0fdf4', bgColor2: '#ecfeff', textColor: '#052e16', mutedColor: '#4b6358', nameColor: '#047857', borderColor: '#065f46', accentFrom: '#059669', accentTo: '#34d399' },
+  { id: 'ocean',    name: 'Ocean Blue',    bgStyle: 'pattern',  bgColor: '#f0f9ff', bgColor2: '#e0f2fe', textColor: '#0c4a6e', mutedColor: '#4b6a80', nameColor: '#0369a1', borderColor: '#0c4a6e', accentFrom: '#0369a1', accentTo: '#38bdf8' },
+  { id: 'crimson',  name: 'Crimson',       bgStyle: 'solid',    bgColor: '#fffafa', bgColor2: '#ffe4e6', textColor: '#3f0a14', mutedColor: '#7f5560', nameColor: '#be123c', borderColor: '#4c0519', accentFrom: '#be123c', accentTo: '#fb7185' },
+  { id: 'mono',     name: 'Monochrome',    bgStyle: 'solid',    bgColor: '#ffffff', bgColor2: '#f4f4f5', textColor: '#111827', mutedColor: '#6b7280', nameColor: '#111827', borderColor: '#111827', accentFrom: '#111827', accentTo: '#6b7280' }
+];
+const CERT_PRESET_KEYS = ['bgStyle', 'bgColor', 'bgColor2', 'textColor', 'mutedColor', 'nameColor', 'borderColor', 'accentFrom', 'accentTo'];
+
 const DEFAULT_CERT_TEMPLATE = {
-  orgName:       'Aero Gyan Education',
-  orgSubtitle:   'IIT Kharagpur',
-  title:         'Certificate',
-  subtitle:      'of Completion',
+  orgName: 'Aero Gyan Education', orgSubtitle: 'IIT Kharagpur',
+  title: 'Certificate', subtitle: 'of Completion',
   presentedText: 'This certificate is proudly presented to',
   completedText: 'for successfully completing',
-  signatureName: 'Krish Yadav',
-  signatureRole: 'Course Director',
-  logoEmoji:     '🚀',
-  accentFrom:    '#6366f1',
-  accentTo:      '#06b6d4',
-  showCertId:    true,
-  showDate:      true
+  signatureName: 'Krish Yadav', signatureRole: 'Course Director',
+  logoEmoji: '🚀', accentFrom: '#6366f1', accentTo: '#06b6d4',
+  showCertId: true, showDate: true,
+  preset: 'indigo', logoType: 'emoji', logoUrl: '', logoShape: 'rounded', logoTile: true,
+  bgStyle: 'solid', bgColor: '#ffffff', bgColor2: '#eef2ff',
+  textColor: '#0f172a', mutedColor: '#64748b', nameColor: '#4f46e5', borderColor: '#0f172a',
+  borderStyle: 'classic', orientation: 'landscape', titleFont: 'playfair', nameFont: 'playfair',
+  showCourseCode: true, showSeal: false, sealText: 'Verified', showWatermark: false,
+  signatureImageUrl: '', showSignature2: false, signature2Name: '', signature2Role: '', signature2ImageUrl: ''
 };
 let _certTemplateCache = null;
+
+function _certNormalize(t) {
+  const out = Object.assign({}, DEFAULT_CERT_TEMPLATE, t || {});
+  const hex = v => /^#[0-9a-fA-F]{6}$/.test(String(v || ''));
+  CERT_PRESET_KEYS.concat(['accentFrom', 'accentTo']).forEach(k => {
+    if (k !== 'bgStyle' && !hex(out[k])) out[k] = DEFAULT_CERT_TEMPLATE[k];
+  });
+  if (!CERT_FONT_STACKS[out.titleFont]) out.titleFont = 'playfair';
+  if (!CERT_FONT_STACKS[out.nameFont]) out.nameFont = 'playfair';
+  if (out.orientation !== 'portrait') out.orientation = 'landscape';
+  if (out.logoType === 'image' && !out.logoUrl) out.logoType = 'emoji';
+  return out;
+}
 
 async function fetchCertificateTemplate(force) {
   if (!force && _certTemplateCache) return _certTemplateCache;
   try {
     const data = await fetchJSON(`${API_BASE}/settings/certificate?_t=${Date.now()}`);
     if (data && data.success && data.template) {
-      _certTemplateCache = data.template;
+      _certTemplateCache = _certNormalize(data.template);
       return _certTemplateCache;
     }
   } catch (e) { /* silent */ }
-  _certTemplateCache = { ...DEFAULT_CERT_TEMPLATE };
+  _certTemplateCache = _certNormalize({});
   return _certTemplateCache;
 }
+
+function _certRgba(hex, a) {
+  const h = String(hex || '#000000').replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+function _certAbsUrl(u) {
+  if (!u) return '';
+  if (/^(data:|https?:)/i.test(u)) return u;
+  return location.origin + (u.startsWith('/') ? u : '/' + u);
+}
+/* Inline uploaded images as data: URLs so the printed / saved PDF
+   never depends on the network. Falls back to the absolute URL. */
+async function _certInlineImage(u) {
+  if (!u) return '';
+  try {
+    const res = await fetch(_certAbsUrl(u), { cache: 'force-cache' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const blob = await res.blob();
+    return await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  } catch (e) { return _certAbsUrl(u); }
+}
+
+/**
+ * Build a complete certificate HTML document.
+ *   t    — template (any shape; normalised here)
+ *   d    — { studentName, courseName, courseCode, date, certId, images? }
+ *   mode — 'preview' (bare canvas, for the admin iframe) or
+ *          'print'   (toolbar + fit-to-screen + A4 print rules)
+ */
+function buildCertificateHtml(rawT, d, mode) {
+  const t = _certNormalize(rawT);
+  const E = escapeHtml;
+  const land = t.orientation !== 'portrait';
+  const W = CERT_DESIGN_W[t.orientation], H = CERT_DESIGN_H[t.orientation];
+  const img = (d && d.images) || {};
+  const logoSrc  = img.logo  || _certAbsUrl(t.logoUrl);
+  const sig1Src  = img.sig1  || _certAbsUrl(t.signatureImageUrl);
+  const sig2Src  = img.sig2  || _certAbsUrl(t.signature2ImageUrl);
+  const titleFont = CERT_FONT_STACKS[t.titleFont];
+  const nameFont  = CERT_FONT_STACKS[t.nameFont];
+  const fontQuery = Array.from(new Set(['inter', 'playfair', t.titleFont, t.nameFont]))
+    .map(k => 'family=' + CERT_FONT_STACKS[k].google).join('&');
+
+  /* ---- background ---- */
+  let bg = t.bgColor;
+  if (t.bgStyle === 'gradient') bg = `linear-gradient(135deg, ${t.bgColor} 0%, ${t.bgColor2} 100%)`;
+  if (t.bgStyle === 'radial')   bg = `radial-gradient(ellipse at 50% 38%, ${t.bgColor} 0%, ${t.bgColor} 35%, ${t.bgColor2} 100%)`;
+  if (t.bgStyle === 'pattern')  bg = `repeating-linear-gradient(135deg, ${_certRgba(t.accentFrom, .045)} 0 2px, transparent 2px 14px), linear-gradient(180deg, ${t.bgColor}, ${t.bgColor2})`;
+
+  /* ---- logo ---- */
+  const radius = t.logoShape === 'circle' ? '50%' : t.logoShape === 'square' ? '6px' : '16px';
+  let logoInner = '';
+  if (t.logoType === 'image' && logoSrc) logoInner = `<img src="${E(logoSrc)}" alt="">`;
+  else if (t.logoType === 'emoji') logoInner = `<span class="emoji">${E(t.logoEmoji)}</span>`;
+  const logoHtml = logoInner
+    ? `<div class="logo ${t.logoTile ? 'tile' : 'bare'} ${t.logoType}">${logoInner}</div>` : '';
+
+  /* ---- watermark ---- */
+  let watermark = '';
+  if (t.showWatermark) {
+    if (t.logoType === 'image' && logoSrc) watermark = `<div class="wm"><img src="${E(logoSrc)}" alt=""></div>`;
+    else if (t.logoType === 'emoji') watermark = `<div class="wm"><span>${E(t.logoEmoji)}</span></div>`;
+  }
+
+  /* ---- ornate corner flourish ---- */
+  const corner = `<svg viewBox="0 0 120 120" aria-hidden="true"><path d="M6 114V36C6 19 19 6 36 6h78" fill="none" stroke="currentColor" stroke-width="3"/><path d="M18 114V44c0-14 12-26 26-26h70" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/><circle cx="36" cy="36" r="7" fill="currentColor"/><path d="M36 22c6 6 6 22 0 28M22 36c6-6 22-6 28 0" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`;
+  const corners = t.borderStyle === 'ornate'
+    ? ['tl', 'tr', 'bl', 'br'].map(c => `<div class="corner ${c}">${corner}</div>`).join('') : '';
+
+  /* ---- seal ---- */
+  const seal = t.showSeal ? `
+    <div class="seal" aria-hidden="true">
+      <svg viewBox="0 0 120 120">
+        <defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${t.accentFrom}"/><stop offset="1" stop-color="${t.accentTo}"/></linearGradient>
+        <path id="sp" d="M60 60 m-41 0 a41 41 0 1 1 82 0 a41 41 0 1 1 -82 0"/></defs>
+        <g fill="url(#sg)">${Array.from({ length: 24 }, (_, i) => `<circle cx="${60 + 54 * Math.cos(i * Math.PI / 12)}" cy="${60 + 54 * Math.sin(i * Math.PI / 12)}" r="6"/>`).join('')}</g>
+        <circle cx="60" cy="60" r="52" fill="url(#sg)"/>
+        <circle cx="60" cy="60" r="45" fill="none" stroke="#fff" stroke-width="1.2" opacity=".85"/>
+        <text font-family="Inter, sans-serif" font-size="9.5" font-weight="700" letter-spacing="2.4" fill="#fff"><textPath href="#sp" startOffset="50%" text-anchor="middle">${E(String(t.sealText || 'Verified').toUpperCase())} · ${E(String(t.orgName).toUpperCase().slice(0, 22))} ·</textPath></text>
+        <path d="M60 41l5.3 10.8 11.9 1.7-8.6 8.4 2 11.8L60 68.1l-10.6 5.6 2-11.8-8.6-8.4 11.9-1.7z" fill="#fff"/>
+      </svg>
+    </div>` : '';
+
+  /* ---- signatures ---- */
+  const sigBlock = (name, role, src) => `
+    <div class="sign">
+      ${src ? `<img class="sign-img" src="${E(src)}" alt="">` : `<div class="sign-script">${E(name)}</div>`}
+      <div class="sign-line"></div>
+      <div class="sign-name">${E(name)}</div>
+      <div class="sign-role">${E(role)}</div>
+    </div>`;
+  const signatures = sigBlock(t.signatureName, t.signatureRole, sig1Src) +
+    (t.showSignature2 && (t.signature2Name || sig2Src) ? sigBlock(t.signature2Name, t.signature2Role, sig2Src) : '');
+
+  const codeBits = [];
+  if (t.showCourseCode && d.courseCode) codeBits.push(E(d.courseCode));
+  if (t.showDate && d.date) codeBits.push('Completed on ' + E(d.date));
+
+  const isPrint = mode === 'print';
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Certificate — ${E(d.courseName || '')}</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?${fontQuery}&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:${isPrint ? '#e9edf3' : 'transparent'}}
+body{font-family:'Inter',system-ui,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.stage{${isPrint ? 'min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:84px 20px 40px;' : ''}}
+.cert{position:relative;width:${W}px;height:${H}px;background:${bg};color:${t.textColor};overflow:hidden;transform-origin:top center;${isPrint ? 'box-shadow:0 24px 70px rgba(15,23,42,.22);border-radius:6px;' : ''}}
+.frame{position:absolute;inset:${t.borderStyle === 'none' ? '0' : '26px'};display:flex;flex-direction:column;align-items:center;text-align:center;padding:${land ? '44px 76px 40px' : '64px 64px 56px'};z-index:2}
+.cert.classic .frame,.cert.ornate .frame{border:3px solid ${t.borderColor}}
+.cert.classic .frame::before,.cert.ornate .frame::before{content:"";position:absolute;inset:7px;border:1px solid ${_certRgba(t.borderColor, .45)};pointer-events:none}
+.cert.minimal .frame{border:1.5px solid ${_certRgba(t.borderColor, .55)}}
+.cert.modern .frame{inset:0;padding-left:${land ? 120 : 100}px;border:0}
+.cert.modern .band{position:absolute;left:0;top:0;bottom:0;width:${land ? 44 : 36}px;background:linear-gradient(180deg,${t.accentFrom},${t.accentTo});z-index:1}
+.cert.modern .band::after{content:"";position:absolute;right:-10px;top:0;bottom:0;width:4px;background:${_certRgba(t.accentFrom, .35)}}
+.corner{position:absolute;width:${land ? 120 : 110}px;height:${land ? 120 : 110}px;color:${t.accentFrom};z-index:3}
+.corner svg{width:100%;height:100%}
+.corner.tl{top:14px;left:14px}.corner.tr{top:14px;right:14px;transform:scaleX(-1)}
+.corner.bl{bottom:14px;left:14px;transform:scaleY(-1)}.corner.br{bottom:14px;right:14px;transform:scale(-1,-1)}
+.head{display:flex;align-items:center;gap:16px;${land ? '' : 'flex-direction:column;gap:12px;'}}
+.logo{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:${land ? 64 : 76}px;height:${land ? 64 : 76}px;border-radius:${radius};overflow:hidden}
+.logo.tile{background:linear-gradient(135deg,${t.accentFrom},${t.accentTo});box-shadow:0 6px 16px ${_certRgba(t.accentFrom, .28)}}
+.logo.tile.image{padding:8px;background:#fff;border:2px solid ${t.accentFrom}}
+.logo img{width:100%;height:100%;object-fit:contain}
+.logo .emoji{font-size:${land ? 32 : 38}px;line-height:1}
+.org{text-align:${land ? 'left' : 'center'}}
+.org h1{font-size:${land ? 22 : 24}px;font-weight:800;letter-spacing:-.2px;color:${t.textColor}}
+.org span{display:block;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:${t.mutedColor};font-weight:600;margin-top:3px}
+.body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;padding:${land ? '6px 0 10px' : '20px 0'}}
+.title{font-family:${titleFont.family};font-size:${land ? 60 : 64}px;font-weight:800;line-height:1.02;margin:0 0 8px;letter-spacing:${t.titleFont === 'cinzel' ? '3px' : '0'};color:${t.textColor}}
+.subtitle{display:flex;align-items:center;gap:14px;font-size:14px;letter-spacing:4px;text-transform:uppercase;font-weight:700;color:${t.mutedColor};margin-bottom:${land ? 26 : 44}px}
+.subtitle::before,.subtitle::after{content:"";width:46px;height:2px;background:linear-gradient(90deg,${t.accentFrom},${t.accentTo});border-radius:2px}
+.presented{font-size:15px;color:${t.mutedColor}}
+.name{font-family:${nameFont.family};font-size:${t.nameFont === 'greatvibes' ? (land ? 64 : 66) : (land ? 50 : 52)}px;font-weight:${t.nameFont === 'greatvibes' ? 400 : 700};color:${t.nameColor};line-height:1.15;margin:8px 0 14px;padding:0 40px 10px;min-width:${land ? 480 : 520}px;border-bottom:2px solid ${_certRgba(t.borderColor, .25)}}
+.completed{font-size:15px;color:${t.mutedColor};margin-bottom:10px}
+.course{font-size:${land ? 26 : 28}px;font-weight:800;color:${t.textColor};max-width:${land ? 760 : 620}px;line-height:1.25}
+.code{margin-top:8px;font-size:12.5px;letter-spacing:2.2px;text-transform:uppercase;font-weight:700;color:${t.mutedColor}}
+.foot{width:100%;display:flex;justify-content:space-between;align-items:flex-end;gap:24px;padding-top:18px}
+.meta{font-size:11px;color:${t.mutedColor};text-align:left;min-width:180px}
+.meta strong{display:block;margin-top:3px;font-family:'Courier New',monospace;font-size:13px;letter-spacing:.6px;color:${t.textColor}}
+.signs{display:flex;gap:36px;align-items:flex-end}
+.sign{text-align:center;min-width:${land ? 190 : 150}px}
+.sign-img{display:block;margin:0 auto 2px;max-width:190px;max-height:60px;object-fit:contain}
+.sign-script{font-family:'Playfair Display',Georgia,serif;font-style:italic;font-size:23px;color:${t.textColor};margin-bottom:4px;white-space:nowrap}
+.sign-line{height:1.5px;background:${_certRgba(t.textColor, .35)};margin-bottom:6px}
+.sign-name{font-size:13px;font-weight:700;color:${t.textColor}}
+.sign-role{font-size:10.5px;text-transform:uppercase;letter-spacing:1.6px;font-weight:600;color:${t.mutedColor};margin-top:2px}
+.seal{position:absolute;z-index:4;width:${land ? 118 : 124}px;height:${land ? 118 : 124}px;${land ? `right:${t.borderStyle === 'modern' ? 60 : 72}px;top:${t.borderStyle === 'none' ? 40 : 66}px` : 'left:50%;transform:translateX(-50%);bottom:190px'};filter:drop-shadow(0 6px 12px ${_certRgba(t.accentFrom, .35)})}
+.seal svg{width:100%;height:100%}
+.wm{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:1;pointer-events:none;opacity:.06}
+.wm img{width:${land ? 420 : 460}px;height:${land ? 420 : 460}px;object-fit:contain;filter:grayscale(1)}
+.wm span{font-size:${land ? 360 : 400}px;line-height:1;filter:grayscale(1)}
+${isPrint ? `
+.toolbar{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;justify-content:center;gap:10px;padding:14px;background:rgba(233,237,243,.9);backdrop-filter:blur(8px)}
+.toolbar button{padding:11px 20px;border:none;border-radius:10px;font:600 14px Inter,sans-serif;cursor:pointer}
+.btn-print{background:linear-gradient(135deg,${t.accentFrom},${t.accentTo});color:#fff;box-shadow:0 6px 18px ${_certRgba(t.accentFrom, .35)}}
+.btn-close{background:#fff;color:#334155;border:1px solid #cbd5e1!important}
+@page{size:A4 ${t.orientation};margin:0}
+@media print{html,body{background:none}.toolbar{display:none!important}.stage{padding:0;display:block;min-height:0}.cert{transform:none!important;box-shadow:none;border-radius:0;margin:0}}
+` : ''}
+</style></head><body>
+${isPrint ? `<div class="toolbar"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button><button class="btn-close" onclick="window.close()">Close</button></div>` : ''}
+<div class="stage"><div class="cert ${t.borderStyle}" id="cert">
+  ${t.borderStyle === 'modern' ? '<div class="band"></div>' : ''}
+  ${watermark}${corners}${seal}
+  <div class="frame">
+    <div class="head">${logoHtml}<div class="org"><h1>${E(t.orgName)}</h1>${t.orgSubtitle ? `<span>${E(t.orgSubtitle)}</span>` : ''}</div></div>
+    <div class="body">
+      <div class="title">${E(t.title)}</div>
+      ${t.subtitle ? `<div class="subtitle">${E(t.subtitle)}</div>` : '<div style="height:24px"></div>'}
+      <div class="presented">${E(t.presentedText)}</div>
+      <div class="name">${E(d.studentName || 'Student Name')}</div>
+      <div class="completed">${E(t.completedText)}</div>
+      <div class="course">${E(d.courseName || 'Course Name')}</div>
+      ${codeBits.length ? `<div class="code">${codeBits.join(' · ')}</div>` : ''}
+    </div>
+    <div class="foot">
+      ${t.showCertId && d.certId ? `<div class="meta">Certificate ID<strong>${E(d.certId)}</strong></div>` : '<div class="meta"></div>'}
+      <div class="signs">${signatures}</div>
+    </div>
+  </div>
+</div></div>
+${isPrint ? `<script>
+(function(){var c=document.getElementById('cert');function fit(){var s=Math.min(1,(window.innerWidth-40)/${W});c.style.transform='scale('+s+')';c.style.marginBottom=(-(1-s)*${H})+'px';}
+window.addEventListener('resize',fit);fit();window.addEventListener('beforeprint',function(){c.style.transform='none';c.style.marginBottom='0';});window.addEventListener('afterprint',fit);})();
+</script>` : ''}
+</body></html>`;
+}
+
+/* ============================================================
+   STUDENT — generate & open the certificate
+   ============================================================ */
+async function generateCertificate(courseId) {
+  const course = findCourse(courseId);
+  if (!course) return showToast('Course not found.', 'error');
+
+  const elig = checkCertificateEligibility(course);
+  if (!elig.eligible) {
+    return showToast(elig.message || 'You are not eligible for this certificate yet.', 'error');
+  }
+
+  /* Open the window synchronously — browsers block window.open()
+     after an await, so we grab the handle first and fill it in later. */
+  const win = window.open('', '_blank');
+  if (!win) return showToast('Please allow popups to view your certificate.', 'error');
+  win.document.write(
+    '<html><head><title>Generating certificate…</title></head>' +
+    '<body style="font-family:Inter,system-ui,sans-serif;padding:60px 20px;text-align:center;color:#64748b;">' +
+    '<h2 style="font-weight:600;">Generating certificate…</h2>' +
+    '</body></html>'
+  );
+
+  const tmpl = await fetchCertificateTemplate();
+  const [logo, sig1, sig2] = await Promise.all([
+    tmpl.logoType === 'image' ? _certInlineImage(tmpl.logoUrl) : '',
+    _certInlineImage(tmpl.signatureImageUrl),
+    tmpl.showSignature2 ? _certInlineImage(tmpl.signature2ImageUrl) : ''
+  ]);
+
+  const certId = 'AERO-' +
+    (course.code || 'CRS').toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' +
+    String(currentUser._id).slice(-4).toUpperCase() + '-' +
+    Date.now().toString(36).toUpperCase();
+
+  const html = buildCertificateHtml(tmpl, {
+    studentName: currentUser.fullName || currentUser.username,
+    courseName: course.name,
+    courseCode: course.code || '',
+    date: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+    certId,
+    images: { logo, sig1, sig2 }
+  }, 'print');
+
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  showToast('🎓 Certificate generated!', 'success');
+}
+
+/* ============================================================
+   ADMIN — CERTIFICATE DESIGNER
+   ============================================================ */
+let _certDraft = null;        // working copy being edited
+let _certSaved = null;        // last saved copy (for "unsaved changes")
+let _certPreviewTimer = null;
+let _certPreviewRO = null;
+
+function _certSampleData() {
+  return {
+    studentName: 'Aarav Sharma',
+    courseName: 'Aerodynamics I — Incompressible Flow',
+    courseCode: 'AE21001',
+    date: new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }),
+    certId: 'AERO-AE21001-7F3A-' + Date.now().toString(36).slice(-6).toUpperCase()
+  };
+}
+
+function _certColorField(key, label, hint) {
+  const v = _certDraft[key];
+  return `
+    <div class="cd-color" data-key="${key}">
+      <label for="cd_${key}">${label}</label>
+      <div class="cd-color-row">
+        <input type="color" id="cd_${key}" value="${escapeHtml(v)}" data-cert-key="${key}" aria-label="${escapeHtml(label)} colour">
+        <input type="text" class="cd-hex" value="${escapeHtml(v)}" data-cert-hex="${key}" maxlength="7" spellcheck="false" aria-label="${escapeHtml(label)} hex code">
+      </div>
+      ${hint ? `<span class="cd-hint">${hint}</span>` : ''}
+    </div>`;
+}
+
+function _certSegmented(key, options) {
+  return `<div class="cd-seg" role="radiogroup">${options.map(([val, label, icon]) => `
+    <button type="button" role="radio" aria-checked="${_certDraft[key] === val}" class="${_certDraft[key] === val ? 'on' : ''}"
+            onclick="certSetField('${key}', '${val}')">${icon ? `<i class="fas ${icon}"></i> ` : ''}${label}</button>`).join('')}</div>`;
+}
+
+function _certToggle(key, label, icon) {
+  return `
+    <label class="cd-toggle">
+      <span><i class="fas ${icon}"></i> ${label}</span>
+      <button type="button" class="switch" role="switch" aria-checked="${!!_certDraft[key]}" aria-label="${escapeHtml(label)}"
+              onclick="certSetField('${key}', ${!_certDraft[key]})"><span class="switch-track"><span class="switch-thumb"></span></span></button>
+    </label>`;
+}
+
+function _certText(key, label, max, placeholder) {
+  return `<div class="form-group">
+      <label for="cd_${key}">${label}</label>
+      <input type="text" id="cd_${key}" data-cert-key="${key}" maxlength="${max}" value="${escapeHtml(_certDraft[key] || '')}" placeholder="${escapeHtml(placeholder || '')}">
+    </div>`;
+}
+
+function _certUploadBox(key, label, hint) {
+  const url = _certDraft[key];
+  return `
+    <div class="cd-upload ${url ? 'has-file' : ''}">
+      <div class="cd-upload-thumb">${url ? `<img src="${escapeHtml(_certAbsUrl(url))}" alt="">` : '<i class="fas fa-image"></i>'}</div>
+      <div class="cd-upload-body">
+        <strong>${label}</strong>
+        <span class="cd-hint">${hint}</span>
+        <div class="cd-upload-actions">
+          <label class="btn btn-outline btn-sm">
+            <i class="fas fa-upload"></i> ${url ? 'Replace' : 'Upload'}
+            <input type="file" accept="image/png,image/jpeg,image/webp" hidden onchange="certUploadImage(this, '${key}')">
+          </label>
+          ${url ? `<button type="button" class="btn btn-outline btn-sm" onclick="certSetField('${key}', '')"><i class="fas fa-trash"></i> Remove</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+}
+
+async function renderAdminCertificates() {
+  const host = document.getElementById('adminCertificatesContent');
+  if (!host) return;
+  host.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading certificate designer…</p></div>`;
+
+  let tmpl;
+  try { tmpl = await fetchCertificateTemplate(true); }
+  catch (e) { tmpl = _certNormalize({}); }
+  _certSaved = JSON.stringify(tmpl);
+  _certDraft = JSON.parse(_certSaved);
+  _renderCertDesigner();
+}
+
+function _renderCertDesigner() {
+  const host = document.getElementById('adminCertificatesContent');
+  if (!host || !_certDraft) return;
+  const t = _certDraft;
+  const openPanels = new Set(Array.from(host.querySelectorAll('details.cd-panel[open]')).map(d => d.dataset.panel));
+  const isOpen = (id, dflt) => (openPanels.size ? openPanels.has(id) : dflt) ? 'open' : '';
+  const scrollY = window.scrollY;
+
+  host.innerHTML = `
+    <div class="cd-header">
+      <div>
+        <h2><i class="fas fa-certificate"></i> Certificate Designer</h2>
+        <p>One design for every certificate the platform issues. Turn certificates on per course in <em>Courses → Edit → Certificate</em>.</p>
+      </div>
+      <div class="cd-header-actions">
+        <span class="cd-dirty" id="certDirtyBadge" hidden><i class="fas fa-circle"></i> Unsaved changes</span>
+        <button class="btn btn-outline" onclick="certRevert()" id="certRevertBtn" disabled><i class="fas fa-rotate-left"></i> Discard</button>
+        <button class="btn btn-primary" onclick="saveAdminCertificateTemplate()" id="certSaveBtn"><i class="fas fa-save"></i> Save design</button>
+      </div>
+    </div>
+
+    <div class="cd-layout">
+      <div class="cd-controls">
+
+        <details class="cd-panel" data-panel="theme" ${isOpen('theme', true)}>
+          <summary><span class="cd-step">1</span> Colour theme <small>Pick a ready-made combination, then fine-tune below</small></summary>
+          <div class="cd-presets">
+            ${CERT_PRESETS.map(p => `
+              <button type="button" class="cd-preset ${t.preset === p.id ? 'on' : ''}" onclick="certApplyPreset('${p.id}')" aria-pressed="${t.preset === p.id}">
+                <span class="cd-preset-swatch" style="background:${p.bgStyle === 'solid' ? p.bgColor : `linear-gradient(135deg,${p.bgColor},${p.bgColor2})`};border-color:${p.borderColor}">
+                  <span style="background:linear-gradient(135deg,${p.accentFrom},${p.accentTo})"></span>
+                  <em style="color:${p.nameColor}">Aa</em>
+                </span>
+                <span class="cd-preset-name">${p.name}</span>
+              </button>`).join('')}
+          </div>
+        </details>
+
+        <details class="cd-panel" data-panel="logo" ${isOpen('logo', true)}>
+          <summary><span class="cd-step">2</span> Logo &amp; branding <small>Your own logo, an emoji, or none</small></summary>
+          ${_certSegmented('logoType', [['image', 'Upload logo', 'fa-image'], ['emoji', 'Emoji', 'fa-face-smile'], ['none', 'No logo', 'fa-ban']])}
+          ${t.logoType === 'image' || (t.logoType !== 'emoji' && t.logoUrl) ? _certUploadBox('logoUrl', 'Logo image', 'PNG with transparent background works best · up to 5 MB') : ''}
+          ${t.logoType === 'emoji' ? `<div class="form-group" style="max-width:160px;margin-top:12px;">
+              <label for="cd_logoEmoji">Emoji</label>
+              <input type="text" id="cd_logoEmoji" data-cert-key="logoEmoji" maxlength="8" value="${escapeHtml(t.logoEmoji)}" class="cd-emoji-input">
+            </div>` : ''}
+          ${t.logoType !== 'none' ? `
+            <div class="cd-row">
+              <div><label class="cd-label">Logo shape</label>${_certSegmented('logoShape', [['rounded', 'Rounded'], ['circle', 'Circle'], ['square', 'Square']])}</div>
+            </div>
+            ${_certToggle('logoTile', 'Colour tile behind the logo', 'fa-square')}` : ''}
+          <div class="editor-grid-2" style="margin-top:12px;">
+            ${_certText('orgName', 'Organisation name', 80)}
+            ${_certText('orgSubtitle', 'Organisation subtitle', 80, 'e.g. IIT Kharagpur')}
+          </div>
+        </details>
+
+        <details class="cd-panel" data-panel="colors" ${isOpen('colors', false)}>
+          <summary><span class="cd-step">3</span> Colours &amp; background <small>Every colour on the certificate</small></summary>
+          <label class="cd-label">Background style</label>
+          ${_certSegmented('bgStyle', [['solid', 'Solid'], ['gradient', 'Gradient'], ['radial', 'Spotlight'], ['pattern', 'Pattern']])}
+          <div class="cd-color-grid">
+            ${_certColorField('bgColor', 'Background')}
+            ${t.bgStyle !== 'solid' ? _certColorField('bgColor2', 'Background 2', 'Second gradient colour') : ''}
+            ${_certColorField('accentFrom', 'Accent — start')}
+            ${_certColorField('accentTo', 'Accent — end')}
+            ${_certColorField('textColor', 'Main text')}
+            ${_certColorField('mutedColor', 'Secondary text')}
+            ${_certColorField('nameColor', 'Student name')}
+            ${_certColorField('borderColor', 'Border')}
+          </div>
+          <div class="cd-contrast" id="certContrastNote"></div>
+        </details>
+
+        <details class="cd-panel" data-panel="layout" ${isOpen('layout', false)}>
+          <summary><span class="cd-step">4</span> Layout &amp; typography <small>Orientation, frame and fonts</small></summary>
+          <label class="cd-label">Orientation</label>
+          ${_certSegmented('orientation', [['landscape', 'Landscape', 'fa-panorama'], ['portrait', 'Portrait', 'fa-file']])}
+          <label class="cd-label">Frame</label>
+          ${_certSegmented('borderStyle', [['classic', 'Classic'], ['ornate', 'Ornate'], ['modern', 'Modern band'], ['minimal', 'Minimal'], ['none', 'None']])}
+          <div class="editor-grid-2" style="margin-top:12px;">
+            <div class="form-group">
+              <label for="cd_titleFont">Title font</label>
+              <select id="cd_titleFont" data-cert-key="titleFont">
+                ${['playfair', 'cinzel', 'cormorant', 'merriweather', 'inter'].map(k => `<option value="${k}" ${t.titleFont === k ? 'selected' : ''}>${CERT_FONT_STACKS[k].label}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cd_nameFont">Student-name font</label>
+              <select id="cd_nameFont" data-cert-key="nameFont">
+                ${['playfair', 'greatvibes', 'cinzel', 'cormorant', 'inter'].map(k => `<option value="${k}" ${t.nameFont === k ? 'selected' : ''}>${CERT_FONT_STACKS[k].label}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </details>
+
+        <details class="cd-panel" data-panel="text" ${isOpen('text', false)}>
+          <summary><span class="cd-step">5</span> Wording <small>Titles and lines of text</small></summary>
+          <div class="editor-grid-2">
+            ${_certText('title', 'Title', 60)}
+            ${_certText('subtitle', 'Subtitle', 60, 'e.g. of Completion')}
+          </div>
+          ${_certText('presentedText', 'Line above the student name', 140)}
+          ${_certText('completedText', 'Line above the course name', 140)}
+        </details>
+
+        <details class="cd-panel" data-panel="signs" ${isOpen('signs', false)}>
+          <summary><span class="cd-step">6</span> Signatures <small>Names, roles and signature images</small></summary>
+          <div class="editor-grid-2">
+            ${_certText('signatureName', 'Signatory name', 80)}
+            ${_certText('signatureRole', 'Signatory role', 80)}
+          </div>
+          ${_certUploadBox('signatureImageUrl', 'Signature image (optional)', 'A scanned signature on white or transparent · replaces the italic name')}
+          ${_certToggle('showSignature2', 'Add a second signatory', 'fa-user-plus')}
+          ${t.showSignature2 ? `
+            <div class="editor-grid-2" style="margin-top:10px;">
+              ${_certText('signature2Name', 'Second signatory name', 80)}
+              ${_certText('signature2Role', 'Second signatory role', 80)}
+            </div>
+            ${_certUploadBox('signature2ImageUrl', 'Second signature image (optional)', 'PNG / JPG / WebP')}` : ''}
+        </details>
+
+        <details class="cd-panel" data-panel="elements" ${isOpen('elements', false)}>
+          <summary><span class="cd-step">7</span> Elements <small>Show or hide details</small></summary>
+          ${_certToggle('showSeal', 'Gold seal badge', 'fa-award')}
+          ${t.showSeal ? `<div class="form-group" style="max-width:240px;margin:-2px 0 10px 34px;">
+              <label for="cd_sealText">Seal text</label>
+              <input type="text" id="cd_sealText" data-cert-key="sealText" maxlength="20" value="${escapeHtml(t.sealText)}">
+            </div>` : ''}
+          ${_certToggle('showWatermark', 'Faint logo watermark', 'fa-droplet')}
+          ${_certToggle('showCourseCode', 'Course code', 'fa-code')}
+          ${_certToggle('showDate', 'Completion date', 'fa-calendar')}
+          ${_certToggle('showCertId', 'Certificate ID', 'fa-hashtag')}
+        </details>
+
+        <div class="cd-reset">
+          <button type="button" class="btn btn-outline btn-sm" onclick="certResetDefaults()"><i class="fas fa-arrows-rotate"></i> Reset to default design</button>
+        </div>
+      </div>
+
+      <div class="cd-preview-col">
+        <div class="cd-preview-card">
+          <div class="cd-preview-bar">
+            <span><i class="fas fa-eye"></i> Live preview <small>· exactly what students download</small></span>
+            <button type="button" class="btn btn-outline btn-sm" onclick="certOpenFullPreview()"><i class="fas fa-up-right-from-square"></i> Full size</button>
+          </div>
+          <div class="cd-preview-box" id="certPreviewBox">
+            <iframe id="certPreviewFrame" title="Certificate preview" tabindex="-1" sandbox="allow-same-origin"></iframe>
+          </div>
+          <p class="cd-hint" style="margin-top:8px;">Sample student and course shown. A4 ${t.orientation} · prints 1 : 1.</p>
+        </div>
+      </div>
+    </div>`;
+
+  /* wire inputs (text / select / colour / hex) */
+  host.querySelectorAll('[data-cert-key]').forEach(el => {
+    const key = el.dataset.certKey;
+    el.addEventListener('input', () => {
+      _certDraft[key] = el.value;
+      if (el.type === 'color') {
+        const hex = host.querySelector(`[data-cert-hex="${key}"]`);
+        if (hex) hex.value = el.value;
+        _certDraft.preset = 'custom';
+        host.querySelectorAll('.cd-preset.on').forEach(b => { b.classList.remove('on'); b.setAttribute('aria-pressed', 'false'); });
+      }
+      _certAfterChange(el.tagName === 'SELECT');
+    });
+  });
+  host.querySelectorAll('[data-cert-hex]').forEach(el => {
+    const key = el.dataset.certHex;
+    el.addEventListener('input', () => {
+      let v = el.value.trim();
+      if (v && v[0] !== '#') v = '#' + v;
+      if (/^#[0-9a-fA-F]{6}$/.test(v)) {
+        _certDraft[key] = v.toLowerCase();
+        _certDraft.preset = 'custom';
+        const sw = host.querySelector(`[data-cert-key="${key}"]`);
+        if (sw) sw.value = v.toLowerCase();
+        el.classList.remove('bad');
+        _certAfterChange(false);
+      } else {
+        el.classList.toggle('bad', v.length >= 7);
+      }
+    });
+  });
+
+  _setupCertPreviewScaling();
+  _paintCertPreview(true);
+  _updateCertDirty();
+  _updateCertContrast();
+  window.scrollTo(0, scrollY);
+}
+
+function _certAfterChange(structural) {
+  _updateCertDirty();
+  _updateCertContrast();
+  clearTimeout(_certPreviewTimer);
+  _certPreviewTimer = setTimeout(() => _paintCertPreview(), structural ? 0 : 140);
+}
+
+/* Toggles / segmented buttons change which fields are visible → full re-render */
+function certSetField(key, value) {
+  if (!_certDraft) return;
+  _certDraft[key] = value;
+  if (key === 'logoUrl' && !value && _certDraft.logoType === 'image') _certDraft.logoType = 'emoji';
+  _renderCertDesigner();
+}
+
+function certApplyPreset(id) {
+  const p = CERT_PRESETS.find(x => x.id === id);
+  if (!p || !_certDraft) return;
+  CERT_PRESET_KEYS.forEach(k => { _certDraft[k] = p[k]; });
+  _certDraft.preset = id;
+  _renderCertDesigner();
+}
+
+async function certUploadImage(input, key) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return showToast('Please choose a PNG, JPG or WebP image.', 'error');
+  if (file.size > 5 * 1024 * 1024) return showToast('Image must be 5 MB or smaller.', 'error');
+  const box = input.closest('.cd-upload');
+  if (box) box.classList.add('busy');
+  try {
+    showToast('Uploading image…', 'info');
+    const up = await uploadFileToServer(file);
+    if (!up || !up.url) throw new Error('Upload failed.');
+    _certDraft[key] = up.url;
+    if (key === 'logoUrl') _certDraft.logoType = 'image';
+    showToast('Image uploaded — remember to Save design.', 'success');
+    _renderCertDesigner();
+  } catch (e) {
+    showToast(e.message || 'Upload failed.', 'error');
+    if (box) box.classList.remove('busy');
+  }
+}
+
+function certRevert() {
+  if (!_certSaved) return;
+  _certDraft = JSON.parse(_certSaved);
+  _renderCertDesigner();
+  showToast('Changes discarded.', 'info');
+}
+
+async function certResetDefaults() {
+  if (!confirm('Reset the certificate to the default design? Your uploaded logo and signature will be removed from the design (the files stay on the server).')) return;
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/settings/certificate`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reset: true })
+    });
+    if (!data || !data.success) throw new Error((data && data.message) || 'Reset failed.');
+    _certTemplateCache = _certNormalize(data.template);
+    _certSaved = JSON.stringify(_certTemplateCache);
+    _certDraft = JSON.parse(_certSaved);
+    _renderCertDesigner();
+    showToast('Certificate reset to the default design.', 'success');
+  } catch (e) { showToast(e.message || 'Reset failed.', 'error'); }
+}
+
+function certOpenFullPreview() {
+  const w = window.open('', '_blank');
+  if (!w) return showToast('Please allow popups to open the preview.', 'error');
+  w.document.open();
+  w.document.write(buildCertificateHtml(_certDraft, _certSampleData(), 'print'));
+  w.document.close();
+}
+
+function _updateCertDirty() {
+  const dirty = JSON.stringify(_certDraft) !== _certSaved;
+  const badge = document.getElementById('certDirtyBadge');
+  const rev = document.getElementById('certRevertBtn');
+  if (badge) badge.hidden = !dirty;
+  if (rev) rev.disabled = !dirty;
+}
+
+/* WCAG contrast check on the two colour pairs that matter most */
+function _certLum(hex) {
+  const n = parseInt(String(hex).slice(1), 16);
+  const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => { v /= 255; return v <= .03928 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); });
+  return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+}
+function _certContrast(a, b) {
+  const x = _certLum(a), y = _certLum(b);
+  return (Math.max(x, y) + .05) / (Math.min(x, y) + .05);
+}
+function _updateCertContrast() {
+  const el = document.getElementById('certContrastNote');
+  if (!el || !_certDraft) return;
+  const t = _certDraft;
+  const issues = [];
+  if (_certContrast(t.textColor, t.bgColor) < 4.5) issues.push('main text');
+  if (_certContrast(t.mutedColor, t.bgColor) < 3) issues.push('secondary text');
+  if (_certContrast(t.nameColor, t.bgColor) < 3) issues.push('student name');
+  el.innerHTML = issues.length
+    ? `<i class="fas fa-triangle-exclamation"></i> Low contrast on the background: <strong>${issues.join(', ')}</strong>. It may be hard to read when printed.`
+    : `<i class="fas fa-circle-check"></i> All text is readable on this background.`;
+  el.classList.toggle('warn', issues.length > 0);
+}
+
+function _setupCertPreviewScaling() {
+  const box = document.getElementById('certPreviewBox');
+  const frame = document.getElementById('certPreviewFrame');
+  if (!box || !frame) return;
+  const apply = () => {
+    const o = (_certDraft && _certDraft.orientation) || 'landscape';
+    const W = CERT_DESIGN_W[o], H = CERT_DESIGN_H[o];
+    const avail = box.clientWidth;
+    const maxH = o === 'portrait' ? Math.min(window.innerHeight * 0.72, 760) : Infinity;
+    const s = Math.min(avail / W, maxH / H);
+    frame.style.width = W + 'px';
+    frame.style.height = H + 'px';
+    frame.style.transform = `scale(${s})`;
+    box.style.height = Math.round(H * s) + 'px';
+    frame.style.left = Math.max(0, (avail - W * s) / 2) + 'px';
+  };
+  if (_certPreviewRO) _certPreviewRO.disconnect();
+  if (window.ResizeObserver) { _certPreviewRO = new ResizeObserver(apply); _certPreviewRO.observe(box); }
+  else window.addEventListener('resize', apply);
+  apply();
+  _setupCertPreviewScaling._apply = apply;
+}
+
+function _paintCertPreview() {
+  const frame = document.getElementById('certPreviewFrame');
+  if (!frame || !_certDraft) return;
+  frame.srcdoc = buildCertificateHtml(_certDraft, _certSampleData(), 'preview');
+  if (_setupCertPreviewScaling._apply) _setupCertPreviewScaling._apply();
+}
+
+/* Kept for backward compatibility with any old callers */
+function _readCertTemplateFromForm() { return Object.assign({}, _certDraft || DEFAULT_CERT_TEMPLATE); }
+
+async function saveAdminCertificateTemplate() {
+  const btn = document.getElementById('certSaveBtn');
+  const originalHTML = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/settings/certificate`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_certDraft)
+    });
+    if (data && data.success) {
+      _certTemplateCache = _certNormalize(data.template || _certDraft);
+      _certSaved = JSON.stringify(_certTemplateCache);
+      _certDraft = JSON.parse(_certSaved);
+      _updateCertDirty();
+      showToast('✅ Certificate design saved — new certificates use it immediately.', 'success');
+    } else {
+      showToast((data && data.message) || 'Failed to save.', 'error');
+    }
+  } catch (err) {
+    showToast(err.message || 'Server error.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHTML || '<i class="fas fa-save"></i> Save design'; }
+  }
+}
+
+/* Warn before leaving the tab with unsaved certificate changes */
+window.addEventListener('beforeunload', (e) => {
+  if (_certDraft && _certSaved && JSON.stringify(_certDraft) !== _certSaved &&
+      document.getElementById('certSaveBtn')) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 /* Check whether a student meets a course's certificate criteria. */
 function checkCertificateEligibility(course) {
@@ -9272,108 +10017,6 @@ async function openPlaylistPlayer(courseId, playlistId, startIndex = 0) {
 /* ============================================================
    CERTIFICATE
    ============================================================ */
-async function generateCertificate(courseId) {
-  const course = findCourse(courseId);
-  if (!course) return showToast('Course not found.', 'error');
-
-  const elig = checkCertificateEligibility(course);
-  if (!elig.eligible) {
-    return showToast(elig.message || 'You are not eligible for this certificate yet.', 'error');
-  }
-
-  /* Open the window synchronously — browsers block window.open()
-     after an await, so we grab the handle first and fill it in later. */
-  const win = window.open('', '_blank');
-  if (!win) return showToast('Please allow popups to view your certificate.', 'error');
-  win.document.write(
-    '<html><head><title>Generating certificate…</title></head>' +
-    '<body style="font-family:Inter,system-ui,sans-serif;padding:60px 20px;text-align:center;color:#64748b;">' +
-    '<h2 style="font-weight:600;">Generating certificate…</h2>' +
-    '</body></html>'
-  );
-
-  /* Load the certificate template */
-  const tmpl = await fetchCertificateTemplate();
-
-  const studentName = currentUser.fullName || currentUser.username;
-  const completionDate = new Date().toLocaleDateString('en-IN', {
-    day: 'numeric', month: 'long', year: 'numeric'
-  });
-  const certId = 'AERO-' +
-    (course.code || 'CRS').toUpperCase().replace(/[^A-Z0-9]/g, '') + '-' +
-    String(currentUser._id).slice(-4).toUpperCase() + '-' +
-    Date.now().toString(36).toUpperCase();
-
-  const from = tmpl.accentFrom || '#6366f1';
-  const to   = tmpl.accentTo   || '#06b6d4';
-
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Certificate — ${escapeHtml(course.name)}</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800;900&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet">
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:'Inter',sans-serif;background:#f0f4f8;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px 20px}
-    .toolbar{position:fixed;top:20px;right:20px;z-index:100}
-    .btn-print{padding:12px 22px;border:none;border-radius:10px;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;background:linear-gradient(135deg,${from},${to});color:#fff;box-shadow:0 6px 18px rgba(79,70,229,.35)}
-    .cert{position:relative;width:100%;max-width:1000px;aspect-ratio:1.414/1;background:#fff;box-shadow:0 20px 60px rgba(15,23,42,.15);overflow:hidden;border-radius:8px}
-    .cert-inner{position:absolute;inset:20px;border:3px solid #0f172a;border-radius:6px;padding:40px 60px;display:flex;flex-direction:column;align-items:center;text-align:center;z-index:1}
-    .cert-inner::before{content:"";position:absolute;inset:6px;border:1px solid #cbd5e1;border-radius:4px}
-    .cert-logo{width:52px;height:52px;border-radius:12px;background:linear-gradient(135deg,${from},${to});display:flex;align-items:center;justify-content:center;font-size:26px;color:#fff}
-    .cert-header{display:flex;align-items:center;gap:14px;margin-bottom:8px}
-    .cert-dept{text-align:left}
-    .cert-dept h1{font-size:20px;font-weight:800;color:#0f172a}
-    .cert-dept span{font-size:12px;color:#64748b;letter-spacing:1px;text-transform:uppercase}
-    .cert-title{font-family:'Playfair Display',serif;font-size:46px;font-weight:800;color:#0f172a;margin:22px 0 6px;line-height:1}
-    .cert-subtitle{font-size:13px;color:#64748b;letter-spacing:3px;text-transform:uppercase;font-weight:600;margin-bottom:24px}
-    .cert-presented{font-size:14px;color:#475569;margin-bottom:8px}
-    .cert-name{font-family:'Playfair Display',serif;font-size:42px;font-weight:700;color:${from};margin:4px 0 14px;padding-bottom:8px;border-bottom:2px solid #e2e8f0;min-width:400px;display:inline-block}
-    .cert-completed{font-size:14px;color:#475569;margin-bottom:10px}
-    .cert-course{font-size:22px;font-weight:700;color:#0f172a;margin-bottom:4px}
-    .cert-code{font-size:12px;color:#64748b;letter-spacing:2px;text-transform:uppercase;font-weight:600;margin-bottom:34px}
-    .cert-footer{margin-top:auto;width:100%;display:flex;justify-content:space-between;align-items:flex-end;padding-top:20px;border-top:1px solid #e2e8f0}
-    .cert-sign{text-align:center;min-width:180px}
-    .cert-sign-line{font-family:'Playfair Display',serif;font-size:22px;font-style:italic;color:#0f172a;margin-bottom:4px;border-bottom:1.5px solid #cbd5e1;padding-bottom:4px}
-    .cert-sign-role{font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:1.5px;font-weight:600}
-    .cert-meta{text-align:center;font-size:11px;color:#94a3b8}
-    .cert-meta strong{color:#475569;font-family:'Courier New',monospace;font-size:12px}
-    @page{size:A4 landscape;margin:0}
-    @media print{body{background:#fff;padding:0}.toolbar{display:none!important}.cert{box-shadow:none;border-radius:0;width:100vw;height:100vh;max-width:none;aspect-ratio:auto}}
-  </style></head><body>
-  <div class="toolbar"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button></div>
-  <div class="cert"><div class="cert-inner">
-    <div class="cert-header">
-      <div class="cert-logo">${escapeHtml(tmpl.logoEmoji)}</div>
-      <div class="cert-dept">
-        <h1>${escapeHtml(tmpl.orgName)}</h1>
-        <span>${escapeHtml(tmpl.orgSubtitle)}</span>
-      </div>
-    </div>
-    <div class="cert-title">${escapeHtml(tmpl.title)}</div>
-    <div class="cert-subtitle">${escapeHtml(tmpl.subtitle)}</div>
-    <div class="cert-presented">${escapeHtml(tmpl.presentedText)}</div>
-    <div class="cert-name">${escapeHtml(studentName)}</div>
-    <div class="cert-completed">${escapeHtml(tmpl.completedText)}</div>
-    <div class="cert-course">${escapeHtml(course.name)}</div>
-    <div class="cert-code">
-      ${escapeHtml(course.code) || ''}${tmpl.showDate ? ' · Completed on ' + completionDate : ''}
-    </div>
-    <div class="cert-footer">
-      ${tmpl.showCertId ? `
-        <div class="cert-meta">Certificate ID<br><strong>${certId}</strong></div>
-      ` : '<div></div>'}
-      <div class="cert-sign">
-        <div class="cert-sign-line">${escapeHtml(tmpl.signatureName)}</div>
-        <div class="cert-sign-role">${escapeHtml(tmpl.signatureRole)}</div>
-      </div>
-    </div>
-  </div></div></body></html>`;
-
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  showToast('🎓 Certificate generated!', 'success');
-}
-
 /* ============================================================
    QUIZ
    ============================================================ */
@@ -19362,219 +20005,6 @@ async function _applyCustomLogoIfAny() {
 /* ============================================================
    ADMIN — CERTIFICATE MANAGEMENT
    ============================================================ */
-async function renderAdminCertificates() {
-  const host = document.getElementById('adminCertificatesContent');
-  if (!host) return;
-  host.innerHTML = `<div class="empty-state">
-    <i class="fas fa-spinner fa-spin"></i><p>Loading certificate template…</p>
-  </div>`;
-
-  let tmpl;
-  try {
-    tmpl = await fetchCertificateTemplate(true);
-  } catch (e) {
-    tmpl = { ...DEFAULT_CERT_TEMPLATE };
-  }
-
-  host.innerHTML = `
-    <div class="editor-section cert-tmpl-intro">
-      <div class="editor-section-title">
-        <i class="fas fa-certificate"></i> Certificate Template
-      </div>
-      <p class="editor-hint">
-        This text and design apply to <strong>every</strong> certificate the
-        platform issues. Toggle certificates on or off per course from the
-        <em>Courses → Edit → Certificate</em> panel — a course only issues
-        certificates after you enable it there and set its criteria.
-      </p>
-    </div>
-
-    <div class="cert-tmpl-grid">
-      <div class="editor-section cert-tmpl-form">
-        <h3 class="editor-section-title"><i class="fas fa-pen-fancy"></i> Text</h3>
-
-        <div class="editor-grid-2">
-          <div class="form-group">
-            <label>Organization name</label>
-            <input type="text" id="certOrgName" maxlength="80" value="${escapeHtml(tmpl.orgName)}">
-          </div>
-          <div class="form-group">
-            <label>Organization subtitle</label>
-            <input type="text" id="certOrgSubtitle" maxlength="80" value="${escapeHtml(tmpl.orgSubtitle)}">
-          </div>
-          <div class="form-group">
-            <label>Title</label>
-            <input type="text" id="certTitle" maxlength="60" value="${escapeHtml(tmpl.title)}">
-          </div>
-          <div class="form-group">
-            <label>Subtitle</label>
-            <input type="text" id="certSubtitle" maxlength="60" value="${escapeHtml(tmpl.subtitle)}">
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label>Presented line</label>
-          <input type="text" id="certPresentedText" maxlength="120" value="${escapeHtml(tmpl.presentedText)}">
-        </div>
-        <div class="form-group">
-          <label>Completed line</label>
-          <input type="text" id="certCompletedText" maxlength="120" value="${escapeHtml(tmpl.completedText)}">
-        </div>
-
-        <div class="editor-grid-2">
-          <div class="form-group">
-            <label>Signature name</label>
-            <input type="text" id="certSignatureName" maxlength="80" value="${escapeHtml(tmpl.signatureName)}">
-          </div>
-          <div class="form-group">
-            <label>Signature role</label>
-            <input type="text" id="certSignatureRole" maxlength="80" value="${escapeHtml(tmpl.signatureRole)}">
-          </div>
-        </div>
-
-        <h3 class="editor-section-title" style="margin-top:20px;"><i class="fas fa-palette"></i> Design</h3>
-
-        <div class="editor-grid-3">
-          <div class="form-group">
-            <label>Logo emoji</label>
-            <input type="text" id="certLogoEmoji" maxlength="4" value="${escapeHtml(tmpl.logoEmoji)}">
-            <span class="hint">Shown in the top-left tile.</span>
-          </div>
-          <div class="form-group">
-            <label>Accent — from</label>
-            <input type="color" id="certAccentFrom" value="${escapeHtml(tmpl.accentFrom)}">
-          </div>
-          <div class="form-group">
-            <label>Accent — to</label>
-            <input type="color" id="certAccentTo" value="${escapeHtml(tmpl.accentTo)}">
-          </div>
-        </div>
-
-        <div class="editor-grid-2">
-          <div class="form-group">
-            <label class="toggle-box" style="margin-top:6px;">
-              <input type="checkbox" id="certShowId" ${tmpl.showCertId ? 'checked' : ''}>
-              <span><i class="fas fa-hashtag"></i> Show certificate ID</span>
-            </label>
-          </div>
-          <div class="form-group">
-            <label class="toggle-box" style="margin-top:6px;">
-              <input type="checkbox" id="certShowDate" ${tmpl.showDate ? 'checked' : ''}>
-              <span><i class="fas fa-calendar"></i> Show completion date</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="editor-footer" style="position:static;box-shadow:none;padding:14px 0 0;border:none;background:none;">
-          <div class="editor-footer-left">
-            <span class="editor-hint"><i class="fas fa-info-circle"></i> Applies to every certificate immediately.</span>
-          </div>
-          <div class="editor-footer-right">
-            <button class="btn btn-primary" onclick="saveAdminCertificateTemplate()">
-              <i class="fas fa-save"></i> Save template
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="editor-section cert-tmpl-preview-wrap">
-        <h3 class="editor-section-title"><i class="fas fa-eye"></i> Live preview</h3>
-        <div class="cert-preview" id="certPreviewHost"></div>
-      </div>
-    </div>
-  `;
-
-  /* Live preview — rebuild whenever any field changes */
-  const rerender = () => _paintCertPreview();
-  ['certOrgName','certOrgSubtitle','certTitle','certSubtitle','certPresentedText',
-   'certCompletedText','certSignatureName','certSignatureRole','certLogoEmoji',
-   'certAccentFrom','certAccentTo','certShowId','certShowDate'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('input', rerender);
-  });
-  rerender();
-}
-
-function _readCertTemplateFromForm() {
-  return {
-    orgName:       ($('certOrgName')?.value       || '').trim(),
-    orgSubtitle:   ($('certOrgSubtitle')?.value   || '').trim(),
-    title:         ($('certTitle')?.value         || '').trim(),
-    subtitle:      ($('certSubtitle')?.value      || '').trim(),
-    presentedText: ($('certPresentedText')?.value || '').trim(),
-    completedText: ($('certCompletedText')?.value || '').trim(),
-    signatureName: ($('certSignatureName')?.value || '').trim(),
-    signatureRole: ($('certSignatureRole')?.value || '').trim(),
-    logoEmoji:     ($('certLogoEmoji')?.value     || '').trim(),
-    accentFrom:    $('certAccentFrom')?.value || '#6366f1',
-    accentTo:      $('certAccentTo')?.value   || '#06b6d4',
-    showCertId:    $('certShowId')?.checked === true,
-    showDate:      $('certShowDate')?.checked === true
-  };
-}
-
-function _paintCertPreview() {
-  const host = document.getElementById('certPreviewHost');
-  if (!host) return;
-  const t = _readCertTemplateFromForm();
-  const from = t.accentFrom || '#6366f1';
-  const to   = t.accentTo   || '#06b6d4';
-
-  host.innerHTML = `
-    <div class="cert-preview-frame">
-      <div class="cert-preview-inner">
-        <div class="cert-preview-head">
-          <div class="cert-preview-logo" style="background:linear-gradient(135deg,${from},${to});">${escapeHtml(t.logoEmoji || '🚀')}</div>
-          <div>
-            <div class="cert-preview-org">${escapeHtml(t.orgName || 'Organization')}</div>
-            <div class="cert-preview-org-sub">${escapeHtml(t.orgSubtitle || '')}</div>
-          </div>
-        </div>
-        <div class="cert-preview-title">${escapeHtml(t.title || 'Certificate')}</div>
-        <div class="cert-preview-subtitle">${escapeHtml(t.subtitle || '')}</div>
-        <div class="cert-preview-presented">${escapeHtml(t.presentedText || '')}</div>
-        <div class="cert-preview-name" style="color:${from};">Student Name</div>
-        <div class="cert-preview-completed">${escapeHtml(t.completedText || '')}</div>
-        <div class="cert-preview-course">Course Name</div>
-        <div class="cert-preview-code">CODE${t.showDate ? ' · Completed on 01 Jan 2026' : ''}</div>
-        <div class="cert-preview-foot">
-          ${t.showCertId ? '<div class="cert-preview-id">AERO-CRS-XXXX-XXX</div>' : '<div></div>'}
-          <div class="cert-preview-sign">
-            <div class="cert-preview-sign-name">${escapeHtml(t.signatureName || '')}</div>
-            <div class="cert-preview-sign-role">${escapeHtml(t.signatureRole || '')}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-async function saveAdminCertificateTemplate() {
-  const btn = document.querySelector('#adminCertificatesContent .btn-primary');
-  const originalHTML = btn ? btn.innerHTML : '';
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
-
-  const payload = _readCertTemplateFromForm();
-
-  try {
-    const data = await fetchJSON(`${API_BASE}/admin/settings/certificate`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    if (data && data.success) {
-      _certTemplateCache = data.template || payload;
-      showToast('✅ Certificate template saved.', 'success');
-    } else {
-      showToast((data && data.message) || 'Failed to save.', 'error');
-    }
-  } catch (err) {
-    showToast(err.message || 'Server error.', 'error');
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = originalHTML || '<i class="fas fa-save"></i> Save template'; }
-  }
-}
-
 /* ============================================================
    ⭐ ADMIN — VISITOR ANALYTICS / TRAFFIC OVERVIEW
    ------------------------------------------------------------

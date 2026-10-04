@@ -7315,6 +7315,85 @@ app.get('/api/settings/subscription', async (req, res) => {
 /* ============================================================
    CERTIFICATE TEMPLATE — public read + admin edit
    ============================================================ */
+/* ⭐ v2 certificate designer (2026-10-04)
+   One normaliser is used for both GET and PUT so every value that
+   reaches the certificate HTML is whitelisted: hex colours only,
+   enum values only, uploaded-file URLs only (no javascript:, no
+   third-party hosts), and bounded text. */
+const CERT_DEFAULTS = Object.freeze({
+  orgName: 'Aero Gyan Education', orgSubtitle: 'IIT Kharagpur',
+  title: 'Certificate', subtitle: 'of Completion',
+  presentedText: 'This certificate is proudly presented to',
+  completedText: 'for successfully completing',
+  signatureName: 'Krish Yadav', signatureRole: 'Course Director',
+  logoEmoji: '🚀', accentFrom: '#6366f1', accentTo: '#06b6d4',
+  showCertId: true, showDate: true,
+  preset: 'indigo', logoType: 'emoji', logoUrl: '', logoShape: 'rounded', logoTile: true,
+  bgStyle: 'solid', bgColor: '#ffffff', bgColor2: '#eef2ff',
+  textColor: '#0f172a', mutedColor: '#64748b', nameColor: '#6366f1', borderColor: '#0f172a',
+  borderStyle: 'classic', orientation: 'landscape', titleFont: 'playfair', nameFont: 'playfair',
+  showCourseCode: true, showSeal: false, sealText: 'Verified', showWatermark: false,
+  signatureImageUrl: '', showSignature2: false, signature2Name: '', signature2Role: '', signature2ImageUrl: ''
+});
+const CERT_ENUMS = {
+  logoType:    ['emoji', 'image', 'none'],
+  logoShape:   ['rounded', 'circle', 'square'],
+  bgStyle:     ['solid', 'gradient', 'radial', 'pattern'],
+  borderStyle: ['classic', 'ornate', 'modern', 'minimal', 'none'],
+  orientation: ['landscape', 'portrait'],
+  titleFont:   ['playfair', 'cinzel', 'cormorant', 'merriweather', 'inter'],
+  nameFont:    ['playfair', 'greatvibes', 'cinzel', 'cormorant', 'inter']
+};
+const CERT_COLOR_KEYS = ['accentFrom', 'accentTo', 'bgColor', 'bgColor2', 'textColor', 'mutedColor', 'nameColor', 'borderColor'];
+const CERT_BOOL_KEYS  = ['showCertId', 'showDate', 'logoTile', 'showCourseCode', 'showSeal', 'showWatermark', 'showSignature2'];
+const CERT_TEXT_LIMITS = {
+  orgName: 80, orgSubtitle: 80, title: 60, subtitle: 60, presentedText: 140, completedText: 140,
+  signatureName: 80, signatureRole: 80, signature2Name: 80, signature2Role: 80,
+  logoEmoji: 8, sealText: 20, preset: 30
+};
+const CERT_URL_KEYS = ['logoUrl', 'signatureImageUrl', 'signature2ImageUrl'];
+
+function _certSafeUrl(v) {
+  const u = String(v || '').trim();
+  if (!u) return '';
+  if (/^\/uploads\/[A-Za-z0-9._-]{1,200}$/.test(u)) return u;
+  if (/^https:\/\/res\.cloudinary\.com\/[A-Za-z0-9._~\/-]{1,400}$/.test(u)) return u;
+  return null;   // rejected
+}
+
+/* base = stored template (or {}); patch = incoming body (or null for read) */
+function normalizeCertTemplate(base, patch) {
+  const src = Object.assign({}, CERT_DEFAULTS, base || {});
+  const inp = patch || {};
+  const out = {};
+  for (const [k, max] of Object.entries(CERT_TEXT_LIMITS)) {
+    const v = (typeof inp[k] === 'string') ? inp[k] : src[k];
+    out[k] = String(v == null ? '' : v).trim().slice(0, max);
+  }
+  /* Required wording falls back to defaults rather than going blank */
+  ['orgName', 'title'].forEach(k => { if (!out[k]) out[k] = CERT_DEFAULTS[k]; });
+  for (const k of CERT_COLOR_KEYS) {
+    const v = String((inp[k] !== undefined ? inp[k] : src[k]) || '').trim();
+    out[k] = /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase()
+           : (/^#[0-9a-fA-F]{6}$/.test(String(src[k])) ? String(src[k]).toLowerCase() : CERT_DEFAULTS[k]);
+  }
+  for (const k of CERT_BOOL_KEYS) {
+    out[k] = typeof inp[k] === 'boolean' ? inp[k]
+           : (typeof src[k] === 'boolean' ? src[k] : CERT_DEFAULTS[k]);
+  }
+  for (const [k, allowed] of Object.entries(CERT_ENUMS)) {
+    const v = inp[k] !== undefined ? inp[k] : src[k];
+    out[k] = allowed.includes(v) ? v : (allowed.includes(src[k]) ? src[k] : CERT_DEFAULTS[k]);
+  }
+  for (const k of CERT_URL_KEYS) {
+    const v = inp[k] !== undefined ? _certSafeUrl(inp[k]) : _certSafeUrl(src[k]);
+    out[k] = v === null ? (_certSafeUrl(src[k]) || '') : v;
+  }
+  if (out.logoType === 'image' && !out.logoUrl) out.logoType = 'emoji';
+  if (!out.logoEmoji) out.logoEmoji = CERT_DEFAULTS.logoEmoji;
+  return out;
+}
+
 app.get('/api/settings/certificate', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -7322,25 +7401,9 @@ app.get('/api/settings/certificate', async (req, res) => {
     res.setHeader('Expires', '0');
 
     const s = await getGlobalSettings();
-    const t = s.certificateTemplate || {};
-    res.json({
-      success: true,
-      template: {
-        orgName:       t.orgName       || 'Aero Gyan Education',
-        orgSubtitle:   t.orgSubtitle   || 'IIT Kharagpur',
-        title:         t.title         || 'Certificate',
-        subtitle:      t.subtitle      || 'of Completion',
-        presentedText: t.presentedText || 'This certificate is proudly presented to',
-        completedText: t.completedText || 'for successfully completing',
-        signatureName: t.signatureName || 'Krish Yadav',
-        signatureRole: t.signatureRole || 'Course Director',
-        logoEmoji:     t.logoEmoji     || '🚀',
-        accentFrom:    t.accentFrom    || '#6366f1',
-        accentTo:      t.accentTo      || '#06b6d4',
-        showCertId:    t.showCertId !== false,
-        showDate:      t.showDate     !== false
-      }
-    });
+    const raw = s.certificateTemplate && s.certificateTemplate.toObject
+      ? s.certificateTemplate.toObject() : (s.certificateTemplate || {});
+    res.json({ success: true, template: normalizeCertTemplate(raw, null) });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -7349,30 +7412,18 @@ app.get('/api/settings/certificate', async (req, res) => {
 app.put('/api/admin/settings/certificate', requireAdminAuth, async (req, res) => {
   try {
     const b = req.body || {};
+    for (const k of CERT_URL_KEYS) {
+      if (b[k] !== undefined && _certSafeUrl(b[k]) === null) {
+        return res.status(400).json({ success: false, message: 'Images must be uploaded through the designer.' });
+      }
+    }
     const s = await getGlobalSettings();
-    if (!s.certificateTemplate) s.certificateTemplate = {};
+    const current = s.certificateTemplate && s.certificateTemplate.toObject
+      ? s.certificateTemplate.toObject() : (s.certificateTemplate || {});
+    const next = normalizeCertTemplate(b.reset === true ? {} : current, b.reset === true ? null : b);
+    next.updatedAt = new Date();
 
-    const str = (v, fallback) => typeof v === 'string' ? v.trim().slice(0, 200) : fallback;
-    const hex = (v, fallback) => /^#[0-9a-fA-F]{6}$/.test(String(v || '').trim())
-      ? String(v).trim()
-      : fallback;
-
-    s.certificateTemplate.orgName       = str(b.orgName,       s.certificateTemplate.orgName       || 'Aero Gyan Education');
-    s.certificateTemplate.orgSubtitle   = str(b.orgSubtitle,   s.certificateTemplate.orgSubtitle   || 'IIT Kharagpur');
-    s.certificateTemplate.title         = str(b.title,         s.certificateTemplate.title         || 'Certificate');
-    s.certificateTemplate.subtitle      = str(b.subtitle,      s.certificateTemplate.subtitle      || 'of Completion');
-    s.certificateTemplate.presentedText = str(b.presentedText, s.certificateTemplate.presentedText || 'This certificate is proudly presented to');
-    s.certificateTemplate.completedText = str(b.completedText, s.certificateTemplate.completedText || 'for successfully completing');
-    s.certificateTemplate.signatureName = str(b.signatureName, s.certificateTemplate.signatureName || 'Krish Yadav');
-    s.certificateTemplate.signatureRole = str(b.signatureRole, s.certificateTemplate.signatureRole || 'Course Director');
-    s.certificateTemplate.logoEmoji     = str(b.logoEmoji,     s.certificateTemplate.logoEmoji     || '🚀');
-    s.certificateTemplate.accentFrom    = hex(b.accentFrom,    s.certificateTemplate.accentFrom    || '#6366f1');
-    s.certificateTemplate.accentTo      = hex(b.accentTo,      s.certificateTemplate.accentTo      || '#06b6d4');
-
-    if (typeof b.showCertId === 'boolean') s.certificateTemplate.showCertId = b.showCertId;
-    if (typeof b.showDate   === 'boolean') s.certificateTemplate.showDate   = b.showDate;
-
-    s.certificateTemplate.updatedAt = new Date();
+    s.certificateTemplate = next;
     s.markModified('certificateTemplate');
     s.updatedAt = new Date();
     await s.save();
@@ -7380,7 +7431,8 @@ app.put('/api/admin/settings/certificate', requireAdminAuth, async (req, res) =>
     cacheClear('settings:');
     invalidateGlobalSettingsCache();
 
-    res.json({ success: true, message: 'Certificate template saved.', template: s.certificateTemplate });
+    console.log(`[certificate] template saved by ${req.adminUser && req.adminUser.username}${b.reset === true ? ' (reset to defaults)' : ''}`);
+    res.json({ success: true, message: b.reset === true ? 'Certificate reset to the default design.' : 'Certificate template saved.', template: normalizeCertTemplate(next, null) });
   } catch (e) {
     console.error('[admin/settings/certificate]', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
