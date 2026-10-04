@@ -1,0 +1,24 @@
+node_modules/
+.env
+.env.save
+.DS_Store
+uploads/
+*.log
+*.bak
+migrate-to-disk.js
+.env
+node_modules/
+uploads/
+*.pre-*
+*.bak
+
+# Go edge service (Phase-1 backend migration) — build artefacts only
+edge/bin/
+edge/dist/
+edge/*.exe
+edge/coverage.out
+
+# Local backups of server.js (never commit — they drift from the live code)
+server.js.*
+!server.js
+.DS_Store

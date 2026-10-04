@@ -1,0 +1,3562 @@
+diff --git a/.gitignore b/.gitignore
+index 8ac3ae7..89ea933 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -17,3 +17,8 @@ edge/bin/
+ edge/dist/
+ edge/*.exe
+ edge/coverage.out
++
++# Local backups of server.js (never commit — they drift from the live code)
++server.js.*
++!server.js
++.DS_Store
+diff --git a/app.js b/app.js
+index 20147e1..a9228c5 100644
+--- a/app.js
++++ b/app.js
+@@ -699,11 +699,18 @@ function withAuthToken(url) {
+         if (token) {
+           init = init || {};
+           const baseHeaders = init.headers || {};
+-          const hasAuth = baseHeaders['Authorization'] || baseHeaders['authorization'];
+-          if (!hasAuth) {
+-            init.headers = Object.assign({}, baseHeaders, {
+-              'Authorization': 'Bearer ' + token
+-            });
++          if (typeof Headers !== 'undefined' && baseHeaders instanceof Headers) {
++            /* Object.assign() on a Headers instance silently drops every
++               header (incl. Content-Type) — handle it natively. */
++            if (!baseHeaders.has('Authorization')) baseHeaders.set('Authorization', 'Bearer ' + token);
++            init.headers = baseHeaders;
++          } else {
++            const hasAuth = baseHeaders['Authorization'] || baseHeaders['authorization'];
++            if (!hasAuth) {
++              init.headers = Object.assign({}, baseHeaders, {
++                'Authorization': 'Bearer ' + token
++              });
++            }
+           }
+         }
+       } catch (e) { /* fail-safe: never break a request */ }
+@@ -727,15 +734,19 @@ function withAuthToken(url) {
+         try { sessionStorage.removeItem('aero_user');  } catch (e) {}
+         try { sessionStorage.removeItem('aero_token'); } catch (e) {}
+ 
+-        setTimeout(function () {
+-          if (typeof window.__aeroHandleStaleSession === 'function') {
+-            window.__aeroHandleStaleSession(
+-              'Your session has expired. Please log in again.'
+-            );
+-          } else {
+-            location.reload();
+-          }
+-        }, 50);
++        /* ⭐ Show the server's reason (suspended / signed in elsewhere /
++           signed out by admin) instead of a generic "expired". */
++        const fallbackMsg = 'Your session has expired. Please log in again.';
++        res.clone().json().catch(function () { return null; }).then(function (body) {
++          const msg = (body && body.message) || fallbackMsg;
++          setTimeout(function () {
++            if (typeof window.__aeroHandleStaleSession === 'function') {
++              window.__aeroHandleStaleSession(msg);
++            } else {
++              location.reload();
++            }
++          }, 50);
++        });
+       }).catch(function () { /* network error — ignore */ });
+     }
+ 
+@@ -809,6 +820,17 @@ async function fetchJSON(url, options = {}) {
+ const CHUNKED_THRESHOLD = 6 * 1024 * 1024; // 6 MB
+ 
+ async function uploadFileToServer(file, onProgress) {
++  /* ⭐ Uploads now require a session. Guests (alumni / supporter forms on
++     the login page) can only send one small photo via a locked-down route. */
++  let token = null;
++  try { token = sessionStorage.getItem('aero_token'); } catch (e) {}
++  if (!token) {
++    if (!/^image\/(jpeg|png|webp)$/i.test(file.type || '')) {
++      throw new Error('Please log in to upload files (guests can attach a JPEG, PNG or WebP photo).');
++    }
++    if (file.size > 5 * 1024 * 1024) throw new Error('Photo must be 5 MB or smaller.');
++    return uploadFileDirect(file, onProgress, `${API_BASE}/upload/public-photo`);
++  }
+   if (file.size >= CHUNKED_THRESHOLD) {
+     return uploadFileChunked(file, onProgress);
+   }
+@@ -816,14 +838,19 @@ async function uploadFileToServer(file, onProgress) {
+ }
+ 
+ /* ---- Direct single-shot upload (small files) ---- */
+-function uploadFileDirect(file, onProgress) {
++function uploadFileDirect(file, onProgress, endpoint) {
+   return new Promise((resolve, reject) => {
+     const formData = new FormData();
+     formData.append('file', file);
+ 
+     const xhr = new XMLHttpRequest();
+-    xhr.open('POST', `${API_BASE}/upload`);
++    xhr.open('POST', endpoint || `${API_BASE}/upload`);
+     xhr.timeout = 1800000;
++    /* XHR bypasses the fetch() interceptor — attach the token ourselves. */
++    try {
++      const t = sessionStorage.getItem('aero_token');
++      if (t && !endpoint) xhr.setRequestHeader('Authorization', 'Bearer ' + t);
++    } catch (e) {}
+ 
+     if (onProgress) {
+       xhr.upload.onprogress = (e) => {
+@@ -843,7 +870,9 @@ function uploadFileDirect(file, onProgress) {
+           reject(new Error('Invalid response from server'));
+         }
+       } else {
+-        reject(new Error(`Upload failed (HTTP ${xhr.status})`));
++        let msg = `Upload failed (HTTP ${xhr.status})`;
++        try { const d = JSON.parse(xhr.responseText); if (d && d.message) msg = d.message; } catch (e) {}
++        reject(new Error(msg));
+       }
+     };
+     xhr.onerror   = () => reject(new Error('Network error during upload'));
+@@ -2348,21 +2377,35 @@ function applyTheme(theme) {
+   });
+ 
+   try { localStorage.setItem('aero_theme', id); } catch (e) {}
++  /* Remember which dark style (Dim / Night) the user prefers, so the
++     single header switch always returns them to it. */
++  if (getThemeMeta(id).family === 'dark') {
++    try { localStorage.setItem(PREFERRED_DARK_KEY, id); } catch (e) {}
++  }
+   updateThemeIcon();
+   renderSettingsThemeUI();
+ }
+ 
+-function cycleTheme() {
+-  applyTheme(getThemeMeta(getCurrentTheme()).next);
++/* ⭐ The header now has ONE animated sun/moon switch (light ↔ dark).
++   Dim vs Night is chosen once in Settings → Appearance. */
++const PREFERRED_DARK_KEY = 'aero_theme_dark';
++function getPreferredDarkTheme() {
++  let t = null;
++  try { t = localStorage.getItem(PREFERRED_DARK_KEY); } catch (e) {}
++  return (t === 'dim' || t === 'dark') ? t : 'dark';
+ }
+ 
++/* Kept for backward compatibility with any old onclick="cycleTheme()" */
++function cycleTheme() { toggleNightMode(); }
++
+ function updateThemeIcon() {
+   const btn = document.getElementById('themeToggle');
+   if (!btn) return;
+-  const meta = getThemeMeta(getCurrentTheme());
+-  btn.innerHTML = `<i class="fas ${meta.icon}" aria-hidden="true"></i>`;
+-  btn.setAttribute('aria-label', meta.ariaLabel);
+-  btn.setAttribute('title', meta.ariaLabel);
++  const night = isNightMode();
++  const label = night ? 'Switch to light mode' : 'Switch to dark mode';
++  btn.setAttribute('aria-checked', night ? 'true' : 'false');
++  btn.setAttribute('aria-label', label);
++  btn.setAttribute('title', label);
+ }
+ 
+ /* ============================================================
+@@ -2396,8 +2439,8 @@ function renderSettingsThemeUI() {
+   const hint = document.getElementById('nightModeHint');
+   if (hint) {
+     hint.textContent = night
+-      ? `${meta.label} theme active — ${meta.palette}.`
+-      : 'Dark grey background with off-white text — easier on the eyes at night.';
++      ? `${meta.label} theme active — ${meta.palette}. The top-bar switch flips back to Light.`
++      : 'The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here.';
+   }
+ }
+ 
+@@ -2407,9 +2450,9 @@ function openSettingsModal() {
+   openModal('settingsModal');
+ }
+ 
+-/* Header switch: OFF → Light, ON → Night. Never lands on Dim by accident. */
++/* Header switch: OFF → Light, ON → the user's preferred dark style. */
+ function toggleNightMode() {
+-  applyTheme(isNightMode() ? 'light' : 'dark');
++  applyTheme(isNightMode() ? 'light' : getPreferredDarkTheme());
+ }
+ 
+ /* Sub-option of Night mode */
+@@ -2553,7 +2596,7 @@ function initBioToggles() {
+    ============================================================ */
+ document.addEventListener('click', (e) => {
+   if (e.target.closest('#themeToggle')) {
+-    cycleTheme();
++    toggleNightMode();
+     return;
+   }
+ 
+@@ -4926,6 +4969,9 @@ let _studentSort = 'newest';       // newest | oldest | name
+ function _studentHasPremium(s) {
+   return !!(s && s.premium && s.premium.active);
+ }
++function _studentIsSuspended(s) {
++  return !!(s && s.suspended && s.suspended.active);
++}
+ 
+ function _studentMatchesSearch(s, q) {
+   if (!q) return true;
+@@ -4941,6 +4987,8 @@ function _getFilteredStudents() {
+ 
+   if (_studentPremiumFilter === 'premium')   list = list.filter(_studentHasPremium);
+   else if (_studentPremiumFilter === 'free') list = list.filter(s => !_studentHasPremium(s));
++  else if (_studentPremiumFilter === 'suspended') list = list.filter(_studentIsSuspended);
++  else if (_studentPremiumFilter === 'active')    list = list.filter(s => !_studentIsSuspended(s));
+ 
+   if (_studentSort === 'name') {
+     list.sort((a, b) => String(a.fullName || a.username || '')
+@@ -4975,7 +5023,7 @@ function clearStudentSearch() {
+ }
+ 
+ function setStudentPremiumFilter(value) {
+-  _studentPremiumFilter = (value === 'premium' || value === 'free') ? value : 'all';
++  _studentPremiumFilter = ['premium', 'free', 'suspended', 'active'].includes(value) ? value : 'all';
+   const sel = $('studentPremiumFilter');
+   if (sel && sel.value !== _studentPremiumFilter) sel.value = _studentPremiumFilter;
+   renderStudentListFromCache();
+@@ -5025,6 +5073,8 @@ function renderStudentListFromCache() {
+       if (query) bits.push(`matching “${escapeHtml(query)}”`);
+       if (_studentPremiumFilter === 'premium') bits.push('with premium access');
+       if (_studentPremiumFilter === 'free')    bits.push('without premium access');
++      if (_studentPremiumFilter === 'suspended') bits.push('that are suspended');
++      if (_studentPremiumFilter === 'active')    bits.push('that are active');
+       summary.hidden = false;
+       summary.innerHTML = `<i class="fas fa-filter"></i> Showing <strong>${list.length}</strong> of <strong>${total}</strong> students ${bits.join(' ')}`;
+     } else {
+@@ -5098,11 +5148,11 @@ function renderStudentListFromCache() {
+     }
+ 
+     html += `
+-      <div class="student-card ${selected ? 'selected' : ''} ${!hasEmail ? 'no-email' : ''}" data-student-id="${sid}">
+-        <label class="student-select-checkbox" title="${hasEmail ? 'Select for email' : 'No email on file'}" onclick="event.stopPropagation();">
++      <div class="student-card ${selected ? 'selected' : ''} ${!hasEmail ? 'no-email' : ''} ${_studentIsSuspended(s) ? 'is-suspended' : ''}" data-student-id="${sid}">
++        <label class="student-select-checkbox" title="${hasEmail ? 'Select for email or bulk actions' : 'Select for bulk actions (no email on file)'}" onclick="event.stopPropagation();">
+           <input type="checkbox"
+                  ${selected ? 'checked' : ''}
+-                 ${!hasEmail ? 'disabled' : ''}
++                 aria-label="Select ${escapeHtml(name)}"
+                  onchange="toggleStudentEmailSelection('${sid}', this.checked)">
+           <span class="student-select-box"></span>
+         </label>
+@@ -5126,7 +5176,11 @@ function renderStudentListFromCache() {
+           </div>
+           <div class="student-meta-row">
+             ${premiumBadge}
++            ${_studentIsSuspended(s)
++              ? `<span class="student-status-badge suspended" title="${escapeHtml((s.suspended && s.suspended.reason) || 'Suspended')}"><i class="fas fa-ban"></i> Suspended</span>`
++              : (s.signedIn ? `<span class="student-status-badge online" title="Has an active session"><span class="dot"></span> Signed in</span>` : '')}
+           </div>
++          ${s.lastSeenAt ? `<div class="student-meta-row student-lastseen"><i class="fas fa-clock"></i><span>Last active ${escapeHtml(timeAgo(s.lastSeenAt))}</span></div>` : ''}
+         </div>
+         <div class="student-card-actions">
+           <button class="btn ${hasPremium ? 'btn-outline' : 'btn-success'} btn-sm student-grant-btn"
+@@ -5137,6 +5191,9 @@ function renderStudentListFromCache() {
+           <button class="btn btn-outline btn-sm" onclick="resetStudentPassword('${sid}', ${jsStr(name)})">
+             <i class="fas fa-key"></i> Reset Password
+           </button>
++          <button class="btn btn-outline btn-sm" onclick="openManageStudentModal('${sid}')" title="Suspend, sign out, course access, progress">
++            <i class="fas fa-user-gear"></i> Manage
++          </button>
+           <button class="btn btn-danger btn-sm" onclick="deleteStudent('${sid}', ${jsStr(name)})">
+             <i class="fas fa-trash"></i>
+           </button>
+@@ -5562,7 +5619,7 @@ function renderStudentSelectionBar(selectedCount, withEmailCount) {
+   const hasSelection = selectedCount > 0;
+ 
+   bar.innerHTML = `
+-    <label class="selection-master-checkbox" title="Select all students with an email">
++    <label class="selection-master-checkbox" title="Select every student shown">
+       <input type="checkbox"
+              id="selectAllStudentsBox"
+              onchange="toggleSelectAllStudents(this.checked)">
+@@ -5577,6 +5634,13 @@ function renderStudentSelectionBar(selectedCount, withEmailCount) {
+     <button class="btn btn-primary btn-sm" onclick="openEmailStudentsModal()" ${!hasSelection ? 'disabled' : ''}>
+       <i class="fas fa-paper-plane"></i> Send Email${hasSelection ? ' (' + selectedCount + ')' : ''}
+     </button>
++    ${hasSelection ? `
++    <div class="bulk-actions" role="group" aria-label="Bulk actions">
++      <button class="btn btn-outline btn-sm" onclick="bulkStudentAction('force-logout')" title="Sign the selected students out on every device"><i class="fas fa-right-from-bracket"></i> Sign out</button>
++      <button class="btn btn-outline btn-sm" onclick="bulkStudentAction('suspend')"><i class="fas fa-ban"></i> Suspend</button>
++      <button class="btn btn-outline btn-sm" onclick="bulkStudentAction('unsuspend')"><i class="fas fa-circle-check"></i> Re-activate</button>
++      <button class="btn btn-outline btn-sm" onclick="openBulkCourseAccess()"><i class="fas fa-unlock-keyhole"></i> Course access…</button>
++    </div>` : ''}
+     ${hasSelection
+       ? `<button class="btn btn-outline btn-sm" onclick="clearStudentSelection()">
+            <i class="fas fa-times"></i> Clear
+@@ -5586,7 +5650,7 @@ function renderStudentSelectionBar(selectedCount, withEmailCount) {
+ 
+   const master = $('selectAllStudentsBox');
+   if (master) {
+-    const allStudents = document.querySelectorAll('.student-card:not(.no-email)');
++    const allStudents = document.querySelectorAll('.student-card');
+     master.checked = allStudents.length > 0 &&
+       Array.from(allStudents).every(c => _emailSelectedIds.has(c.dataset.studentId));
+     master.indeterminate = hasSelection &&
+@@ -5601,7 +5665,7 @@ function toggleStudentEmailSelection(studentId, isChecked) {
+ }
+ 
+ function toggleSelectAllStudents(isChecked) {
+-  const cards = document.querySelectorAll('.student-card:not(.no-email)');
++  const cards = document.querySelectorAll('.student-card');
+   cards.forEach(c => {
+     const sid = c.dataset.studentId;
+     if (isChecked) _emailSelectedIds.add(sid);
+@@ -5629,10 +5693,23 @@ function updateStudentSelectionUI() {
+ }
+ 
+ /* ---- Open / send email modal ---- */
++/* Selection is shared with bulk actions now, so email only goes to
++   the selected students who actually have an address. */
++function _emailableSelectedIds() {
++  const byId = new Map((_allStudentsCache || []).map(st => [String(st._id), st]));
++  return Array.from(_emailSelectedIds).filter(id => {
++    const st = byId.get(id);
++    return st && st.email && String(st.email).trim();
++  });
++}
++
+ function openEmailStudentsModal() {
+   if (_emailSelectedIds.size === 0) {
+     return showToast('Select at least one student first.', 'info');
+   }
++  if (_emailableSelectedIds().length === 0) {
++    return showToast('None of the selected students has an email address.', 'info');
++  }
+ 
+   const modal = $('emailStudentsModal');
+   if (!modal) return showToast('Email modal missing.', 'error');
+@@ -5644,7 +5721,7 @@ function openEmailStudentsModal() {
+     _allStudentsCache.map(s => [String(s._id), s.fullName || s.username || 'Student'])
+   );
+ 
+-  const names = Array.from(_emailSelectedIds).map(id => {
++  const names = _emailableSelectedIds().map(id => {
+     const card = document.querySelector(`.student-card[data-student-id="${id}"]`);
+     const h4 = card ? card.querySelector('.student-card-info h4') : null;
+     return (h4 && h4.textContent.trim()) || _nameById.get(String(id)) || 'Student';
+@@ -5662,7 +5739,10 @@ function openEmailStudentsModal() {
+ 
+   const summary = $('emailModalRecipientSummary');
+   if (summary) {
+-    summary.textContent = `To: ${_emailSelectedIds.size} student${_emailSelectedIds.size === 1 ? '' : 's'} — individually addressed, no BCC leaks.`;
++    const _n = _emailableSelectedIds().length;
++    const _skipped = _emailSelectedIds.size - _n;
++    summary.textContent = `To: ${_n} student${_n === 1 ? '' : 's'} — individually addressed, no BCC leaks.` +
++      (_skipped > 0 ? ` (${_skipped} selected without an email will be skipped.)` : '');
+   }
+ 
+   const subjectEl = $('emailSubject');
+@@ -5672,7 +5752,7 @@ function openEmailStudentsModal() {
+   if (subjectEl) subjectEl.value = '';
+   if (bodyEl) bodyEl.value = '';
+   if (submitBtn) submitBtn.disabled = false;
+-  if (label) label.textContent = `Send to ${_emailSelectedIds.size}`;
++  if (label) label.textContent = `Send to ${_emailableSelectedIds().length}`;
+ 
+   openModal('emailStudentsModal');
+   setTimeout(() => subjectEl && subjectEl.focus(), 80);
+@@ -5687,8 +5767,8 @@ async function sendBulkEmail(e) {
+   if (!subject) return showToast('Subject is required.', 'error');
+   if (!body) return showToast('Message body is required.', 'error');
+ 
+-  const recipientIds = Array.from(_emailSelectedIds);
+-  if (recipientIds.length === 0) return showToast('No recipients selected.', 'error');
++  const recipientIds = _emailableSelectedIds();
++  if (recipientIds.length === 0) return showToast('No recipients with an email selected.', 'error');
+ 
+   const confirmMsg = `Send this email to ${recipientIds.length} student${recipientIds.length === 1 ? '' : 's'}?\n\nSubject: ${subject}\n\nThis cannot be undone.`;
+   if (!confirm(confirmMsg)) return;
+@@ -5914,6 +5994,189 @@ async function deleteStudent(userId, name) {
+   } catch { showToast('Server error.', 'error'); }
+ }
+ 
++/* ============================================================
++   ⭐ ADMIN — MANAGE STUDENT (2026-10-04)
++   Suspend / re-activate, force sign-out, per-course access and a
++   progress snapshot, in one modal. Bulk versions act on the
++   current selection.
++   ============================================================ */
++function _ensureManageStudentModal() {
++  let el = document.getElementById('manageStudentModal');
++  if (el) return el;
++  el = document.createElement('div');
++  el.className = 'modal-overlay';
++  el.id = 'manageStudentModal';
++  el.innerHTML = `<div class="modal-box manage-student-box" role="dialog" aria-modal="true" aria-labelledby="manageStudentTitle">
++      <div id="manageStudentBody"></div>
++    </div>`;
++  el.addEventListener('click', (e) => { if (e.target === el) el.classList.remove('active'); });
++  document.body.appendChild(el);
++  return el;
++}
++
++async function openManageStudentModal(userId) {
++  const el = _ensureManageStudentModal();
++  const body = el.querySelector('#manageStudentBody');
++  body.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading student…</p></div>`;
++  el.classList.add('active');
++  try {
++    const data = await fetchJSON(`${API_BASE}/admin/students/${userId}/overview?_t=${Date.now()}`);
++    if (!data.success) throw new Error(data.message || 'Could not load student.');
++    renderManageStudentBody(data);
++  } catch (e) {
++    body.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message || 'Error')}</p>
++      <button class="btn btn-outline" onclick="closeModal('manageStudentModal')">Close</button></div>`;
++  }
++}
++
++function renderManageStudentBody(data) {
++  const st = data.student;
++  const body = document.getElementById('manageStudentBody');
++  if (!body) return;
++  const sid = String(st._id);
++  const susp = st.suspended && st.suspended.active;
++  const owned = new Set((data.courses || []).filter(c => c.owned).map(c => c.courseId));
++  const premiumCourses = (liveCourses || []).filter(c => c.isPremium === true || c.isPremium === 'true');
++  const progressRows = (data.courses || []).filter(c => c.done > 0 || c.videosDone > 0);
++
++  body.innerHTML = `
++    <div class="ms-head">
++      <div class="student-avatar">${escapeHtml((st.fullName || st.username || 'S').split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase())}</div>
++      <div class="ms-head-text">
++        <h3 id="manageStudentTitle">${escapeHtml(st.fullName || st.username)}</h3>
++        <div class="ms-sub">@${escapeHtml(st.username)}${st.email ? ' · ' + escapeHtml(st.email) : ''}</div>
++      </div>
++      <button class="icon-btn ms-close" onclick="closeModal('manageStudentModal')" aria-label="Close"><i class="fas fa-xmark"></i></button>
++    </div>
++
++    <div class="ms-stats">
++      <div><strong>${st.lastSeenAt ? escapeHtml(timeAgo(st.lastSeenAt)) : '—'}</strong><span>Last active</span></div>
++      <div><strong>${st.streakCount}</strong><span>Day streak</span></div>
++      <div><strong>${st.videosCompleted}/${st.videosStarted}</strong><span>Videos finished</span></div>
++      <div><strong>${st.quizzesTaken}</strong><span>Quizzes</span></div>
++    </div>
++
++    <section class="ms-section">
++      <h4><i class="fas fa-shield-halved"></i> Account</h4>
++      ${susp ? `<div class="ms-alert"><i class="fas fa-ban"></i> Suspended${st.suspended.reason ? ' — ' + escapeHtml(st.suspended.reason) : ''}${st.suspended.at ? ' · ' + escapeHtml(timeAgo(st.suspended.at)) : ''}</div>` : ''}
++      ${st.device ? `<p class="ms-muted"><i class="fas fa-laptop"></i> Signed in on: ${escapeHtml(st.device.slice(0, 90))}</p>` : '<p class="ms-muted">Not signed in on any device.</p>'}
++      <div class="ms-actions">
++        ${susp
++          ? `<button class="btn btn-success btn-sm" onclick="setStudentSuspended('${sid}', false)"><i class="fas fa-circle-check"></i> Re-activate account</button>`
++          : `<button class="btn btn-danger btn-sm" onclick="setStudentSuspended('${sid}', true)"><i class="fas fa-ban"></i> Suspend account</button>`}
++        <button class="btn btn-outline btn-sm" onclick="forceLogoutStudent('${sid}')" ${st.device ? '' : 'disabled'}><i class="fas fa-right-from-bracket"></i> Sign out everywhere</button>
++      </div>
++    </section>
++
++    <section class="ms-section">
++      <h4><i class="fas fa-unlock-keyhole"></i> Premium course access</h4>
++      ${premiumCourses.length === 0 ? '<p class="ms-muted">No premium courses yet.</p>' : `
++      <ul class="ms-course-list">
++        ${premiumCourses.map(c => {
++          const has = owned.has(String(c.id));
++          return `<li>
++            <span class="ms-course-name">${escapeHtml(c.name)} <em>${escapeHtml(c.code || '')}</em></span>
++            <button type="button" class="switch" role="switch" aria-checked="${has}" aria-label="Access to ${escapeHtml(c.name)}"
++                    onclick="toggleStudentCourseAccess('${sid}', '${c.id}', ${!has})">
++              <span class="switch-track"><span class="switch-thumb"></span></span>
++            </button>
++          </li>`;
++        }).join('')}
++      </ul>`}
++    </section>
++
++    <section class="ms-section">
++      <h4><i class="fas fa-chart-line"></i> Progress</h4>
++      ${progressRows.length === 0 ? '<p class="ms-muted">No completed materials yet.</p>' : `
++      <ul class="ms-progress-list">
++        ${progressRows.map(c => `<li>
++          <div class="ms-progress-top"><span>${escapeHtml(c.name)}</span><span>${c.done}/${c.total} · ${c.pct}%</span></div>
++          <div class="cd-progress-bar"><span style="width:${c.pct}%"></span></div>
++          ${c.videosTotal ? `<div class="ms-muted">${c.videosDone} of ${c.videosTotal} videos watched</div>` : ''}
++        </li>`).join('')}
++      </ul>`}
++    </section>`;
++}
++
++async function _studentAdminCall(url, method, payload, okMsg) {
++  try {
++    const data = await fetchJSON(url, {
++      method, headers: { 'Content-Type': 'application/json' },
++      body: payload ? JSON.stringify(payload) : undefined
++    });
++    if (!data.success) throw new Error(data.message || 'Action failed.');
++    showToast(okMsg || data.message || 'Done.', 'success');
++    return data;
++  } catch (e) {
++    showToast(e.message || 'Action failed.', 'error');
++    return null;
++  }
++}
++
++async function setStudentSuspended(userId, suspend) {
++  let reason = '';
++  if (suspend) {
++    reason = prompt('Reason for suspending (shown to admins only):', '');
++    if (reason === null) return;
++  }
++  const ok = await _studentAdminCall(`${API_BASE}/admin/students/${userId}/suspend`, 'POST', { suspend, reason });
++  if (ok) { await renderAdminStudents(); openManageStudentModal(userId); }
++}
++
++async function forceLogoutStudent(userId) {
++  if (!confirm('Sign this student out on every device?')) return;
++  const ok = await _studentAdminCall(`${API_BASE}/admin/students/${userId}/force-logout`, 'POST', {});
++  if (ok) { await renderAdminStudents(); openManageStudentModal(userId); }
++}
++
++async function toggleStudentCourseAccess(userId, courseId, grant) {
++  const ok = await _studentAdminCall(`${API_BASE}/admin/students/${userId}/course-access`, 'PUT', { courseId, grant });
++  if (ok) openManageStudentModal(userId);
++}
++
++async function bulkStudentAction(action, extra) {
++  const ids = Array.from(_emailSelectedIds);
++  if (ids.length === 0) return showToast('Select at least one student first.', 'info');
++  const labels = {
++    'suspend': 'Suspend', 'unsuspend': 'Re-activate', 'force-logout': 'Sign out',
++    'grant-course': 'Unlock course for', 'revoke-course': 'Remove course access for'
++  };
++  let reason = '';
++  if (action === 'suspend') {
++    reason = prompt(`Suspend ${ids.length} student(s)? Optional reason:`, '');
++    if (reason === null) return;
++  } else if (!confirm(`${labels[action] || action} ${ids.length} selected student(s)?`)) {
++    return;
++  }
++  const ok = await _studentAdminCall(`${API_BASE}/admin/students/bulk`, 'POST',
++    Object.assign({ userIds: ids, action, reason }, extra || {}));
++  if (ok) { clearStudentSelection(); renderAdminStudents(); }
++}
++
++function openBulkCourseAccess() {
++  const premium = (liveCourses || []).filter(c => c.isPremium === true || c.isPremium === 'true');
++  if (premium.length === 0) return showToast('There are no premium courses yet.', 'info');
++  const el = _ensureManageStudentModal();
++  const body = el.querySelector('#manageStudentBody');
++  body.innerHTML = `
++    <div class="ms-head">
++      <div class="ms-head-text"><h3 id="manageStudentTitle">Course access · ${_emailSelectedIds.size} student(s)</h3>
++      <div class="ms-sub">Unlock or remove a premium course for everyone selected.</div></div>
++      <button class="icon-btn ms-close" onclick="closeModal('manageStudentModal')" aria-label="Close"><i class="fas fa-xmark"></i></button>
++    </div>
++    <div class="form-group" style="margin-top:14px;">
++      <label for="bulkCourseSelect">Course</label>
++      <select id="bulkCourseSelect" class="student-filter-select" style="width:100%;">
++        ${premium.map(c => `<option value="${c.id}">${escapeHtml(c.name)}${c.code ? ' (' + escapeHtml(c.code) + ')' : ''}</option>`).join('')}
++      </select>
++    </div>
++    <div class="ms-actions">
++      <button class="btn btn-success btn-sm" onclick="closeModal('manageStudentModal');bulkStudentAction('grant-course', { courseId: document.getElementById('bulkCourseSelect').value })"><i class="fas fa-unlock"></i> Unlock</button>
++      <button class="btn btn-outline btn-sm" onclick="closeModal('manageStudentModal');bulkStudentAction('revoke-course', { courseId: document.getElementById('bulkCourseSelect').value })"><i class="fas fa-lock"></i> Remove access</button>
++    </div>`;
++  el.classList.add('active');
++}
++
+ function showCredentialsCard(student) {
+   const card = $('credentialsCard');
+   if (!card) return;
+@@ -8343,6 +8606,42 @@ function renderCourseDetail(courseId) {
+   const acc = accentStyle(course.code || course.name);
+   const diff = difficultyColor(course.difficulty);
+ 
++  /* ⭐ Breadcrumb (rendered into the static top bar) */
++  const crumbEl = document.getElementById('courseBreadcrumb');
++  if (crumbEl) {
++    const isStu = currentUser && currentUser.role === 'student';
++    crumbEl.innerHTML = `
++      <ol>
++        <li><a href="#/home" onclick="event.preventDefault();navigateStudent('home')">Home</a></li>
++        ${isStu ? `<li><a href="#/courses" onclick="event.preventDefault();navigateStudent('courses')">Courses</a></li>` : ''}
++        <li aria-current="page"><span>${escapeHtml(course.name)}</span></li>
++      </ol>`;
++  }
++
++  /* ⭐ Pull watch progress (≤ 1 request/min); repaint once if it changed */
++  AeroVideoProgress.ensure(course.id).then(changed => {
++    if (changed && (window.currentSelectedCourseId === course.id || currentCourseId === course.id)) {
++      try { renderCourseDetail(course.id); } catch (e) {}
++    }
++  });
++
++  const prog = (currentUser && currentUser.role === 'student') ? courseProgressSummary(course) : null;
++  const canStudy = !isPremiumCourse || isPurchased || isSubscribed;
++  const progressHtml = (prog && prog.total) ? `
++      <div class="cd-progress">
++        <div class="cd-progress-top">
++          <span class="cd-progress-label"><i class="fas fa-chart-line"></i> Your progress</span>
++          <span class="cd-progress-num">${prog.done}/${prog.total} · ${prog.pct}%</span>
++        </div>
++        <div class="cd-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${prog.pct}" aria-label="Course progress"><span style="width:${prog.pct}%"></span></div>
++        ${prog.next && canStudy ? `
++        <button class="cd-upnext" onclick="openMaterialSmart('${course.id}', '${prog.next.id}')">
++          <span class="cd-upnext-kicker">${prog.done ? 'Up next' : 'Start here'}</span>
++          <span class="cd-upnext-title">${escapeHtml(prog.next.title)}</span>
++          <i class="fas fa-arrow-right" aria-hidden="true"></i>
++        </button>` : (prog.done === prog.total ? `<div class="cd-progress-done"><i class="fas fa-trophy"></i> Course complete — great work!</div>` : '')}
++      </div>` : '';
++
+   let html = `
+     <div class="course-detail-header" style="${acc}">
+       ${course.thumbnail ? `<img src="${course.thumbnail}" class="cd-thumb" alt="" loading="lazy" decoding="async">` : ''}
+@@ -8363,6 +8662,7 @@ function renderCourseDetail(courseId) {
+           ${isPremiumCourse ? `<span><i class="fas fa-rupee-sign"></i> ${course.price || 0}</span>` : ''}
+         </div>
+         <p class="detail-desc">${escapeHtml(course.description) || ''}</p>
++        ${progressHtml}
+       </div>
+     </div>
+   `;
+@@ -8628,9 +8928,13 @@ function renderMaterialCard(course, m, isPurchased) {
+   } else {
+     if (m.type === 'video' && hasUrl && !hasFile) {
+       /* ─── Video with an external URL (YouTube / direct link) ─── */
++      const vpr = AeroVideoProgress.get(m.id);
++      const watchLabel = (vpr && vpr.completed) ? '<i class="fas fa-rotate-right"></i> Rewatch'
++                       : (vpr && vpr.pos >= 10) ? '<i class="fas fa-play"></i> Resume'
++                       : '<i class="fas fa-play"></i> Watch';
+       fileActionHtml += `<button class="btn btn-primary btn-sm"
+                           onclick="event.stopPropagation();openMaterialVideo('${course.id}', '${m.id}')">
+-                          <i class="fas fa-play"></i> Watch
++                          ${watchLabel}
+                         </button>`;
+     } else {
+       /* ─── Read button ───────────────────────────────────────────
+@@ -8742,6 +9046,7 @@ function renderMaterialCard(course, m, isPurchased) {
+       </div>
+       <h4>${escapeHtml(m.title)}</h4>
+       <div class="mat-desc">${escapeHtml(m.description) || ''}</div>
++      ${(m.type === 'video' && canAccess && currentUser.role === 'student') ? videoProgressStripHtml(m.id) : ''}
+       <div class="mat-actions">${fileActionHtml}${progressBtnHtml}</div>
+     </div>
+   `;
+@@ -8797,11 +9102,11 @@ function renderQASection(course) {
+       const answered = hasAnyAnswer(d);
+       const statusBadge = answered ? `<span class="qa-status solved">ANSWERED</span>` : `<span class="qa-status pending">OPEN</span>`;
+       const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
+-      const emailText = d.studentEmail ? escapeHtml(d.studentEmail) : 'No Email';
++      const emailText = d.studentEmail ? escapeHtml(d.studentEmail) : '';
+       const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
+       const isAsker = d.studentUsername === currentUser.username;
+       const isAdminUser = isAdmin(currentUser);
+-      const canReply = isAdmin || currentUser.role === 'student';
++      const canReply = isAdminUser || currentUser.role === 'student';
+ 
+       const replies = d.replies || [];
+       let repliesHtml = '';
+@@ -8840,7 +9145,7 @@ function renderQASection(course) {
+         <div class="qa-head">
+           <div>
+             <strong><i class="fas fa-user-circle"></i> ${escapeHtml(d.studentName)} <span class="qa-username">${usernameText}</span></strong>
+-            ${isAdmin ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
++            ${(isAdminUser && emailText) ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
+           </div>
+           <div>${statusBadge} <span class="qa-date">${dateText}</span></div>
+         </div>
+@@ -8872,7 +9177,12 @@ function renderCoursePlaylists(course) {
+       .map(id => (course.materials || []).find(m => m.id === id))
+       .filter(Boolean);
+ 
+-    const firstThree = items.slice(0, 3).map(m => `<li>${escapeHtml(m.title)}</li>`).join('');
++    const plProg = playlistProgress(course, pl);
++    const firstThree = items.slice(0, 3).map(m => {
++      const pr = AeroVideoProgress.get(m.id);
++      const fin = (pr && pr.completed) || isMaterialViewed(course.id, m.id);
++      return `<li class="${fin ? 'watched' : ''}">${fin ? '<i class="fas fa-check-circle"></i> ' : ''}${escapeHtml(m.title)}</li>`;
++    }).join('');
+     const more = items.length > 3 ? `<li class="playlist-more">+ ${items.length - 3} more</li>` : '';
+ 
+     html += `
+@@ -8888,8 +9198,13 @@ function renderCoursePlaylists(course) {
+             ${firstThree}
+             ${more}
+           </ul>
+-          <button class="btn btn-primary btn-block" onclick="openPlaylistPlayer('${course.id}', '${pl.id}', 0)">
+-            <i class="fas fa-play"></i> Play Playlist
++          ${plProg.total && currentUser.role === 'student' ? `
++          <div class="vprog playlist ${plProg.done === plProg.total ? 'done' : ''}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${plProg.pct}" aria-label="Playlist progress">
++            <div class="vprog-bar"><span style="width:${plProg.pct}%"></span></div>
++            <div class="vprog-label">${plProg.done} of ${plProg.total} watched · ${plProg.pct}%</div>
++          </div>` : ''}
++          <button class="btn btn-primary btn-block" onclick="openPlaylistPlayer('${course.id}', '${pl.id}', ${plProg.resumeIndex})">
++            <i class="fas fa-play"></i> ${plProg.done === plProg.total && plProg.total ? 'Play Again' : (plProg.started ? 'Continue · video ' + (plProg.resumeIndex + 1) : 'Play Playlist')}
+           </button>
+         </div>
+       </div>
+@@ -8928,6 +9243,7 @@ async function openPlaylistPlayer(courseId, playlistId, startIndex = 0) {
+ 
+       items.push({
+         materialId: mat.id,
++        courseId,
+         title: mat.title,
+         kind: data.kind,
+         videoId: data.videoId || null,
+@@ -8938,9 +9254,14 @@ async function openPlaylistPlayer(courseId, playlistId, startIndex = 0) {
+ 
+   if (items.length === 0) return showToast('No playable videos in this playlist.', 'error');
+ 
+-  const safeStart = Math.max(0, Math.min(startIndex, items.length - 1));
++  /* startIndex counts playlist entries; map it onto the playable items list */
++  let safeStart = Math.max(0, Math.min(startIndex, items.length - 1));
++  const wantId = (playlist.materialIds || [])[startIndex];
++  const found = wantId ? items.findIndex(it => it.materialId === wantId) : -1;
++  if (found >= 0) safeStart = found;
+ 
+   window.VideoPlayer.open({
++    courseId,
+     playlist: items,
+     playlistIndex: safeStart,
+     playlistTitle: playlist.title,
+@@ -12419,6 +12740,179 @@ if (_viewUrl.startsWith('/')) {
+   showToast('No file attached.', 'info');
+ }
+ 
++/* ============================================================
++   ⭐ VIDEO WATCH PROGRESS (2026-10-04)
++   ------------------------------------------------------------
++   • The player (media-viewer.js) fires `aero:video-progress`
++     events; we persist them via POST /api/user/video-progress.
++   • Course pages load the student's map once per minute and
++     draw per-video bars, playlist completion and "Resume" labels.
++   • Reaching 90 % auto-marks the material as completed (same
++     XP / streak path as the manual "Mark done" button).
++   ============================================================ */
++const AeroVideoProgress = (function () {
++  const store = Object.create(null);           // materialId → {pos,dur,pct,completed,updatedAt}
++  const loadedAt = new Map();                  // courseId → ms
++  const inflight = new Map();
++  const LOAD_TTL_MS = 60 * 1000;
++
++  function isStudent() {
++    return !!(currentUser && String(currentUser.role || '').toLowerCase() === 'student');
++  }
++  function get(mid) { return mid ? (store[mid] || null) : null; }
++
++  /* Resolves true when fresh data arrived (caller may re-render). */
++  function ensure(courseId) {
++    if (!isStudent() || !courseId) return Promise.resolve(false);
++    const at = loadedAt.get(courseId) || 0;
++    if (Date.now() - at < LOAD_TTL_MS) return Promise.resolve(false);
++    if (inflight.has(courseId)) return inflight.get(courseId);
++    loadedAt.set(courseId, Date.now());
++    const p = fetch(`${API_BASE}/user/video-progress?courseId=${encodeURIComponent(courseId)}`, { cache: 'no-store' })
++      .then(r => r.ok ? r.json() : null)
++      .then(d => {
++        if (!d || !d.success || !d.progress) return false;
++        let changed = false;
++        Object.keys(d.progress).forEach(mid => {
++          const prev = store[mid];
++          const next = d.progress[mid];
++          if (!prev || prev.pct !== next.pct || prev.completed !== next.completed || prev.pos !== next.pos) changed = true;
++          store[mid] = next;
++        });
++        return changed;
++      })
++      .catch(() => false)
++      .finally(() => inflight.delete(courseId));
++    inflight.set(courseId, p);
++    return p;
++  }
++
++  async function report(detail) {
++    if (!isStudent() || !detail || !detail.materialId || !detail.courseId) return;
++    /* Optimistic local update so bars move immediately */
++    const cur = store[detail.materialId] || { pos: 0, dur: 0, pct: 0, completed: false };
++    const pct = detail.ended ? 100 : (detail.duration > 0 ? Math.round(detail.position / detail.duration * 100) : 0);
++    store[detail.materialId] = {
++      pos: detail.ended ? 0 : Math.round(detail.position),
++      dur: Math.round(detail.duration),
++      pct: Math.max(cur.pct || 0, Math.min(100, pct)),
++      completed: cur.completed || pct >= 90,
++      updatedAt: new Date().toISOString()
++    };
++    try {
++      const res = await fetch(`${API_BASE}/user/video-progress`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        keepalive: detail.reason === 'close',
++        body: JSON.stringify({
++          courseId: detail.courseId, materialId: detail.materialId,
++          position: detail.position, duration: detail.duration, ended: !!detail.ended
++        })
++      });
++      const data = await res.json().catch(() => null);
++      if (data && data.success && data.progress) {
++        store[detail.materialId] = Object.assign({}, store[detail.materialId], data.progress);
++        if (data.completedNow && !isMaterialViewed(detail.courseId, detail.materialId)) {
++          markMaterialViewedQuietly(detail.courseId, detail.materialId);
++        }
++      }
++    } catch (e) { /* offline — localStorage resume still works */ }
++  }
++
++  return { get, ensure, report, _store: store };
++})();
++window.AeroVideoProgress = AeroVideoProgress;
++
++window.addEventListener('aero:video-progress', (e) => { AeroVideoProgress.report(e.detail); });
++window.addEventListener('aero:video-closed', () => {
++  /* Repaint bars / "Up next" once the player is gone */
++  if (window.currentSelectedCourseId || currentCourseId) {
++    try { renderApp(); } catch (e) {}
++  }
++});
++
++/* Same server path as the "Mark done" button, without the toast/re-render
++   storm — used when a video crosses the 90 % mark. */
++async function markMaterialViewedQuietly(courseId, materialId) {
++  try {
++    const res = await fetch(`/api/user/progress/${courseId}/${materialId}`, {
++      method: 'POST', headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ userId: currentUser._id, viewed: true })
++    });
++    const data = await res.json();
++    if (data && data.success) {
++      currentUser.progress = data.progress;
++      currentUser.lastActivity = data.lastActivity;
++      if (data.streakCount !== undefined) currentUser.streakCount = data.streakCount;
++      if (data.longestStreak !== undefined) currentUser.longestStreak = data.longestStreak;
++      saveSessionUser(currentUser);
++      showToast('✅ Lecture completed — progress saved', 'success');
++    }
++  } catch (e) { /* non-fatal */ }
++}
++
++function _fmtClock(sec) {
++  sec = Math.max(0, Math.floor(Number(sec) || 0));
++  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s2 = sec % 60;
++  return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s2).padStart(2, '0');
++}
++
++/* Small progress strip under a video card's title */
++function videoProgressStripHtml(materialId) {
++  const pr = AeroVideoProgress.get(materialId);
++  if (!pr || (!pr.pct && !pr.completed)) return '';
++  const pct = pr.completed ? 100 : Math.max(2, Math.min(100, pr.pct || 0));
++  const label = pr.completed
++    ? '<i class="fas fa-check-circle"></i> Watched'
++    : `${pct}% watched${pr.pos >= 10 ? ' · resume at ' + _fmtClock(pr.pos) : ''}`;
++  return `<div class="vprog ${pr.completed ? 'done' : ''}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="Watch progress">
++      <div class="vprog-bar"><span style="width:${pct}%"></span></div>
++      <div class="vprog-label">${label}</div>
++    </div>`;
++}
++
++/* Playlist completion summary */
++function playlistProgress(course, pl) {
++  const ids = (pl.materialIds || []).filter(id => (course.materials || []).some(m => m.id === id));
++  let done = 0, sum = 0, firstUnfinished = -1;
++  ids.forEach((id, i) => {
++    const pr = AeroVideoProgress.get(id);
++    const viewed = isMaterialViewed(course.id, id);
++    const finished = !!(pr && pr.completed) || viewed;
++    if (finished) done++;
++    sum += finished ? 100 : (pr ? (pr.pct || 0) : 0);
++    if (!finished && firstUnfinished < 0) firstUnfinished = i;
++  });
++  return {
++    total: ids.length, done,
++    pct: ids.length ? Math.round(sum / ids.length) : 0,
++    resumeIndex: firstUnfinished < 0 ? 0 : firstUnfinished,
++    started: sum > 0
++  };
++}
++
++/* Course-level progress + the next thing to study (in course order) */
++function courseProgressSummary(course) {
++  const mats = course.materials || [];
++  const viewedIds = getProgress(course.id);
++  const done = mats.filter(m => viewedIds.includes(m.id)).length;
++  let next = null;
++  for (const m of mats) {
++    if (viewedIds.includes(m.id)) continue;
++    next = m; break;
++  }
++  return { done, total: mats.length, pct: mats.length ? Math.round(done / mats.length * 100) : 0, next };
++}
++
++function openMaterialSmart(courseId, materialId) {
++  const course = findCourse(courseId);
++  const m = course && (course.materials || []).find(x => x.id === materialId);
++  if (!m) return;
++  const isVideoUrl = m.type === 'video' && (m.url || m.cloudUrl) && !(m.fileName || m.diskName);
++  if (isVideoUrl) openMaterialVideo(courseId, materialId);
++  else viewFileOnline(courseId, materialId);
++}
++
+ /* ============================================================
+    openMaterialVideo — PREMIUM GATED
+    ============================================================ */
+@@ -12430,6 +12924,9 @@ async function openMaterialVideo(courseId, materialId) {
+   const mat = (course.materials || []).find(m => m.id === materialId);
+   if (!mat || !mat.url) return showToast('No video URL set for this material.', 'error');
+ 
++  /* Make sure the server-side resume point is known (≤ 1 request/min) */
++  try { await Promise.race([AeroVideoProgress.ensure(courseId), new Promise(r => setTimeout(r, 800))]); } catch (e) {}
++
+   /* ⭐ Store context so heartbeats know exactly what's playing */
+   window.__activeVideoContext = {
+     courseId,
+@@ -15534,7 +16031,7 @@ async function renderReferralCard() {
+     console.warn('[referral]', e.message);
+     return;
+   }
+-  if (!data.success || !data.program.enabled) return;
++  if (!data || !data.success || !data.program || !data.program.enabled) return;
+ 
+   const s = data.stats || {};
+   const p = data.program || {};
+diff --git a/index.html b/index.html
+index 209610d..aedb7b3 100644
+--- a/index.html
++++ b/index.html
+@@ -4,15 +4,27 @@
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+   <meta name="theme-color" content="#0b1226">
+-<link rel="manifest" href="manifest.json?v=136">
++  <!-- ⭐ Pre-paint theme: set data-theme before CSS paints (no light→dark flash) -->
++  <script>
++    (function () {
++      try {
++        var t = localStorage.getItem('aero_theme');
++        if (t !== 'light' && t !== 'dim' && t !== 'dark') {
++          t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
++        }
++        document.documentElement.setAttribute('data-theme', t);
++      } catch (e) {}
++    })();
++  </script>
++<link rel="manifest" href="manifest.json?v=137">
+   <!-- Logo / Favicon -->
+-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=136">
+-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=136">
+-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=136">
+-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=136">
+-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=136">
+-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=136">
+-  <link rel="shortcut icon" href="/favicon-32.png?v=136">
++  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=137">
++  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=137">
++  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=137">
++  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=137">
++  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=137">
++  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=137">
++  <link rel="shortcut icon" href="/favicon-32.png?v=137">
+   <title>AeroGyan Education – Course Portal</title>
+ 
+   <!-- Critical preconnects (only 3 — extra ones waste time) -->
+@@ -44,7 +56,7 @@
+   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
+ 
+   <!-- App stylesheet — blocking (must be, small) -->
+-  <link rel="stylesheet" href="styles.css?v=136">
++  <link rel="stylesheet" href="styles.css?v=137">
+ 
+ 
+   <!-- Inline critical fallback so icons don't flash before FA loads -->
+@@ -139,14 +151,28 @@
+           </div>
+         </div>
+ 
+-        <!-- ⭐ Settings (contains the Night Mode toggle) -->
+-        <button class="icon-btn" id="settingsBtn" aria-label="Open settings" title="Settings"
+-                onclick="openSettingsModal()">
+-          <i class="fas fa-gear"></i>
+-        </button>
+-
+-        <button class="icon-btn theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
+-          <i class="fas fa-moon"></i>
++        <!-- ⭐ Single animated light/dark switch (Settings lives in the profile menu).
++             Dim stays available under Settings → Appearance; when Dim is active this
++             switch shows the moon and a click returns to Light. -->
++        <button type="button" class="theme-switch" id="themeToggle" role="switch"
++                aria-checked="false" aria-label="Switch to dark mode" title="Switch to dark mode">
++          <span class="ts-track" aria-hidden="true">
++            <span class="ts-knob">
++              <svg class="ts-icon" viewBox="0 0 24 24" focusable="false">
++                <mask id="tsMoonMaskApp">
++                  <rect width="24" height="24" fill="#fff"/>
++                  <circle class="ts-bite" cx="19" cy="5" r="7" fill="#000"/>
++                </mask>
++                <circle class="ts-core" cx="12" cy="12" r="8" fill="currentColor" mask="url(#tsMoonMaskApp)"/>
++                <g class="ts-rays" stroke="currentColor" stroke-width="2" stroke-linecap="round">
++                  <line x1="12" y1="1.5" x2="12" y2="3.2"/><line x1="12" y1="20.8" x2="12" y2="22.5"/>
++                  <line x1="1.5" y1="12" x2="3.2" y2="12"/><line x1="20.8" y1="12" x2="22.5" y2="12"/>
++                  <line x1="4.6" y1="4.6" x2="5.8" y2="5.8"/><line x1="18.2" y1="18.2" x2="19.4" y2="19.4"/>
++                  <line x1="4.6" y1="19.4" x2="5.8" y2="18.2"/><line x1="18.2" y1="5.8" x2="19.4" y2="4.6"/>
++                </g>
++              </svg>
++            </span>
++          </span>
+         </button>
+ 
+         <span class="streak-badge" id="streakBadge" style="display:none;" title="Daily streak">
+@@ -636,11 +662,13 @@
+             </div>
+ 
+             <select id="studentPremiumFilter" class="student-filter-select"
+-                    title="Filter by premium access"
++                    title="Filter by access level or account status"
+                     onchange="setStudentPremiumFilter(this.value)">
+               <option value="all">All access levels</option>
+               <option value="premium">Premium access only</option>
+               <option value="free">No premium access</option>
++              <option value="active">Active accounts</option>
++              <option value="suspended">Suspended accounts</option>
+             </select>
+ 
+             <select id="studentSortSelect" class="student-filter-select"
+@@ -856,9 +884,12 @@
+ 
+       <!-- COURSE DETAIL -->
+       <section id="courseDetailView" class="view">
+-        <button class="back-link" onclick="goBackFromDetail()">
+-          <i class="fas fa-arrow-left"></i> Back
+-        </button>
++        <div class="cd-topbar">
++          <button class="back-link" onclick="goBackFromDetail()" aria-label="Go back">
++            <i class="fas fa-arrow-left"></i> Back
++          </button>
++          <nav class="breadcrumb" id="courseBreadcrumb" aria-label="Breadcrumb"></nav>
++        </div>
+         <div id="courseDetailContent"></div>
+       </section>
+ 
+@@ -1068,7 +1099,7 @@
+     </div>
+   </div>
+ 
+-  <!-- ============ ⭐ SETTINGS MODAL — APPEARANCE / NIGHT MODE ============ -->
++  <!-- ============ ⭐ SETTINGS MODAL — APPEARANCE ============ -->
+   <div class="modal-overlay" id="settingsModal">
+     <div class="modal-box" style="max-width:520px;">
+       <h3><i class="fas fa-gear"></i> Settings</h3>
+@@ -1077,30 +1108,11 @@
+       <div class="settings-section">
+         <h4><i class="fas fa-palette"></i> Appearance</h4>
+ 
+-        <!-- Primary Night Mode switch -->
+-        <div class="settings-row">
++        <div class="settings-row settings-row--stacked">
+           <div class="settings-row-text">
+-            <strong>Night mode</strong>
+-            <span id="nightModeHint">Dark grey background with off-white text — easier on the eyes at night.</span>
++            <strong>Theme</strong>
++            <span id="nightModeHint">The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here.</span>
+           </div>
+-          <button type="button" class="switch" id="nightModeSwitch" role="switch"
+-                  aria-checked="false" aria-label="Toggle Night mode"
+-                  onclick="toggleNightMode()">
+-            <span class="switch-track"><span class="switch-thumb"></span></span>
+-          </button>
+-        </div>
+-
+-        <!-- Sub-option: softer "Dim" dark theme (only when Night mode is on) -->
+-        <div class="settings-row" id="dimModeRow" hidden>
+-          <div class="settings-row-text">
+-            <strong>Dim instead of Night</strong>
+-            <span>Softer, lower-contrast grey — good for dim rooms and OLED screens.</span>
+-          </div>
+-          <button type="button" class="switch" id="dimModeSwitch" role="switch"
+-                  aria-checked="false" aria-label="Use the softer Dim theme"
+-                  onclick="toggleDimMode()">
+-            <span class="switch-track"><span class="switch-thumb"></span></span>
+-          </button>
+         </div>
+ 
+         <!-- Full three-way picker (Light / Dim / Night) -->
+@@ -1825,9 +1837,9 @@
+   <!-- Core app scripts — always loaded, deferred -->
+   <!-- ⚡ Version query busts HTTP cache on every deploy.
+        Just bump the number (v=29, v=30...) to force fresh files. -->
+- 	<script src="media-viewer.js?v=136" defer></script>
+-  <script src="document-viewer.js?v=136" defer></script>
+-  <script src="app.js?v=136" defer></script>
++ 	<script src="media-viewer.js?v=137" defer></script>
++  <script src="document-viewer.js?v=137" defer></script>
++  <script src="app.js?v=137" defer></script>
+   <!-- Service worker registration -->
+ <script>
+   if ('serviceWorker' in navigator) {
+@@ -1835,7 +1847,7 @@
+       // updateViaCache:'none' forces the browser to fetch the SW script
+       // from the network on every update check — critical for iOS/Safari
+       // which otherwise uses an HTTP-cached copy.
+-      navigator.serviceWorker.register('/sw.js?v=136', { updateViaCache: 'none' })
++      navigator.serviceWorker.register('/sw.js?v=137', { updateViaCache: 'none' })
+         .then(reg => {
+           console.log('[SW] registered:', reg.scope);
+ 
+diff --git a/landing.html b/landing.html
+index a9ff0b0..3fc70f8 100644
+--- a/landing.html
++++ b/landing.html
+@@ -5,15 +5,15 @@
+   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+   <meta name="theme-color" content="#0b1226">
+   <meta name="description" content="AeroGyan Education — Your complete hub for engineering excellence. Video lectures, notes, PYQs, tutorials, slides, and an AI doubt solver. Built for IIT Kharagpur students.">
+-  <link rel="manifest" href="manifest.json?v=136">
++  <link rel="manifest" href="manifest.json?v=137">
+ 
+-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=136">
+-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=136">
+-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=136">
+-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=136">
+-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=136">
+-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=136">
+-  <link rel="shortcut icon" href="/favicon-32.png?v=136">
++  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=137">
++  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=137">
++  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=137">
++  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=137">
++  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=137">
++  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=137">
++  <link rel="shortcut icon" href="/favicon-32.png?v=137">
+ 
+   <title>AeroGyan Education — Your Complete Hub for Engineering Excellence</title>
+ 
+@@ -31,7 +31,19 @@
+   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
+ 
+   <!-- Same global stylesheet → 100% theme continuity with the app -->
+-  <link rel="stylesheet" href="styles.css?v=136">
++  <script>
++    /* ⭐ Pre-paint theme — avoids a light flash for dark-mode users */
++    (function () {
++      try {
++        var t = localStorage.getItem('aero_theme');
++        if (t !== 'light' && t !== 'dim' && t !== 'dark') {
++          t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
++        }
++        document.documentElement.setAttribute('data-theme', t);
++      } catch (e) {}
++    })();
++  </script>
++  <link rel="stylesheet" href="styles.css?v=137">
+ 
+   <style>
+     /* ============================================================
+@@ -2115,8 +2127,25 @@
+       </nav>
+ 
+       <div class="landing-nav-right">
+-        <button class="icon-btn theme-toggle" id="landingThemeToggle" aria-label="Toggle theme">
+-          <i class="fas fa-moon"></i>
++        <button type="button" class="theme-switch" id="landingThemeToggle" role="switch"
++                aria-checked="false" aria-label="Switch to dark mode" title="Switch to dark mode">
++          <span class="ts-track" aria-hidden="true">
++            <span class="ts-knob">
++              <svg class="ts-icon" viewBox="0 0 24 24" focusable="false">
++                <mask id="tsMoonMaskLanding">
++                  <rect width="24" height="24" fill="#fff"/>
++                  <circle class="ts-bite" cx="19" cy="5" r="7" fill="#000"/>
++                </mask>
++                <circle class="ts-core" cx="12" cy="12" r="8" fill="currentColor" mask="url(#tsMoonMaskLanding)"/>
++                <g class="ts-rays" stroke="currentColor" stroke-width="2" stroke-linecap="round">
++                  <line x1="12" y1="1.5" x2="12" y2="3.2"/><line x1="12" y1="20.8" x2="12" y2="22.5"/>
++                  <line x1="1.5" y1="12" x2="3.2" y2="12"/><line x1="20.8" y1="12" x2="22.5" y2="12"/>
++                  <line x1="4.6" y1="4.6" x2="5.8" y2="5.8"/><line x1="18.2" y1="18.2" x2="19.4" y2="19.4"/>
++                  <line x1="4.6" y1="19.4" x2="5.8" y2="18.2"/><line x1="18.2" y1="5.8" x2="19.4" y2="4.6"/>
++                </g>
++              </svg>
++            </span>
++          </span>
+         </button>
+ 
+         <!-- ⬇️ Install App — direct link to #apps section -->
+@@ -2830,41 +2859,48 @@
+ 
+   document.getElementById('landingYear').textContent = new Date().getFullYear();
+ 
+-  /* ---------- Theme toggle (shares 'aero_theme' with the app) ---------- */
++  /* ---------- Theme switch (shares 'aero_theme' + 'aero_theme_dark' with the app) ----------
++     One animated sun ⇄ moon switch: Light ↔ the user's preferred dark style
++     (Dim or Night, chosen in the app's Settings). */
+   (function initLandingTheme() {
+-    const THEME_CYCLE = ['light', 'dim', 'dark'];
+-    const ICONS = { light: 'fa-sun', dim: 'fa-circle-half-stroke', dark: 'fa-moon' };
+-
++    const DARK = ['dim', 'dark'];
+     function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
+-    function applyTheme(t) {
+-      document.documentElement.setAttribute('data-theme', t);
+-      try { localStorage.setItem('aero_theme', t); } catch (e) {}
+-      updateIcon();
++    function preferredDark() {
++      let t = null;
++      try { t = localStorage.getItem('aero_theme_dark'); } catch (e) {}
++      return DARK.includes(t) ? t : 'dark';
+     }
+-    function updateIcon() {
++    function syncSwitch() {
+       const btn = document.getElementById('landingThemeToggle');
+       if (!btn) return;
+-      const t = getTheme();
+-      btn.innerHTML = '<i class="fas ' + (ICONS[t] || ICONS.light) + '"></i>';
++      const night = DARK.includes(getTheme());
++      const label = night ? 'Switch to light mode' : 'Switch to dark mode';
++      btn.setAttribute('aria-checked', night ? 'true' : 'false');
++      btn.setAttribute('aria-label', label);
++      btn.setAttribute('title', label);
+     }
+-    function cycle() {
+-      const cur = getTheme();
+-      const idx = THEME_CYCLE.indexOf(cur);
+-      applyTheme(THEME_CYCLE[(idx + 1) % THEME_CYCLE.length]);
++    function applyTheme(t) {
++      document.documentElement.setAttribute('data-theme', t);
++      try { localStorage.setItem('aero_theme', t); } catch (e) {}
++      if (DARK.includes(t)) { try { localStorage.setItem('aero_theme_dark', t); } catch (e) {} }
++      syncSwitch();
+     }
++    function toggle() { applyTheme(DARK.includes(getTheme()) ? 'light' : preferredDark()); }
+ 
+     let saved = null;
+     try { saved = localStorage.getItem('aero_theme'); } catch (e) {}
+     const valid = ['light', 'dim', 'dark'];
+-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
++    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+     const initial = valid.includes(saved) ? saved : (prefersDark ? 'dark' : 'light');
+     document.documentElement.setAttribute('data-theme', initial);
+ 
+-    document.addEventListener('DOMContentLoaded', () => {
+-      updateIcon();
++    const wire = () => {
++      syncSwitch();
+       const btn = document.getElementById('landingThemeToggle');
+-      if (btn) btn.addEventListener('click', cycle);
+-    });
++      if (btn && !btn.__wired) { btn.__wired = true; btn.addEventListener('click', toggle); }
++    };
++    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
++    else wire();
+   })();
+ 
+   /* ---------- Sticky nav shrink ---------- */
+diff --git a/media-viewer.js b/media-viewer.js
+index 987c6af..bc11c17 100644
+--- a/media-viewer.js
++++ b/media-viewer.js
+@@ -242,6 +242,11 @@ class VideoPlayer {
+     this.playlistIndex = opts.playlistIndex || 0;
+     this.playlistTitle = opts.playlistTitle || '';
+     this.videoId = opts.videoId || opts.materialId || opts.title || 'video';
++    /* ⭐ Watch-progress identity (synced to the server by app.js) */
++    this.courseId = opts.courseId || null;
++    this.materialId = opts.materialId || null;
++    this._lastReportedPos = -1;
++    this._lastReportAt = 0;
+ 
+     this._buildUI();
+     this._renderWatermark();
+@@ -268,6 +273,7 @@ class VideoPlayer {
+ 
+   close() {
+     if (!this.active) return;
++    this._reportProgress('close');
+     this.active = false;
+ 
+     this._saveResume();
+@@ -298,6 +304,7 @@ class VideoPlayer {
+     this.modal = null;
+     this.playlist = [];
+     this.playlistIndex = 0;
++    try { window.dispatchEvent(new CustomEvent('aero:video-closed', { detail: { courseId: this.courseId } })); } catch (e) {}
+   }
+ 
+   /* ------------------------------------------------------------
+@@ -549,8 +556,13 @@ class VideoPlayer {
+ 
+   async _loadPlaylistItem(idx) {
+     if (idx < 0 || idx >= this.playlist.length) return;
++    /* Flush progress of the video we are leaving */
++    if (this.materialId) this._reportProgress('switch');
+     this.playlistIndex = idx;
+     const item = this.playlist[idx];
++    this.materialId = item.materialId || null;
++    this.courseId = item.courseId || this.courseId;
++    this._lastReportedPos = -1;
+     this.titleEl.textContent = item.title || 'Video';
+     this.videoId = item.videoId || item.materialId || item.title || ('item-' + idx);
+ 
+@@ -818,6 +830,10 @@ class VideoPlayer {
+       this._lastResumeSave = now;
+       this._saveResume();
+     }
++    /* ⭐ Sync watch progress to the server every ~15 s while playing */
++    if (this.isPlaying && now - (this._lastReportAt || 0) > 15000) {
++      this._reportProgress('tick');
++    }
+   }
+ 
+   /* ------------------------------------------------------------
+@@ -1002,12 +1018,20 @@ class VideoPlayer {
+ 
+   _renderPlaylist() {
+     if (!this.playlistItemsEl) return;
+-    this.playlistItemsEl.innerHTML = this.playlist.map((item, i) => `
+-      <div class="vp-playlist-item ${i === this.playlistIndex ? 'current' : ''}" data-index="${i}">
+-        <div class="vp-playlist-item-num">${i + 1}</div>
+-        <div class="vp-playlist-item-title">${_escHtml(item.title)}</div>
++    const VP = window.AeroVideoProgress;
++    this.playlistItemsEl.innerHTML = this.playlist.map((item, i) => {
++      const pr = (VP && item.materialId) ? VP.get(item.materialId) : null;
++      const pct = pr ? Math.max(0, Math.min(100, pr.pct || 0)) : 0;
++      const done = !!(pr && pr.completed);
++      return `
++      <div class="vp-playlist-item ${i === this.playlistIndex ? 'current' : ''} ${done ? 'watched' : ''}" data-index="${i}">
++        <div class="vp-playlist-item-num">${done ? '<i class="fas fa-check" aria-label="Watched"></i>' : (i + 1)}</div>
++        <div class="vp-playlist-item-title">${_escHtml(item.title)}
++          ${pct > 0 ? `<span class="vp-pl-progress" aria-hidden="true"><span style="width:${pct}%"></span></span>` : ''}
++        </div>
+         ${i === this.playlistIndex ? '<i class="fas fa-volume-up vp-playlist-item-playing"></i>' : ''}
+-      </div>`).join('');
++      </div>`;
++    }).join('');
+     this.playlistItemsEl.querySelectorAll('.vp-playlist-item').forEach(el => {
+       el.addEventListener('click', () => {
+         const idx = parseInt(el.dataset.index, 10);
+@@ -1028,6 +1052,7 @@ class VideoPlayer {
+   }
+ 
+   _onVideoEnded() {
++    this._reportProgress('ended', true);
+     if (this.looping) { this._play(); return; }
+     if (this.playlist.length > 1 && this.playlistIndex < this.playlist.length - 1) {
+       this._showToast('Next up: ' + (this.playlist[this.playlistIndex + 1].title || ''));
+@@ -1111,9 +1136,38 @@ class VideoPlayer {
+       localStorage.setItem(this._resumeKey(), JSON.stringify({ t, dur, at: Date.now() }));
+     } catch (e) {}
+   }
++  /* ⭐ Watch-progress reporting. The player stays decoupled from the
++     network: it fires a DOM event and app.js persists it. */
++  _reportProgress(reason, ended) {
++    try {
++      if (!this.materialId) return;
++      const t = this._getCurrentTime();
++      const d = this._getDuration();
++      if (!d || d < 1) return;
++      if (!ended && reason === 'tick' && Math.abs(t - this._lastReportedPos) < 4) return;
++      if (!ended && t < 1 && reason !== 'tick') return;
++      this._lastReportedPos = t;
++      this._lastReportAt = Date.now();
++      window.dispatchEvent(new CustomEvent('aero:video-progress', {
++        detail: {
++          courseId: this.courseId, materialId: this.materialId,
++          position: ended ? d : t, duration: d, ended: !!ended, reason
++        }
++      }));
++      if (reason !== 'close') this._renderPlaylist();
++    } catch (e) { /* never break playback */ }
++  }
++
+   _maybeResumeFromSaved() {
+     let saved;
+     try { saved = JSON.parse(localStorage.getItem(this._resumeKey())); } catch (e) {}
++    /* ⭐ Fall back to the server-side position (another device / cleared storage) */
++    if ((!saved || !saved.t) && this.materialId && window.AeroVideoProgress) {
++      const srv = window.AeroVideoProgress.get(this.materialId);
++      if (srv && !srv.completed && srv.pos >= 10) {
++        saved = { t: srv.pos, dur: srv.dur, at: srv.updatedAt ? new Date(srv.updatedAt).getTime() : Date.now() };
++      }
++    }
+     if (!saved || !saved.t || saved.t < 10) return;
+     const dur = this._getDuration();
+     if (dur && saved.t > dur - 15) return;
+diff --git a/models/User.js b/models/User.js
+index 04c9567..edb5541 100644
+--- a/models/User.js
++++ b/models/User.js
+@@ -127,6 +127,35 @@ const userSchema = new mongoose.Schema({
+     total:      { type: Number, default: null }
+   }],
+ 
++  /* ============================================================
++     ⭐ VIDEO WATCH PROGRESS (2026-10-04)
++     materialId → { courseId, pos, dur, pct, completed, updatedAt }
++     pct only ever increases (stored with $max) so rewatching the
++     intro never lowers a finished lecture's progress.
++     ============================================================ */
++  videoProgress: {
++    type: Map,
++    of: new mongoose.Schema({
++      courseId:  { type: String, default: null },
++      pos:       { type: Number, default: 0 },     // last position (s)
++      dur:       { type: Number, default: 0 },     // duration (s)
++      pct:       { type: Number, default: 0 },     // furthest-watched %, 0–100
++      completed: { type: Boolean, default: false },
++      updatedAt: { type: Date, default: Date.now }
++    }, { _id: false }),
++    default: {}
++  },
++
++  /* ============================================================
++     ⭐ ACCOUNT SUSPENSION (admin tool, 2026-10-04)
++     ============================================================ */
++  suspended: {
++    active: { type: Boolean, default: false },
++    reason: { type: String, default: '' },
++    at:     { type: Date, default: null },
++    by:     { type: String, default: '' }
++  },
++
+   /* ============================================================
+      ACTIVE SESSION
+      ============================================================ */
+@@ -143,5 +172,6 @@ userSchema.index({ phone: 1 });
+ userSchema.index({ role: 1, createdAt: -1 });
+ userSchema.index({ 'subscription.status': 1 });
+ userSchema.index({ role: 1, email: 1 });
++userSchema.index({ 'suspended.active': 1 });
+ 
+ module.exports = mongoose.model('User', userSchema);
+\ No newline at end of file
+diff --git a/package.json b/package.json
+index 47caa35..e83ef64 100644
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,9 @@
+   "description": "",
+   "main": "server.js",
+   "scripts": {
+-    "start": "node server.js"
++    "start": "node server.js",
++    "test": "node scripts/test-auth-core.js && node scripts/test-security-helpers.js",
++    "smoke": "bash scripts/smoke-test.sh"
+   },
+   "keywords": [],
+   "author": "",
+diff --git a/scripts/smoke-test.sh b/scripts/smoke-test.sh
+new file mode 100755
+index 0000000..e1947d8
+--- /dev/null
++++ b/scripts/smoke-test.sh
+@@ -0,0 +1,67 @@
++#!/usr/bin/env bash
++# ============================================================
++# AeroGyan staging smoke test  —  run BEFORE every push to the VPS
++#   BASE_URL=http://localhost:5001 bash scripts/smoke-test.sh
++# Optional deeper checks with a real student session:
++#   STUDENT_TOKEN=<jwt from sessionStorage.aero_token> STUDENT_ID=<_id> bash scripts/smoke-test.sh
++# Exit code 0 = all checks passed.
++# ============================================================
++BASE_URL="${BASE_URL:-http://localhost:5001}"
++FAKE_ID="000000000000000000000000"
++pass=0; fail=0
++ok()   { echo "  ✅ $1"; pass=$((pass+1)); }
++bad()  { echo "  ❌ $1"; fail=$((fail+1)); }
++code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
++
++echo "Smoke-testing $BASE_URL"
++echo "— Public pages"
++[ "$(code "$BASE_URL/")" = "200" ] && ok "GET / → 200" || bad "GET / is not 200"
++[ "$(code "$BASE_URL/app")" = "200" ] && ok "GET /app → 200" || bad "GET /app is not 200"
++curl -s "$BASE_URL/app" | grep -Eq 'app\.js\?v=[0-9a-f]{10}' && ok "index.html carries a content-hash for app.js" || bad "app.js?v=<hash> not injected"
++[ "$(code "$BASE_URL/api/version")" = "200" ] && ok "GET /api/version → 200" || bad "/api/version failed"
++[ "$(code "$BASE_URL/api/courses")" = "200" ] && ok "GET /api/courses → 200" || bad "/api/courses failed"
++curl -s "$BASE_URL/api/courses" | grep -q 'res.cloudinary.com' && bad "course list leaks Cloudinary URLs" || ok "course list has no raw Cloudinary URLs"
++[ "$(code "$BASE_URL/api/definitely-not-a-route")" = "404" ] && ok "unknown /api route → JSON 404" || bad "unknown /api route not 404"
++
++echo "— Protected routes must refuse anonymous callers"
++for spec in \
++  "GET /api/user/me/$FAKE_ID" \
++  "GET /api/user/analytics/$FAKE_ID" \
++  "GET /api/user/notifications/$FAKE_ID" \
++  "GET /api/user/video-progress" \
++  "POST /api/user/video-progress" \
++  "POST /api/user/progress/$FAKE_ID/$FAKE_ID" \
++  "POST /api/upload/init" \
++  "POST /api/create-order" \
++  "POST /api/subscribe/verify-order" \
++  "POST /api/courses/$FAKE_ID/doubts" \
++  "POST /api/ai/solve-doubt" \
++  "GET /api/students" \
++  "POST /api/admin/students/bulk" \
++  "PUT /api/courses/$FAKE_ID/doubts/$FAKE_ID"; do
++  m="${spec%% *}"; p="${spec#* }"
++  c=$(code -X "$m" -H 'Content-Type: application/json' -d '{}' "$BASE_URL$p")
++  [ "$c" = "401" ] && ok "$m $p → 401" || bad "$m $p → $c (expected 401)"
++done
++
++echo "— NoSQL operator injection is stripped"
++c=$(code -X POST -H 'Content-Type: application/json' -d '{"username":{"$ne":null},"password":{"$ne":null}}' "$BASE_URL/api/login")
++[ "$c" = "400" ] && ok "login with {\$ne:null} → 400" || bad "login operator payload → $c (expected 400)"
++
++echo "— Compressed static assets"
++sleep 2
++enc=$(curl -s -o /dev/null -D - -H 'Accept-Encoding: br, gzip' "$BASE_URL/app.js" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-encoding"{print $2}')
++[ -n "$enc" ] && ok "app.js served with Content-Encoding: $enc" || bad "app.js not compressed"
++
++if [ -n "$STUDENT_TOKEN" ] && [ -n "$STUDENT_ID" ]; then
++  echo "— Student session checks"
++  AUTH="Authorization: Bearer $STUDENT_TOKEN"
++  [ "$(code -H "$AUTH" "$BASE_URL/api/user/me/$STUDENT_ID")" = "200" ] && ok "own profile → 200" || bad "own profile not 200"
++  [ "$(code -H "$AUTH" "$BASE_URL/api/user/me/$FAKE_ID")" = "403" ] && ok "someone else's profile → 403" || bad "IDOR check failed (expected 403)"
++  [ "$(code -H "$AUTH" "$BASE_URL/api/user/video-progress")" = "200" ] && ok "video progress → 200" || bad "video progress not 200"
++  [ "$(code -H "$AUTH" "$BASE_URL/api/students")" = "403" ] && ok "student → admin route → 403" || bad "student reached an admin route"
++fi
++
++echo
++echo "Passed: $pass   Failed: $fail"
++[ "$fail" -eq 0 ]
+diff --git a/scripts/test-auth-core.js b/scripts/test-auth-core.js
+new file mode 100644
+index 0000000..f11c20d
+--- /dev/null
++++ b/scripts/test-auth-core.js
+@@ -0,0 +1,86 @@
++// Run: node scripts/test-auth-core.js   (no DB or npm packages needed — pure logic test)
++// Unit tests for the new auth core, extracted verbatim from server.js and run in a VM.
++const fs = require('fs'), vm = require('vm'), crypto = require('crypto'), assert = require('assert');
++const src = fs.readFileSync(require('path').join(__dirname, '..', 'server.js'), 'utf8');
++function grab(startMarker, endMarker) {
++  const a = src.indexOf(startMarker); const b = src.indexOf(endMarker, a);
++  if (a < 0 || b < 0) throw new Error('marker not found: ' + startMarker);
++  return src.slice(a, b);
++}
++const code = [
++  grab('async function requireAdminAuth(req, res, next) {', '/* ============================================================\n   AUTH — optional token attach'),
++  grab('const AUTH_USER_CACHE_TTL_MS', '/* ============================================================\n   PREMIUM ACCESS — single source of truth'),
++].join('\n');
++
++// --- minimal HS256 jwt shim ---
++const b64u = b => Buffer.from(b).toString('base64url');
++const jwt = {
++  sign(p, secret) { const h = b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' })); const pl = b64u(JSON.stringify(p)); const sig = crypto.createHmac('sha256', secret).update(h + '.' + pl).digest('base64url'); return `${h}.${pl}.${sig}`; },
++  verify(t, secret, opts) { assert.deepStrictEqual(opts, { algorithms: ['HS256'] }); const [h, pl, sig] = String(t).split('.'); const exp = crypto.createHmac('sha256', secret).update(h + '.' + pl).digest('base64url'); if (sig !== exp) throw new Error('bad sig'); return JSON.parse(Buffer.from(pl, 'base64url').toString()); }
++};
++const users = {};
++let dbDown = false;
++const User = { findById(id) { return { select() { return { lean: async () => { if (dbDown) throw new Error('db'); return users[id] ? JSON.parse(JSON.stringify(users[id])) : null; } }; } }; } };
++const mongoose = { Types: { ObjectId: { isValid: v => /^[0-9a-f]{24}$/.test(v) } } };
++const ctx = { jwt, User, mongoose, JWT_SECRET: 's'.repeat(40), JWT_VERIFY_OPTS: { algorithms: ['HS256'] }, console: { warn() {}, log() {} }, Date, Map, String, Number, Promise };
++vm.createContext(ctx);
++vm.runInContext(code + '\nthis.api = { requireAdminAuth, requireUser, requireSelfOrAdmin, attachUserFromToken, _clearAuthUserCache, resolveSessionUser };', ctx);
++const { requireAdminAuth, requireUser, requireSelfOrAdmin, attachUserFromToken, _clearAuthUserCache } = ctx.api;
++
++const A = 'a'.repeat(24), S = 'b'.repeat(24), S2 = 'c'.repeat(24);
++users[A] = { _id: A, role: 'admin', username: 'admin', activeSession: { sessionId: 'sa' } };
++users[S] = { _id: S, role: 'student', username: 'stu', activeSession: { sessionId: 's1' } };
++users[S2] = { _id: S2, role: 'student', username: 'stu2', activeSession: { sessionId: 's2' }, suspended: { active: true } };
++const tok = (id, sid) => jwt.sign({ id, role: 'x', sessionId: sid }, ctx.JWT_SECRET);
++
++function run(mw, req) {
++  return new Promise(resolve => {
++    const res = { code: 200, body: null, status(c) { this.code = c; return this; }, json(b) { this.body = b; resolve({ next: false, res: this, req }); return this; } };
++    req.headers = req.headers || {}; req.query = req.query || {}; req.params = req.params || {};
++    Promise.resolve(mw(req, res, () => resolve({ next: true, res, req })));
++  });
++}
++const bearer = t => ({ authorization: 'Bearer ' + t });
++(async () => {
++  let r;
++  r = await run(requireUser, {}); assert.strictEqual(r.res.code, 401); assert.strictEqual(r.res.body.code, 'NO_TOKEN');
++  r = await run(requireUser, { headers: bearer('garbage') }); assert.strictEqual(r.res.body.code, 'INVALID_TOKEN');
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')) }); assert.ok(r.next); assert.strictEqual(r.req.authUserId, S);
++  // forged with wrong secret
++  r = await run(requireUser, { headers: bearer(jwt.sign({ id: A, sessionId: 'sa' }, 'SuperSecretAeroKey')) }); assert.strictEqual(r.res.body.code, 'INVALID_TOKEN');
++  // pending 2FA token (no id) must not authenticate
++  r = await run(requireUser, { headers: bearer(jwt.sign({ pendingId: 'x' }, ctx.JWT_SECRET)) }); assert.strictEqual(r.res.body.code, 'INVALID_TOKEN');
++  // session replaced
++  r = await run(requireUser, { headers: bearer(tok(S, 'old')) }); assert.strictEqual(r.res.body.code, 'SESSION_REPLACED');
++  // logout → sessionId null → ended (after cache clear)
++  users[S].activeSession.sessionId = null; _clearAuthUserCache();
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')) }); assert.strictEqual(r.res.body.code, 'SESSION_ENDED');
++  users[S].activeSession.sessionId = 's1'; _clearAuthUserCache();
++  // suspended
++  r = await run(requireUser, { headers: bearer(tok(S2, 's2')) }); assert.strictEqual(r.res.body.code, 'SUSPENDED');
++  // db down → 503, not cached
++  _clearAuthUserCache(); dbDown = true;
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')) }); assert.strictEqual(r.res.code, 503);
++  dbDown = false;
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')) }); assert.ok(r.next, 'recovers after db hiccup');
++  // query param ?auth=
++  r = await run(requireUser, { query: { auth: tok(S, 's1') } }); assert.ok(r.next);
++  // ?token= only for admin route
++  r = await run(requireUser, { query: { token: tok(S, 's1') } }); assert.strictEqual(r.res.body.code, 'NO_TOKEN');
++  // admin
++  r = await run(requireAdminAuth, { headers: bearer(tok(S, 's1')) }); assert.strictEqual(r.res.code, 403);
++  r = await run(requireAdminAuth, { query: { token: tok(A, 'sa') } }); assert.ok(r.next); assert.strictEqual(String(r.req.adminUser._id), A);
++  r = await run(requireAdminAuth, { headers: bearer(tok(A, 'stale')) }); assert.strictEqual(r.res.code, 401);
++  // self-or-admin
++  const self = requireSelfOrAdmin('params'), body = requireSelfOrAdmin('body');
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')), params: { userId: A } });
++  r = await run(self, r.req); assert.strictEqual(r.res.code, 403, 'student cannot read another user');
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')), params: { userId: S } }); r = await run(self, r.req); assert.ok(r.next);
++  r = await run(requireUser, { headers: bearer(tok(A, 'sa')), params: { userId: S } }); r = await run(self, r.req); assert.ok(r.next, 'admin may read any');
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')), body: {} }); r = await run(body, r.req); assert.ok(r.next); assert.strictEqual(r.req.body.userId, S, 'fills userId from token');
++  r = await run(requireUser, { headers: bearer(tok(S, 's1')), body: { userId: A } }); r = await run(body, r.req); assert.strictEqual(r.res.code, 403);
++  // optional attach
++  r = await run(attachUserFromToken, { headers: bearer(tok(S, 'old')) }); assert.ok(r.next); assert.strictEqual(r.req.authUser, undefined);
++  r = await run(attachUserFromToken, { headers: bearer(tok(S, 's1')) }); assert.ok(r.next); assert.strictEqual(String(r.req.authUser._id), S);
++  console.log('✅ auth core: all 24 assertions passed');
++})().catch(e => { console.error('❌', e); process.exit(1); });
+diff --git a/scripts/test-security-helpers.js b/scripts/test-security-helpers.js
+new file mode 100644
+index 0000000..55b6c26
+--- /dev/null
++++ b/scripts/test-security-helpers.js
+@@ -0,0 +1,17 @@
++// Run: node scripts/test-security-helpers.js
++const fs = require('fs'), vm = require('vm'), assert = require('assert');
++const src = fs.readFileSync(require('path').join(__dirname, '..', 'server.js'), 'utf8');
++const grab = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b, i); if (i < 0 || j < 0) throw new Error(a); return src.slice(i, j); };
++const ctx = { Buffer, Set, console };
++vm.createContext(ctx);
++vm.runInContext(grab('const _BAD_KEYS', 'app.use((req, res, next) => {\n  try {\n    if (req.body') + grab('function paymentAlreadyApplied', '/* ---- Verify (subscription mode) ---- */') + '\nthis.f={_scrubKeys,paymentAlreadyApplied};', ctx);
++const { _scrubKeys, paymentAlreadyApplied } = ctx.f;
++const body = JSON.parse('{"username":{"$ne":null},"password":"x","nested":{"a":[{"$gt":1,"ok":2}]},"__proto__":{"isAdmin":true},"q":"$x^2$"}');
++_scrubKeys(body, 0);
++assert.deepStrictEqual(JSON.parse(JSON.stringify(body)), { username: {}, password: 'x', nested: { a: [{ ok: 2 }] }, q: '$x^2$' });
++assert.strictEqual(({}).isAdmin, undefined);
++assert.strictEqual(paymentAlreadyApplied({ subscription: { history: [{ paymentId: 'p1', status: 'charged' }] } }, 'p1'), true);
++assert.strictEqual(paymentAlreadyApplied({ subscription: { history: [{ paymentId: 'p1', status: 'refunded' }] } }, 'p1'), false);
++assert.strictEqual(paymentAlreadyApplied({ subscription: { history: [] } }, 'p2'), false);
++assert.strictEqual(paymentAlreadyApplied({}, 'p2'), false);
++console.log('✅ sanitiser + payment idempotency: passed');
+diff --git a/server.js b/server.js
+index 2a60f7d..89a1a26 100644
+--- a/server.js
++++ b/server.js
+@@ -552,6 +552,32 @@ app.use('/api/razorpay-webhook', express.raw({ type: 'application/json', limit:
+ // File uploads use multer (separate path); JSON bodies never exceed a few MB
+ app.use(express.json({ limit: '4mb' }));
+ app.use(express.urlencoded({ limit: '4mb', extended: true }));
++
++/* ============================================================
++   ⭐ INPUT SANITISER (2026-10-04)
++   ------------------------------------------------------------
++   Strips keys that start with "$" (MongoDB operators such as
++   {"username": {"$ne": null}}) and prototype-pollution keys from
++   req.body / req.query / req.params before any route sees them.
++   Values are untouched — LaTeX like "$x^2$" in quiz text is fine.
++   ============================================================ */
++const _BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
++function _scrubKeys(obj, depth) {
++  if (!obj || typeof obj !== 'object' || depth > 12) return;
++  if (Buffer.isBuffer(obj)) return;
++  for (const k of Object.keys(obj)) {
++    if (k.charAt(0) === '$' || _BAD_KEYS.has(k)) { delete obj[k]; continue; }
++    const v = obj[k];
++    if (v && typeof v === 'object') _scrubKeys(v, depth + 1);
++  }
++}
++app.use((req, res, next) => {
++  try {
++    if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) _scrubKeys(req.body, 0);
++    if (req.query && typeof req.query === 'object') _scrubKeys(req.query, 0);
++  } catch (e) { /* never block a request because of the scrubber */ }
++  next();
++});
+ /* ---- Slow request logger (must be registered BEFORE routes) ---- */
+ app.use((req, res, next) => {
+   const start = Date.now();
+@@ -789,11 +815,14 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
+ /* ============================================================
+    HYBRID UPLOAD — Disk (fast) + Cloudinary (durable backup)
+    ============================================================ */
+-app.post('/api/upload', upload.single('file'), async (req, res) => {
++async function handleSingleUpload(req, res) {
+   try {
+     if (!req.file) {
+       return res.status(400).json({ success: false, message: 'No file uploaded.' });
+     }
++    if (!_isAdminUser(req.authUser) && req.file.size > MAX_STUDENT_UPLOAD_BYTES) {
++      return res.status(413).json({ success: false, message: 'File too large.' });
++    }
+ 
+     const sizeMB = Math.round(req.file.size / 1024 / 1024);
+     console.log('[upload] 📥 Received:', req.file.originalname, '(' + sizeMB + ' MB)');
+@@ -801,7 +830,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
+     // ---- 1) Save to VPS disk IMMEDIATELY (this is what users will fetch) ----
+     const diskName = safeDiskName(req.file.originalname);
+     const diskPath = path.join(UPLOAD_DIR, diskName);
+-    fs.writeFileSync(diskPath, req.file.buffer);
++    await fs.promises.writeFile(diskPath, req.file.buffer);   // ⚡ non-blocking (was writeFileSync on up to 30 MB)
+     const diskUrl = '/uploads/' + diskName;
+     console.log('[upload] ✅ Disk saved:', diskName);
+ 
+@@ -841,7 +870,44 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
+     console.error('[upload] ❌ Error:', e.message);
+     res.status(500).json({ success: false, message: 'Upload failed: ' + e.message });
+   }
++}
++
++/* ⭐ Signed-in users (any role) — documents, images, video, audio. */
++app.post('/api/upload', requireUser, upload.single('file'), handleSingleUpload);
++
++/* ⭐ Guests (the alumni / supporter forms on the login page) may upload
++   ONE small photo: JPEG / PNG / WebP only, ≤ 5 MB, content-sniffed,
++   8 per IP per hour. Everything else needs a login. */
++const publicPhotoLimiter = rateLimit({
++  windowMs: 60 * 60 * 1000, max: 8,
++  standardHeaders: true, legacyHeaders: false,
++  message: { success: false, message: 'Too many photo uploads. Please try again later.' }
++});
++const publicPhotoUpload = multer({
++  storage: multer.memoryStorage(),
++  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
++  fileFilter: (req, file, cb) => {
++    if (/^image\/(jpeg|png|webp)$/.test(file.mimetype)) return cb(null, true);
++    cb(new Error('File type not allowed: only JPEG, PNG or WebP photos.'));
++  }
+ });
++function _isRealImage(buf) {
++  if (!buf || buf.length < 12) return false;
++  const jpg  = buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF;
++  const png  = buf.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
++  const webp = buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP';
++  return jpg || png || webp;
++}
++app.post('/api/upload/public-photo', publicPhotoLimiter, publicPhotoUpload.single('file'), (req, res, next) => {
++  if (!req.file || !_isRealImage(req.file.buffer)) {
++    return res.status(400).json({ success: false, message: 'Please choose a JPEG, PNG or WebP photo.' });
++  }
++  /* Force a safe extension that matches the sniffed type. */
++  const b = req.file.buffer;
++  const ext = b[0] === 0xFF ? '.jpg' : b[0] === 0x89 ? '.png' : '.webp';
++  req.file.originalname = 'photo' + ext;
++  next();
++}, handleSingleUpload);
+ 
+ /* ============================================================
+    CHUNKED UPLOAD — bypasses Hostinger's 10 MB proxy limit
+@@ -855,6 +921,8 @@ const CHUNK_DIR = path.join(UPLOAD_DIR, 'chunks');
+ if (!fs.existsSync(CHUNK_DIR)) fs.mkdirSync(CHUNK_DIR, { recursive: true });
+ 
+ const uploadSessions = new Map(); // uploadId → session
++const MAX_ADMIN_UPLOAD_BYTES   = 4 * 1024 * 1024 * 1024;   // 4 GB (lecture videos)
++const MAX_STUDENT_UPLOAD_BYTES = 60 * 1024 * 1024;         // 60 MB
+ 
+ // Auto-cleanup stale sessions every 30 min
+ setInterval(() => {
+@@ -867,22 +935,43 @@ setInterval(() => {
+   }
+ }, 30 * 60 * 1000);
+ 
+-app.post('/api/upload/init', (req, res) => {
++app.post('/api/upload/init', requireUser, (req, res) => {
+   try {
+     const { fileName, fileSize, fileType } = req.body || {};
+     if (!fileName || !fileSize) {
+       return res.status(400).json({ success: false, message: 'fileName and fileSize are required.' });
+     }
++    /* ⭐ Size caps: admins upload lecture videos; students only upload
++       answer sheets / contributions / photos. */
++    const sizeNum = Number(fileSize);
++    const isAdminUploader = _isAdminUser(req.authUser);
++    const maxBytes = isAdminUploader ? MAX_ADMIN_UPLOAD_BYTES : MAX_STUDENT_UPLOAD_BYTES;
++    if (!Number.isFinite(sizeNum) || sizeNum <= 0) {
++      return res.status(400).json({ success: false, message: 'Invalid file size.' });
++    }
++    if (sizeNum > maxBytes) {
++      return res.status(413).json({
++        success: false,
++        message: `File too large — the limit is ${Math.round(maxBytes / 1024 / 1024)} MB.`
++      });
++    }
++    /* Each user may only have a few uploads in flight (disk-fill guard). */
++    let openForUser = 0;
++    for (const sess of uploadSessions.values()) if (sess.ownerId === req.authUserId) openForUser++;
++    if (openForUser >= 6) {
++      return res.status(429).json({ success: false, message: 'Too many uploads in progress. Please wait for one to finish.' });
++    }
+     const uploadId  = crypto.randomBytes(16).toString('hex');
+     const chunkSize = 5 * 1024 * 1024;               // 5 MB per chunk — smaller chunks finish faster on weak networks
+-    const totalChunks = Math.ceil(Number(fileSize) / chunkSize);
++    const totalChunks = Math.ceil(sizeNum / chunkSize);
+     const sessionDir  = path.join(CHUNK_DIR, uploadId);
+     fs.mkdirSync(sessionDir, { recursive: true });
+ 
+     uploadSessions.set(uploadId, {
+-      fileName: String(fileName),
++      ownerId: req.authUserId,
++      fileName: String(fileName).slice(0, 255),
+       fileType: fileType || 'application/octet-stream',
+-      fileSize: Number(fileSize),
++      fileSize: sizeNum,
+       totalChunks,
+       chunkSize,
+       sessionDir,
+@@ -903,6 +992,13 @@ const chunkUpload = multer({
+     destination: (req, file, cb) => {
+       const session = uploadSessions.get(req.body.uploadId);
+       if (!session) return cb(new Error('Invalid or expired upload session.'));
++      /* ⭐ Only the user who opened the session may add chunks, and the
++         index must be inside the announced range. */
++      if (session.ownerId !== req.authUserId) return cb(new Error('Invalid or expired upload session.'));
++      const idx = Number(req.body.chunkIndex);
++      if (!Number.isInteger(idx) || idx < 0 || idx >= session.totalChunks) {
++        return cb(new Error('Invalid upload session chunk index.'));
++      }
+       cb(null, session.sessionDir);
+     },
+     filename: (req, file, cb) => {
+@@ -914,13 +1010,16 @@ const chunkUpload = multer({
+   fileFilter
+ });
+ 
+-app.post('/api/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
++app.post('/api/upload/chunk', requireUser, chunkUpload.single('chunk'), (req, res) => {
+   try {
+     const { uploadId, chunkIndex } = req.body || {};
+     const session = uploadSessions.get(uploadId);
+-    if (!session) {
++    if (!session || session.ownerId !== req.authUserId) {
+       return res.status(400).json({ success: false, message: 'Invalid upload session.' });
+     }
++    if (!req.file) {
++      return res.status(400).json({ success: false, message: 'Chunk data missing.' });
++    }
+     session.receivedChunks.add(parseInt(chunkIndex, 10));
+     res.json({
+       success: true,
+@@ -933,13 +1032,16 @@ app.post('/api/upload/chunk', chunkUpload.single('chunk'), (req, res) => {
+   }
+ });
+ 
+-app.post('/api/upload/complete', async (req, res) => {
++app.post('/api/upload/complete', requireUser, async (req, res) => {
+   try {
+     const { uploadId } = req.body || {};
+     const session = uploadSessions.get(uploadId);
+-    if (!session) {
++    if (!session || session.ownerId !== req.authUserId) {
+       return res.status(400).json({ success: false, message: 'Invalid upload session.' });
+     }
++    if (session.assembling) {
++      return res.status(409).json({ success: false, message: 'This upload is already being assembled.' });
++    }
+     if (session.receivedChunks.size !== session.totalChunks) {
+       return res.status(400).json({
+         success: false,
+@@ -947,6 +1049,8 @@ app.post('/api/upload/complete', async (req, res) => {
+       });
+     }
+ 
++    session.assembling = true;   // double-click / retry guard
++
+     // ---- 1) Merge all chunks into one temp file on disk ----
+     const tempName = 'temp-' + Date.now() + '-' + Math.round(Math.random() * 1e9);
+     const tempPath = path.join(UPLOAD_DIR, tempName);
+@@ -1014,6 +1118,7 @@ app.post('/api/upload/complete', async (req, res) => {
+       diskName: diskName
+     });
+   } catch (e) {
++    try { const sess = uploadSessions.get((req.body || {}).uploadId); if (sess) sess.assembling = false; } catch (_) {}
+     console.error('[chunked/complete]', e);
+     res.status(500).json({ success: false, message: 'Assemble failed: ' + e.message });
+   }
+@@ -1045,25 +1150,72 @@ app.use((err, req, res, next) => {
+ /* ⚠️ SECURITY: Do NOT use express.static(__dirname) — it exposes .env, server.js, package.json, etc.
+    Serve ONLY specific frontend files. Uploads are served from /uploads below. */
+ /* ---- Public landing page — the new front door ---- */
+-app.get('/', (req, res) => {
+-  res.setHeader('Cache-Control', 'no-cache');
+-  res.sendFile(path.join(__dirname, 'landing.html'));
+-});
+-app.get('/landing.html', (req, res) => {
++/* ============================================================
++   ⚡ VERSION-STAMPED HTML + PRE-COMPRESSED ASSETS (2026-10-04)
++   ------------------------------------------------------------
++   app.js / styles.css / the viewers are served with a 1-year
++   `immutable` cache, but the HTML referenced them as ?v=136 —
++   a hand-edited number. Forgetting to bump it left users on an
++   old app.js for up to a year. Now every page is served with
++   ?v=<content-hash> injected automatically, so a deploy is picked
++   up on the very next page load and unchanged files are never
++   re-downloaded.
++
++   Big assets are compressed ONCE per deploy (brotli + gzip, in
++   the background) instead of gzip-on-every-request: ~20 % fewer
++   bytes on slow connections and no per-request CPU.
++   ============================================================ */
++const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js'];
++const _assetHashCache = new Map();   // file → { key, hash }
++function assetHash(file) {
++  try {
++    const fp = path.join(__dirname, file);
++    const st = fs.statSync(fp);
++    const key = st.mtimeMs + ':' + st.size;
++    const hit = _assetHashCache.get(file);
++    if (hit && hit.key === key) return hit.hash;
++    const hash = crypto.createHash('sha1').update(fs.readFileSync(fp)).digest('hex').slice(0, 10);
++    _assetHashCache.set(file, { key, hash });
++    return hash;
++  } catch (e) { return null; }
++}
++const _htmlCache = new Map();        // file → { key, body, etag }
++function sendVersionedHtml(req, res, file) {
+   res.setHeader('Cache-Control', 'no-cache');
+-  res.sendFile(path.join(__dirname, 'landing.html'));
+-});
++  try {
++    const fp = path.join(__dirname, file);
++    const st = fs.statSync(fp);
++    const hashes = VERSIONED_ASSETS.map(f => assetHash(f) || '');
++    const key = st.mtimeMs + ':' + st.size + ':' + hashes.join(',');
++    let entry = _htmlCache.get(file);
++    if (!entry || entry.key !== key) {
++      let html = fs.readFileSync(fp, 'utf8');
++      VERSIONED_ASSETS.forEach((f, i) => {
++        if (!hashes[i]) return;
++        const re = new RegExp('((?:src|href)=["\'])(\\/?)' + f.replace(/[.]/g, '\\.') + '\\?v=[^"\']*', 'g');
++        html = html.replace(re, '$1$2' + f + '?v=' + hashes[i]);
++      });
++      const etag = '"h-' + crypto.createHash('sha1').update(html).digest('hex').slice(0, 16) + '"';
++      entry = { key, body: html, etag };
++      _htmlCache.set(file, entry);
++    }
++    res.setHeader('ETag', entry.etag);
++    if (req.headers['if-none-match'] === entry.etag) return res.status(304).end();
++    res.setHeader('Content-Type', 'text/html; charset=utf-8');
++    return res.send(entry.body);
++  } catch (e) {
++    console.warn('[html] version stamping failed, sending raw file:', e.message);
++    return res.sendFile(path.join(__dirname, file));
++  }
++}
++
++app.get('/', (req, res) => sendVersionedHtml(req, res, 'landing.html'));
++app.get('/landing.html', (req, res) => sendVersionedHtml(req, res, 'landing.html'));
+ 
+ /* ---- Main app (login + dashboard) — now served at /app ---- */
+-app.get('/app', (req, res) => {
+-  res.setHeader('Cache-Control', 'no-cache');
+-  res.sendFile(path.join(__dirname, 'index.html'));
+-});
++app.get('/app', (req, res) => sendVersionedHtml(req, res, 'index.html'));
+ /* ---- Legacy alias — existing bookmarks to /index.html keep working ---- */
+-app.get('/index.html', (req, res) => {
+-  res.setHeader('Cache-Control', 'no-cache');
+-  res.sendFile(path.join(__dirname, 'index.html'));
+-});
++app.get('/index.html', (req, res) => sendVersionedHtml(req, res, 'index.html'));
+ 
+ /* ---- Static assets: 5-min browser cache (speeds up repeat visits) ---- */
+ function sendCached(res, file, maxAge = 300) {
+@@ -1077,18 +1229,79 @@ function sendCached(res, file, maxAge = 300) {
+ /* Auto cache-busting for JS/CSS — the file's mtime is used as the
+    version key, so every deploy is instantly picked up without
+    manually bumping ?v=NN in index.html. */
++const _precompressed = new Map();    // file → { key, raw, br, gz, etag, type } | { key, pending: true }
++function _assetMime(file) {
++  return file.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8';
++}
++function _buildPrecompressed(filename, filePath, key) {
++  _precompressed.set(filename, { key, pending: true });
++  fs.readFile(filePath, (err, raw) => {
++    if (err) { _precompressed.delete(filename); return; }
++    zlib.brotliCompress(raw, {
++      params: {
++        [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
++        [zlib.constants.BROTLI_PARAM_SIZE_HINT]: raw.length
++      }
++    }, (e1, br) => {
++      zlib.gzip(raw, { level: 9 }, (e2, gz) => {
++        const etag = '"a-' + crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16) + '"';
++        _precompressed.set(filename, {
++          key, raw, br: e1 ? null : br, gz: e2 ? null : gz, etag, type: _assetMime(filename)
++        });
++        console.log(`[assets] ⚡ ${filename}: ${Math.round(raw.length / 1024)} KB → br ${br ? Math.round(br.length / 1024) : '-'} KB / gz ${gz ? Math.round(gz.length / 1024) : '-'} KB`);
++      });
++    });
++  });
++}
++
+ function sendImmutableAsset(res, filename) {
+   const filePath = path.join(__dirname, filename);
+   try {
+     const stat = fs.statSync(filePath);
+-    // 1-year immutable cache keyed on the file's mtime (as a version stamp)
++    const key = stat.mtimeMs + ':' + stat.size;
++    const req = res.req;
++    // 1-year immutable cache — safe because the HTML now carries a content hash
+     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
++    res.setHeader('Vary', 'Accept-Encoding');
++
++    const entry = _precompressed.get(filename);
++    if (!entry || entry.key !== key) {
++      if (!entry || !entry.pending || entry.key !== key) _buildPrecompressed(filename, filePath, key);
++    } else if (!entry.pending) {
++      res.setHeader('ETag', entry.etag);
++      if (req && req.headers['if-none-match'] === entry.etag) return res.status(304).end();
++      const ae = String((req && req.headers['accept-encoding']) || '');
++      res.setHeader('Content-Type', entry.type);
++      if (entry.br && /\bbr\b/.test(ae)) {
++        res.setHeader('Content-Encoding', 'br');
++        res.setHeader('Content-Length', entry.br.length);
++        return res.end(entry.br);
++      }
++      if (entry.gz && /\bgzip\b/.test(ae)) {
++        res.setHeader('Content-Encoding', 'gzip');
++        res.setHeader('Content-Length', entry.gz.length);
++        return res.end(entry.gz);
++      }
++      return res.end(entry.raw);
++    }
++    // First request after a deploy: plain file (compression middleware gzips it)
+     res.setHeader('ETag', `"${stat.mtimeMs.toString(36)}-${stat.size.toString(36)}"`);
+     res.sendFile(filePath);
+   } catch (e) {
+     res.status(404).send('Not found');
+   }
+ }
++/* Warm the compressed copies right after boot so the first visitor is fast too. */
++setTimeout(() => {
++  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js',
++   'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'].forEach(f => {
++    try {
++      const fp = path.join(__dirname, f);
++      const st = fs.statSync(fp);
++      _buildPrecompressed(f, fp, st.mtimeMs + ':' + st.size);
++    } catch (e) { /* file missing — fine */ }
++  });
++}, 1500).unref();
+ app.get('/app.js',             (req, res) => sendImmutableAsset(res, 'app.js'));
+ app.get('/styles.css',         (req, res) => sendImmutableAsset(res, 'styles.css'));
+ app.get('/media-viewer.js',    (req, res) => sendImmutableAsset(res, 'media-viewer.js'));
+@@ -1703,44 +1916,49 @@ app.get('/api/events/stream', (req, res) => {
+   req.on('aborted', cleanup);
+ });
+ 
+-const JWT_SECRET = process.env.JWT_SECRET || 'SuperSecretAeroKey';
+-if (!process.env.JWT_SECRET) {
+-  console.warn('⚠️  WARNING: JWT_SECRET not set. Using insecure fallback.');
+-}
++/* ⭐ SECURITY (2026-10-04): never fall back to a hard-coded, publicly
++   known secret — anyone could forge an admin token with it. If the env
++   var is missing we generate a random per-process secret (sessions reset
++   on restart) and shout about it in the logs. */
++const JWT_SECRET = (() => {
++  const s = process.env.JWT_SECRET;
++  if (s && s.length >= 32) return s;
++  if (s) {
++    console.warn('⚠️  JWT_SECRET is shorter than 32 characters — use a long random value (openssl rand -hex 48).');
++    return s;
++  }
++  console.error('❌ JWT_SECRET is not set! Using a random per-process secret — every restart logs everyone out. Set JWT_SECRET in .env.');
++  return crypto.randomBytes(48).toString('hex');
++})();
++/* Pin the algorithm so a token can never pick its own (e.g. "none"). */
++const JWT_VERIFY_OPTS = { algorithms: ['HS256'] };
+ /* ============================================================
+    ADMIN AUTH MIDDLEWARE
+    Verifies the Bearer token belongs to a real admin.
+    Attach to any route that only admins should call.
+    ============================================================ */
+ async function requireAdminAuth(req, res, next) {
+-  try {
+-    const auth = req.headers.authorization || '';
+-    let token = null;
+-
+-    // Preferred: Authorization: Bearer <token>
+-    if (auth.startsWith('Bearer ')) {
+-      token = auth.slice(7);
+-    }
+-    // Fallback: ?token=<jwt>  (needed for plain <a href> downloads that
+-    // cannot send an Authorization header)
+-    else if (req.query && typeof req.query.token === 'string' && req.query.token) {
+-      token = req.query.token;
+-    }
+-
+-    if (!token) {
+-      return res.status(401).json({ success: false, message: 'Authentication required.' });
+-    }
+-
+-    const decoded = jwt.verify(token, JWT_SECRET);
+-    const u = await User.findById(decoded.id).select('role').lean();
+-    if (!u || String(u.role || '').trim().toLowerCase() !== 'admin') {
+-      return res.status(403).json({ success: false, message: 'Admin access only.' });
+-    }
+-    req.adminUser = u;
+-    next();
+-  } catch (e) {
+-    return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
+-  }
++  /* ⭐ v2 (2026-10-04): same token rules as every other protected route —
++     signature + single-device session + not suspended — then role check.
++     Previously a logged-out or replaced admin token stayed valid for 24 h. */
++  const token = _extractToken(req, true);
++  if (!token) {
++    return res.status(401).json({ success: false, code: 'NO_TOKEN', message: 'Authentication required.' });
++  }
++  const r = await resolveSessionUser(token);
++  if (!r.user) {
++    /* A database hiccup must not look like an expired session — the client
++       logs the user out on 401, so report it as 503 (retryable) instead. */
++    return res.status(r.code === 'AUTH_UNAVAILABLE' ? 503 : 401)
++      .json({ success: false, code: r.code, message: r.message });
++  }
++  if (String(r.user.role || '').trim().toLowerCase() !== 'admin') {
++    return res.status(403).json({ success: false, message: 'Admin access only.' });
++  }
++  req.adminUser = r.user;
++  req.authUser = r.user;
++  req.authUserId = String(r.user._id);
++  next();
+ }
+ /* ============================================================
+    AUTH — optional token attach (v2 — CACHED)
+@@ -1772,7 +1990,7 @@ function _getCachedAuthUser(token) {
+     _authUserCache.delete(token);
+     return null;
+   }
+-  return entry.user;
++  return entry.user;          // ⭐ now a { user, code, message } result
+ }
+ function _setCachedAuthUser(token, user) {
+   if (_authUserCache.size >= AUTH_USER_CACHE_MAX) {
+@@ -1794,33 +2012,130 @@ function _setCachedAuthUser(token, user) {
+    subscription. Forces the next request to re-read from Mongo. */
+ function _clearAuthUserCache() { _authUserCache.clear(); }
+ 
++/* ============================================================
++   ⭐ SESSION-AWARE AUTH CORE (2026-10-04)
++   ------------------------------------------------------------
++   resolveSessionUser(token) is the ONE place a JWT becomes a user:
++     1. signature + expiry (HS256 only)
++     2. token must carry an account id (2FA "pending" tokens don't)
++     3. account exists and is not suspended
++     4. token's sessionId === user.activeSession.sessionId
++        (single-device login + logout really ends the session)
++   Results are cached per token for 30 s; logout / suspend /
++   force-logout / purchases call _clearAuthUserCache().
++   ============================================================ */
++const AUTH_USER_FIELDS = 'role username fullName email purchases subscription activeSession suspended';
++
++function _extractToken(req, allowLegacyQueryParam) {
++  const auth = req.headers.authorization || '';
++  if (auth.startsWith('Bearer ')) return auth.slice(7).trim() || null;
++  if (req.query) {
++    if (typeof req.query.auth === 'string' && req.query.auth) return req.query.auth;
++    // ?token= kept for admin <a href> downloads (CSV / ZIP)
++    if (allowLegacyQueryParam && typeof req.query.token === 'string' && req.query.token) return req.query.token;
++  }
++  return null;
++}
++
++async function resolveSessionUser(token) {
++  if (!token) return { user: null, code: 'NO_TOKEN', message: 'Authentication required.' };
++  const cached = _getCachedAuthUser(token);
++  if (cached) return cached;
++
++  let decoded;
++  try { decoded = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTS); }
++  catch (e) {
++    return { user: null, code: 'INVALID_TOKEN', message: 'Your session has expired. Please log in again.' };
++  }
++  if (!decoded || !decoded.id || !mongoose.Types.ObjectId.isValid(String(decoded.id))) {
++    return { user: null, code: 'INVALID_TOKEN', message: 'Invalid session token.' };
++  }
++
++  let u = null;
++  try { u = await User.findById(decoded.id).select(AUTH_USER_FIELDS).lean(); }
++  catch (e) {
++    // DB hiccup — do NOT cache, let the client retry
++    return { user: null, code: 'AUTH_UNAVAILABLE', message: 'Could not verify your session. Please retry.' };
++  }
++
++  let result;
++  if (!u) {
++    result = { user: null, code: 'USER_NOT_FOUND', message: 'Account no longer exists.' };
++  } else if (u.suspended && u.suspended.active) {
++    result = { user: null, code: 'SUSPENDED', message: 'This account has been suspended. Please contact the admin.' };
++  } else {
++    const current = u.activeSession && u.activeSession.sessionId;
++    if (!current) {
++      result = { user: null, code: 'SESSION_ENDED', message: 'You have been signed out. Please log in again.' };
++    } else if (current !== decoded.sessionId) {
++      result = { user: null, code: 'SESSION_REPLACED', message: 'You were signed out because this account was signed in on another device.' };
++    } else {
++      result = { user: u, code: 'OK' };
++    }
++  }
++  _setCachedAuthUser(token, result);
++  return result;
++}
++
++/* Optional auth — attaches req.authUser when the token is valid,
++   otherwise the request proceeds as a guest (premium gates then deny). */
+ async function attachUserFromToken(req, res, next) {
+   try {
+-    let token = null;
+-    const auth = req.headers.authorization || '';
+-    if (auth.startsWith('Bearer ')) token = auth.slice(7);
+-    else if (req.query && req.query.auth) token = String(req.query.auth);
+-
++    const token = _extractToken(req, false);
+     if (token) {
+-      const cached = _getCachedAuthUser(token);
+-      if (cached) {
+-        req.authUser = cached;
+-        return next();
+-      }
+-
+-      const decoded = jwt.verify(token, JWT_SECRET);
+-      const u = await User.findById(decoded.id)
+-        .select('role purchases subscription')
+-        .lean();
+-      if (u) {
+-        _setCachedAuthUser(token, u);
+-        req.authUser = u;
++      const r = await resolveSessionUser(token);
++      if (r.user) {
++        req.authUser = r.user;
++        req.authUserId = String(r.user._id);
+       }
+     }
+-  } catch (e) { /* invalid / expired token → proceed as guest */ }
++  } catch (e) { /* proceed as guest */ }
++  next();
++}
++
++/* Mandatory auth — any role. */
++async function requireUser(req, res, next) {
++  const token = _extractToken(req, false);
++  if (!token) {
++    return res.status(401).json({ success: false, code: 'NO_TOKEN', message: 'Please log in to continue.' });
++  }
++  const r = await resolveSessionUser(token);
++  if (!r.user) {
++    return res.status(r.code === 'AUTH_UNAVAILABLE' ? 503 : 401)
++      .json({ success: false, code: r.code, message: r.message });
++  }
++  req.authUser = r.user;
++  req.authUserId = String(r.user._id);
+   next();
+ }
+ 
++function _isAdminUser(u) {
++  return !!u && String(u.role || '').trim().toLowerCase() === 'admin';
++}
++
++/* Ownership guard for routes that name a user in the URL / body / query.
++   Students may only touch their OWN record; admins may touch anyone's.
++   If the client omitted the id we fill it in from the token, so older
++   clients keep working. Must run AFTER requireUser. */
++function requireSelfOrAdmin(source) {
++  return function (req, res, next) {
++    const bag = source === 'params' ? req.params
++              : source === 'query'  ? (req.query || {})
++              : (req.body = req.body || {});
++    const supplied = bag && bag.userId != null ? String(bag.userId) : '';
++    if (!supplied) {
++      if (source === 'params') {
++        return res.status(400).json({ success: false, message: 'userId required.' });
++      }
++      bag.userId = req.authUserId;
++      return next();
++    }
++    if (supplied === req.authUserId || _isAdminUser(req.authUser)) return next();
++    console.warn(`[auth] ⛔ ${req.authUser && req.authUser.username} tried ${req.method} ${req.originalUrl} for userId=${supplied.slice(0, 30)}`);
++    return res.status(403).json({ success: false, message: 'You can only access your own account.' });
++  };
++}
++
+ /* ============================================================
+    PREMIUM ACCESS — single source of truth
+    ------------------------------------------------------------
+@@ -3535,7 +3850,10 @@ app.get('/setup-admin', async (req, res) => {
+     const adminEmail = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+     if (!adminEmail) return res.status(500).send('❌ ADMIN_EMAIL not set in environment.');
+     const adminUsername = (process.env.ADMIN_USERNAME || 'admin').trim().toLowerCase();
+-    const adminPassword = process.env.ADMIN_PASSWORD || 'AeroAdmin123';
++    const adminPassword = process.env.ADMIN_PASSWORD;
++    if (!adminPassword || adminPassword.length < 10) {
++      return res.status(500).send('❌ Set a strong ADMIN_PASSWORD (10+ chars) in the environment first.');
++    }
+     const hashedPassword = await bcrypt.hash(adminPassword, 10);
+     await new User({
+       username: adminUsername,
+@@ -3544,7 +3862,7 @@ app.get('/setup-admin', async (req, res) => {
+       fullName: 'Aerospace Admin',
+       email: adminEmail
+     }).save();
+-    res.send(`✅ Admin created!\nUsername: ${adminUsername}\nPassword: ${adminPassword}\nEmail: ${adminEmail}\n\n⚠️ 2FA OTPs will be sent to ${adminEmail}. Please log in and change the default password.`);
++    res.send(`✅ Admin created!\nUsername: ${adminUsername}\nPassword: (the ADMIN_PASSWORD from your environment)\nEmail: ${adminEmail}\n\n⚠️ 2FA OTPs will be sent to ${adminEmail}.`);
+   } catch (e) { res.status(500).send('Error: ' + e.message); }
+ });
+ 
+@@ -3647,6 +3965,16 @@ app.post('/api/login', async (req, res) => {
+       try { await ensureReferralCode(user); } catch (e) {}
+     }
+ 
++    // ---------- ⭐ Suspended accounts cannot sign in ----------
++    if (user.suspended && user.suspended.active) {
++      console.log(`[login] ⛔ suspended account "${user.username}"`);
++      return res.status(403).json({
++        success: false,
++        code: 'SUSPENDED',
++        message: 'This account has been suspended. Please contact the admin.'
++      });
++    }
++
+     // ---------- Role check — LENIENT (warn only, never block) ----------
+     // The frontend auto-flips the role toggle when the username contains "admin".
+     // Trust the DB role instead of the UI tab to avoid locking out real students.
+@@ -3676,7 +4004,7 @@ app.post('/api/login', async (req, res) => {
+         }
+       }
+ 
+-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
++      const otp = crypto.randomInt(100000, 1000000).toString();
+ 
+       // ⚡ Store OTP server-side; JWT carries only an opaque id
+       const pendingId = crypto.randomBytes(24).toString('hex');
+@@ -3795,18 +4123,27 @@ app.post('/api/login', async (req, res) => {
+     }
+ 
+     if (!sessionOk) {
+-      console.warn(
+-        '[login] ⚠️ session bookkeeping failed — issuing token anyway. ' +
++      /* ⭐ 2026-10-04: every protected route now validates the session id,
++         so a token without a stored session would be rejected instantly.
++         Fail clearly instead of handing out a token that cannot work. */
++      console.error(
++        '[login] ❌ session bookkeeping failed — refusing to issue a token. ' +
+         (sessionWarning
+           ? 'Reason: ' + sessionWarning
+           : 'Check that the User schema defines `activeSession`.')
+       );
++      return res.status(500).json({
++        success: false,
++        message: 'Could not establish a session. Please try again in a moment.'
++      });
+     } else {
+       console.log(
+         `[login] 🔐 session issued · user=${user.username} · sid=${sessionId.slice(0,8)}…`
+       );
+     }
+ 
++    _clearAuthUserCache();   // old device's cached "valid" verdict must die now
++
+     // ---------- 3. Issue token (with sessionId embedded) ----------
+     const token = jwt.sign(
+       { id: user._id, role: user.role, sessionId },
+@@ -3855,7 +4192,7 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
+ 
+     let decoded;
+     try {
+-      decoded = jwt.verify(pendingToken, JWT_SECRET);
++      decoded = jwt.verify(pendingToken, JWT_SECRET, JWT_VERIFY_OPTS);
+     } catch (err) {
+       return res.status(400).json({ success: false, message: 'Session expired or invalid. Please log in again.' });
+     }
+@@ -3921,6 +4258,7 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
+     }
+ 
+     console.log(`[login-2fa] 🔐 session issued · user=${user.username} · sid=${sessionId.slice(0,8)}…`);
++    _clearAuthUserCache();
+ 
+     const token = jwt.sign(
+       { id: user._id, role: user.role, sessionId },
+@@ -3969,7 +4307,7 @@ app.get('/api/auth/session-check', async (req, res) => {
+     const token = auth.slice(7);
+     let decoded;
+     try {
+-      decoded = jwt.verify(token, JWT_SECRET);
++      decoded = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTS);
+     } catch (e) {
+       return res.status(401).json({
+         success: false,
+@@ -3979,7 +4317,7 @@ app.get('/api/auth/session-check', async (req, res) => {
+     }
+ 
+     const user = await User.findById(decoded.id)
+-      .select('activeSession role username')
++      .select('activeSession role username suspended')
+       .lean();
+ 
+     if (!user) {
+@@ -3990,13 +4328,24 @@ app.get('/api/auth/session-check', async (req, res) => {
+       });
+     }
+ 
++    if (user.suspended && user.suspended.active) {
++      return res.status(401).json({
++        success: false,
++        code: 'SUSPENDED',
++        message: 'This account has been suspended. Please contact the admin.'
++      });
++    }
++
+     const currentSessionId = user.activeSession && user.activeSession.sessionId;
+ 
++    /* ⭐ 2026-10-04: an empty activeSession means the user logged out (or an
++       admin forced a sign-out). That token must not be accepted any more. */
+     if (!currentSessionId) {
+-      console.warn(
+-        `[session-check] no activeSession record for ${user.username} — accepting token`
+-      );
+-      return res.json({ success: true, valid: true });
++      return res.status(401).json({
++        success: false,
++        code: 'SESSION_ENDED',
++        message: 'You have been signed out. Please log in again.'
++      });
+     }
+ 
+     if (currentSessionId !== decoded.sessionId) {
+@@ -4045,7 +4394,7 @@ app.post('/api/auth/logout', async (req, res) => {
+     const token = auth.slice(7);
+     let decoded;
+     try {
+-      decoded = jwt.verify(token, JWT_SECRET);
++      decoded = jwt.verify(token, JWT_SECRET, JWT_VERIFY_OPTS);
+     } catch (e) {
+       return res.json({ success: true, message: 'Session already expired.' });
+     }
+@@ -4056,6 +4405,7 @@ app.post('/api/auth/logout', async (req, res) => {
+       user.activeSession.loginAt = null;
+       user.activeSession.lastSeenAt = null;
+       await user.save();
++      _clearAuthUserCache();
+     }
+ 
+     res.json({ success: true, message: 'Logged out.' });
+@@ -4075,7 +4425,7 @@ app.post('/api/admin/login/resend-otp', async (req, res) => {
+ 
+     let decoded;
+     try {
+-      decoded = jwt.verify(pendingToken, JWT_SECRET);
++      decoded = jwt.verify(pendingToken, JWT_SECRET, JWT_VERIFY_OPTS);
+     } catch (err) {
+       return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
+     }
+@@ -4089,7 +4439,7 @@ app.post('/api/admin/login/resend-otp', async (req, res) => {
+     if (!user) return res.status(404).json({ success: false, message: 'Admin account not found.' });
+ 
+     // Generate new OTP + new pendingId (single-use)
+-    const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
++    const newOtp = crypto.randomInt(100000, 1000000).toString();
+     const newPendingId = crypto.randomBytes(24).toString('hex');
+     adminLoginStore.set(newPendingId, {
+       userId: user._id.toString(),
+@@ -4225,7 +4575,7 @@ app.post('/api/send-otp', async (req, res) => {
+       return res.status(400).json({ success: false, message: `${field} already exists!` });
+     }
+ 
+-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
++    const otp = crypto.randomInt(100000, 1000000).toString();
+     await otpSet(cleanEmail, {
+       otp,
+       phone: cleanPhone,
+@@ -4265,6 +4615,12 @@ app.post('/api/register', async (req, res) => {
+     if (!fullName || !cleanUsername || !cleanEmail || !cleanPhone || !password) {
+       return res.status(400).json({ success: false, message: 'All fields are required.' });
+     }
++    if (typeof password !== 'string' || password.length > 200) {
++      return res.status(400).json({ success: false, message: 'Invalid password.' });
++    }
++    if (!/^[a-z0-9._-]{3,40}$/.test(cleanUsername)) {
++      return res.status(400).json({ success: false, message: 'Username must be 3–40 characters: letters, numbers, dot, dash or underscore.' });
++    }
+     if (password.length < 6) {
+       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
+     }
+@@ -4364,9 +4720,11 @@ app.post('/api/register', async (req, res) => {
+ /* ============================================================
+    FORGOT USERNAME / FORGOT PASSWORD / RESET PASSWORD
+    ============================================================ */
+-const forgotUsernameStore = {};   // key: email|phone → { otp, expiresAt, attempts, userId }
+-const forgotPasswordStore = {};   // key: email|phone → { otp, expiresAt, attempts, userId }
+-const passwordResetTokens = {};   // token → { userId, expiresAt }
++/* Object.create(null): no prototype, so a key like "__proto__" or
++   "constructor" can never resolve to a built-in object. */
++const forgotUsernameStore = Object.create(null);   // key: email|phone → { otp, expiresAt, attempts, userId }
++const forgotPasswordStore = Object.create(null);   // key: email|phone → { otp, expiresAt, attempts, userId }
++const passwordResetTokens = Object.create(null);   // token → { userId, expiresAt }
+ 
+ function storeKeyFor(user) {
+   // Use email as the primary key; phone falls back if email missing
+@@ -4407,7 +4765,7 @@ app.post('/api/forgot-username/send-otp', async (req, res) => {
+       });
+     }
+ 
+-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
++    const otp = crypto.randomInt(100000, 1000000).toString();
+     const key = storeKeyFor(user);
+     forgotUsernameStore[key] = {
+       otp,
+@@ -4533,7 +4891,7 @@ app.post('/api/forgot-password/send-otp', async (req, res) => {
+       });
+     }
+ 
+-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
++    const otp = crypto.randomInt(100000, 1000000).toString();
+     const key = storeKeyFor(user);
+     forgotPasswordStore[key] = {
+       otp,
+@@ -4636,7 +4994,12 @@ app.post('/api/forgot-password/reset', async (req, res) => {
+     const user = await User.findById(rec.userId);
+     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+ 
++    if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 200) {
++      return res.status(400).json({ success: false, message: 'Password must be 6–200 characters.' });
++    }
+     user.password = await bcrypt.hash(newPassword, 10);
++    /* ⭐ A password reset ends every existing session (stolen tokens die too). */
++    if (user.activeSession) user.activeSession.sessionId = null;
+     await user.save();
+ 
+     // Notify admins that their password was reset via recovery
+@@ -4649,6 +5012,7 @@ app.post('/api/forgot-password/reset', async (req, res) => {
+     }
+ 
+     delete passwordResetTokens[resetToken];
++    _clearAuthUserCache();
+     res.json({ success: true, message: 'Password updated successfully. You can now log in.' });
+   } catch (e) {
+     console.error('[forgot-password/reset]', e);
+@@ -4714,8 +5078,10 @@ app.post('/api/admin/reset-password/:userId', requireAdminAuth, async (req, res)
+     }
+     const user = await User.findById(req.params.userId);
+     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+-    user.password = await bcrypt.hash(newPassword, 10);
++    user.password = await bcrypt.hash(String(newPassword), 10);
++    if (user.activeSession) user.activeSession.sessionId = null;   // ⭐ old sessions end
+     await user.save();
++    _clearAuthUserCache();
+     res.json({ success: true, message: 'Password reset successfully.', password: newPassword });
+   } catch (e) {
+     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+@@ -5259,7 +5625,18 @@ app.get('/api/courses/:id', async (req, res) => {
+           name: 1, code: 1, semester: 1, instructor: 1, description: 1,
+           category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
+           learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
+-          isPremium: 1, price: 1, announcements: 1, playlists: 1, doubts: 1,
++          isPremium: 1, price: 1, announcements: 1, playlists: 1,
++          /* ⭐ Doubts are public to every student — strip askers' emails. */
++          doubts: {
++            $map: {
++              input: { $ifNull: ['$doubts', []] },
++              as: 'd',
++              in: {
++                _id: '$$d._id', studentName: '$$d.studentName', studentUsername: '$$d.studentUsername',
++                question: '$$d.question', answer: '$$d.answer', date: '$$d.date', replies: '$$d.replies'
++              }
++            }
++          },
+           certificate: 1,
+           createdAt: 1, updatedAt: 1,
+           materials: {
+@@ -5274,7 +5651,10 @@ app.get('/api/courses/:id', async (req, res) => {
+                 url:            '$$m.url',
+                 fileName:       '$$m.fileName',
+                 diskName:       '$$m.diskName',
+-                cloudUrl:       '$$m.cloudUrl',
++                /* ⭐ Never ship the raw Cloudinary URL publicly — it would
++                   bypass the premium gate. The client only needs to know
++                   that a cloud copy exists. */
++                cloudUrl:       { $cond: [{ $gt: [{ $strLenCP: { $ifNull: ['$$m.cloudUrl', ''] } }, 0] }, 'cloud', ''] },
+                 isPremium:      '$$m.isPremium',
+                 price:          '$$m.price',
+                 previewPercent: '$$m.previewPercent',
+@@ -5444,9 +5824,14 @@ app.delete('/api/courses/:courseId/announcements/:annId', requireAdminAuth, asyn
+ /* ============================================================
+    Q&A / DOUBTS
+    ============================================================ */
+-app.post('/api/courses/:id/doubts', async (req, res) => {
++app.post('/api/courses/:id/doubts', requireUser, async (req, res) => {
+   try {
+-    const { studentName, studentUsername, studentEmail, question } = req.body;
++    const question = String((req.body && req.body.question) || '').trim().slice(0, 5000);
++    if (!question) return res.status(400).json({ success: false, message: 'Please type your question.' });
++    /* ⭐ Who asked is taken from the session — the client can't post as someone else. */
++    const studentName     = req.authUser.fullName || req.authUser.username;
++    const studentUsername = req.authUser.username;
++    const studentEmail    = req.authUser.email || '';
+     await Course.findByIdAndUpdate(req.params.id, {
+       $push: { doubts: { studentName, studentUsername, studentEmail, question, date: new Date() } }
+     });
+@@ -5455,7 +5840,7 @@ app.post('/api/courses/:id/doubts', async (req, res) => {
+   } catch (e) { res.status(500).json({ success: false, message: 'Error submitting doubt' }); }
+ });
+ 
+-app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
++app.put('/api/courses/:courseId/doubts/:doubtId', requireAdminAuth, async (req, res) => {
+   try {
+     const { answer } = req.body;
+     await Course.updateOne(
+@@ -5483,10 +5868,14 @@ app.put('/api/courses/:courseId/doubts/:doubtId', async (req, res) => {
+   } catch (e) { res.status(500).json({ success: false, message: 'Error posting answer: ' + e.message }); }
+ });
+ 
+-app.post('/api/courses/:courseId/doubts/:doubtId/replies', async (req, res) => {
++app.post('/api/courses/:courseId/doubts/:doubtId/replies', requireUser, async (req, res) => {
+   try {
+-    const { authorName, authorUsername, authorRole, text } = req.body;
++    const text = String((req.body && req.body.text) || '').slice(0, 5000);
+     if (!text || !text.trim()) return res.status(400).json({ success: false, message: 'Reply text required' });
++    /* ⭐ Author + role come from the session (a student could previously post as "admin"). */
++    const authorName     = req.authUser.fullName || req.authUser.username;
++    const authorUsername = req.authUser.username;
++    const authorRole     = _isAdminUser(req.authUser) ? 'admin' : 'student';
+     await Course.updateOne(
+       { _id: req.params.courseId, "doubts._id": req.params.doubtId },
+       { $push: { "doubts.$.replies": {
+@@ -5516,16 +5905,15 @@ app.post('/api/courses/:courseId/doubts/:doubtId/replies', async (req, res) => {
+   } catch (e) { res.status(500).json({ success: false, message: 'Error posting reply: ' + e.message }); }
+ });
+ 
+-app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', async (req, res) => {
++app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', requireUser, async (req, res) => {
+   try {
+-    const { acceptedBy } = req.body;
++    const acceptedBy = req.authUser.username;   // ⭐ from the session, not the body
+     const course = await Course.findById(req.params.courseId);
+     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
+     const doubt = course.doubts.id(req.params.doubtId);
+     if (!doubt) return res.status(404).json({ success: false, message: 'Doubt not found' });
+     const isAsker = doubt.studentUsername === acceptedBy;
+-    const acceptor = await User.findOne({ username: acceptedBy });
+-    const isAdmin = acceptor?.role === 'admin';
++    const isAdmin = _isAdminUser(req.authUser);
+     if (!isAsker && !isAdmin) return res.status(403).json({ success: false, message: 'Only asker or admin can accept' });
+     doubt.replies.forEach(r => { r.isAccepted = false; });
+     const reply = doubt.replies.id(req.params.replyId);
+@@ -5622,7 +6010,7 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth,
+    stale row is deleted so the UNIQUE index on
+    (userId, courseId, materialId) does not block a fresh attempt.
+    ============================================================ */
+-app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
++app.post('/api/user/quiz/:courseId/:materialId/start', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId } = req.body || {};
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+@@ -5828,7 +6216,7 @@ app.post('/api/user/quiz/:courseId/:materialId/start', async (req, res) => {
+    material card to render the correct button label and to
+    short-circuit openQuizPlayer() when the cap is reached.
+    ============================================================ */
+-app.get('/api/user/quiz/:courseId/:materialId/attempt-status', async (req, res) => {
++app.get('/api/user/quiz/:courseId/:materialId/attempt-status', requireUser, requireSelfOrAdmin('query'), async (req, res) => {
+   try {
+     const userId = String(req.query.userId || '');
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+@@ -5933,7 +6321,7 @@ app.get('/api/user/quiz/:courseId/:materialId/attempt-status', async (req, res)
+    submit — but even if the client never ticks, the server has
+    already locked the deadline.
+    ============================================================ */
+-app.get('/api/user/quiz/:courseId/:materialId/heartbeat', async (req, res) => {
++app.get('/api/user/quiz/:courseId/:materialId/heartbeat', requireUser, requireSelfOrAdmin('query'), async (req, res) => {
+   try {
+     const userId = String(req.query.userId || '');
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+@@ -5985,7 +6373,7 @@ app.get('/api/user/quiz/:courseId/:materialId/heartbeat', async (req, res) => {
+    Deletes the current session row so /start creates a new one
+    with a new timer and a new shuffle seed. Called by Retake.
+    ============================================================ */
+-app.post('/api/user/quiz/:courseId/:materialId/reset', async (req, res) => {
++app.post('/api/user/quiz/:courseId/:materialId/reset', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId } = req.body || {};
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+@@ -6010,7 +6398,7 @@ app.post('/api/user/quiz/:courseId/:materialId/reset', async (req, res) => {
+    QUIZ — Grade submission (student)
+    Supports: single, multiple, integer, matrix
+    ============================================================ */
+-app.post('/api/user/quiz/:courseId/:materialId', async (req, res) => {
++app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId, answers, timeSpentPerQuestion, autoSubmitted } = req.body || {};
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+@@ -6545,7 +6933,7 @@ app.get('/api/admin/quiz/pending-subjective', requireAdminAuth, async (req, res)
+ });
+ 
+ 
+-app.get('/api/user/quiz-results/:userId', async (req, res) => {
++app.get('/api/user/quiz-results/:userId', requireUser, requireSelfOrAdmin('params'), async (req, res) => {
+   try {
+     const user = await User.findById(req.params.userId).select('quizResults').lean();
+     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+@@ -6556,7 +6944,7 @@ app.get('/api/user/quiz-results/:userId', async (req, res) => {
+ /* ============================================================
+    ANALYTICS
+    ============================================================ */
+-app.get('/api/user/analytics/:userId', async (req, res) => {
++app.get('/api/user/analytics/:userId', requireUser, requireSelfOrAdmin('params'), async (req, res) => {
+   try {
+     const user = await User.findById(req.params.userId).select('-password').lean();
+     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+@@ -6780,7 +7168,7 @@ const razorpay = {
+ /* ============================================================
+    CREATE RAZORPAY ORDER — SECURE VERSION
+    ============================================================ */
+-app.post('/api/create-order', async (req, res) => {
++app.post('/api/create-order', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+       console.error('[create-order] ❌ Razorpay keys missing from env');
+@@ -8025,7 +8413,7 @@ async function ensureRazorpayPlanForThisPlan(plan) {
+   return created.id;
+ }
+ 
+-app.post('/api/subscribe/create', async (req, res) => {
++app.post('/api/subscribe/create', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId, planId, couponCode } = req.body || {};
+     if (!userId) return res.status(400).json({ success:false, message:'userId required.' });
+@@ -8144,8 +8532,19 @@ app.post('/api/subscribe/create', async (req, res) => {
+   }
+ });
+ 
++/* ⭐ Payment idempotency (2026-10-04)
++   The same Razorpay payment can reach us up to three times (client
++   verify, webhook, a replayed request). Without this check each hop
++   extended the subscription again, re-counted the coupon and bumped
++   the referrer's stats. */
++function paymentAlreadyApplied(user, paymentId) {
++  if (!paymentId || !user || !user.subscription) return false;
++  const hist = user.subscription.history || [];
++  return hist.some(h => h && h.paymentId === paymentId && (h.status === 'charged' || h.status === 'coupon'));
++}
++
+ /* ---- Verify (subscription mode) ---- */
+-app.post('/api/subscribe/verify', async (req, res) => {
++app.post('/api/subscribe/verify', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId, razorpay_subscription_id, razorpay_payment_id, razorpay_signature } = req.body || {};
+     if (!userId || !razorpay_subscription_id || !razorpay_payment_id || !razorpay_signature) {
+@@ -8162,8 +8561,19 @@ app.post('/api/subscribe/verify', async (req, res) => {
+     const user = await User.findById(userId);
+     if (!user) return res.status(404).json({ success:false, message:'User not found.' });
+ 
++    /* ⭐ The subscription must be the one WE created for THIS account. */
++    if (!user.subscription || user.subscription.subscriptionId !== razorpay_subscription_id) {
++      return res.status(403).json({ success:false, message:'This subscription does not belong to your account.' });
++    }
++    if (paymentAlreadyApplied(user, razorpay_payment_id)) {
++      return res.json({ success: true, message: 'Subscription already active.', user: serializeUser(user) });
++    }
++
+     let sub = null;
+     try { sub = await razorpay.subscriptions.fetch(razorpay_subscription_id); } catch (e) {}
++    if (sub && sub.notes && sub.notes.userId && String(sub.notes.userId) !== String(user._id)) {
++      return res.status(403).json({ success:false, message:'This subscription does not belong to your account.' });
++    }
+ 
+     const s = await getGlobalSettings();
+     const planId = (user.subscription && user.subscription.planId) || null;
+@@ -8215,7 +8625,7 @@ app.post('/api/subscribe/verify', async (req, res) => {
+ });
+ 
+ /* ---- Verify (one-time order mode with coupon) ---- */
+-app.post('/api/subscribe/verify-order', async (req, res) => {
++app.post('/api/subscribe/verify-order', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const {
+       userId,
+@@ -8238,6 +8648,29 @@ app.post('/api/subscribe/verify-order', async (req, res) => {
+     const user = await User.findById(userId);
+     if (!user) return res.status(404).json({ success:false, message:'User not found.' });
+ 
++    /* ⭐ Bind the order to this account and make the grant idempotent.
++       Before: replaying one valid (order, payment, signature) triple kept
++       extending the subscription indefinitely. */
++    if (!user.subscription || user.subscription.lastOrderId !== razorpay_order_id) {
++      return res.status(403).json({ success:false, message:'This order does not belong to your account.' });
++    }
++    if (paymentAlreadyApplied(user, razorpay_payment_id)) {
++      return res.json({ success: true, message: 'Subscription already active.', user: serializeUser(user) });
++    }
++    try {
++      const order = await razorpay.orders.fetch(razorpay_order_id);
++      const notes = (order && order.notes) || {};
++      if (String(notes.userId) !== String(user._id)) {
++        return res.status(403).json({ success:false, message:'This order does not belong to your account.' });
++      }
++      if (order.status !== 'paid' && !(Number(order.amount_paid) >= Number(order.amount))) {
++        return res.status(400).json({ success:false, message:'Payment not completed yet. If money was deducted, it will activate automatically in a few minutes.' });
++      }
++    } catch (e) {
++      console.warn('[subscribe/verify-order] order fetch failed:', e.message);
++      return res.status(502).json({ success:false, message:'Could not confirm the payment with the gateway. Please retry in a minute.' });
++    }
++
+     if (!user.subscription) user.subscription = {};
+     const now = new Date();
+     const durationDays = user.subscription.planDurationDays || 30;
+@@ -8306,7 +8739,7 @@ app.post('/api/subscribe/verify-order', async (req, res) => {
+    ============================================================ */
+ 
+ /* ---- Student: my referral info ---- */
+-app.get('/api/user/referral/:userId', async (req, res) => {
++app.get('/api/user/referral/:userId', requireUser, requireSelfOrAdmin('params'), async (req, res) => {
+   try {
+     const user = await User.findById(req.params.userId)
+       .select('username fullName referralCode referralStats referredBy');
+@@ -8504,7 +8937,7 @@ function maskEmail(email) {
+ }
+ 
+ /* ---- Step 1: send OTP ---- */
+-app.post('/api/subscribe/cancel/send-otp', async (req, res) => {
++app.post('/api/subscribe/cancel/send-otp', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId } = req.body || {};
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
+@@ -8530,7 +8963,7 @@ app.post('/api/subscribe/cancel/send-otp', async (req, res) => {
+       });
+     }
+ 
+-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
++    const otp = crypto.randomInt(100000, 1000000).toString();
+ 
+     // Store / overwrite previous OTP for this user
+     cancelOtpStore[userId] = {
+@@ -8602,7 +9035,7 @@ app.post('/api/subscribe/cancel/send-otp', async (req, res) => {
+ });
+ 
+ /* ---- Step 2: verify OTP + cancel ---- */
+-app.post('/api/subscribe/cancel/verify', async (req, res) => {
++app.post('/api/subscribe/cancel/verify', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId, otp } = req.body || {};
+     if (!userId || !otp) {
+@@ -8856,7 +9289,7 @@ app.post('/api/admin/subscription/:userId/extend', requireAdminAuth, async (req,
+ /* ============================================================
+    VERIFY RAZORPAY PAYMENT — SECURE VERSION
+    ============================================================ */
+-app.post('/api/verify-payment', async (req, res) => {
++app.post('/api/verify-payment', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const {
+       razorpay_order_id,
+@@ -8999,6 +9432,7 @@ app.post('/api/razorpay-webhook', async (req, res) => {
+           if (user && !user.purchases.includes(itemId)) {
+             user.purchases.push(itemId);
+             await user.save();
++            _clearAuthUserCache();
+             console.log(`[Webhook] Unlocked item ${itemId} for user ${userId}`);
+           }
+         }
+@@ -9006,7 +9440,9 @@ app.post('/api/razorpay-webhook', async (req, res) => {
+         // ---- NEW: one-time subscription purchase (via coupon) ----
+         if (userId && order.notes && order.notes.purpose === 'aero-one-time-subscription') {
+           const user = await User.findById(userId);
+-          if (user) {
++          if (user && paymentAlreadyApplied(user, paymentId)) {
++            console.log(`[Webhook] ⏭️  payment ${paymentId} already applied for ${user.username}`);
++          } else if (user) {
+             const planId = order.notes.planId;
+             const durationDays = parseInt(order.notes.durationDays, 10) || 30;
+             const now = new Date();
+@@ -9063,7 +9499,9 @@ app.post('/api/razorpay-webhook', async (req, res) => {
+ 
+       if (userId) {
+         const user = await User.findById(userId);
+-        if (user) {
++        if (user && payEntity.id && paymentAlreadyApplied(user, payEntity.id)) {
++          console.log(`[Webhook] ⏭️  payment ${payEntity.id} already applied for ${user.username}`);
++        } else if (user) {
+           const now = new Date();
+ 
+           /* ── FIX: resolve the REAL plan duration instead of hardcoding 30 days.
+@@ -9149,7 +9587,7 @@ app.post('/api/razorpay-webhook', async (req, res) => {
+ /* ============================================================
+    USER DATA
+    ============================================================ */
+-app.post('/api/user/bookmarks/:courseId', async (req, res) => {
++app.post('/api/user/bookmarks/:courseId', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId } = req.body;
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+@@ -9165,9 +9603,11 @@ app.post('/api/user/bookmarks/:courseId', async (req, res) => {
+   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+ });
+ 
+-app.get('/api/user/me/:userId', async (req, res) => {
++app.get('/api/user/me/:userId', requireUser, requireSelfOrAdmin('params'), async (req, res) => {
+   try {
+-    const user = await User.findById(req.params.userId).select('-password');
++    /* ⚡ activityLog / videoProgress are never sent by serializeUser —
++       don't pull them from Mongo on every navigation. */
++    const user = await User.findById(req.params.userId).select('-password -activityLog -videoProgress');
+     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+ 
+     /* ⚡ Skip the write when the streak day hasn't changed.
+@@ -9183,7 +9623,7 @@ app.get('/api/user/me/:userId', async (req, res) => {
+   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+ });
+ 
+-app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
++app.post('/api/user/progress/:courseId/:materialId', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+   try {
+     const { userId, viewed } = req.body;
+     if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+@@ -9248,7 +9688,7 @@ app.post('/api/user/progress/:courseId/:materialId', async (req, res) => {
+ /* ============================================================
+    NOTIFICATIONS
+    ============================================================ */
+-app.get('/api/user/notifications/:userId', async (req, res) => {
++app.get('/api/user/notifications/:userId', requireUser, requireSelfOrAdmin('params'), async (req, res) => {
+   try {
+     const user = await User.findById(req.params.userId).select('notifications').lean();
+     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+@@ -9257,7 +9697,7 @@ app.get('/api/user/notifications/:userId', async (req, res) => {
+   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+ });
+ 
+-app.post('/api/user/notifications/:userId/mark-read', async (req, res) => {
++app.post('/api/user/notifications/:userId/mark-read', requireUser, requireSelfOrAdmin('params'), async (req, res) => {
+   try {
+     const { notifId, all } = req.body;
+     const user = await User.findById(req.params.userId);
+@@ -9278,7 +9718,7 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
+        activityLog / quizResults / notifications cuts the payload
+        from tens of MB down to a few hundred KB. */
+     const students = await User.find({ role: 'student' })
+-      .select('username fullName email phone role createdAt subscription')
++      .select('username fullName email phone role createdAt subscription suspended purchases activeSession.lastSeenAt activeSession.sessionId')
+       .sort({ createdAt: -1 })
+       .lean();
+ 
+@@ -9300,6 +9740,15 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
+         phone: s.phone,
+         role: s.role,
+         createdAt: s.createdAt,
++        /* ⭐ user-management fields (2026-10-04) */
++        suspended: {
++          active: !!(s.suspended && s.suspended.active),
++          reason: (s.suspended && s.suspended.reason) || '',
++          at: (s.suspended && s.suspended.at) || null
++        },
++        purchases: Array.isArray(s.purchases) ? s.purchases : [],
++        lastSeenAt: (s.activeSession && s.activeSession.lastSeenAt) || null,
++        signedIn: !!(s.activeSession && s.activeSession.sessionId),
+         premium: {
+           active: premiumActive,
+           status: sub.status || 'none',
+@@ -9312,6 +9761,246 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
+     res.json({ success: true, students: studentsOut });
+   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+ });
++/* ============================================================
++   ⭐ ADMIN — USER MANAGEMENT TOOLS (2026-10-04)
++   ------------------------------------------------------------
++   • suspend / unsuspend  (blocks login + kills the live session)
++   • force sign-out       (ends the session on every device)
++   • course access        (grant / revoke a purchase manually)
++   • bulk actions         (same, for up to 500 selected students)
++   • student overview     (progress snapshot for the detail panel)
++   Every action is logged with the acting admin's username.
++   ============================================================ */
++function _validId(id) { return mongoose.Types.ObjectId.isValid(String(id || '')); }
++
++async function _applyStudentAction(filter, action, opts, adminName) {
++  const now = new Date();
++  let update;
++  switch (action) {
++    case 'suspend':
++      update = { $set: {
++        'suspended.active': true,
++        'suspended.reason': String(opts.reason || '').slice(0, 300),
++        'suspended.at': now,
++        'suspended.by': adminName,
++        'activeSession.sessionId': null
++      } };
++      break;
++    case 'unsuspend':
++      update = { $set: { 'suspended.active': false, 'suspended.reason': '', 'suspended.at': null, 'suspended.by': adminName } };
++      break;
++    case 'force-logout':
++      update = { $set: { 'activeSession.sessionId': null } };
++      break;
++    case 'grant-course':
++      update = { $addToSet: { purchases: String(opts.courseId) } };
++      break;
++    case 'revoke-course':
++      update = { $pull: { purchases: String(opts.courseId) } };
++      break;
++    default:
++      return { error: 'Unknown action.' };
++  }
++  /* Admin accounts are never touched by these tools. */
++  const r = await User.updateMany(Object.assign({ role: 'student' }, filter), update);
++  _clearAuthUserCache();
++  return { matched: r.matchedCount || 0, modified: r.modifiedCount || 0 };
++}
++
++async function _checkCourseForAction(action, courseId) {
++  if (action !== 'grant-course' && action !== 'revoke-course') return null;
++  if (!_validId(courseId)) return 'A valid courseId is required.';
++  const exists = await Course.exists({ _id: courseId });
++  return exists ? null : 'Course not found.';
++}
++
++app.post('/api/admin/students/:userId/suspend', requireAdminAuth, async (req, res) => {
++  try {
++    if (!_validId(req.params.userId)) return res.status(400).json({ success: false, message: 'Invalid user id.' });
++    const suspend = !!(req.body && req.body.suspend);
++    const r = await _applyStudentAction({ _id: req.params.userId }, suspend ? 'suspend' : 'unsuspend',
++      { reason: req.body && req.body.reason }, req.adminUser.username);
++    if (!r.matched) return res.status(404).json({ success: false, message: 'Student not found.' });
++    console.log(`[admin-users] ${req.adminUser.username} ${suspend ? 'SUSPENDED' : 'unsuspended'} ${req.params.userId}`);
++    res.json({ success: true, message: suspend ? 'Account suspended and signed out.' : 'Account re-activated.' });
++  } catch (e) {
++    console.error('[admin-users/suspend]', e);
++    res.status(500).json({ success: false, message: 'Server error.' });
++  }
++});
++
++app.post('/api/admin/students/:userId/force-logout', requireAdminAuth, async (req, res) => {
++  try {
++    if (!_validId(req.params.userId)) return res.status(400).json({ success: false, message: 'Invalid user id.' });
++    const r = await _applyStudentAction({ _id: req.params.userId }, 'force-logout', {}, req.adminUser.username);
++    if (!r.matched) return res.status(404).json({ success: false, message: 'Student not found.' });
++    console.log(`[admin-users] ${req.adminUser.username} force-signed-out ${req.params.userId}`);
++    res.json({ success: true, message: 'Student signed out on all devices.' });
++  } catch (e) {
++    console.error('[admin-users/force-logout]', e);
++    res.status(500).json({ success: false, message: 'Server error.' });
++  }
++});
++
++app.put('/api/admin/students/:userId/course-access', requireAdminAuth, async (req, res) => {
++  try {
++    if (!_validId(req.params.userId)) return res.status(400).json({ success: false, message: 'Invalid user id.' });
++    const { courseId } = req.body || {};
++    const action = (req.body && req.body.grant) ? 'grant-course' : 'revoke-course';
++    const bad = await _checkCourseForAction(action, courseId);
++    if (bad) return res.status(400).json({ success: false, message: bad });
++    const r = await _applyStudentAction({ _id: req.params.userId }, action, { courseId }, req.adminUser.username);
++    if (!r.matched) return res.status(404).json({ success: false, message: 'Student not found.' });
++    const u = await User.findById(req.params.userId).select('purchases').lean();
++    console.log(`[admin-users] ${req.adminUser.username} ${action} ${courseId} → ${req.params.userId}`);
++    res.json({ success: true, message: action === 'grant-course' ? 'Course unlocked for this student.' : 'Course access removed.', purchases: (u && u.purchases) || [] });
++  } catch (e) {
++    console.error('[admin-users/course-access]', e);
++    res.status(500).json({ success: false, message: 'Server error.' });
++  }
++});
++
++app.post('/api/admin/students/bulk', requireAdminAuth, async (req, res) => {
++  try {
++    const { userIds, action, courseId, reason } = req.body || {};
++    const ALLOWED = ['suspend', 'unsuspend', 'force-logout', 'grant-course', 'revoke-course'];
++    if (!ALLOWED.includes(action)) return res.status(400).json({ success: false, message: 'Unknown action.' });
++    const ids = Array.isArray(userIds) ? [...new Set(userIds.map(String))].filter(_validId) : [];
++    if (ids.length === 0) return res.status(400).json({ success: false, message: 'Select at least one student.' });
++    if (ids.length > 500) return res.status(400).json({ success: false, message: 'At most 500 students per bulk action.' });
++    const bad = await _checkCourseForAction(action, courseId);
++    if (bad) return res.status(400).json({ success: false, message: bad });
++    const r = await _applyStudentAction({ _id: { $in: ids } }, action, { courseId, reason }, req.adminUser.username);
++    console.log(`[admin-users] ${req.adminUser.username} bulk ${action} on ${ids.length} (modified ${r.modified})`);
++    res.json({ success: true, matched: r.matched, modified: r.modified, message: `Done — ${r.modified} of ${ids.length} student(s) updated.` });
++  } catch (e) {
++    console.error('[admin-users/bulk]', e);
++    res.status(500).json({ success: false, message: 'Server error.' });
++  }
++});
++
++app.get('/api/admin/students/:userId/overview', requireAdminAuth, async (req, res) => {
++  try {
++    if (!_validId(req.params.userId)) return res.status(400).json({ success: false, message: 'Invalid user id.' });
++    const u = await User.findById(req.params.userId)
++      .select('username fullName email phone createdAt purchases progress videoProgress quizResults streakCount longestStreak xp level suspended activeSession subscription')
++      .lean();
++    if (!u) return res.status(404).json({ success: false, message: 'Student not found.' });
++    const courses = await Course.find().select('name code materials._id materials.type').lean();
++    const progress = u.progress || {};
++    const vp = u.videoProgress || {};
++    const perCourse = courses.map(c => {
++      const ids = (c.materials || []).map(m => String(m._id));
++      const done = (progress[String(c._id)] || []).filter(id => ids.includes(id)).length;
++      const vids = (c.materials || []).filter(m => m.type === 'video').map(m => String(m._id));
++      const vidsDone = vids.filter(id => vp[id] && vp[id].completed).length;
++      return {
++        courseId: String(c._id), name: c.name, code: c.code,
++        done, total: ids.length, pct: ids.length ? Math.round(done / ids.length * 100) : 0,
++        videosDone: vidsDone, videosTotal: vids.length,
++        owned: (u.purchases || []).includes(String(c._id))
++      };
++    }).filter(c => c.done > 0 || c.owned || c.videosDone > 0);
++    const vpVals = Object.values(vp);
++    res.json({
++      success: true,
++      student: {
++        _id: u._id, username: u.username, fullName: u.fullName, email: u.email, phone: u.phone,
++        createdAt: u.createdAt, streakCount: u.streakCount || 0, longestStreak: u.longestStreak || 0,
++        xp: u.xp || 0, level: u.level || 1,
++        suspended: u.suspended || { active: false },
++        lastSeenAt: (u.activeSession && u.activeSession.lastSeenAt) || null,
++        device: (u.activeSession && u.activeSession.sessionId && u.activeSession.deviceInfo) || '',
++        quizzesTaken: Object.keys(u.quizResults || {}).length,
++        videosStarted: vpVals.length,
++        videosCompleted: vpVals.filter(v => v && v.completed).length,
++        subscription: u.subscription ? { status: u.subscription.status, expiresAt: u.subscription.expiresAt } : null
++      },
++      courses: perCourse
++    });
++  } catch (e) {
++    console.error('[admin-users/overview]', e);
++    res.status(500).json({ success: false, message: 'Server error.' });
++  }
++});
++
++/* ============================================================
++   ⭐ VIDEO WATCH PROGRESS (2026-10-04)
++   ------------------------------------------------------------
++   POST — the player reports { courseId, materialId, position,
++          duration, ended } every ~15 s while playing and on close.
++   GET  — returns the student's map (optionally one course) so the
++          course page can draw per-video and per-playlist bars and
++          the player can resume on any device.
++   ============================================================ */
++const VIDEO_COMPLETE_PCT = 90;
++
++app.post('/api/user/video-progress', requireUser, async (req, res) => {
++  try {
++    const b = req.body || {};
++    const mid = String(b.materialId || '');
++    const cid = String(b.courseId || '');
++    if (!_validId(mid) || !_validId(cid)) {
++      return res.status(400).json({ success: false, message: 'Valid courseId and materialId are required.' });
++    }
++    const dur = Math.max(0, Math.min(Number(b.duration) || 0, 24 * 3600));
++    const pos = Math.max(0, Math.min(Number(b.position) || 0, dur || 24 * 3600));
++    let pct = dur > 0 ? Math.round((pos / dur) * 100) : 0;
++    if (b.ended === true) pct = 100;
++    pct = Math.max(0, Math.min(100, pct));
++    const completed = pct >= VIDEO_COMPLETE_PCT;
++
++    const key = 'videoProgress.' + mid;
++    const set = {
++      [key + '.courseId']: cid,
++      [key + '.pos']: (b.ended === true || pct >= 98) ? 0 : Math.round(pos),   // finished → restart from 0 next time
++      [key + '.dur']: Math.round(dur),
++      [key + '.updatedAt']: new Date()
++    };
++    if (completed) set[key + '.completed'] = true;
++
++    const before = await User.findOneAndUpdate(
++      { _id: req.authUserId },
++      { $set: set, $max: { [key + '.pct']: pct } },
++      { new: false, projection: { [key]: 1 } }
++    ).lean();
++
++    const prev = before && before.videoProgress && before.videoProgress[mid];
++    const completedNow = completed && !(prev && prev.completed);
++    res.json({
++      success: true,
++      progress: {
++        pos: set[key + '.pos'], dur: Math.round(dur),
++        pct: Math.max(pct, (prev && prev.pct) || 0),
++        completed: completed || !!(prev && prev.completed)
++      },
++      completedNow
++    });
++  } catch (e) {
++    console.error('[video-progress/save]', e);
++    res.status(500).json({ success: false, message: 'Could not save progress.' });
++  }
++});
++
++app.get('/api/user/video-progress', requireUser, async (req, res) => {
++  try {
++    res.setHeader('Cache-Control', 'no-store, private');
++    const u = await User.findById(req.authUserId).select('videoProgress').lean();
++    const all = (u && u.videoProgress) || {};
++    const cid = req.query.courseId ? String(req.query.courseId) : '';
++    const out = {};
++    for (const [mid, v] of Object.entries(all)) {
++      if (!v) continue;
++      if (cid && v.courseId !== cid) continue;
++      out[mid] = { pos: v.pos || 0, dur: v.dur || 0, pct: v.pct || 0, completed: !!v.completed, updatedAt: v.updatedAt || null };
++    }
++    res.json({ success: true, progress: out });
++  } catch (e) {
++    console.error('[video-progress/get]', e);
++    res.status(500).json({ success: false, message: 'Could not load progress.' });
++  }
++});
++
+ /* ============================================================
+    VIDEO SESSION — PREMIUM PROTECTED (checks COURSE + MATERIAL)
+    ============================================================ */
+@@ -10053,9 +10742,13 @@ const contributionLimiter = rateLimit({
+ });
+ 
+ /* Student: submit a contribution (file already uploaded via /api/upload) */
+-app.post('/api/contributions/submit', contributionLimiter, async (req, res) => {
++app.post('/api/contributions/submit', requireUser, contributionLimiter, async (req, res) => {
+   try {
+     const b = req.body || {};
++    /* ⭐ Identity comes from the session, never from the form. */
++    b.studentName     = req.authUser.fullName || req.authUser.username || '';
++    b.studentUsername = req.authUser.username || '';
++    b.studentEmail    = req.authUser.email || '';
+     if (!b.title || !String(b.title).trim()) {
+       return res.status(400).json({ success: false, message: 'Title is required.' });
+     }
+@@ -10087,9 +10780,12 @@ app.post('/api/contributions/submit', contributionLimiter, async (req, res) => {
+ });
+ 
+ /* Student: list own contributions */
+-app.get('/api/contributions/mine/:username', async (req, res) => {
++app.get('/api/contributions/mine/:username', requireUser, async (req, res) => {
+   try {
+     const username = String(req.params.username || '').toLowerCase();
++    if (username !== String(req.authUser.username || '').toLowerCase() && !_isAdminUser(req.authUser)) {
++      return res.status(403).json({ success: false, message: 'You can only view your own contributions.' });
++    }
+     if (!username) return res.json({ success: true, contributions: [] });
+     const list = await Contribution.find({ studentUsername: username })
+       .select('-cloudinaryPublicId')
+@@ -10745,7 +11441,7 @@ const aiDoubtLimiter = rateLimit({
+       if (req.body && req.body.userId) return 'u:' + String(req.body.userId).slice(0, 60);
+       const auth = req.headers.authorization || '';
+       if (auth.startsWith('Bearer ')) {
+-        const decoded = jwt.verify(auth.slice(7), JWT_SECRET);
++        const decoded = jwt.verify(auth.slice(7), JWT_SECRET, JWT_VERIFY_OPTS);
+         if (decoded && decoded.id) return 'u:' + String(decoded.id);
+       }
+     } catch (e) { /* invalid token — fall through to IP */ }
+@@ -10774,7 +11470,7 @@ function getGeminiClient() {
+    Body:    { question: string, courseId?: string }
+    Returns: { success: true, answer: string, model: string }
+    ============================================================ */
+-app.post('/api/ai/solve-doubt', aiDoubtLimiter, async (req, res) => {
++app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) => {
+   try {
+     const { question, courseId } = req.body || {};
+ 
+@@ -11577,9 +12273,9 @@ app.get('/api/admin/online-users/stream', async (req, res) => {
+   try {
+     const token = String(req.query.auth || '');
+     if (!token) return res.status(401).end();
+-    const decoded = jwt.verify(token, JWT_SECRET);
+-    const u = await User.findById(decoded.id).select('role').lean();
+-    if (!u || String(u.role || '').trim().toLowerCase() !== 'admin') return res.status(403).end();
++    const r = await resolveSessionUser(token);           // ⭐ session-aware
++    if (!r.user) return res.status(401).end();
++    if (!_isAdminUser(r.user)) return res.status(403).end();
+   } catch (e) {
+     return res.status(401).end();
+   }
+@@ -11716,11 +12412,9 @@ app.get('/api/admin/visitor-analytics/stream', async (req, res) => {
+   try {
+     const token = String(req.query.auth || '');
+     if (!token) return res.status(401).end();
+-    const decoded = jwt.verify(token, JWT_SECRET);
+-    const u = await User.findById(decoded.id).select('role').lean();
+-    if (!u || String(u.role || '').trim().toLowerCase() !== 'admin') {
+-      return res.status(403).end();
+-    }
++    const r = await resolveSessionUser(token);           // ⭐ session-aware
++    if (!r.user) return res.status(401).end();
++    if (!_isAdminUser(r.user)) return res.status(403).end();
+   } catch (e) {
+     return res.status(401).end();
+   }
+@@ -12133,10 +12827,73 @@ app.put('/api/admin/quiz/:courseId/:materialId/schedule',
+    Without this call, `app` never binds to a port and the
+    process exits silently. Nginx then returns 502 to clients.
+    ============================================================ */
++/* ============================================================
++   ⭐ FINAL HANDLERS (2026-10-04)
++   ------------------------------------------------------------
++   • Unknown /api/* routes → JSON 404 (the client's fetchJSON
++     expects JSON; an HTML 404 used to surface as a parse error).
++   • Any error that escapes a route (Express 5 forwards rejected
++     async handlers here) → JSON 500 without leaking internals
++     in production. The earlier multer handler only covered the
++     upload routes registered above it.
++   ============================================================ */
++app.use('/api', (req, res) => {
++  res.status(404).json({ success: false, message: 'Not found.' });
++});
++app.use((err, req, res, next) => {
++  if (res.headersSent) return next(err);
++  const status = Number(err && (err.status || err.statusCode)) || 500;
++  if (status >= 500) console.error('[unhandled-route-error]', req.method, req.originalUrl, err);
++  const isProd = process.env.NODE_ENV === 'production';
++  res.status(status).json({
++    success: false,
++    message: status < 500
++      ? (err.message || 'Bad request.')
++      : (isProd ? 'Something went wrong. Please try again.' : (err.message || 'Server error'))
++  });
++});
++
+ const PORT = process.env.PORT || 5000;
+-app.listen(PORT, () => {
++const server = app.listen(PORT, () => {
+   console.log(`✅ Server is running on port ${PORT}`);
+ });
++/* ⚡ Keep idle upstream sockets alive longer than nginx's (60 s default)
++   so nginx never reuses a socket Node just closed → no sporadic 502s. */
++server.keepAliveTimeout = 65 * 1000;
++server.headersTimeout   = 66 * 1000;
++
++/* ============================================================
++   ⭐ GRACEFUL SHUTDOWN — zero-downtime restarts
++   ------------------------------------------------------------
++   `pm2 reload` / systemd send SIGTERM. We stop accepting new
++   connections, let in-flight requests finish (max 10 s), close
++   SSE streams so browsers reconnect to the new process, then
++   close Mongo and exit cleanly.
++   ============================================================ */
++let _shuttingDown = false;
++function gracefulShutdown(signal) {
++  if (_shuttingDown) return;
++  _shuttingDown = true;
++  console.log(`[shutdown] ${signal} received — draining connections…`);
++  const hardExit = setTimeout(() => {
++    console.warn('[shutdown] forced exit after 10 s');
++    process.exit(0);
++  }, 10 * 1000);
++  hardExit.unref();
++  try {
++    for (const c of CONTENT_SYNC.clients) { try { c.end(); } catch (_) {} }
++    CONTENT_SYNC.clients.clear();
++  } catch (_) {}
++  server.close(async () => {
++    try { await mongoose.connection.close(false); } catch (_) {}
++    console.log('[shutdown] ✅ clean exit');
++    process.exit(0);
++  });
++  /* Idle keep-alive sockets would otherwise hold server.close() open. */
++  try { server.closeIdleConnections && server.closeIdleConnections(); } catch (_) {}
++}
++process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
++process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
+ /* ============================================================
+    ⭐ QUIZ RESULT PUBLICATION SWEEPER
+    ------------------------------------------------------------
+diff --git a/styles.css b/styles.css
+index ba1764f..0fe9d13 100644
+--- a/styles.css
++++ b/styles.css
+@@ -14488,4 +14488,202 @@ body.aero-logged-out #appHeader .brand { cursor: default; }
+   .traffic-chart { height: 150px; padding: 14px 12px 10px; }
+   .traffic-table thead th,
+   .traffic-table tbody td { padding: 8px 12px; font-size: 12px; }
+-}
+\ No newline at end of file
++}
++/* ============================================================
++   ⭐ THEME SWITCH — single animated sun ⇄ moon toggle (2026-10-04)
++   Replaces the old icon cycle button + the header Settings gear.
++   • 44×44 touch target, 56×30 visual track
++   • Sun rays retract and a "bite" slides in to form the moon
++   • Honours prefers-reduced-motion
++   ============================================================ */
++.theme-switch {
++  --ts-w: 56px; --ts-h: 30px; --ts-knob: 24px; --ts-pad: 3px;
++  position: relative;
++  display: inline-flex; align-items: center; justify-content: center;
++  min-width: 44px; min-height: 44px; padding: 0 2px;
++  background: none; border: 0; cursor: pointer;
++  -webkit-tap-highlight-color: transparent;
++  flex-shrink: 0;
++}
++.theme-switch .ts-track {
++  position: relative; display: block;
++  width: var(--ts-w); height: var(--ts-h);
++  border-radius: 999px;
++  background: linear-gradient(135deg, #7dd3fc 0%, #38bdf8 100%);
++  border: 1px solid rgba(255,255,255,.35);
++  box-shadow: inset 0 1px 3px rgba(0,0,0,.18);
++  transition: background .35s ease, border-color .35s ease;
++  overflow: hidden;
++}
++/* tiny stars, only visible in dark */
++.theme-switch .ts-track::before,
++.theme-switch .ts-track::after {
++  content: ''; position: absolute; border-radius: 50%; background: #fff;
++  opacity: 0; transition: opacity .35s ease, transform .45s ease;
++  transform: translateY(4px);
++}
++.theme-switch .ts-track::before { width: 2px; height: 2px; top: 8px;  left: 11px; box-shadow: 7px 9px 0 0 #fff, 14px 2px 0 0 rgba(255,255,255,.7); }
++.theme-switch .ts-track::after  { width: 3px; height: 3px; top: 17px; left: 8px; }
++.theme-switch .ts-knob {
++  position: absolute; top: calc((var(--ts-h) - var(--ts-knob)) / 2 - 1px); left: var(--ts-pad);
++  width: var(--ts-knob); height: var(--ts-knob); border-radius: 50%;
++  display: flex; align-items: center; justify-content: center;
++  background: #fffbeb; color: #f59e0b;
++  box-shadow: 0 2px 6px rgba(0,0,0,.25);
++  transition: transform .45s cubic-bezier(.34,1.56,.64,1), background .35s ease, color .35s ease;
++}
++.theme-switch .ts-icon { width: 18px; height: 18px; overflow: visible; }
++.theme-switch .ts-core {
++  transform-box: fill-box; transform-origin: center;
++  transform: scale(.55);
++  transition: transform .45s cubic-bezier(.34,1.56,.64,1);
++}
++.theme-switch .ts-bite {
++  transform: translate(9px, -9px);           /* parked outside → full sun */
++  transition: transform .45s cubic-bezier(.34,1.56,.64,1);
++}
++.theme-switch .ts-rays {
++  transform-box: view-box; transform-origin: 12px 12px;
++  transition: transform .45s ease, opacity .3s ease;
++}
++
++/* ---- dark state (aria-checked=true) ---- */
++.theme-switch[aria-checked="true"] .ts-track {
++  background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
++  border-color: rgba(165,180,252,.35);
++}
++.theme-switch[aria-checked="true"] .ts-track::before,
++.theme-switch[aria-checked="true"] .ts-track::after { opacity: .9; transform: none; }
++.theme-switch[aria-checked="true"] .ts-knob {
++  transform: translateX(calc(var(--ts-w) - var(--ts-knob) - var(--ts-pad) * 2 - 2px));
++  background: #334155; color: #e2e8f0;
++}
++.theme-switch[aria-checked="true"] .ts-core { transform: scale(1); }
++.theme-switch[aria-checked="true"] .ts-bite { transform: translate(0, 0); }
++.theme-switch[aria-checked="true"] .ts-rays { transform: rotate(90deg) scale(.4); opacity: 0; }
++
++.theme-switch:hover .ts-knob { box-shadow: 0 2px 10px rgba(0,0,0,.3), 0 0 0 4px rgba(255,255,255,.12); }
++.theme-switch:focus-visible { outline: none; }
++.theme-switch:focus-visible .ts-track { box-shadow: 0 0 0 3px rgba(129,140,248,.75); }
++.theme-switch:active .ts-knob { width: calc(var(--ts-knob) + 4px); border-radius: 999px; }
++
++@media (prefers-reduced-motion: reduce) {
++  .theme-switch .ts-knob, .theme-switch .ts-core, .theme-switch .ts-bite,
++  .theme-switch .ts-rays, .theme-switch .ts-track { transition: none !important; }
++}
++@media (max-width: 380px) {
++  .theme-switch { --ts-w: 48px; --ts-h: 26px; --ts-knob: 20px; }
++  .theme-switch .ts-icon { width: 15px; height: 15px; }
++}
++
++/* Logged-out top bar: brand + switch must stay on ONE row on phones */
++body.aero-logged-out #appHeader { flex-wrap: nowrap !important; }
++body.aero-logged-out #appHeader .user-info {
++  width: auto !important; flex: 0 0 auto; border-top: 0 !important;
++  padding: 0 !important; margin: 0 0 0 auto !important; order: 0 !important;
++}
++.settings-row--stacked { padding-bottom: 4px; }
++/* Dark/Dim: active login role tab had brand-600 on a near-black chip (≈2.9:1) */
++[data-theme="dark"] .login-role-toggle button.active,
++[data-theme="dim"]  .login-role-toggle button.active { color: var(--brand-200, #c7d2fe); }
++
++/* ============================================================
++   ⭐ COURSE NAVIGATION + WATCH PROGRESS (2026-10-04)
++   ============================================================ */
++.cd-topbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
++.cd-topbar .back-link { margin-bottom: 0; }
++.breadcrumb { min-width: 0; flex: 1 1 auto; }
++.breadcrumb ol { list-style: none; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; font-size: 13px; }
++.breadcrumb li { display: inline-flex; align-items: center; min-width: 0; color: var(--text-tertiary); }
++.breadcrumb li + li::before { content: '›'; margin: 0 6px 0 2px; color: var(--text-tertiary); opacity: .7; }
++.breadcrumb a { color: var(--text-secondary); text-decoration: none; padding: 4px 2px; border-radius: 4px; }
++.breadcrumb a:hover { color: var(--brand-600); text-decoration: underline; }
++.breadcrumb a:focus-visible { outline: 2px solid var(--brand-400); outline-offset: 2px; }
++.breadcrumb [aria-current="page"] span { color: var(--text-primary); font-weight: 600; max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
++[data-theme="dark"] .breadcrumb a:hover, [data-theme="dim"] .breadcrumb a:hover { color: var(--brand-200); }
++
++.cd-progress { margin-top: 16px; padding-top: 14px; border-top: 1px dashed var(--border-default); }
++.cd-progress-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; margin-bottom: 8px; }
++.cd-progress-label { color: var(--text-secondary); font-weight: 600; }
++.cd-progress-label i { color: var(--brand-500); margin-right: 4px; }
++.cd-progress-num { font-variant-numeric: tabular-nums; color: var(--text-primary); font-weight: 700; }
++.cd-progress-bar { height: 8px; border-radius: 999px; background: var(--bg-surface-3); overflow: hidden; }
++.cd-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--brand-500), #06b6d4); transition: width .6s cubic-bezier(.22,1,.36,1); }
++.cd-upnext {
++  margin-top: 12px; width: 100%; display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto;
++  column-gap: 12px; align-items: center; text-align: left;
++  padding: 12px 14px; border-radius: 12px; cursor: pointer;
++  background: var(--bg-surface); border: 1px solid var(--brand-200); color: var(--text-primary);
++  transition: border-color .2s, box-shadow .2s, transform .2s;
++}
++.cd-upnext:hover { border-color: var(--brand-400); box-shadow: 0 6px 18px rgba(79,70,229,.14); transform: translateY(-1px); }
++.cd-upnext:focus-visible { outline: 3px solid var(--brand-300, #a5b4fc); outline-offset: 2px; }
++.cd-upnext-kicker { grid-column: 1; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; color: var(--brand-600); }
++.cd-upnext-title { grid-column: 1; font-weight: 600; font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.cd-upnext > i { grid-column: 2; grid-row: 1 / span 2; color: var(--brand-500); }
++[data-theme="dark"] .cd-upnext, [data-theme="dim"] .cd-upnext { border-color: rgba(129,140,248,.35); }
++[data-theme="dark"] .cd-upnext-kicker, [data-theme="dim"] .cd-upnext-kicker { color: var(--brand-200); }
++.cd-progress-done { margin-top: 10px; font-weight: 600; color: #059669; font-size: 13.5px; }
++
++.vprog { margin: 6px 0 10px; }
++.vprog-bar { height: 5px; border-radius: 999px; background: var(--bg-surface-3); overflow: hidden; }
++.vprog-bar > span { display: block; height: 100%; border-radius: inherit; background: var(--brand-500); transition: width .5s ease; }
++.vprog.done .vprog-bar > span { background: #10b981; }
++.vprog-label { margin-top: 5px; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
++.vprog.done .vprog-label { color: #059669; font-weight: 600; }
++.vprog.playlist { margin: 4px 0 14px; }
++.playlist-card-preview li.watched { color: var(--text-tertiary); }
++.playlist-card-preview li.watched i { color: #10b981; }
++
++.vp-playlist-item .vp-pl-progress { display: block; height: 3px; margin-top: 6px; border-radius: 999px; background: rgba(255,255,255,.15); overflow: hidden; }
++.vp-playlist-item .vp-pl-progress > span { display: block; height: 100%; background: #818cf8; }
++.vp-playlist-item.watched .vp-pl-progress > span { background: #34d399; }
++.vp-playlist-item.watched .vp-playlist-item-num { color: #34d399; }
++
++@media (max-width: 640px) {
++  .cd-topbar { gap: 8px; }
++  .breadcrumb [aria-current="page"] span { max-width: 22ch; }
++}
++[data-theme="dark"] .back-link, [data-theme="dim"] .back-link { color: var(--brand-200); }
++[data-theme="dark"] .back-link:hover, [data-theme="dim"] .back-link:hover { color: #fff; background: rgba(129,140,248,.16); }
++
++/* ============================================================
++   ⭐ ADMIN — STUDENT MANAGEMENT (2026-10-04)
++   ============================================================ */
++.student-status-badge { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
++.student-status-badge.suspended { background: rgba(244,63,94,.12); color: #be123c; }
++.student-status-badge.online { background: rgba(16,185,129,.12); color: #047857; }
++.student-status-badge .dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,.2); }
++[data-theme="dark"] .student-status-badge.suspended, [data-theme="dim"] .student-status-badge.suspended { color: #fda4af; }
++[data-theme="dark"] .student-status-badge.online, [data-theme="dim"] .student-status-badge.online { color: #6ee7b7; }
++.student-card.is-suspended { opacity: .78; }
++.student-card.is-suspended .student-avatar { filter: grayscale(.8); }
++.student-lastseen { font-size: 12px; color: var(--text-tertiary); }
++.bulk-actions { display: inline-flex; flex-wrap: wrap; gap: 6px; }
++
++.manage-student-box { max-width: 560px; width: calc(100% - 32px); max-height: min(88vh, 820px); overflow-y: auto; }
++.ms-head { display: flex; align-items: center; gap: 12px; }
++.ms-head-text { flex: 1 1 auto; min-width: 0; }
++.ms-head h3 { margin: 0; font-size: 18px; }
++.ms-sub { color: var(--text-tertiary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
++.ms-close { color: var(--text-secondary); background: var(--bg-surface-3); border-color: var(--border-default); }
++.ms-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0 6px; }
++.ms-stats > div { background: var(--bg-surface-2); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 10px; text-align: center; }
++.ms-stats strong { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
++.ms-stats span { font-size: 11px; color: var(--text-tertiary); }
++.ms-section { margin-top: 18px; }
++.ms-section h4 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-secondary); margin: 0 0 10px; }
++.ms-section h4 i { color: var(--brand-500); margin-right: 6px; }
++.ms-muted { color: var(--text-tertiary); font-size: 13px; margin: 4px 0; }
++.ms-alert { background: rgba(244,63,94,.1); color: #be123c; border-radius: 10px; padding: 10px 12px; font-size: 13.5px; font-weight: 600; margin-bottom: 8px; }
++[data-theme="dark"] .ms-alert, [data-theme="dim"] .ms-alert { color: #fda4af; }
++.ms-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
++.ms-course-list, .ms-progress-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
++.ms-course-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 10px; }
++.ms-course-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
++.ms-course-name em { font-style: normal; color: var(--text-tertiary); font-size: 12px; margin-left: 4px; }
++.ms-progress-top { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 6px; }
++.ms-progress-top span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
++@media (max-width: 520px) {
++  .ms-stats { grid-template-columns: repeat(2, 1fr); }
++}
+diff --git a/sw.js b/sw.js
+index 9e3f9b3..d7bf436 100644
+--- a/sw.js
++++ b/sw.js
+@@ -1,12 +1,12 @@
+ /* ============================================================
+-   SERVICE WORKER — v132
++   SERVICE WORKER — v137
+    ------------------------------------------------------------
+    KEY RULE: NEVER cache app code (app.js, styles.css, media-viewer.js,
+    sw.js, index.html, landing.html, /app). Those files must always
+    come from the network. Only truly static assets (manifest, images)
+    go in the cache.
+    ============================================================ */
+-const CACHE_NAME = 'aero-shell-v135';
++const CACHE_NAME = 'aero-shell-v137';
+ 
+ /* ONLY these go into the offline cache — they never change silently */
+ const SHELL_ASSETS = [
