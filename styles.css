@@ -15003,3 +15003,41 @@ body.aero-logged-out #appHeader .user-info {
 @media (max-width: 860px) and (prefers-reduced-motion: reduce) {
   #appHeader #mainNav, #appHeader #mainNav.open, .nav-toggle-bars > span { transition: none !important; }
 }
+
+/* ============================================================
+   ⭐ STUDENT REVIEWS — uniform cards + "Read more" (2026-10-04c)
+   ============================================================ */
+/* Cards in a row keep equal heights (grid stretch) so the wall looks uniform. */
+.feedback-card { min-height: 200px; }
+.feedback-card-text { flex: 1; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; width: 100%; margin-bottom: 10px; }
+.feedback-card-body.fb-collapsible {
+  flex: 0 0 auto;
+  width: 100%;
+  margin: 0;
+  max-height: calc(1.6em * 6);                               /* ≈ 6 lines */
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  transition: max-height .36s cubic-bezier(.4,0,.2,1);
+}
+.feedback-card-body.fb-collapsible.is-truncated {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.4em), transparent);
+          mask-image: linear-gradient(to bottom, #000 calc(100% - 2.4em), transparent);
+}
+.feedback-readmore {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 4px 0 0; padding: 4px 0;
+  background: none; border: 0; cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 700;
+  color: var(--brand-600);
+  min-height: 32px;
+}
+.feedback-readmore[hidden] { display: none !important; }
+.feedback-readmore:hover span { text-decoration: underline; }
+.feedback-readmore:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; border-radius: 4px; }
+.feedback-readmore i { font-size: 11px; transition: transform .3s ease; }
+.feedback-card.is-expanded .feedback-readmore i { transform: rotate(180deg); }
+[data-theme="dark"] .feedback-readmore,
+[data-theme="dim"]  .feedback-readmore { color: var(--brand-300, #a5b4fc); }
+@media (prefers-reduced-motion: reduce) {
+  .feedback-card-body.fb-collapsible, .feedback-readmore i { transition: none !important; }
+}

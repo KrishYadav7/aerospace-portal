@@ -8724,7 +8724,8 @@ function renderStudentHome() {
   renderFriendsSection();
   loadApprovedFeedback();
   loadMyContributions();
-  renderTestimonials();
+  /* "What Our Students Say" was removed (it repeated Student Reviews);
+     renderTestimonials() is kept but returns early without its slider. */
 
   // ⭐ Paint the grid immediately with whatever we already have in memory
   renderProfessorsGrid();
@@ -15633,18 +15634,104 @@ async function loadApprovedFeedback() {
             <span class="feedback-card-date">${when}</span>
           </div>
           ${f.title ? `<div class="feedback-card-title">${escapeHtml(f.title)}</div>` : ''}
-          <p class="feedback-card-body">${escapeHtml(f.message)}</p>
+          <div class="feedback-card-text">
+            <p class="feedback-card-body fb-collapsible">${escapeHtml(f.message)}</p>
+            <button type="button" class="feedback-readmore" hidden aria-expanded="false">
+              <span>Read more</span> <i class="fas fa-chevron-down" aria-hidden="true"></i>
+            </button>
+          </div>
           ${f.courseName ? `<div class="feedback-card-course"><i class="fas fa-graduation-cap"></i> ${escapeHtml(f.courseName)}</div>` : ''}
         </div>`;
     });
     html += '</div>';
     host.innerHTML = html;
+    _initFeedbackReadMore(host);
   } catch (err) {
     console.error('[loadApprovedFeedback]', err);
     host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
       <p style="color:var(--rose-500);">Could not load reviews.</p>
     </div>`;
   }
+}
+
+/* ============================================================
+   ⭐ STUDENT REVIEWS — "Read more" for long reviews (2026-10-04c)
+   ------------------------------------------------------------
+   Every review shows at most ~6 lines (CSS: .fb-collapsible), so
+   the wall stays uniform whatever students write. Only reviews
+   that are actually cut off get a "Read more" button; it expands
+   the card smoothly to the full text exactly as posted, and
+   "Show less" folds it back. Re-checked on resize, because what
+   fits on a laptop may not fit on a phone.
+   ============================================================ */
+function _measureFeedbackClamp(root) {
+  if (!root) return;
+  root.querySelectorAll('.feedback-card').forEach(card => {
+    if (card.classList.contains('is-expanded')) return;
+    const body = card.querySelector('.fb-collapsible');
+    const btn  = card.querySelector('.feedback-readmore');
+    if (!body || !btn) return;
+    const cut = body.scrollHeight > body.clientHeight + 2;
+    body.classList.toggle('is-truncated', cut);
+    btn.hidden = !cut;
+  });
+}
+
+function _toggleFeedbackCard(card) {
+  const body = card.querySelector('.fb-collapsible');
+  const btn  = card.querySelector('.feedback-readmore');
+  if (!body || !btn) return;
+  const label = btn.querySelector('span');
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  clearTimeout(body._fbTimer);
+
+  if (!card.classList.contains('is-expanded')) {
+    /* Expand: animate from the clamped height to the full height,
+       then release the limit so nothing can ever be cut off. */
+    body.style.maxHeight = body.clientHeight + 'px';
+    card.classList.add('is-expanded');
+    body.classList.remove('is-truncated');
+    void body.offsetHeight;                              // commit the start height
+    body.style.maxHeight = body.scrollHeight + 'px';
+    body._fbTimer = setTimeout(() => { body.style.maxHeight = 'none'; }, reduce ? 0 : 380);
+    btn.setAttribute('aria-expanded', 'true');
+    if (label) label.textContent = 'Show less';
+  } else {
+    /* Collapse: from the current full height back to the clamp. */
+    body.style.maxHeight = body.scrollHeight + 'px';
+    void body.offsetHeight;
+    card.classList.remove('is-expanded');
+    body.style.maxHeight = '';                           // CSS clamp height → animates
+    body._fbTimer = setTimeout(() => {
+      body.classList.add('is-truncated');
+      const r = card.getBoundingClientRect();
+      if (r.top < 70) card.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+    }, reduce ? 0 : 360);
+    btn.setAttribute('aria-expanded', 'false');
+    if (label) label.textContent = 'Read more';
+  }
+}
+
+function _initFeedbackReadMore(host) {
+  if (!host) return;
+  _measureFeedbackClamp(host);
+  /* Fonts can finish loading after the first paint and change the
+     line count — measure once more when they are ready. */
+  try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => _measureFeedbackClamp(host)); } catch (_) {}
+  if (host.dataset.fbReadMore === '1') return;           // listeners already attached
+  host.dataset.fbReadMore = '1';
+  host.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('.feedback-readmore');
+    if (!btn || !host.contains(btn)) return;
+    e.preventDefault();
+    const card = btn.closest('.feedback-card');
+    if (card) _toggleFeedbackCard(card);
+  });
+  let t = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(t);
+    t = setTimeout(() => _measureFeedbackClamp(document.getElementById('studentFeedbackList')), 150);
+  });
 }
 
 /* ============================================================
