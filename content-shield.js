@@ -9,9 +9,8 @@
      2. Cover all content while the window loses focus or the
         tab is hidden (Snipping Tool / screen-capture overlays
         take focus; mobile app-switcher thumbnails are blank).
-     3. Personal tiled watermark (name · username · date) on
-        every logged-in page, so any photo or capture that does
-        get through identifies who leaked it.
+     3. (No visible watermarks — removed at the owner's request.
+        Leak tracing is done invisibly by the server access log.)
      4. Printing disabled (Ctrl/Cmd+P and the print stylesheet).
      5. No right-click, text selection, drag-to-desktop, copy,
         view-source or DevTools shortcuts outside form fields.
@@ -22,7 +21,8 @@
    What NO website can do: stop a phone camera, stop OS-level
    capture on every device (e.g. Android/iOS screenshot buttons,
    macOS Cmd+Shift+3 fires before the page is told), or remove
-   hardware/HDMI capture. The watermark is the answer to those.
+   hardware/HDMI capture. The server-side access log records who
+   opened which paper and when, so a leak can still be traced.
    ============================================================ */
 (function () {
   'use strict';
@@ -31,7 +31,6 @@
 
   const CFG = Object.assign({
     coverOnBlur: true,        // hide content when the window loses focus
-    watermark: true,          // personal tiled watermark for logged-in users
     report: true              // log capture attempts to the server
   }, window.AERO_SHIELD_CONFIG || {});
 
@@ -61,9 +60,7 @@
       background: linear-gradient(135deg, #6366f1, #06b6d4); font-size: 28px; box-shadow: 0 10px 30px rgba(99,102,241,.4); }
     #aeroShieldCover strong { font-size: 19px; color: #fff; }
     #aeroShieldCover small { color: #94a3b8; font-size: 13px; max-width: 420px; line-height: 1.5; }
-    #aeroShieldWm {
-      position: fixed; inset: 0; z-index: 2147482000; pointer-events: none; background-repeat: repeat;
-    }
+    #aeroShieldWm, .pdfv-watermark, .vp-watermark, .docv-watermark, .pdfv-present-wm { display: none !important; }
     @media print {
       html body > * { display: none !important; }
       html body::before {
@@ -243,49 +240,17 @@
     }
   } catch (e) {}
 
-  /* ---------- 8. Personal watermark ---------- */
-  let wm = null, wmKey = '';
-  function wmSvg(text) {
-    const esc = String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-    const dark = /dark|dim/.test(document.documentElement.getAttribute('data-theme') || '');
-    const fill = dark ? 'rgba(255,255,255,0.07)' : 'rgba(15,23,42,0.06)';
-    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="420" height="260">' +
-      '<text x="210" y="130" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-size="13" font-weight="600" fill="' + fill + '" ' +
-      'transform="rotate(-24 210 130)">' + esc + '</text></svg>';
-    return 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")';
-  }
-  function syncWatermark() {
-    if (!CFG.watermark || !document.body) return;
-    const u = currentUser();
-    if (!u || isAdmin()) { if (wm) { wm.remove(); wm = null; wmKey = ''; } return; }
-    const d = new Date();
-    const text = (u.fullName || u.username || 'Student') + ' · @' + (u.username || '') + ' · ' +
-      d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-    const key = text + '|' + (document.documentElement.getAttribute('data-theme') || '');
-    if (!wm) {
-      wm = document.createElement('div');
-      wm.id = 'aeroShieldWm';
-      wm.setAttribute('aria-hidden', 'true');
-      document.body.appendChild(wm);
-    }
-    if (key !== wmKey) { wm.style.backgroundImage = wmSvg(text); wmKey = key; }
-  }
-  /* Keep it present: logins, logouts, theme changes, and anyone deleting it in DevTools */
+  /* ---------- 8. Boot ---------- */
+  /* Remove any visible watermark layer an older cached script may have left. */
   function boot() {
     ensureCover();
-    syncWatermark();
-    setInterval(syncWatermark, 5000);
-    try {
-      new MutationObserver(() => { if (wm && !document.body.contains(wm)) { wm = null; wmKey = ''; syncWatermark(); } })
-        .observe(document.body, { childList: true });
-      new MutationObserver(syncWatermark).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    } catch (e) {}
+    try { const old = document.getElementById('aeroShieldWm'); if (old) old.remove(); } catch (e) {}
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 
   window.AeroShield = {
-    cover: show, uncover: () => hide(true), refreshWatermark: syncWatermark,
+    cover: show, uncover: () => hide(true),
     suspend(ms) { suspendedUntil = Date.now() + (ms || 30000); }
   };
 })();

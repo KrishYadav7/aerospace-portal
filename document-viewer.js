@@ -164,7 +164,6 @@
               <p>Preparing document…</p>
             </div>
           </div>
-          <div class="docv-watermark" id="docvWatermark" aria-hidden="true"></div>
         </div>`;
 
       document.body.appendChild(el);
@@ -178,16 +177,8 @@
       this._renderWatermark();
     }
 
-    _renderWatermark() {
-      const wm = this.modal && this.modal.querySelector('#docvWatermark');
-      if (!wm) return;
-      const stamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      const text  = this.username + ' · ' + stamp;
-      wm.style.backgroundImage = makeWatermarkUrl(text, {
-        size: 13, angle: -25, tile: 750, dark: false
-      });
-      wm.style.opacity = '0.30';
-    }
+    /* 2026-10-04: visible watermarks removed (owner's decision). */
+    _renderWatermark() { /* intentionally no-op */ }
 
     _renderImage() {
       const body = this.modal.querySelector('#docvBody');

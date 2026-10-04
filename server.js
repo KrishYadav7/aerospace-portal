@@ -349,6 +349,7 @@ const Contribution = require('./models/Contribution');
 const Coupon       = require('./models/Coupon');
 const DailyUsage   = require('./models/DailyUsage');
 const Visit = require('./models/Visit');
+const AccessLog = require('./models/AccessLog');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const multer = require('multer');
@@ -720,6 +721,98 @@ const brandingUpload = multer({
    HYBRID STATIC FILE SERVING — PREMIUM GATED + NO-CACHE
    ============================================================ */
 /* ============================================================
+   ⭐ INVISIBLE LEAK TRACING + BULK-ACCESS GUARD (2026-10-04)
+   ------------------------------------------------------------
+   Replaces visible watermarks. Nothing is drawn on screen:
+     • Every open of a paper / deck / video by a signed-in user
+       is written to AccessLog (who, what, when, IP, device).
+       Admins can list "who opened this paper" if it leaks.
+     • A student opening an unusual number of different
+       materials in a short time (bulk ripping) is flagged for
+       the admin, and past a hard limit is paused for 10 min.
+   ============================================================ */
+const BULK_WINDOW_MS   = 15 * 60 * 1000;
+const BULK_FLAG_AT     = 30;     // distinct materials / 15 min → flag for admin
+const BULK_THROTTLE_AT = 60;     // distinct materials / 15 min → pause 10 min
+const BULK_PAUSE_MS    = 10 * 60 * 1000;
+const _bulkState = new Map();    // userId → { opens: Map(materialId → ts), pausedUntil, flaggedAt }
+const _recentLog = new Map();    // userId|materialId → ts  (de-dupe re-opens within 5 min)
+
+function _clientIp(req) {
+  return String(req.ip || req.headers['x-forwarded-for'] || '').split(',')[0].trim().slice(0, 64);
+}
+
+/* Returns { paused: true, minutes } when the student must wait. */
+function checkBulkAccess(user, materialId) {
+  if (!user || _isAdminUser(user)) return { paused: false };
+  const uid = String(user._id);
+  const now = Date.now();
+  let st = _bulkState.get(uid);
+  if (!st) { st = { opens: new Map(), pausedUntil: 0, flaggedAt: 0 }; _bulkState.set(uid, st); }
+  if (st.pausedUntil > now) return { paused: true, minutes: Math.ceil((st.pausedUntil - now) / 60000) };
+  for (const [mid, ts] of st.opens) if (now - ts > BULK_WINDOW_MS) st.opens.delete(mid);
+  st.opens.set(String(materialId), now);
+  const distinct = st.opens.size;
+  if (distinct >= BULK_FLAG_AT && now - st.flaggedAt > 60 * 60 * 1000) {
+    st.flaggedAt = now;
+    console.warn(`[guard] ⚠️ ${user.username} opened ${distinct} materials in 15 min — flagged`);
+    User.updateOne({ _id: uid }, {
+      $set: { 'security.lastFlagAt': new Date() },
+      $push: { 'security.flags': { $each: [{ at: new Date(), reason: `Opened ${distinct} different materials in 15 minutes` }], $slice: -20 } }
+    }).catch(() => {});
+  }
+  if (distinct >= BULK_THROTTLE_AT) {
+    st.pausedUntil = now + BULK_PAUSE_MS;
+    st.opens.clear();
+    console.warn(`[guard] ⛔ ${user.username} paused for 10 min (bulk access)`);
+    return { paused: true, minutes: 10 };
+  }
+  if (_bulkState.size > 5000) {           // keep memory bounded
+    for (const [k, v] of _bulkState) { if (!v.opens.size && v.pausedUntil < now) _bulkState.delete(k); }
+  }
+  return { paused: false };
+}
+
+function logMaterialAccess(req, course, mat, kind, preview) {
+  try {
+    const u = req.authUser;
+    if (!u) return;
+    const key = String(u._id) + '|' + String(mat._id);
+    const now = Date.now();
+    if (now - (_recentLog.get(key) || 0) < 5 * 60 * 1000) return;
+    _recentLog.set(key, now);
+    if (_recentLog.size > 20000) _recentLog.clear();
+    AccessLog.create({
+      userId: String(u._id), username: u.username || '', fullName: u.fullName || '',
+      courseId: String(course._id), materialId: String(mat._id), title: String(mat.title || '').slice(0, 200),
+      kind, preview: !!preview, ip: _clientIp(req),
+      device: String(req.headers['user-agent'] || '').slice(0, 180)
+    }).catch(e => console.warn('[access-log]', e.message));
+  } catch (e) { /* never block viewing */ }
+}
+
+/* Admin: who opened this material? (grouped per student) */
+app.get('/api/admin/access-log/material/:courseId/:materialId', requireAdminAuth, async (req, res) => {
+  try {
+    const rows = await AccessLog.aggregate([
+      { $match: { materialId: String(req.params.materialId) } },
+      { $sort: { at: -1 } },
+      { $group: {
+          _id: '$userId', username: { $first: '$username' }, fullName: { $first: '$fullName' },
+          opens: { $sum: 1 }, lastAt: { $first: '$at' }, firstAt: { $last: '$at' },
+          lastIp: { $first: '$ip' }, lastDevice: { $first: '$device' }, previewOnly: { $min: { $cond: ['$preview', 1, 0] } }
+      } },
+      { $sort: { lastAt: -1 } },
+      { $limit: 1000 }
+    ]);
+    res.json({ success: true, viewers: rows });
+  } catch (e) {
+    console.error('[access-log/material]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ============================================================
    ⭐ OFFICE → PDF RENDERER (2026-10-04)
    ------------------------------------------------------------
    PowerPoint / Word / Excel files are converted ONCE on the
@@ -873,6 +966,14 @@ app.get('/api/courses/:courseId/materials/:materialId/render', attachUserFromTok
       return res.status(400).json({ success: false, message: 'This material has no uploaded file.' });
     }
     const diskName = path.basename(rawUrl);
+    {
+      const g = checkBulkAccess(req.authUser, mat._id);
+      if (g.paused) {
+        return res.status(429).json({ success: false, code: 'BULK_PAUSE',
+          message: `You've opened a lot of materials very quickly. Please wait ${g.minutes} minute(s) and try again.` });
+      }
+    }
+    logMaterialAccess(req, course, mat, /\.(pptx?|ppsx?|potx?|odp)$/i.test(diskName) ? 'slides' : 'document', !access.allowed);
     if (!isOfficeFile(diskName)) {
       return res.status(400).json({ success: false, message: 'Only PowerPoint, Word and Excel files are rendered.' });
     }
@@ -5697,6 +5798,16 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
         });
       }
 
+      /* ⭐ Invisible tracing + bulk guard (office files are handled by /render) */
+      if (req.query.meta === '1' && !isOfficeFile(path.basename(String(mat.url || '')))) {
+        const g = checkBulkAccess(req.authUser, mat._id);
+        if (g.paused) {
+          return res.status(429).json({ success: false, code: 'BULK_PAUSE',
+            message: `You've opened a lot of materials very quickly. Please wait ${g.minutes} minute(s) and try again.` });
+        }
+        logMaterialAccess(req, course, mat, 'document', !access.allowed);
+      }
+
       /* ⭐ FAST PATH — metadata-only response.
          Returns access flags + the on-disk file URL WITHOUT the huge
          base64 payload. The client uses this to decide whether to
@@ -9985,7 +10096,7 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
        activityLog / quizResults / notifications cuts the payload
        from tens of MB down to a few hundred KB. */
     const students = await User.find({ role: 'student' })
-      .select('username fullName email phone role createdAt subscription suspended purchases activeSession.lastSeenAt activeSession.sessionId security.captureAttempts')
+      .select('username fullName email phone role createdAt subscription suspended purchases activeSession.lastSeenAt activeSession.sessionId security.captureAttempts security.lastFlagAt')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -10017,6 +10128,7 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
         lastSeenAt: (s.activeSession && s.activeSession.lastSeenAt) || null,
         signedIn: !!(s.activeSession && s.activeSession.sessionId),
         captureAttempts: (s.security && s.security.captureAttempts) || 0,
+        flagged: !!(s.security && s.security.lastFlagAt && (Date.now() - new Date(s.security.lastFlagAt).getTime()) < 7 * 86400000),
         premium: {
           active: premiumActive,
           status: sub.status || 'none',
@@ -10185,8 +10297,11 @@ app.get('/api/admin/students/:userId/overview', requireAdminAuth, async (req, re
         subscription: u.subscription ? { status: u.subscription.status, expiresAt: u.subscription.expiresAt } : null,
         captureAttempts: (u.security && u.security.captureAttempts) || 0,
         lastCaptureAt: (u.security && u.security.lastCaptureAt) || null,
-        captureLog: ((u.security && u.security.log) || []).slice(-5).reverse()
+        captureLog: ((u.security && u.security.log) || []).slice(-5).reverse(),
+        flags: ((u.security && u.security.flags) || []).slice(-3).reverse()
       },
+      recentOpens: await AccessLog.find({ userId: String(u._id) })
+        .sort({ at: -1 }).limit(12).select('title kind preview ip at -_id').lean(),
       courses: perCourse
     });
   } catch (e) {
@@ -10352,6 +10467,14 @@ app.post('/api/materials/:courseId/:materialId/video-session',
       }
     }
 
+    {
+      const g = checkBulkAccess(req.authUser, mat._id);
+      if (g.paused) {
+        return res.status(429).json({ success: false, code: 'BULK_PAUSE',
+          message: `You've opened a lot of materials very quickly. Please wait ${g.minutes} minute(s) and try again.` });
+      }
+      logMaterialAccess(req, course, mat, 'video', false);
+    }
     const url = String(mat.url).trim();
     const ytId = extractYouTubeId(url);
 

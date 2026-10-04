@@ -158,6 +158,13 @@ const userSchema = new mongoose.Schema({
       at:   { type: Date, default: Date.now },
       kind: { type: String, default: '' },
       path: { type: String, default: '' }
+    }],
+    /* Bulk-access guard: "opened N materials in 15 min" alerts for admins */
+    lastFlagAt: { type: Date, default: null },
+    flags: [{
+      _id:    false,
+      at:     { type: Date, default: Date.now },
+      reason: { type: String, default: '' }
     }]
   },
 

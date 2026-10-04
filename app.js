@@ -145,11 +145,7 @@ function buildCertificateHtml(rawT, d, mode) {
     ? `<div class="logo ${t.logoTile ? 'tile' : 'bare'} ${t.logoType}">${logoInner}</div>` : '';
 
   /* ---- watermark ---- */
-  let watermark = '';
-  if (t.showWatermark) {
-    if (t.logoType === 'image' && logoSrc) watermark = `<div class="wm"><img src="${E(logoSrc)}" alt=""></div>`;
-    else if (t.logoType === 'emoji') watermark = `<div class="wm"><span>${E(t.logoEmoji)}</span></div>`;
-  }
+  const watermark = '';   // 2026-10-04: no watermarks anywhere (owner's decision)
 
   /* ---- ornate corner flourish ---- */
   const corner = `<svg viewBox="0 0 120 120" aria-hidden="true"><path d="M6 114V36C6 19 19 6 36 6h78" fill="none" stroke="currentColor" stroke-width="3"/><path d="M18 114V44c0-14 12-26 26-26h70" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".7"/><circle cx="36" cy="36" r="7" fill="currentColor"/><path d="M36 22c6 6 6 22 0 28M22 36c6-6 22-6 28 0" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`;
@@ -542,7 +538,6 @@ function _renderCertDesigner() {
               <label for="cd_sealText">Seal text</label>
               <input type="text" id="cd_sealText" data-cert-key="sealText" maxlength="20" value="${escapeHtml(t.sealText)}">
             </div>` : ''}
-          ${_certToggle('showWatermark', 'Faint logo watermark', 'fa-droplet')}
           ${_certToggle('showCourseCode', 'Course code', 'fa-code')}
           ${_certToggle('showDate', 'Completion date', 'fa-calendar')}
           ${_certToggle('showCertId', 'Certificate ID', 'fa-hashtag')}
@@ -5925,6 +5920,7 @@ function renderStudentListFromCache() {
               ? `<span class="student-status-badge suspended" title="${escapeHtml((s.suspended && s.suspended.reason) || 'Suspended')}"><i class="fas fa-ban"></i> Suspended</span>`
               : (s.signedIn ? `<span class="student-status-badge online" title="Has an active session"><span class="dot"></span> Signed in</span>` : '')}
             ${s.captureAttempts ? `<span class="student-status-badge capture" title="Screenshot / print attempts blocked"><i class="fas fa-camera"></i> ${s.captureAttempts}</span>` : ''}
+            ${s.flagged ? `<span class="student-status-badge capture" title="Opened an unusual number of materials quickly in the last 7 days"><i class="fas fa-gauge-high"></i> Unusual activity</span>` : ''}
           </div>
           ${s.lastSeenAt ? `<div class="student-meta-row student-lastseen"><i class="fas fa-clock"></i><span>Last active ${escapeHtml(timeAgo(s.lastSeenAt))}</span></div>` : ''}
         </div>
@@ -6832,6 +6828,20 @@ function renderManageStudentBody(data) {
       </ul>`}
     </section>
 
+    ${(st.flags || []).length ? `<div class="ms-alert ms-alert--warn"><i class="fas fa-gauge-high"></i> Unusual activity: ${escapeHtml(st.flags[0].reason)} · ${escapeHtml(timeAgo(st.flags[0].at))}</div>` : ''}
+
+    <section class="ms-section">
+      <h4><i class="fas fa-clock-rotate-left"></i> Recently opened</h4>
+      ${(data.recentOpens || []).length === 0 ? '<p class="ms-muted">No papers, slides or videos opened yet.</p>' : `
+      <ul class="ms-open-list">
+        ${data.recentOpens.map(o => `<li>
+          <i class="fas ${o.kind === 'video' ? 'fa-circle-play' : o.kind === 'slides' ? 'fa-person-chalkboard' : 'fa-file-lines'}"></i>
+          <span class="ms-open-title">${escapeHtml(o.title || 'Material')}${o.preview ? ' <em>(preview)</em>' : ''}</span>
+          <span class="ms-open-when" title="${escapeHtml(o.ip || '')}">${escapeHtml(timeAgo(o.at))}</span>
+        </li>`).join('')}
+      </ul>`}
+    </section>
+
     <section class="ms-section">
       <h4><i class="fas fa-chart-line"></i> Progress</h4>
       ${progressRows.length === 0 ? '<p class="ms-muted">No completed materials yet.</p>' : `
@@ -6922,6 +6932,44 @@ function openBulkCourseAccess() {
       <button class="btn btn-outline btn-sm" onclick="closeModal('manageStudentModal');bulkStudentAction('revoke-course', { courseId: document.getElementById('bulkCourseSelect').value })"><i class="fas fa-lock"></i> Remove access</button>
     </div>`;
   el.classList.add('active');
+}
+
+/* ============================================================
+   ⭐ ADMIN — "Who opened this?" (invisible access log, 2026-10-04)
+   ============================================================ */
+async function openMaterialViewers(courseId, materialId, title) {
+  const el = _ensureManageStudentModal();
+  const body = el.querySelector('#manageStudentBody');
+  body.innerHTML = `<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading access log…</p></div>`;
+  el.classList.add('active');
+  try {
+    const data = await fetchJSON(`${API_BASE}/admin/access-log/material/${courseId}/${materialId}?_t=${Date.now()}`);
+    if (!data.success) throw new Error(data.message || 'Could not load the access log.');
+    const v = data.viewers || [];
+    body.innerHTML = `
+      <div class="ms-head">
+        <div class="ms-head-text">
+          <h3 id="manageStudentTitle">Who opened this</h3>
+          <div class="ms-sub">${escapeHtml(title || '')}</div>
+        </div>
+        <button class="icon-btn ms-close" onclick="closeModal('manageStudentModal')" aria-label="Close"><i class="fas fa-xmark"></i></button>
+      </div>
+      <p class="ms-muted" style="margin-top:10px;">${v.length} student${v.length === 1 ? '' : 's'} · recorded invisibly whenever someone opens this material (kept for 12 months).</p>
+      ${v.length === 0 ? '<div class="empty-state" style="padding:24px;"><p>Nobody has opened this material yet.</p></div>' : `
+      <div class="ms-viewers">
+        <div class="ms-viewers-row ms-viewers-head"><span>Student</span><span>Opens</span><span>Last opened</span><span>Last IP</span></div>
+        ${v.map(r => `
+          <div class="ms-viewers-row">
+            <span><strong>${escapeHtml(r.fullName || r.username || 'Student')}</strong> <em>@${escapeHtml(r.username || '')}</em>${r.previewOnly ? ' <span class="ms-chip">preview</span>' : ''}</span>
+            <span>${r.opens}</span>
+            <span title="${escapeHtml(new Date(r.lastAt).toLocaleString('en-IN'))}">${escapeHtml(timeAgo(r.lastAt))}</span>
+            <span class="ms-ip" title="${escapeHtml(r.lastDevice || '')}">${escapeHtml(r.lastIp || '—')}</span>
+          </div>`).join('')}
+      </div>`}`;
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state"><p style="color:var(--rose-500);">${escapeHtml(e.message || 'Error')}</p>
+      <button class="btn btn-outline" onclick="closeModal('manageStudentModal')">Close</button></div>`;
+  }
 }
 
 function showCredentialsCard(student) {
@@ -9794,7 +9842,7 @@ function renderMaterialCard(course, m, isPurchased) {
       <h4>${escapeHtml(m.title)}</h4>
       <div class="mat-desc">${escapeHtml(m.description) || ''}</div>
       ${(m.type === 'video' && canAccess && currentUser.role === 'student') ? videoProgressStripHtml(m.id) : ''}
-      <div class="mat-actions">${fileActionHtml}${progressBtnHtml}</div>
+      <div class="mat-actions">${fileActionHtml}${progressBtnHtml}${isAdminUser ? `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openMaterialViewers('${course.id}', '${m.id}', ${jsStr(m.title || '')})" title="Who opened this material (invisible access log)"><i class="fas fa-users-viewfinder"></i> Viewers</button>` : ''}</div>
     </div>
   `;
 }

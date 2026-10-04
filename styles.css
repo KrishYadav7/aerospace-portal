@@ -14866,3 +14866,32 @@ body.aero-logged-out #appHeader .user-info {
 .ms-alert--warn { background: rgba(245,158,11,.12) !important; color: #92400e !important; margin-top: 10px; }
 [data-theme="dark"] .ms-alert--warn, [data-theme="dim"] .ms-alert--warn { color: #fcd34d !important; }
 .ms-capture-log { margin: 6px 0 0 18px; padding: 0; font-weight: 500; font-size: 12.5px; }
+
+/* ============================================================
+   2026-10-04 — NO VISIBLE WATERMARKS ANYWHERE (owner's decision).
+   Hard override in case any older cached script still injects one.
+   ============================================================ */
+#aeroShieldWm, .pdfv-watermark, .vp-watermark, .docv-watermark, .pdfv-present-wm {
+  display: none !important; background-image: none !important; opacity: 0 !important;
+}
+
+/* ⭐ Admin — access log views (2026-10-04) */
+.ms-open-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ms-open-list li { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; align-items: center; font-size: 13px; padding: 6px 8px; border-radius: 8px; background: var(--bg-surface-2); }
+.ms-open-list i { color: var(--brand-500); }
+.ms-open-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-open-title em { color: var(--text-tertiary); font-style: normal; font-size: 12px; }
+.ms-open-when { color: var(--text-tertiary); font-size: 12px; white-space: nowrap; }
+.ms-viewers { margin-top: 12px; border: 1px solid var(--border-subtle); border-radius: 12px; overflow: hidden; max-height: 60vh; overflow-y: auto; }
+.ms-viewers-row { display: grid; grid-template-columns: minmax(0, 2.2fr) 0.6fr 1fr 1fr; gap: 10px; padding: 9px 12px; font-size: 13px; align-items: center; border-top: 1px solid var(--border-subtle); }
+.ms-viewers-row:first-child { border-top: 0; }
+.ms-viewers-head { background: var(--bg-surface-2); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-tertiary); position: sticky; top: 0; }
+.ms-viewers-row em { color: var(--text-tertiary); font-style: normal; font-size: 12px; }
+.ms-viewers-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ms-ip { font-family: 'SFMono-Regular', Menlo, monospace; font-size: 12px; color: var(--text-secondary); }
+.ms-chip { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--bg-surface-3); color: var(--text-secondary); }
+@media (max-width: 560px) {
+  .ms-viewers-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .ms-viewers-row > span:nth-child(4), .ms-viewers-head > span:nth-child(4) { display: none; }
+  .ms-viewers-row > span:nth-child(2) { display: none; }
+}

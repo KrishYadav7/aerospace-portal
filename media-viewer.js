@@ -328,7 +328,6 @@ class VideoPlayer {
         <div class="vp-title" id="vpTitle"></div>
 
         <div class="vp-video-area" id="vpVideoArea">
-          <div class="vp-watermark" id="vpWatermark"></div>
           <div class="vp-click-capture" id="vpClickCapture" tabindex="0" aria-label="Video surface"></div>
           <button class="vp-big-play" id="vpBigPlay" type="button" aria-label="Play"><i class="fas fa-play"></i></button>
         </div>
@@ -1305,16 +1304,9 @@ class VideoPlayer {
   /* ------------------------------------------------------------
      Watermark, protection, helpers
      ------------------------------------------------------------ */
-  _renderWatermark() {
-    if (!this.watermarkEl) return;
-    const now = new Date();
-    const stamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-    const text = this.username + ' · ' + stamp;
-    this.watermarkEl.style.backgroundImage = makeWatermarkUrl(text, {
-      size: 14, angle: -25, tile: 700, dark: true
-    });
-    this.watermarkEl.style.opacity = '0.18';
-  }
+  /* 2026-10-04: visible watermarks removed site-wide (owner's decision).
+     Tracking now happens invisibly on the server (access log). */
+  _renderWatermark() { /* intentionally no-op */ }
 
   _flashBlur() {
     if (!this.modal) return;
@@ -1744,7 +1736,6 @@ class VideoPlayer {
           '</div>' +
           '<div class="pdfv-body" id="pdfvBody">' +
             '<div class="pdfv-pages" id="pdfvPages"></div>' +
-            '<div class="pdfv-watermark" id="pdfvWatermark"></div>' +
             '<div class="pdfv-loader" id="pdfvLoader">' +
               '<div class="pdfv-spinner"></div>' +
               '<p id="pdfvLoaderText">Connecting to server…</p>' +
@@ -2812,7 +2803,7 @@ class VideoPlayer {
        Full-screen, one slide at a time — for rendered PowerPoint
        decks (and any PDF). Keyboard: → ← Space PgUp/PgDn Home End,
        Esc to exit. Click right/left half or swipe on touch.
-       The same watermark + screenshot shield stay on top.
+       The screenshot shield stays active on top.
        ============================================================ */
     async _startPresentation(startPage) {
       if (!this.pdfDoc || this._present) return;
@@ -2823,7 +2814,6 @@ class VideoPlayer {
       ov.setAttribute('aria-label', 'Slideshow');
       ov.innerHTML =
         '<div class="pdfv-present-stage"><canvas></canvas></div>' +
-        '<div class="pdfv-present-wm" aria-hidden="true"></div>' +
         '<div class="pdfv-present-bar">' +
           '<button type="button" data-p="prev" aria-label="Previous slide"><i class="fas fa-chevron-left"></i></button>' +
           '<span class="pdfv-present-count"></span>' +
@@ -2836,12 +2826,6 @@ class VideoPlayer {
       ov.addEventListener('dragstart', e => e.preventDefault());
       document.body.appendChild(ov);
 
-      const wmSrc = this.modal && this.modal.querySelector('#pdfvWatermark');
-      if (wmSrc) {
-        const wm = ov.querySelector('.pdfv-present-wm');
-        wm.style.backgroundImage = wmSrc.style.backgroundImage;
-        wm.style.opacity = '0.9';
-      }
 
       const st = this._present = {
         ov, page: Math.max(1, Math.min(max, startPage || 1)), max,
@@ -2957,18 +2941,8 @@ class VideoPlayer {
       if (!silent && this.active) { try { this._scrollToPage(st.page); } catch (e) {} }
     }
 
-    _renderWatermark() {
-      if (!this.modal) return;
-      const wm = this.modal.querySelector('#pdfvWatermark');
-      if (!wm) return;
-      const now = new Date();
-      const stamp = now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-      const text = this.username + ' · ' + stamp;
-      wm.style.backgroundImage = makeWatermarkUrl(text, {
-        size: 13, angle: -25, tile: 750, dark: false
-      });
-      wm.style.opacity = '0.42';
-    }
+    /* 2026-10-04: visible watermarks removed (owner's decision). */
+    _renderWatermark() { /* intentionally no-op */ }
     _onKeyDown(e) {
       if (!this.active) return;
       if (this._present) return;          // slideshow owns the keyboard
