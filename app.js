@@ -862,7 +862,13 @@ function checkCertificateEligibility(course) {
   const warm = () => {
     if (warmed) return;
     warmed = true;
-    try { window.loadPDFJS().catch(() => {}); } catch (e) {}
+    try {
+      window.loadPDFJS().then(() => {
+        /* ⚡ Also start the PDF.js worker, so the first PDF opens without
+           waiting for it to boot. */
+        try { if (window.PDFViewer && window.PDFViewer.prewarmWorker) window.PDFViewer.prewarmWorker(); } catch (_) {}
+      }).catch(() => {});
+    } catch (e) {}
   };
 
   // Desktop: hover anywhere on a material card
@@ -13306,30 +13312,16 @@ async function viewFileOnline(courseId, materialId) {
   /* Client-side access is only used as a FALLBACK if meta fails. */
   const access = getMaterialAccessInfo(course, mat);
 
-  /* ① Kick off PDF.js load + meta fetch in PARALLEL.
-     We ALSO warm the /uploads/ connection with a tiny HEAD so the
-     campus proxy has already negotiated the TCP + TLS handshake
-     by the time the real GET fires. Fire-and-forget — never blocks. */
-  const pdfJsPromise = window.loadPDFJS().catch(err => {
+  /* ① Kick off PDF.js load (+ its worker) and the meta fetch in PARALLEL.
+     (The old unsigned HEAD "warm-up" of /uploads/ was removed: it ran a
+     full access check on the server for every open while the meta call
+     already opens the same connection.) */
+  const pdfJsPromise = window.loadPDFJS().then(() => {
+    try { if (window.PDFViewer && window.PDFViewer.prewarmWorker) window.PDFViewer.prewarmWorker(); } catch (_) {}
+  }).catch(err => {
     console.warn('[viewFileOnline] PDF.js load failed:', err);
     throw err;
   });
-
-  /* ⭐ Non-blocking warm-up of the uploads route. */
-  try {
-    const warmUrl = (mat.url && String(mat.url).startsWith('/uploads/'))
-      ? String(mat.url)
-      : null;
-    if (warmUrl) {
-      fetch(warmUrl, {
-        method: 'HEAD',
-        credentials: 'same-origin',
-        cache: 'default',
-        priority: 'low',
-        keepalive: true
-      }).catch(() => {});
-    }
-  } catch (_) { /* purely an optimisation — never break the flow */ }
 
   let meta = null;
   let metaFailed = false;
@@ -13425,7 +13417,9 @@ async function viewFileOnline(courseId, materialId) {
                         : 'Guest · ' + new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
       hasFullAccess,
       previewPercent,
-      lockReason
+      lockReason,
+      /* ⚡ the server sent its re-packed fast-view copy → load on demand */
+      fastView:       !!(meta && meta.fastView === true && effectiveUrl === serverFileUrl)
     });
     return;
   }

@@ -1336,6 +1336,11 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(403).json({ success: false, message: 'This link has expired. Please open the file again from the course page.' });
   }
+  /* ⚡ Fast-view PDF copies — same rule: signed URL (or admin) only */
+  if (FASTVIEW_ANY_RE.test(filename) && !_isAdminUser(req.authUser)) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(403).json({ success: false, message: 'This link has expired. Please open the file again from the course page.' });
+  }
 
   /* ============================================================
      PREMIUM ACCESS CHECK — with file→owner caching
@@ -1348,9 +1353,12 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
       /* Rendered copies inherit the access rules of their original file */
       const lookupName = originalNameForRender(filename) || filename;
       const escaped = lookupName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      /* ⚡ Only the fields the access check below reads. Selecting all of
+         `materials` pulled every material's quiz and legacy base64
+         `fileData` (megabytes) on each lookup and kept it in the cache. */
       owner = await Course.findOne({
         'materials.url': { $regex: '/uploads/' + escaped + '$' }
-      }).select('isPremium price materials').lean();
+      }).select('isPremium price materials._id materials.url materials.isPremium materials.previewPercent').lean();
 
       cacheSet(ownerCacheKey, owner || false, 5 * 60 * 1000);
     } catch (e) {
@@ -1436,6 +1444,7 @@ async function handleSingleUpload(req, res) {
       setTimeout(() => {
         linearizePdf(diskPath)
           .then(() => generatePreviewPdf(diskName, 10))
+          .then(() => { fastViewFor(diskName); })
           .catch(() => {});
       }, 500);
     }
@@ -1680,6 +1689,7 @@ app.post('/api/upload/complete', requireUser, async (req, res) => {
       setTimeout(() => {
         linearizePdf(finalPath)
           .then(() => generatePreviewPdf(diskName, 10))
+          .then(() => { fastViewFor(diskName); })
           .catch(() => {});
       }, 500);
     }
@@ -4125,13 +4135,18 @@ function _buildZipBuffer(entries) {
      • It still uses HMAC-SHA256 with the same secret.
    ============================================================ */
 const SIGNED_URL_TTL_MS    = 24 * 60 * 60 * 1000;   // valid for up to 24h
-const SIGNED_URL_QUANTUM_MS = 60 * 60 * 1000;       // quantize to the hour
+/* ⚡ 2026-10-05: quantum 1h → 6h. The signed URL (and so the browser's
+   cached copy of the PDF) now stays the same for 6 hours instead of 1,
+   so re-opening a document is served from the browser cache far more
+   often. Tokens still expire 24–30 h after issue; tokens issued with the
+   old 1 h quantum stay valid (verify only checks the expiry + HMAC). */
+const SIGNED_URL_QUANTUM_MS = 6 * 60 * 60 * 1000;   // quantize to 6 hours
 
 function signUploadToken(filename, userId) {
   const target = Date.now() + SIGNED_URL_TTL_MS;
-  /* Round UP to the next whole hour. Repeated calls within the
-     same wall-clock hour return the same `expires`, hence the
-     same signature, hence the same URL. */
+  /* Round UP to the next quantum boundary. Repeated calls within the
+     same 6-hour window return the same `expires`, hence the same
+     signature, hence the same URL. */
   const expires = Math.ceil(target / SIGNED_URL_QUANTUM_MS) * SIGNED_URL_QUANTUM_MS;
   const payload = `${filename}:${userId}:${expires}`;
   const sig = crypto
@@ -6049,6 +6064,203 @@ app.get('/api/courses', async (req, res) => {
   }
 });
 
+/* ============================================================
+   ⚡ PDF OPEN — fast lookups (2026-10-05)
+   ------------------------------------------------------------
+   _loadCourseWithOneMaterial: returns { _id, isPremium, price,
+   materials: [that one material] } — the same shape the /file
+   route used before, but MongoDB filters the array, so the other
+   materials' quizzes and legacy base64 PDFs are no longer read
+   into Node on every open. Falls back to the old full query if
+   the aggregation ever fails.
+   ============================================================ */
+async function _loadCourseWithOneMaterial(courseId, materialId) {
+  const mid = String(materialId || '');
+  try {
+    const rows = await Course.aggregate([
+      { $match: { _id: new mongoose.Types.ObjectId(String(courseId)) } },
+      { $project: {
+          isPremium: 1,
+          price: 1,
+          materials: {
+            $filter: {
+              input: { $ifNull: ['$materials', []] },
+              as: 'm',
+              cond: { $eq: [{ $toString: '$$m._id' }, mid] }
+            }
+          }
+      } },
+      { $limit: 1 }
+    ]);
+    return rows[0] || null;
+  } catch (e) {
+    console.warn('[file] slim lookup failed, using full lookup:', e.message);
+    return Course.findById(courseId).select('isPremium price materials').lean();
+  }
+}
+
+const _uploadRestores = new Map();          // filename → Promise<boolean>
+const UPLOAD_RESTORE_WAIT_MS = 20000;
+const UPLOAD_RESTORE_MAX_PARALLEL = 2;
+async function _restoreUploadFromBackup(fn, cloudUrl) {
+  try {
+    if (!/^[A-Za-z0-9._-]+$/.test(fn)) return false;
+    const src = /^https:\/\//i.test(String(cloudUrl || '')) ? String(cloudUrl) : readCloudSidecar(fn);
+    if (!src || !/^https:\/\//i.test(src)) return false;
+    let job = _uploadRestores.get(fn);
+    if (!job) {
+      if (_uploadRestores.size >= UPLOAD_RESTORE_MAX_PARALLEL) return false;
+      console.log('[uploads] ☁️  restoring missing file from backup:', fn);
+      job = _ensureLocalOriginal(fn, src)
+        .then(p => !!p)
+        .catch(() => false)
+        .finally(() => _uploadRestores.delete(fn));
+      _uploadRestores.set(fn, job);
+    }
+    let timer;
+    const timeout = new Promise(r => { timer = setTimeout(() => r(false), UPLOAD_RESTORE_WAIT_MS); });
+    const ok = await Promise.race([job, timeout]);
+    clearTimeout(timer);
+    return ok === true && fs.existsSync(path.join(UPLOAD_DIR, fn));
+  } catch (e) {
+    return false;
+  }
+}
+
+/* ============================================================
+   ⚡ FAST-VIEW COPIES OF PDFs (2026-10-05)
+   ------------------------------------------------------------
+   Why large PDFs opened slowly: before PDF.js shows anything it
+   reads the dictionary of EVERY page (to check the page count).
+   In most PDFs — Word/scanner exports, and also the files our own
+   "linearize" step produced — those small dictionaries are spread
+   through the whole file, so the browser effectively had to
+   download the entire PDF before page 1 appeared (20 MB ≈ 20 s+
+   on a phone).
+
+   Fix: a re-packed copy, made once per file with qpdf
+   (--object-streams=generate), stores all those dictionaries
+   together in a few compressed blocks. Same pages, same bytes for
+   images and text — only the internal layout changes. PDF.js then
+   needs a few small range requests for page 1 (measured: 19 s →
+   0.7 s on 20 Mbit/s, 62 s → 2.7 s on a slow 5 Mbit/s link).
+
+   Safety:
+     • The ORIGINAL file is never modified — the copy is a new file
+       next to it (<name>_fastview.pdf), so no cached URL changes.
+     • The copy is served ONLY through a signed URL issued by
+       /file?meta=1 to users with full access (or to admins);
+       anything else gets 403.
+     • Built in the background, one at a time, only when the disk
+       has plenty of free space; any failure → the original is used.
+     • The copy is ignored automatically if the original is newer.
+   ============================================================ */
+const FASTVIEW_ANY_RE         = /_fastview(?:_tmp[a-f0-9]{6})?\.pdf$/i;
+const FASTVIEW_MIN_BYTES      = 1024 * 1024;               // smaller PDFs load in one request anyway
+const FASTVIEW_MAX_BYTES      = 500 * 1024 * 1024;
+const FASTVIEW_MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024;    // keep ≥ 3 GB free on the disk
+const _fastViewQueue  = [];
+const _fastViewQueued = new Set();
+const _fastViewSkip   = new Map();       // filename → original mtime that could not be packed
+let   _fastViewBusy   = false;
+let   _fastViewNoQpdf = false;
+
+function fastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview.pdf'); }
+
+/* The fast copy's filename when an up-to-date one exists; otherwise
+   null (and a copy is queued so the next open is fast). */
+function fastViewFor(fn) {
+  try {
+    if (_fastViewNoQpdf) return null;
+    fn = String(fn || '');
+    if (!/^[A-Za-z0-9._-]+\.pdf$/i.test(fn) || FASTVIEW_ANY_RE.test(fn)) return null;
+    const st = fs.statSync(path.join(UPLOAD_DIR, fn));
+    if (!st.isFile() || st.size < FASTVIEW_MIN_BYTES || st.size > FASTVIEW_MAX_BYTES) return null;
+    const fv = fastViewNameFor(fn);
+    let fst = null;
+    try { fst = fs.statSync(path.join(UPLOAD_DIR, fv)); } catch (_) {}
+    if (fst && fst.isFile() && fst.size > 1024 && fst.mtimeMs >= st.mtimeMs) return fv;
+    _queueFastView(fn, st.mtimeMs);
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _queueFastView(fn, mtimeMs) {
+  if (_fastViewQueued.has(fn) || _fastViewSkip.get(fn) === mtimeMs) return;
+  if (_fastViewQueue.length >= 100) return;
+  _fastViewQueued.add(fn);
+  _fastViewQueue.push(fn);
+  if (!_fastViewBusy) {
+    _fastViewBusy = true;
+    setImmediate(_runFastViewQueue);
+  }
+}
+
+async function _runFastViewQueue() {
+  try {
+    while (_fastViewQueue.length) {
+      const fn = _fastViewQueue.shift();
+      try { await _buildFastView(fn); }
+      catch (e) { console.warn('[fastview]', fn, '·', e.message); }
+      finally { _fastViewQueued.delete(fn); }
+    }
+  } finally {
+    _fastViewBusy = false;
+  }
+}
+
+async function _buildFastView(fn) {
+  const src = path.join(UPLOAD_DIR, fn);
+  const out = path.join(UPLOAD_DIR, fastViewNameFor(fn));
+  const st  = await fs.promises.stat(src);
+  try {
+    const o = await fs.promises.stat(out);
+    if (o.mtimeMs >= st.mtimeMs) return;                   // already up to date
+  } catch (_) {}
+
+  /* Disk guard — never let the copies fill the disk. */
+  if (typeof fs.promises.statfs !== 'function') { _fastViewNoQpdf = true; return; }
+  const sf = await fs.promises.statfs(UPLOAD_DIR);
+  const free = Number(sf.bavail) * Number(sf.bsize);
+  if (!(free > FASTVIEW_MIN_FREE_BYTES && free > st.size * 10)) {
+    _fastViewSkip.set(fn, st.mtimeMs);
+    console.warn('[fastview] skipped (low disk space):', fn);
+    return;
+  }
+
+  const tmp = out.replace(/\.pdf$/i, '') + '_tmp' + crypto.randomBytes(3).toString('hex') + '.pdf';
+  const t0 = Date.now();
+  const ok = await new Promise((resolve) => {
+    execFile('qpdf', ['--object-streams=generate', '--stream-data=preserve', src, tmp],
+      { timeout: 120000, maxBuffer: 4 * 1024 * 1024 },
+      (err, _o, stderr) => {
+        if (!err) return resolve(true);
+        if (err.code === 'ENOENT') { _fastViewNoQpdf = true; console.warn('[fastview] qpdf is not installed — PDFs are served as they are.'); return resolve(false); }
+        if (err.code === 3) return resolve(true);           // success with warnings
+        console.warn('[fastview] qpdf could not pack', fn, '·', String(stderr || err.message || '').trim().split('\n')[0]);
+        resolve(false);
+      });
+  });
+  try {
+    if (!ok) { _fastViewSkip.set(fn, st.mtimeMs); return; }
+    const tst = await fs.promises.stat(tmp);
+    const head = Buffer.alloc(5);
+    const fh = await fs.promises.open(tmp, 'r');
+    try { await fh.read(head, 0, 5, 0); } finally { await fh.close(); }
+    const st2 = await fs.promises.stat(src);
+    if (tst.size < 1024 || head.toString('latin1') !== '%PDF-' || st2.mtimeMs !== st.mtimeMs) {
+      _fastViewSkip.set(fn, st.mtimeMs);
+      return;
+    }
+    await fs.promises.rename(tmp, out);
+    console.log(`[fastview] ⚡ ${fn} → ${path.basename(out)} (${Math.round(tst.size / 1024)} KB, ${Date.now() - t0} ms)`);
+  } finally {
+    fs.promises.rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
 /* ---- On-demand full material fetch (quiz questions) ---- */
 /* ---- On-demand file fetch (PDF base64) — PREMIUM PROTECTED ---- */
 app.get('/api/courses/:courseId/materials/:materialId/file',
@@ -6059,9 +6271,7 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
         return res.status(400).json({ success: false, message: 'Invalid course ID.' });
       }
 
-      const course = await Course.findById(req.params.courseId)
-        .select('isPremium price materials')
-        .lean();
+      const course = await _loadCourseWithOneMaterial(req.params.courseId, req.params.materialId);
       if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
 
       const mat = (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
@@ -6102,6 +6312,7 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
         let diskFileExists = false;
         let fileUrl = rawUrl;
         let signedUrlIssued = false;
+        let fastView = false;
 
         if (rawUrl.startsWith('/uploads/')) {
           const fn = path.basename(rawUrl);
@@ -6112,17 +6323,29 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
           if (resolved.startsWith(uploadRoot + path.sep)) {
             try { diskFileExists = fs.existsSync(resolved); }
             catch (e) { diskFileExists = false; }
+
+            /* ⚡ The file is missing on disk (e.g. the uploads folder was
+               reset) but a Cloudinary backup exists → put it back once,
+               then serve it normally. Only for students who may read the
+               whole file; bounded in time, never blocks longer than ~20 s. */
+            if (!diskFileExists && access.allowed && !isOfficeFile(fn)) {
+              diskFileExists = await _restoreUploadFromBackup(fn, mat.cloudUrl);
+            }
           }
 
           /* ⭐ Issue a signed URL when full access is granted.
                 This eliminates per-range-request auth overhead. */
           if (diskFileExists && access.allowed && req.authUser && !isOfficeFile(fn)) {
             try {
-              const tok = signUploadToken(fn, String(req.authUser._id));
-              fileUrl = `/uploads/${encodeURIComponent(fn)}` +
+              /* ⚡ Serve the fast-view copy of a large PDF when it is ready */
+              const fv = /\.pdf$/i.test(fn) ? fastViewFor(fn) : null;
+              const serveName = fv || fn;
+              const tok = signUploadToken(serveName, String(req.authUser._id));
+              fileUrl = `/uploads/${encodeURIComponent(serveName)}` +
                         `?su=${encodeURIComponent(String(req.authUser._id))}` +
                         `&st=${encodeURIComponent(tok)}`;
               signedUrlIssued = true;
+              fastView = !!fv;
             } catch (e) {
               console.warn('[file-meta] signed URL build failed:', e.message);
               fileUrl = rawUrl;
@@ -6137,6 +6360,7 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
           fileUrl,
           originalUrl:    rawUrl,
           signedUrl:      signedUrlIssued,
+          fastView,
           diskFileExists,
           hasInlineData:  !!mat.fileData,
           hasFullAccess:  !!access.allowed,
