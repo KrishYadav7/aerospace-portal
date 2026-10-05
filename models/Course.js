@@ -175,6 +175,11 @@ const courseSchema = new mongoose.Schema({
   thumbnail:  { type: String, default: '' },
   status:     { type: String, default: 'published' },
   featured:   { type: Boolean, default: false },
+  /* ⭐ Display position chosen by the admin (Admin → Courses → drag or ↑ ↓).
+     Lower = earlier. Courses without one (all courses until the admin first
+     reorders, and courses created afterwards) are listed first, by the old
+     rule: featured first, then name. */
+  sortOrder:  { type: Number },
 
   isPremium: { type: Boolean, default: false },
   price:     { type: Number, default: 0 },
@@ -192,6 +197,7 @@ courseSchema.index({ code: 1 });
 courseSchema.index({ featured: -1, createdAt: -1 });
 courseSchema.index({ createdAt: -1 });
 courseSchema.index({ status: 1, featured: -1 });
+courseSchema.index({ sortOrder: 1 });
 courseSchema.index({ name: 'text', code: 'text', description: 'text' });
 // Fast lookup by filename for the disk-miss → Cloudinary fallback path
 courseSchema.index({ 'materials.url': 1 });

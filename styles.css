@@ -15534,3 +15534,77 @@ body.aero-logged-out #appHeader .user-info {
   .sp-log-time { width: 54px; }
   .sp-sub { font-size: 12px; gap: 4px 10px; }
 }
+
+/* ============================================================
+   ⭐ COURSE ORDER — Admin → Courses (2026-10-05)
+   ============================================================ */
+.cord-hint {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 0 0 14px; padding: 9px 14px;
+  border: 1px dashed var(--border-subtle); border-radius: var(--radius-md);
+  background: var(--bg-surface-2); color: var(--text-secondary);
+  font-size: 12.5px; line-height: 1.5;
+}
+.cord-hint > .fas { color: var(--brand-500); }
+.cord-hint > span:first-of-type { flex: 1 1 260px; min-width: 0; }
+.cord-hint em { display: block; font-style: normal; color: var(--text-tertiary); font-size: 12px; }
+.cord-hint .fa-grip-vertical { font-size: 11px; margin: 0 2px; }
+.cord-state { font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; }
+.cord-state.run, .cord-state.ok, .cord-state.err { padding: 3px 10px; }
+.cord-state.run { background: rgba(99, 102, 241, .1); color: var(--brand-600, #4f46e5); }
+.cord-state.ok { background: rgba(16, 185, 129, .12); color: #059669; }
+.cord-state.err { background: rgba(239, 68, 68, .1); color: var(--rose-600, #e11d48); }
+[data-theme="dark"] .cord-state.ok { color: #34d399; }
+[data-theme="dark"] .cord-state.run { color: var(--brand-300, #a5b4fc); }
+
+.course-card .cord-bar {
+  margin-top: auto; display: flex; align-items: center; gap: 6px;
+  padding: 8px 0 0; font-size: 12px; color: var(--text-tertiary); cursor: default;
+}
+.course-card .cord-bar + .card-actions { margin-top: 10px; }
+.cord-grip {
+  width: 30px; height: 30px; border: 1px solid var(--border-subtle); border-radius: 8px;
+  background: var(--bg-surface); color: var(--text-tertiary);
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: grab; touch-action: none; flex-shrink: 0; transition: .15s;
+}
+.cord-grip:hover { color: var(--text-primary); background: var(--bg-surface-3); }
+.cord-grip:active { cursor: grabbing; }
+.cord-pos {
+  font-weight: 800; color: var(--text-primary); font-variant-numeric: tabular-nums;
+  min-width: 28px;
+}
+.cord-label { flex: 1; text-transform: uppercase; letter-spacing: .6px; font-size: 10.5px; font-weight: 700; }
+.cord-btn {
+  width: 30px; height: 30px; border: 1px solid var(--border-subtle); border-radius: 8px;
+  background: var(--bg-surface); color: var(--text-secondary); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 12px; transition: .15s;
+}
+.cord-btn:hover:not(:disabled) { color: #fff; background: var(--brand-500); border-color: var(--brand-500); }
+.cord-btn:disabled { opacity: .35; cursor: not-allowed; }
+.cord-grip:focus-visible, .cord-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(99, 102, 241, .45); }
+
+body.cord-drag-on, body.cord-drag-on * { cursor: grabbing !important; user-select: none !important; -webkit-user-select: none !important; }
+body.cord-drag-on #adminCourseGrid .course-card { transform: none !important; transition: none; }
+#adminCourseGrid .course-card.cord-dragging {
+  position: fixed; z-index: 2600; margin: 0; pointer-events: none;
+  transform: rotate(-1deg) scale(1.02) !important; opacity: .96;
+  box-shadow: 0 24px 54px rgba(15, 23, 42, .3), 0 0 0 2px var(--brand-500);
+}
+.cord-ph {
+  border-radius: var(--radius-lg);
+  border: 2px dashed color-mix(in srgb, var(--brand-500) 55%, transparent);
+  background: rgba(99, 102, 241, .06);
+}
+#adminCourseGrid .course-card.cord-dropped { animation: cordDropped .8s ease-out; }
+@keyframes cordDropped {
+  0% { box-shadow: 0 0 0 3px rgba(16, 185, 129, .6); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+@media (max-width: 700px) {
+  .cord-grip, .cord-btn { width: 38px; height: 38px; font-size: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #adminCourseGrid .course-card.cord-dragging { transform: none !important; }
+  #adminCourseGrid .course-card.cord-dropped { animation: none; }
+}

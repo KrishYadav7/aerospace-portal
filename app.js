@@ -1018,6 +1018,16 @@ function checkCertificateEligibility(course) {
     try { _analyticsCacheAt = 0; } catch (e) {}
     try { invalidateCommunityCache(); } catch (e) {}
 
+    /* ⭐ Course order changed (Admin → Courses). Only the course list is
+       refetched — quietly, no toast. The admin's own change is already on
+       screen, so its echo is ignored. */
+    if (scope === 'courses:order') {
+      if (Date.now() - (window.__aeroCourseOrderSelfAt || 0) < 6000) return;
+      if (isBusy()) { window.__aeroSyncPending = { scope, detail }; return; }
+      try { if (typeof fetchCoursesFromDB === 'function') fetchCoursesFromDB(true).catch(() => {}); } catch (e) {}
+      return;
+    }
+
     /* If the user is mid-flow, queue and bail */
     if (isBusy()) {
       window.__aeroSyncPending = { scope, detail };
@@ -1831,6 +1841,20 @@ function renderCoursesLoadingSkeleton(message) {
 function getCourses() { return liveCourses; }
 function findCourse(id) { return getCourses().find(c => c.id === id) || null; }
 
+/* ⭐ COURSE DISPLAY ORDER (2026-10-05) — one rule for the admin list and
+   the student catalog, matching GET /api/courses:
+     1. courses the admin has not placed yet (no sortOrder) come first,
+        featured before others, then A–Z — exactly the old catalog order,
+        so nothing moves until the admin arranges the courses;
+     2. then the admin's order (Admin → Courses → drag ⋮⋮ or ↑ ↓). */
+function courseDisplayCompare(a, b) {
+  const ao = Number.isFinite(a && a.sortOrder), bo = Number.isFinite(b && b.sortOrder);
+  if (ao !== bo) return ao ? 1 : -1;
+  if (ao && a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+  if (!!a.featured !== !!b.featured) return a.featured ? -1 : 1;
+  return String(a.name || '').localeCompare(String(b.name || ''));
+}
+
 /* Client-side course catalog cache.
    - Students: cached for 60s → instant navigation between pages.
    - Admins:   always fresh → no risk of stale admin dashboard.
@@ -1983,6 +2007,10 @@ async function fetchSingleCourse(courseId) {
         playlists: c.playlists || []
       };
       const idx = liveCourses.findIndex(x => x.id === normalized.id);
+      /* keep the list position if this server copy predates sortOrder */
+      if (idx >= 0 && normalized.sortOrder === undefined && liveCourses[idx].sortOrder !== undefined) {
+        normalized.sortOrder = liveCourses[idx].sortOrder;
+      }
       if (idx >= 0) liveCourses[idx] = normalized;
       else liveCourses.push(normalized);
       return normalized;
@@ -5469,6 +5497,8 @@ function clearAdminCourseFilters() {
 }
 
 async function renderAdminCourses() {  
+  /* never rebuild the list under a course that is being dragged */
+  if (_cordDrag) { _cordDrag.rerender = true; return; }
   const courses = getCourses();
 
   // ⭐ FIX: show loading skeleton while courses are still being fetched
@@ -5507,7 +5537,11 @@ async function renderAdminCourses() {
     return m ? m[0] : s.toLowerCase();
   }
 
-  const filtered = courses.filter(c => {
+  /* ⭐ Same order the students see; #positions count the whole list */
+  const ordered = courses.slice().sort(courseDisplayCompare);
+  const posOf = new Map(ordered.map((c, i) => [c.id, i + 1]));
+
+  const filtered = ordered.filter(c => {
     if (searchTerm) {
       const hit = (c.name || '').toLowerCase().includes(searchTerm) ||
                   (c.code && c.code.toLowerCase().includes(searchTerm)) ||
@@ -5536,8 +5570,10 @@ async function renderAdminCourses() {
     return;
   }
 
-  let html = `<div class="course-grid">`;
-  filtered.forEach(c => {
+  const narrowed = filtered.length !== ordered.length;
+  let html = renderCourseOrderHint(ordered.length, narrowed) +
+             `<div class="course-grid" id="adminCourseGrid" data-cord-grid="1">`;
+  filtered.forEach((c, vi) => {
     const matCount = (c.materials || []).length;
     const plCount = c.playlistCount != null ? c.playlistCount : (c.playlists || []).length;
     const statusBadge = c.status === 'draft'
@@ -5564,8 +5600,24 @@ async function renderAdminCourses() {
 
     const thumbHtml = c.thumbnail ? `<div class="course-thumb"><img src="${c.thumbnail}" alt="" loading="lazy" decoding="async"></div>` : '';
 
+    const pos = posOf.get(c.id);
+    const orderBar = `
+        <div class="cord-bar" onclick="event.stopPropagation()">
+          <button type="button" class="cord-grip" title="Drag to move this course (or focus and use the arrow keys)"
+                  aria-label="Move ${escapeHtml(c.name)} — position ${pos} of ${ordered.length}. Drag, or use the arrow keys."
+                  onpointerdown="cordDragStart(event, '${c.id}')" onkeydown="cordGripKey(event, '${c.id}')">
+            <i class="fas fa-grip-vertical"></i>
+          </button>
+          <span class="cord-pos" title="Position in the course list">#${pos}</span>
+          <span class="cord-label">Order</span>
+          <button type="button" class="cord-btn" onclick="cordMove('${c.id}', -1)" ${vi === 0 ? 'disabled' : ''}
+                  title="Move up" aria-label="Move ${escapeHtml(c.name)} up"><i class="fas fa-arrow-up"></i></button>
+          <button type="button" class="cord-btn" onclick="cordMove('${c.id}', 1)" ${vi === filtered.length - 1 ? 'disabled' : ''}
+                  title="Move down" aria-label="Move ${escapeHtml(c.name)} down"><i class="fas fa-arrow-down"></i></button>
+        </div>`;
+
     html += `
-      <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" style="${accentStyle(c.code || c.name)}">
+      <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" data-cord-id="${c.id}" style="${accentStyle(c.code || c.name)}">
         ${thumbHtml}
         <button class="delete-course-btn" onclick="event.stopPropagation();deleteCourse('${c.id}')" title="Delete" aria-label="Delete course"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${premiumLabel} ${statusBadge} ${featuredBadge}</div>
@@ -5577,6 +5629,7 @@ async function renderAdminCourses() {
           ${c.category ? `<span><i class="fas fa-tag"></i> ${escapeHtml(c.category)}</span>` : ''}
         </div>
         <div class="material-count"><i class="fas fa-layer-group"></i> ${matCount} materials${plCount > 0 ? ` · <i class="fas fa-list"></i> ${plCount} playlist${plCount === 1 ? '' : 's'}` : ''}</div>
+        ${orderBar}
         <div class="card-actions">
           <button class="btn btn-warning btn-sm" onclick="event.stopPropagation();openCourseEditor('${c.id}')"><i class="fas fa-edit"></i> Edit</button>
           ${c.status === 'draft'
@@ -5589,6 +5642,308 @@ async function renderAdminCourses() {
   });
   html += `</div>`;
   $('adminCourseList').innerHTML = html;
+  cordStateRestore();
+  cordRefocus();
+}
+
+/* ============================================================
+   ⭐ COURSE ORDER — Admin → Courses (2026-10-05)
+   ------------------------------------------------------------
+   Every course card has an "Order" strip:
+     ⋮⋮  drag handle (mouse, trackpad or touch) — drag the card to a
+         new place in the grid; the others make room as you move.
+         Keyboard: focus it and press ↑ ↓ (or ← →).
+     ↑ ↓ move one place up / down.
+   The new order shows at once (here and in the student catalog of
+   this browser), is saved to the database in the background
+   (PUT /api/admin/courses/order — rapid moves are combined into one
+   save, saves never overlap), and every open student page re-sorts
+   live through the 'courses:order' sync event.
+   With a search / filter active, the moves happen among the
+   visible courses; hidden courses keep their places.
+   ============================================================ */
+var _cordDrag = null;
+var _cordFocus = null;
+const _cordSave = { timer: 0, inflight: false, pending: null, failedAt: 0 };
+
+function renderCourseOrderHint(total, narrowed) {
+  if (total < 2) return '';
+  return `
+    <div class="cord-hint" id="cordHint">
+      <i class="fas fa-arrow-down-short-wide"></i>
+      <span>Drag <i class="fas fa-grip-vertical" aria-hidden="true"></i> or use <b>↑ ↓</b> to set the order students see the courses in.
+      ${narrowed ? '<em>Filter on — only the courses shown are moved; the rest keep their places.</em>' : ''}</span>
+      <span class="cord-state" id="cordState" aria-live="polite"></span>
+    </div>`;
+}
+
+/* The full display order (ids) — what the server stores */
+function cordFullOrder() {
+  return getCourses().slice().sort(courseDisplayCompare).map(c => String(c.id));
+}
+
+/* Put `visibleNew` (the shown courses in their new order) back into the
+   full list: the slots the shown courses occupied are refilled in the
+   new order, hidden courses do not move. */
+function cordMergeVisible(visibleNew) {
+  const full = cordFullOrder();
+  const vis = new Set(visibleNew);
+  let k = 0;
+  return full.map(id => (vis.has(id) ? visibleNew[k++] : id));
+}
+
+function cordVisibleIds() {
+  const grid = document.getElementById('adminCourseGrid');
+  return grid ? Array.from(grid.querySelectorAll(':scope > .course-card[data-cord-id]')).map(el => el.getAttribute('data-cord-id')) : [];
+}
+
+/* Apply locally (instant), repaint, and queue the save */
+function cordApply(fullIds) {
+  const before = cordFullOrder();
+  if (fullIds.join('|') === before.join('|')) return false;
+  const pos = new Map(fullIds.map((id, i) => [id, (i + 1) * 10]));
+  getCourses().forEach(c => { const p = pos.get(String(c.id)); if (p !== undefined) c.sortOrder = p; });
+  renderAdminCourses();
+  cordQueueSave(fullIds);
+  return true;
+}
+
+function cordMove(courseId, dir) {
+  if (_cordDrag) return;
+  const vis = cordVisibleIds();
+  const i = vis.indexOf(String(courseId));
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= vis.length) return;
+  [vis[i], vis[j]] = [vis[j], vis[i]];
+  /* keep focus on the button that was pressed, or on its neighbour at the ends */
+  const ae = document.activeElement;
+  if (ae && ae.closest && ae.closest('.cord-bar')) {
+    _cordFocus = { id: String(courseId), sel: ae.classList.contains('cord-grip') ? '.cord-grip' : null, dir, at: Date.now() };
+  }
+  if (cordApply(cordMergeVisible(vis))) cordFlash(courseId);
+}
+
+function cordGripKey(e, courseId) {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); return; }
+  const dir = (e.key === 'ArrowUp' || e.key === 'ArrowLeft') ? -1
+            : (e.key === 'ArrowDown' || e.key === 'ArrowRight') ? 1 : 0;
+  if (!dir) return;
+  e.preventDefault(); e.stopPropagation();
+  cordMove(courseId, dir);
+}
+
+/* After a repaint, put keyboard focus back on the moved course */
+function cordRefocus() {
+  const f = _cordFocus;
+  if (!f || Date.now() - f.at > 4000) { _cordFocus = null; return; }
+  const card = document.querySelector(`#adminCourseGrid .course-card[data-cord-id="${CSS.escape(f.id)}"]`);
+  if (!card) return;
+  let btn = null;
+  if (f.sel) btn = card.querySelector(f.sel);
+  else {
+    const [up, down] = card.querySelectorAll('.cord-btn');
+    btn = f.dir < 0 ? (up && !up.disabled ? up : down) : (down && !down.disabled ? down : up);
+  }
+  if (btn) {
+    try { btn.focus({ preventScroll: true }); } catch (e) { btn.focus(); }
+    const r = card.getBoundingClientRect();
+    if (r.top < 70 || r.bottom > window.innerHeight) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+}
+
+function cordFlash(courseId) {
+  requestAnimationFrame(() => {
+    const card = document.querySelector(`#adminCourseGrid .course-card[data-cord-id="${CSS.escape(String(courseId))}"]`);
+    if (!card) return;
+    card.classList.remove('cord-dropped'); void card.offsetWidth;
+    card.classList.add('cord-dropped');
+    setTimeout(() => card.classList.remove('cord-dropped'), 800);
+  });
+}
+
+/* ---------- Saving: debounced, one request at a time ---------- */
+function cordQueueSave(fullIds) {
+  _cordSave.pending = fullIds.slice();
+  cordState('saving');
+  clearTimeout(_cordSave.timer);
+  _cordSave.timer = setTimeout(cordFlushSave, 300);
+}
+
+async function cordFlushSave() {
+  if (_cordSave.inflight || !_cordSave.pending) return;
+  const ids = _cordSave.pending;
+  _cordSave.pending = null;
+  _cordSave.inflight = true;
+  /* our own change comes back as a live-sync event — ignore that echo */
+  window.__aeroCourseOrderSelfAt = Date.now();
+  let ok = false, msg = '', serverMsg = '';
+  try {
+    const res = await fetch(`${API_BASE}/admin/courses/order`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order: ids })
+    });
+    let data = null;
+    try { data = await res.json(); } catch (e) {}
+    ok = res.ok && data && data.success === true;
+    if (!ok) { serverMsg = (data && data.message) || ''; msg = 'HTTP ' + res.status; }
+  } catch (e) {
+    serverMsg = 'Could not save the course order — check your internet connection and try again.';
+  } finally {
+    window.__aeroCourseOrderSelfAt = Date.now();
+    _cordSave.inflight = false;
+  }
+  if (_cordSave.pending) { cordFlushSave(); return; }      // a newer order is waiting
+  if (ok) {
+    _cordSave.failedAt = 0;
+    cordState('saved');
+  } else {
+    _cordSave.failedAt = Date.now();
+    cordState('error');
+    showToast(serverMsg || ('Could not save the course order (' + msg + '). Please try again.'), 'error');
+    /* show the order the database really has */
+    fetchCoursesFromDB(true).catch(() => {});
+  }
+}
+
+function cordState(state) {
+  const el = document.getElementById('cordState');
+  if (!el) return;
+  clearTimeout(el._t);
+  if (state === 'saving') { el.className = 'cord-state run'; el.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+  else if (state === 'saved') {
+    el.className = 'cord-state ok'; el.innerHTML = '<i class="fas fa-circle-check"></i> Order saved';
+    el._t = setTimeout(() => { el.className = 'cord-state'; el.innerHTML = ''; }, 2500);
+  } else if (state === 'error') { el.className = 'cord-state err'; el.innerHTML = '<i class="fas fa-triangle-exclamation"></i> Not saved'; }
+  else { el.className = 'cord-state'; el.innerHTML = ''; }
+}
+/* a repaint (e.g. after a save) recreates the hint — keep its state */
+function cordStateRestore() {
+  if (_cordSave.inflight || _cordSave.pending) cordState('saving');
+  else if (_cordSave.failedAt && Date.now() - _cordSave.failedAt < 6000) cordState('error');
+}
+
+/* ---------- Drag & drop (pointer events: mouse, pen and touch) ---------- */
+function cordDragStart(e, courseId) {
+  if (_cordDrag) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const handle = e.currentTarget;
+  const card = handle && handle.closest('.course-card');
+  const grid = card && card.parentElement;
+  if (!card || !grid || grid.id !== 'adminCourseGrid') return;
+  const startOrder = cordVisibleIds();
+  if (startOrder.length < 2) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  const rect = card.getBoundingClientRect();
+  const ph = document.createElement('div');
+  ph.className = 'cord-ph';
+  ph.style.height = rect.height + 'px';
+  grid.insertBefore(ph, card);
+
+  card.classList.add('cord-dragging');
+  card.style.width = rect.width + 'px';
+  card.style.height = rect.height + 'px';
+  card.style.left = rect.left + 'px';
+  card.style.top = rect.top + 'px';
+  document.body.classList.add('cord-drag-on');
+  try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+
+  const cols = (getComputedStyle(grid).gridTemplateColumns || '').split(' ').filter(Boolean).length || 1;
+  _cordDrag = { courseId: String(courseId), card, grid, ph, handle, startOrder, cols,
+                offX: e.clientX - rect.left, offY: e.clientY - rect.top,
+                x: e.clientX, y: e.clientY, raf: 0, pointerId: e.pointerId, rerender: false };
+
+  const onMove = (ev) => {
+    if (!_cordDrag || ev.pointerId !== _cordDrag.pointerId) return;
+    ev.preventDefault();
+    _cordDrag.x = ev.clientX; _cordDrag.y = ev.clientY;
+    cordDragPlace();
+  };
+  const onUp = (ev) => {
+    if (!_cordDrag || (ev && ev.pointerId !== undefined && ev.pointerId !== _cordDrag.pointerId)) return;
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    window.removeEventListener('keydown', onEsc, true);
+    cordDragFinish(!!(ev && ev.cancelled));
+  };
+  const onEsc = (ev) => {
+    if (ev.key !== 'Escape' || !_cordDrag) return;
+    ev.preventDefault(); ev.stopPropagation();
+    onUp({ cancelled: true });
+  };
+  window.addEventListener('pointermove', onMove, { passive: false });
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+  window.addEventListener('keydown', onEsc, true);
+
+  /* auto-scroll near the top / bottom of the window */
+  const tick = () => {
+    if (!_cordDrag) return;
+    const edge = 90, y = _cordDrag.y, h = window.innerHeight;
+    let dy = 0;
+    if (y < edge) dy = -Math.ceil((edge - y) / 5);
+    else if (y > h - edge) dy = Math.ceil((y - (h - edge)) / 5);
+    if (dy) { window.scrollBy(0, dy); cordDragPlace(); }
+    _cordDrag.raf = requestAnimationFrame(tick);
+  };
+  _cordDrag.raf = requestAnimationFrame(tick);
+}
+
+function cordDragPlace() {
+  const d = _cordDrag;
+  if (!d) return;
+  d.card.style.left = (d.x - d.offX) + 'px';
+  d.card.style.top = (d.y - d.offY) + 'px';
+  const cards = Array.from(d.grid.querySelectorAll(':scope > .course-card[data-cord-id]')).filter(c => c !== d.card);
+  if (!cards.length) return;
+  let target = null;
+  for (const c of cards) {
+    const r = c.getBoundingClientRect();
+    if (d.x >= r.left && d.x <= r.right && d.y >= r.top && d.y <= r.bottom) { target = c; break; }
+  }
+  if (target) {
+    const r = target.getBoundingClientRect();
+    const before = d.cols > 1 ? d.x < r.left + r.width / 2 : d.y < r.top + r.height / 2;
+    const ref = before ? target : target.nextSibling;
+    if (ref !== d.ph && d.ph.nextSibling !== ref) d.grid.insertBefore(d.ph, ref);
+    return;
+  }
+  /* above the first card / below the last one */
+  const first = cards[0].getBoundingClientRect();
+  const last = cards[cards.length - 1].getBoundingClientRect();
+  if (d.y < first.top) { if (d.grid.firstElementChild !== d.ph) d.grid.insertBefore(d.ph, d.grid.firstElementChild); }
+  else if (d.y > last.bottom) { if (d.grid.lastElementChild !== d.ph) d.grid.appendChild(d.ph); }
+}
+
+function cordDragFinish(cancelled) {
+  const d = _cordDrag;
+  if (!d) return;
+  cancelAnimationFrame(d.raf);
+  try { d.handle.releasePointerCapture(d.pointerId); } catch (e) {}
+  if (cancelled) {
+    const next = d.startOrder[d.startOrder.indexOf(d.courseId) + 1];
+    const ref = next ? d.grid.querySelector(`:scope > .course-card[data-cord-id="${CSS.escape(next)}"]`) : null;
+    d.grid.insertBefore(d.ph, ref);
+  }
+  d.grid.insertBefore(d.card, d.ph);
+  d.ph.remove();
+  d.card.classList.remove('cord-dragging');
+  d.card.style.width = d.card.style.height = d.card.style.left = d.card.style.top = '';
+  document.body.classList.remove('cord-drag-on');
+  _cordDrag = null;
+
+  const vis = cordVisibleIds();
+  const moved = vis.join('|') !== d.startOrder.join('|');
+  if (moved) {
+    _cordFocus = { id: d.courseId, sel: '.cord-grip', at: Date.now() };
+    cordApply(cordMergeVisible(vis));
+    cordFlash(d.courseId);
+  } else if (d.rerender) {
+    renderAdminCourses();
+  }
 }
 
 function renderAdminProfessors() {
@@ -9286,11 +9641,8 @@ function renderStudentCourses() {
     return true;
   });
 
-  filtered.sort((a, b) => {
-    if (a.featured && !b.featured) return -1;
-    if (!a.featured && b.featured) return 1;
-    return (a.name || '').localeCompare(b.name || '');
-  });
+  /* ⭐ The admin's course order (featured, then A–Z until it is set) */
+  filtered.sort(courseDisplayCompare);
 
   if (filtered.length === 0) {
     $('studentCourseList').innerHTML = `

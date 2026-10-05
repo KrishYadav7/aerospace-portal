@@ -2358,6 +2358,7 @@ function classifyMutation(method, path) {
   if (/^\/subscribe\//.test(path)) return null;
 
   // Admin content mutations → broadcast
+  if (method === 'PUT' && /^\/admin\/courses\/order\/?$/.test(path)) return 'courses:order';
   if (method === 'POST' && /^\/courses\/?$/.test(path)) return 'courses:created';
   if (method === 'PUT' && /^\/courses\/[^/]+$/.test(path)) return 'courses:updated';
   if (method === 'DELETE' && /^\/courses\/[^/]+$/.test(path)) return 'courses:deleted';
@@ -6009,16 +6010,18 @@ app.get('/api/courses', async (req, res) => {
 
     const [courses, total] = await Promise.all([
       Course.aggregate([
-        { $sort: { featured: -1, createdAt: -1 } },
-        { $skip: skip },
-        { $limit: limit },
+        /* ⭐ 2026-10-05: the admin's course order. The slim $project runs
+           FIRST so the sort only ever handles small documents (never the
+           materials' base64 data), then the admin order is applied —
+           courses without a position first (featured, then name), then
+           by position. The app sorts the same way on screen. */
         {
           $project: {
             name: 1, code: 1, semester: 1, instructor: 1, description: 1,
             category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
             learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
             isPremium: 1, price: 1, announcements: 1, playlists: 1,
-            certificate: 1,
+            certificate: 1, sortOrder: 1,
             createdAt: 1, updatedAt: 1,
             doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
             materials: {
@@ -6038,7 +6041,10 @@ app.get('/api/courses', async (req, res) => {
               }
             }
           }
-        }
+        },
+        { $sort: { sortOrder: 1, featured: -1, name: 1, _id: 1 } },
+        { $skip: skip },
+        { $limit: limit }
       ]),
       Course.countDocuments()
     ]);
@@ -6461,7 +6467,7 @@ app.get('/api/courses/:id', async (req, res) => {
           name: 1, code: 1, semester: 1, instructor: 1, description: 1,
           category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
           learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
-          isPremium: 1, price: 1, announcements: 1, playlists: 1,
+          isPremium: 1, price: 1, announcements: 1, playlists: 1, sortOrder: 1,
           /* ⭐ Doubts are public to every student — strip askers' emails. */
           doubts: {
             $map: {
@@ -6548,6 +6554,46 @@ app.delete('/api/courses/:id', requireAdminAuth, async (req, res) => {
     cacheClear('courses:');
     res.json({ success: true, message: 'Course deleted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+});
+
+/* ============================================================
+   ⭐ COURSE ORDER (2026-10-05)
+   ------------------------------------------------------------
+   PUT /api/admin/courses/order   { order: [courseId, …] }
+   The admin's full list, top to bottom. Each course gets
+   sortOrder 10, 20, 30, … (only that field changes — updatedAt
+   is left alone). Courses missing from the list keep their
+   current value. Students' open pages re-sort live through the
+   'courses:order' sync event (classifyMutation).
+   ============================================================ */
+app.put('/api/admin/courses/order', requireAdminAuth, async (req, res) => {
+  try {
+    const raw = req.body && req.body.order;
+    if (!Array.isArray(raw) || !raw.length || raw.length > 5000) {
+      return res.status(400).json({ success: false, message: 'Send the course order as a list of course ids.' });
+    }
+    const ids = raw.map(x => String(x || '').trim());
+    if (ids.some(id => !/^[a-f0-9]{24}$/i.test(id)) || new Set(ids).size !== ids.length) {
+      return res.status(400).json({ success: false, message: 'The course list contains an invalid or repeated id.' });
+    }
+    const ops = ids.map((id, i) => ({
+      updateOne: {
+        filter: { _id: new mongoose.Types.ObjectId(id) },
+        update: { $set: { sortOrder: (i + 1) * 10 } },
+        timestamps: false
+      }
+    }));
+    const r = await Course.bulkWrite(ops, { ordered: false, timestamps: false });
+    cacheClear('courses:');
+    res.json({
+      success: true,
+      matched: (r && (r.matchedCount ?? r.nMatched)) || 0,
+      order: ids.map((id, i) => ({ id, sortOrder: (i + 1) * 10 }))
+    });
+  } catch (e) {
+    console.error('[admin/courses/order]', e);
+    res.status(500).json({ success: false, message: 'Could not save the course order. Please try again.' });
+  }
 });
 
 /* ============================================================
