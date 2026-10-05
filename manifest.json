@@ -1,4 +1,5 @@
 {
+  "id": "/app",
   "name": "AeroGyan Education – Course Portal",
   "short_name": "AeroGyan",
   "description": "Aerospace Engineering course materials, lectures, and quizzes.",
@@ -57,5 +58,6 @@
       "type": "image/png",
       "purpose": "any"
     }
-  ]
+  ],
+  "prefer_related_applications": false
 }

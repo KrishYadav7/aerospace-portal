@@ -13011,6 +13011,170 @@ app.get('/popup-media/:file', async (req, res) => {
   if (cloud && /^https:\/\//.test(cloud)) return res.redirect(302, cloud);
   res.status(404).end();
 });
+
+/* ============================================================
+   ⭐ NATIVE ANDROID APP — hosting the APK (2026-10-05)
+   ------------------------------------------------------------
+   The Android app (android-app/, built by GitHub Actions) is
+   uploaded by the admin and downloaded by students from the
+   "Get App" button. The installed app also asks this server
+   whether a newer version exists.
+
+   Public:  GET  /api/app-release          → { android: { available, version, versionCode, size, url } }
+            GET  /download/android         → the latest APK
+   Admin:   GET  /api/admin/app-release
+            POST /api/admin/app-release/android   multipart: file (.apk), version?, versionCode?, notes?
+            DELETE /api/admin/app-release/android
+   ============================================================ */
+const APP_RELEASE_DIR = path.join(UPLOAD_DIR, 'app');
+const APP_RELEASE_JSON = path.join(APP_RELEASE_DIR, 'release.json');
+try { fs.mkdirSync(APP_RELEASE_DIR, { recursive: true }); } catch (_) {}
+
+let _appRelease = null;                 // cached release.json
+function readAppRelease() {
+  if (_appRelease) return _appRelease;
+  try {
+    const r = JSON.parse(fs.readFileSync(APP_RELEASE_JSON, 'utf8'));
+    _appRelease = r && r.android ? r : { android: null };
+  } catch (_) { _appRelease = { android: null }; }
+  return _appRelease;
+}
+async function writeAppRelease(rel) {
+  const tmp = APP_RELEASE_JSON + '.tmp' + crypto.randomBytes(3).toString('hex');
+  await fs.promises.writeFile(tmp, JSON.stringify(rel, null, 1));
+  await fs.promises.rename(tmp, APP_RELEASE_JSON);
+  _appRelease = rel;
+}
+function _androidReleaseLive() {
+  const a = readAppRelease().android;
+  if (!a || !a.file) return null;
+  const fp = path.join(APP_RELEASE_DIR, path.basename(a.file));
+  return fs.existsSync(fp) ? Object.assign({}, a, { fp }) : null;
+}
+function _publicAndroid(a) {
+  return a ? { available: true, version: a.version, versionCode: a.versionCode, size: a.size,
+               url: '/download/android', updatedAt: a.uploadedAt, notes: a.notes || '' }
+           : { available: false };
+}
+
+app.get('/api/app-release', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=60');
+  res.json({ success: true, android: _publicAndroid(_androidReleaseLive()) });
+});
+
+let _apkCountTimer = null;
+app.get('/download/android', (req, res) => {
+  const a = _androidReleaseLive();
+  if (!a) return res.redirect(302, '/#apps');          // no APK yet → the install section
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.setHeader('Content-Disposition', `attachment; filename="AeroGyan-${String(a.version).replace(/[^0-9A-Za-z._-]/g, '')}.apk"`);
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (req.method === 'GET' && !req.headers.range) {
+    const rel = readAppRelease();
+    rel.android.downloads = (rel.android.downloads || 0) + 1;
+    clearTimeout(_apkCountTimer);
+    _apkCountTimer = setTimeout(() => { writeAppRelease(rel).catch(() => {}); }, 5000);
+  }
+  res.sendFile(a.fp, { headers: { 'Content-Type': 'application/vnd.android.package-archive' } });
+});
+
+app.get('/api/admin/app-release', requireAdminAuth, (req, res) => {
+  const a = _androidReleaseLive();
+  res.json({ success: true, android: a ? Object.assign(_publicAndroid(a), {
+    file: path.basename(a.file), sha256: a.sha256, uploadedBy: a.uploadedBy, downloads: a.downloads || 0,
+    previous: readAppRelease().previous || null
+  }) : { available: false } });
+});
+
+const apkUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, require('os').tmpdir()),
+    filename: (req, file, cb) => cb(null, 'apk-upload-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'))
+  }),
+  limits: { fileSize: 150 * 1024 * 1024, files: 1 }
+});
+
+/* Is this really an Android app package? (zip with AndroidManifest.xml + classes.dex) */
+async function _looksLikeApk(fp) {
+  const fh = await fs.promises.open(fp, 'r');
+  try {
+    const st = await fh.stat();
+    const head = Buffer.alloc(4);
+    await fh.read(head, 0, 4, 0);
+    if (head.toString('latin1') !== 'PK\u0003\u0004') return false;
+    /* the zip's central directory (file list) sits at the end */
+    const tailLen = Math.min(st.size, 2 * 1024 * 1024);
+    const tail = Buffer.alloc(tailLen);
+    await fh.read(tail, 0, tailLen, st.size - tailLen);
+    const s = tail.toString('latin1');
+    return s.includes('AndroidManifest.xml') && /classes\d*\.dex/.test(s);
+  } finally { await fh.close(); }
+}
+
+app.post('/api/admin/app-release/android', requireAdminAuth, (req, res) => {
+  apkUpload.single('file')(req, res, async (err) => {
+    const tmp = req.file && req.file.path;
+    const cleanup = () => { if (tmp) fs.promises.rm(tmp, { force: true }).catch(() => {}); };
+    try {
+      if (err) {
+        return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400)
+          .json({ success: false, message: err.code === 'LIMIT_FILE_SIZE' ? 'The APK is larger than 150 MB.' : 'Upload failed.' });
+      }
+      if (!req.file) return res.status(400).json({ success: false, message: 'Choose the .apk file first.' });
+      if (!(await _looksLikeApk(tmp))) {
+        cleanup();
+        return res.status(415).json({ success: false, message: 'That file is not an Android app (.apk). Upload the AeroGyan-x.y.z.apk built by GitHub.' });
+      }
+      /* version: from the form, else from the file name "AeroGyan-1.0.12.apk" */
+      const fromName = /(\d+)\.(\d+)\.(\d+)/.exec(String(req.file.originalname || ''));
+      let version = String((req.body && req.body.version) || (fromName ? fromName[0] : '')).trim().slice(0, 20);
+      if (!/^\d+(\.\d+){0,3}$/.test(version)) version = '';
+      let versionCode = parseInt((req.body && req.body.versionCode) || (fromName ? fromName[3] : ''), 10);
+      if (!version || !Number.isFinite(versionCode) || versionCode < 1) {
+        cleanup();
+        return res.status(400).json({ success: false, message: 'Enter the version (e.g. 1.0.12) — it is in the APK file name from GitHub.' });
+      }
+      const prev = readAppRelease().android;
+      if (prev && prev.versionCode >= versionCode && !(req.body && req.body.force === '1')) {
+        cleanup();
+        return res.status(409).json({ success: false, code: 'OLDER_VERSION',
+          message: `Version ${version} is not newer than the current ${prev.version}. Phones only install newer versions as updates.` });
+      }
+      const buf = await fs.promises.readFile(tmp);
+      const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+      const name = `AeroGyan-${version}-${crypto.randomBytes(4).toString('hex')}.apk`;
+      await fs.promises.copyFile(tmp, path.join(APP_RELEASE_DIR, name));
+      cleanup();
+      const android = {
+        version, versionCode, file: name, size: buf.length, sha256,
+        notes: String((req.body && req.body.notes) || '').slice(0, 500),
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: (req.authUser && req.authUser.username) || 'admin', downloads: 0
+      };
+      /* keep the previous APK for one release (rollback), delete older ones */
+      const keep = new Set([name, prev && prev.file].filter(Boolean));
+      for (const f of await fs.promises.readdir(APP_RELEASE_DIR)) {
+        if (f.endsWith('.apk') && !keep.has(f)) fs.promises.rm(path.join(APP_RELEASE_DIR, f), { force: true }).catch(() => {});
+      }
+      await writeAppRelease({ android, previous: prev ? { version: prev.version, versionCode: prev.versionCode, file: prev.file, uploadedAt: prev.uploadedAt } : null });
+      console.log(`[app-release] 📱 Android ${version} (${versionCode}) uploaded · ${(buf.length / 1048576).toFixed(1)} MB`);
+      res.json({ success: true, android: _publicAndroid(android) });
+    } catch (e) {
+      cleanup();
+      console.error('[app-release]', e);
+      res.status(500).json({ success: false, message: 'Could not save the APK.' });
+    }
+  });
+});
+
+app.delete('/api/admin/app-release/android', requireAdminAuth, async (req, res) => {
+  try {
+    const rel = readAppRelease();
+    await writeAppRelease({ android: null, previous: rel.android ? { version: rel.android.version, versionCode: rel.android.versionCode, file: rel.android.file, uploadedAt: rel.android.uploadedAt } : null });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+});
 /* ============================================================
    ════════════════════════════════════════════════════════════
    /* ============================================================

@@ -5082,7 +5082,8 @@ function updateAdminTabUI() {
     backup:        { icon: 'fa-database',            text: 'Backup & Restore' },
     branding:      { icon: 'fa-palette',             text: 'Branding — Favicon & App Icons' },
     certificates:  { icon: 'fa-certificate',         text: 'Certificate Management' },
-    popup:         { icon: 'fa-bullhorn',            text: 'Login Pop-up — Greetings & Announcements' }
+    popup:         { icon: 'fa-bullhorn',            text: 'Login Pop-up — Greetings & Announcements' },
+    mobileapp:     { icon: 'fa-mobile-screen',       text: 'Mobile App — Android' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -5121,6 +5122,9 @@ function updateAdminTabUI() {
     certificates: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
       <button class="btn btn-primary" onclick="renderAdminCertificates()"><i class="fas fa-rotate"></i> <span class="btn-text">Reload</span></button>`,
+    mobileapp: `
+      <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminMobileApp()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`,
     popup: `
       <button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
       <button class="btn btn-primary" onclick="lpOpenTemplates()"><i class="fas fa-plus"></i> <span class="btn-text">New pop-up</span></button>`,
@@ -5148,6 +5152,7 @@ function renderAdminDashboard() {
   else if (adminTab === 'branding')      renderAdminBranding();
   else if (adminTab === 'certificates')  renderAdminCertificates();
   else if (adminTab === 'popup')         renderAdminLoginPopup();
+  else if (adminTab === 'mobileapp')     renderAdminMobileApp();
 }
 
 /* ============================================================
@@ -22119,4 +22124,132 @@ function _lpWireEditor() {
     _lpApplyDesign(); markDirty();
   }));
   ['lpName', 'lpFreq', 'lpStart', 'lpEnd'].forEach(id => document.getElementById(id).addEventListener('change', markDirty));
+}
+
+/* ============================================================
+   ⭐ ADMIN — MOBILE APP (Android APK) (2026-10-05)
+   ------------------------------------------------------------
+   Upload the APK that GitHub Actions builds (android-app/).
+   Students then get it from "Get App" on Android, and the
+   installed app offers the update automatically.
+   ============================================================ */
+async function renderAdminMobileApp() {
+  const el = document.getElementById('adminMobileAppContent');
+  if (!el) return;
+  el.innerHTML = '<div class="empty-state" style="padding:40px"><i class="fas fa-spinner fa-spin"></i><p>Loading…</p></div>';
+  let a = { available: false };
+  try {
+    const res = await fetchJSON(`${API_BASE}/admin/app-release?_t=${Date.now()}`);
+    if (res && res.success) a = res.android || a;
+  } catch (e) {
+    el.innerHTML = `<div class="empty-state" style="padding:40px"><p>${escapeHtml(e.message)}</p></div>`;
+    return;
+  }
+  const mb = (n) => (Number(n || 0) / 1048576).toFixed(1) + ' MB';
+  const when = (d) => d ? new Date(d).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+  const link = location.origin + '/download/android';
+  el.innerHTML = `
+    <div class="ma-grid">
+      <div class="section-card ma-current">
+        <h2><i class="fab fa-android"></i> Android app</h2>
+        ${a.available ? `
+          <div class="ma-status ma-live"><span class="lp-dot lp-dot-live"></span> Live — students get it from <b>Get App</b> on Android</div>
+          <div class="ma-facts">
+            <div><span>Version</span><strong>${escapeHtml(a.version)}</strong></div>
+            <div><span>Size</span><strong>${mb(a.size)}</strong></div>
+            <div><span>Uploaded</span><strong>${escapeHtml(when(a.updatedAt))}</strong></div>
+            <div><span>Downloads</span><strong>${Number(a.downloads || 0).toLocaleString('en-IN')}</strong></div>
+          </div>
+          <div class="ma-link"><code>${escapeHtml(link)}</code>
+            <button class="btn btn-outline btn-sm" type="button" onclick="copyToClipboard(${jsStr(link)}).then(ok=>showToast(ok?'Link copied.':'Copy failed.', ok?'success':'error'))"><i class="fas fa-copy"></i> Copy link</button>
+          </div>
+          ${a.previous ? `<p class="ma-muted">Previous version kept for rollback: ${escapeHtml(a.previous.version)}</p>` : ''}
+          <button class="btn btn-outline btn-sm ma-remove" type="button" onclick="maRemoveRelease()"><i class="fas fa-eye-slash"></i> Stop offering the APK</button>
+        ` : `
+          <div class="ma-status"><span class="lp-dot"></span> No APK uploaded yet — Android visitors still get the browser install.</div>
+        `}
+      </div>
+
+      <div class="section-card ma-upload">
+        <h3><i class="fas fa-cloud-arrow-up"></i> Upload a new version</h3>
+        <form id="maForm" onsubmit="maUpload(event)">
+          <label class="ma-drop" id="maDrop">
+            <input type="file" id="maFile" accept=".apk,application/vnd.android.package-archive">
+            <i class="fas fa-file-arrow-up"></i>
+            <span id="maFileLabel">Choose <b>AeroGyan-1.0.N.apk</b> (from GitHub → Actions)</span>
+          </label>
+          <div class="lp-field-row">
+            <label class="lp-field"><span>Version</span><input type="text" id="maVersion" placeholder="1.0.12" pattern="\\d+(\\.\\d+){0,3}" required></label>
+            <label class="lp-field"><span>Build number</span><input type="number" id="maCode" min="1" placeholder="12" required></label>
+          </div>
+          <label class="lp-field"><span>What's new <small>(optional)</small></span><input type="text" id="maNotes" maxlength="500" placeholder="e.g. Faster PDF viewer"></label>
+          <div class="ma-progress" id="maProgress" hidden><i></i></div>
+          <button class="btn btn-primary" type="submit" id="maSubmit"><i class="fas fa-upload"></i> Upload &amp; publish</button>
+        </form>
+      </div>
+
+      <div class="section-card ma-help">
+        <h3><i class="fas fa-circle-info"></i> How to make a new version</h3>
+        <ol>
+          <li>Push your code to GitHub (or open <b>GitHub → Actions → "Android app (APK)" → Run workflow</b>).</li>
+          <li>After about 5 minutes, open the finished run and download <b>AeroGyan-1.0.N.apk</b> from <b>Artifacts</b> (or <b>Releases</b>).</li>
+          <li>Upload it here. Version and build number fill in by themselves from the file name.</li>
+        </ol>
+        <p class="ma-muted">The app opens your website full-screen with its own icon — no browser bar or badge — and Android blocks screenshots and screen recording inside it. Installed apps offer the new version automatically within a few hours.</p>
+      </div>
+    </div>`;
+
+  const file = document.getElementById('maFile');
+  file.addEventListener('change', () => {
+    const f = file.files && file.files[0];
+    document.getElementById('maFileLabel').innerHTML = f ? `<b>${escapeHtml(f.name)}</b> · ${mb(f.size)}` : 'Choose the .apk file';
+    const m = f && /(\d+)\.(\d+)\.(\d+)/.exec(f.name);
+    if (m) { document.getElementById('maVersion').value = m[0]; document.getElementById('maCode').value = m[3]; }
+  });
+}
+
+function maUpload(e, force) {
+  if (e) e.preventDefault();
+  const f = document.getElementById('maFile').files[0];
+  if (!f) return showToast('Choose the .apk file first.', 'error');
+  if (!/\.apk$/i.test(f.name)) return showToast('Please choose an .apk file.', 'error');
+  const fd = new FormData();
+  fd.append('file', f, f.name);
+  fd.append('version', document.getElementById('maVersion').value.trim());
+  fd.append('versionCode', document.getElementById('maCode').value.trim());
+  fd.append('notes', document.getElementById('maNotes').value.trim());
+  if (force) fd.append('force', '1');
+  const btn = document.getElementById('maSubmit');
+  const bar = document.getElementById('maProgress');
+  btn.disabled = true; bar.hidden = false; bar.firstElementChild.style.width = '0%';
+
+  /* XHR so the admin sees upload progress */
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `${API_BASE}/admin/app-release/android`);
+  try { const t = sessionStorage.getItem('aero_token'); if (t) xhr.setRequestHeader('Authorization', 'Bearer ' + t); } catch (_) {}
+  xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) bar.firstElementChild.style.width = Math.round(ev.loaded / ev.total * 100) + '%'; };
+  xhr.onload = () => {
+    btn.disabled = false; bar.hidden = true;
+    let data = null;
+    try { data = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status === 409 && data && data.code === 'OLDER_VERSION') {
+      if (confirm(data.message + '\n\nUpload it anyway (e.g. to roll back)? Phones that already have a newer version will keep it.')) return maUpload(null, true);
+      return;
+    }
+    if (!data || !data.success) return showToast((data && data.message) || `Upload failed (HTTP ${xhr.status}).`, 'error');
+    showToast(`📱 Android ${data.android.version} is live — students can download it now.`, 'success');
+    renderAdminMobileApp();
+  };
+  xhr.onerror = () => { btn.disabled = false; bar.hidden = true; showToast('Network error during upload.', 'error'); };
+  xhr.send(fd);
+}
+
+async function maRemoveRelease() {
+  if (!confirm('Stop offering the Android app? The Get App button will go back to the browser install. (Installed apps keep working.)')) return;
+  try {
+    const res = await fetchJSON(`${API_BASE}/admin/app-release/android`, { method: 'DELETE' });
+    if (!res.success) throw new Error(res.message || 'Failed.');
+    showToast('The APK is no longer offered.', 'info');
+    renderAdminMobileApp();
+  } catch (e) { showToast(e.message, 'error'); }
 }

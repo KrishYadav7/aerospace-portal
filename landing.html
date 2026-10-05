@@ -2244,6 +2244,7 @@
 @media (max-width: 860px) and (prefers-reduced-motion: reduce) {
   #landingNav #landingLinks, .nav-toggle-bars > span { transition: none !important; }
 }
+html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a[href="#apps"] { display: none !important; }
 </style>
 </head>
 <body>
@@ -3860,6 +3861,34 @@
   /* ---------- 2. State ---------- */
   let deferredPrompt = null;   // captured beforeinstallprompt event
   let installedAlready = false;
+  let apkInfo = null;          // { version, size } when the real Android app is published
+
+  /* Inside the AeroGyan Android app itself → no install buttons at all */
+  const IN_NATIVE_APP = /AeroGyanApp\//.test(navigator.userAgent || '');
+  if (IN_NATIVE_APP) document.documentElement.classList.add('aero-in-app');
+
+  /* ---------- 2b. Real Android app (APK) published by the admin? ---------- */
+  function fmtMB(n) { return (Number(n || 0) / 1048576).toFixed(1) + ' MB'; }
+  fetch('/api/app-release', { cache: 'no-cache' })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      const a = d && d.android;
+      if (!a || !a.available) return;
+      apkInfo = a;
+      APP_DOWNLOADS.android.apkUrl = a.url || '/download/android';
+      window.__aeroApk = a;
+      const card = document.querySelector('.lp-app-card[data-platform="android"]');
+      if (card) {
+        const desc = card.querySelector('.lp-app-desc');
+        const lbl  = card.querySelector('.lp-app-btn-label');
+        const hint = card.querySelector('.lp-app-hint');
+        if (desc) desc.textContent = 'The real AeroGyan app — its own icon, full-screen, no browser bar or badge.';
+        if (lbl)  lbl.textContent  = 'Download Android app';
+        if (hint) { hint.textContent = 'Version ' + a.version + ' · ' + fmtMB(a.size); hint.classList.remove('is-error'); }
+      }
+      window.dispatchEvent(new Event('aerogyan:apk-ready'));
+    })
+    .catch(() => {});
 
   const IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches ||
                         window.navigator.standalone === true;
@@ -3957,6 +3986,31 @@
     const cfg = APP_DOWNLOADS[platform] || {};
     const directUrl = cfg.apkUrl || cfg.exeUrl || cfg.dmgUrl;
 
+    if (directUrl && platform === 'android') {
+      if (detectPlatform() !== 'android') {
+        showInstallGuide(card, hint, 'Get the Android app', [
+          'Open <strong>' + location.host + '</strong> on your <strong>Android phone</strong> and tap <strong>Get App</strong>.',
+          'Or download it here and send it to your phone: <a href="' + directUrl + '" style="font-weight:700;">AeroGyan.apk</a>' + (apkInfo ? ' (' + fmtMB(apkInfo.size) + ')' : '') + '.'
+        ]);
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = directUrl;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      if (hint) { hint.textContent = 'Downloading… then open the file to install.'; hint.classList.remove('is-error'); hint.classList.add('is-ok'); }
+      showInstallGuide(card, hint, 'Install the AeroGyan app', [
+        'Your download has started' + (apkInfo ? ' — <strong>AeroGyan ' + apkInfo.version + '</strong> (' + fmtMB(apkInfo.size) + ')' : '') + '.',
+        'Open it from the <strong>download notification</strong> or your <strong>Downloads</strong> folder.',
+        'If Android asks, tap <strong>Settings</strong> and turn on <strong>“Allow from this source”</strong> for your browser, then go back. <em>(Only needed the first time.)</em>',
+        'Tap <strong>Install</strong>, then <strong>Open</strong>. AeroGyan is now a normal app in your app drawer — no browser, no badge.',
+        'Had added the website to your home screen before? You can remove that old shortcut.'
+      ]);
+      return;
+    }
+
     if (directUrl) {
       if (card) card.classList.add('lp-app-busy');
       if (lbl) lbl.textContent = 'Starting download…';
@@ -4041,10 +4095,10 @@
       return {
         title: 'Install on Android',
         steps: [
-          'Open <strong>aerogyan.app</strong> in <strong>Google Chrome</strong> on your Android phone.',
+          'Open <strong>' + location.host + '</strong> in <strong>Google Chrome</strong> on your Android phone.',
           'Tap the <strong>⋮ menu</strong> (top right).',
-          'Tap <strong>“Install app”</strong> or <strong>“Add to Home screen”</strong>.',
-          'Confirm — the app icon will appear on your home screen.'
+          'Tap <strong>“Install app”</strong> (not “Add to Home screen”, which only makes a browser shortcut).',
+          'Confirm — AeroGyan appears in your app drawer.'
         ]
       };
     }
@@ -4053,7 +4107,7 @@
       return {
         title: 'Install on iPhone / iPad',
         steps: [
-          'Open <strong>aerogyan.app</strong> in <strong>Safari</strong> on your iPhone or iPad. <em>(Chrome, Firefox, and Edge cannot install PWAs on iOS — Apple requires Safari.)</em>',
+          'Open <strong>' + location.host + '</strong> in <strong>Safari</strong> on your iPhone or iPad. <em>(Chrome, Firefox, and Edge cannot install PWAs on iOS — Apple requires Safari.)</em>',
           'Tap the <strong>Share button</strong> — the square with an arrow pointing up ⬆️, at the bottom of the screen.',
           'Scroll down in the share sheet and tap <strong>“Add to Home Screen”</strong>.',
           'Tap <strong>“Add”</strong> in the top-right corner — the AeroGyan icon will appear on your home screen.'
@@ -4064,7 +4118,7 @@
       return {
         title: 'Install on Windows',
         steps: [
-          'Open <strong>aerogyan.app</strong> in <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong>.',
+          'Open <strong>' + location.host + '</strong> in <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong>.',
           'Look for the <strong>install icon</strong> (⊕ or monitor symbol) in the address bar.',
           'Click it, then click <strong>“Install”</strong>.',
           'AeroGyan will pin to your taskbar and Start menu.'
@@ -4075,7 +4129,7 @@
       return {
         title: 'Install on macOS',
         steps: [
-          'Open <strong>aerogyan.app</strong> in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.',
+          'Open <strong>' + location.host + '</strong> in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.',
           'Look for the <strong>install icon</strong> in the address bar (or <em>File → Install AeroGyan</em>).',
           'Click <strong>“Install”</strong>.',
           'The app appears in Launchpad and the Dock.'
@@ -4281,6 +4335,12 @@
       if (typeof window.showToast === 'function') {
         window.showToast('App is already installed on this device. 🎉', 'success');
       }
+      return;
+    }
+
+    // 0) Android phone and the real app is published → download the APK
+    if (window.__aeroApk && /android/i.test(navigator.userAgent || '') && typeof window.installApp === 'function') {
+      window.installApp('android');
       return;
     }
 

@@ -22,3 +22,13 @@ edge/coverage.out
 server.js.*
 !server.js
 .DS_Store
+
+# Android app — build output and the PRIVATE signing key (never commit)
+android-signing/
+*.jks
+*.keystore
+android-app/.gradle/
+android-app/build/
+android-app/app/build/
+android-app/local.properties
+android-app/.idea/

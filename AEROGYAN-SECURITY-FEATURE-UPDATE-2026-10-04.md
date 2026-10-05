@@ -222,3 +222,36 @@ Streaming needs no extra nginx setting — the response sends `X-Accel-Buffering
 **What students see**: a centred card over a dimmed page with a ✕ button and a thin countdown bar. It closes on its own after the chosen time, or with ✕, Esc or a tap outside. Students already logged in never see it. If the admin edits the live pop-up or switches it on again, students see the new version once more.
 
 **Safety**: the pop-up's HTML is cleaned twice — on save (server) and before display (browser) — so no script, frames or event handlers can ever run on the login page. Admin routes require the admin login.
+
+---
+
+## 12. Real Android app instead of a browser shortcut (2026-10-05)
+
+**Why the browser badge appeared:** "Get App" could only ask the browser to install the website. Some
+browsers/phones (and "Add to Home screen") create a *shortcut*, which Android marks with the browser's
+logo. A website cannot change that — only a real app can.
+
+**What is new**
+- `android-app/` — a real Android app (`tech.aerogyan.app`): own icon and name, full-screen, no browser
+  bar, no badge; opens `https://aerogyan.tech/app`. Android blocks **screenshots and screen recording**
+  inside it. Uploads (incl. camera), Razorpay/UPI payments, YouTube/WhatsApp links, back button, offline
+  screen and automatic update offers all work. Details: `android-app/README.md`.
+- `android-app/ci/android-apk.yml` — the GitHub build recipe. Move it once to `.github/workflows/android-apk.yml`; then GitHub builds the signed APK for you (Actions → "Android app (APK)").
+- **Admin → Mobile App** — upload the APK; shows version, size, downloads; keeps the previous version.
+- `GET /download/android` serves the latest APK; `GET /api/app-release` tells the landing page and the
+  installed app which version is current.
+- Landing page: on Android, **Get App** now downloads the real app and shows the 3-step install guide.
+  Until an APK is uploaded, it falls back to the browser install as before. Inside the app, all install
+  buttons are hidden. The guide no longer suggests "Add to Home screen" (that creates the badged shortcut).
+- `manifest.json` now has a fixed `id` (same as before, so existing installs are unaffected).
+
+**One-time setup**
+0. Move `android-app/ci/android-apk.yml` to `.github/workflows/android-apk.yml` (create the folders).
+1. Back up `android-signing/` (on your computer only, git-ignored) and add its 4 values as GitHub
+   repository secrets — see `android-signing/GITHUB-SECRETS-README.txt`.
+2. Push → GitHub builds `AeroGyan-1.0.N.apk` (~5 min) → download it from the run's Artifacts/Releases.
+3. Website → Admin → Mobile App → upload it. Done — Android students now get the real app.
+
+**Other platforms:** iPhone home-screen apps (Safari) and Chrome/Edge desktop installs never show a
+browser badge, so they keep the current install. A native iPhone app would need an Apple Developer
+account and App Store review.
