@@ -5725,6 +5725,9 @@ function _studentIsSuspended(s) {
 
 function _studentMatchesSearch(s, q) {
   if (!q) return true;
+  /* Student ID — the full id or any 6+ character piece of it (2026-10-05) */
+  const idq = q.replace(/^#|^id[:\s]*/, '').trim();
+  if (/^[a-f0-9]{6,24}$/.test(idq) && String(s._id || '').toLowerCase().includes(idq)) return true;
   const hay = `${s.fullName || ''} ${s.username || ''} ${s.email || ''} ${s.phone || ''}`.toLowerCase();
   // Every whitespace-separated token must match → "rahul sharma" also finds "Sharma Rahul"
   return q.split(/\s+/).filter(Boolean).every(tok => hay.includes(tok));
@@ -5861,7 +5864,7 @@ function renderStudentListFromCache() {
       <div class="empty-state">
         <i class="fas fa-magnifying-glass"></i>
         <p>No students match your search.</p>
-        <p style="margin-top:6px;font-size:13px;color:var(--text-tertiary);">Try a different name, username or email.</p>
+        <p style="margin-top:6px;font-size:13px;color:var(--text-tertiary);">Try a different name, username, email, phone or student ID.</p>
         <button class="btn btn-outline" style="margin-top:16px;" onclick="clearStudentFilters()">
           <i class="fas fa-filter-circle-xmark"></i> Clear Filters
         </button>
@@ -5906,11 +5909,15 @@ function renderStudentListFromCache() {
                  onchange="toggleStudentEmailSelection('${sid}', this.checked)">
           <span class="student-select-box"></span>
         </label>
-        <div class="student-card-header">
+        <div class="student-card-header student-profile-link" role="button" tabindex="0"
+             title="View ${escapeHtml(name)}'s learning profile"
+             onclick="openStudentProfileFromCard(event, '${sid}')"
+             onkeydown="openStudentProfileFromCard(event, '${sid}')">
           <div class="student-avatar">${initials}</div>
           <div class="student-card-info">
             <h4>${escapeHtml(s.fullName || s.username)}</h4>
             <div class="student-username">@${escapeHtml(s.username)}</div>
+            <div class="student-profile-hint"><i class="fas fa-chart-line"></i> Learning profile <i class="fas fa-chevron-right"></i></div>
           </div>
         </div>
         <div class="student-card-body">
@@ -19979,6 +19986,10 @@ async function openStudentUsageModal(userId, username) {
             <span class="sum-meta-pill"><i class="fas fa-circle-notch fa-spin"></i> Loading last 7 days…</span>
           </div>
         </div>
+        ${/^[a-f0-9]{24}$/i.test(String(userId || '')) ? `
+        <button type="button" class="sum-profile-btn" id="sumProfileBtn" title="Open the full learning profile">
+          <i class="fas fa-id-card"></i><span>Full profile</span>
+        </button>` : ''}
         <button type="button" class="sum-close" id="sumClose" aria-label="Close" title="Close (Esc)">
           <i class="fas fa-times"></i>
         </button>
@@ -20015,6 +20026,11 @@ async function openStudentUsageModal(userId, username) {
   document.addEventListener('keydown', onEsc, true);
 
   modal.querySelector('#sumClose').addEventListener('click', close);
+  const profBtn = modal.querySelector('#sumProfileBtn');
+  if (profBtn) profBtn.addEventListener('click', () => {
+    close();
+    openStudentProfileModal(String(userId), username ? { username: String(username) } : null);
+  });
   modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
 
   /* Animate in on the next frame (avoids the "flash then animate" glitch) */
@@ -20060,6 +20076,19 @@ async function openStudentUsageModal(userId, username) {
     return;
   }
 
+  /* Rendering lives in _sumUsageView() so the Students → learning
+     profile shows exactly the same breakdown (2026-10-05). */
+  const view = _sumUsageView(data, '7 days');
+  const meta = document.getElementById('sumMeta');
+  if (meta) meta.innerHTML = view.metaHtml;
+  body.innerHTML = view.bodyHtml;
+}
+
+/* Builds the Live Activity breakdown (header pills + stats tiles +
+   course engagement + daily timeline) from a
+   /api/admin/usage/student payload. Pure — returns HTML strings. */
+function _sumUsageView(data, rangeLabel) {
+  rangeLabel = String(rangeLabel || '7 days');
   /* ============================================================
      FORMATTING HELPERS
      ============================================================ */
@@ -20144,10 +20173,10 @@ async function openStudentUsageModal(userId, username) {
   /* ============================================================
      HEADER META PILLS (replace the "Loading…" placeholder)
      ============================================================ */
-  const meta = document.getElementById('sumMeta');
-  if (meta) {
+  let metaHtml = '';
+  {
     const activeDayCount = Number(totals.daysWithActivity) || 0;
-    meta.innerHTML = `
+    metaHtml = `
       <span class="sum-meta-pill">
         <i class="fas fa-clock"></i>
         <strong>${fmtDur(totals.totalSeconds)}</strong> total
@@ -20171,13 +20200,12 @@ async function openStudentUsageModal(userId, username) {
      EMPTY STATE
      ============================================================ */
   if (days.length === 0) {
-    body.innerHTML = `
+    return { metaHtml, bodyHtml: `
       <div class="sum-empty">
         <i class="fas fa-inbox"></i>
         <h3>No activity recorded yet</h3>
-        <p>This student hasn't opened any material, taken any quiz, or spent measurable time on the platform in the last 7 days.</p>
-      </div>`;
-    return;
+        <p>This student hasn't opened any material, taken any quiz, or spent measurable time on the platform in the last ${escapeHtml(rangeLabel)}.</p>
+      </div>` };
   }
 
   /* ============================================================
@@ -20322,13 +20350,13 @@ async function openStudentUsageModal(userId, username) {
   /* ============================================================
      FINAL LAYOUT
      ============================================================ */
-  body.innerHTML = `
+  const bodyHtml = `
     ${statsHtml}
     <div class="sum-grid">
       <section class="sum-panel">
         <header class="sum-panel-head">
           <h3><i class="fas fa-chart-simple"></i> Course engagement</h3>
-          <span class="sum-panel-sub">Ranked by time spent across the 7 days</span>
+          <span class="sum-panel-sub">Ranked by time spent across the ${escapeHtml(rangeLabel)}</span>
         </header>
         ${coursesHtml}
       </section>
@@ -20342,6 +20370,554 @@ async function openStudentUsageModal(userId, username) {
       </section>
     </div>
   `;
+  return { metaHtml, bodyHtml };
+}
+
+/* ============================================================
+   ⭐ STUDENT LEARNING PROFILE (2026-10-05)
+   ------------------------------------------------------------
+   Admin → Students → click a student's name (or press Enter on
+   a single search match) → full learning profile.
+
+     Tab 1  Activity overview — EXACTLY the Live Activity
+            breakdown (_sumUsageView), with a 7 / 30 / 90 / 180
+            day range switch.
+     Tab 2  Study history — lifetime study time, day-by-day
+            activity map, most-studied materials and every
+            material opened (newest first, "Load older").
+     Tab 3  Courses & quizzes — progress per course and scores.
+
+   Read-only. Uses the existing sum-* modal design so it looks
+   like the Live Activity dialog. Data:
+     /api/admin/students/:id/learning-profile   (once per open)
+     /api/admin/usage/student/:id?days=N        (per range, cached)
+     /api/admin/students/:id/access-history     ("Load older")
+   ============================================================ */
+const SP_RANGES = [
+  { days: 7,   label: '7 days' },
+  { days: 30,  label: '30 days' },
+  { days: 90,  label: '90 days' },
+  { days: 180, label: '180 days' }
+];
+
+function _spDur(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
+}
+function _spDateKeyLabel(key, withWeekday) {
+  try {
+    const [y, m, d] = String(key).split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.toLocaleDateString('en-IN', Object.assign(
+      { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' },
+      withWeekday ? { weekday: 'short' } : {}));
+  } catch (e) { return String(key || ''); }
+}
+function _spIstKey(dateLike) {
+  const t = (dateLike ? new Date(dateLike).getTime() : Date.now()) + 5.5 * 3600 * 1000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+function _spDayHeading(key) {
+  const today = _spIstKey();
+  const yest = _spIstKey(Date.now() - 86400000);
+  if (key === today) return 'Today · ' + _spDateKeyLabel(key, true);
+  if (key === yest) return 'Yesterday · ' + _spDateKeyLabel(key, true);
+  return _spDateKeyLabel(key, true);
+}
+function _spClock(iso) {
+  try {
+    return new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+  } catch (e) { return ''; }
+}
+function _spKindIcon(kind) {
+  const k = String(kind || '').toLowerCase();
+  if (k === 'video') return 'fa-circle-play';
+  if (k === 'slides' || k === 'ppt' || k === 'pptx') return 'fa-person-chalkboard';
+  if (k === 'quiz') return 'fa-file-pen';
+  return 'fa-file-lines';
+}
+
+/* Enter in the Students search box opens the profile when exactly
+   one student matches; Esc clears the search. */
+function studentSearchKeydown(e) {
+  if (!e) return;
+  if (e.key === 'Escape' && _studentSearch) { e.preventDefault(); clearStudentSearch(); return; }
+  if (e.key !== 'Enter') return;
+  const list = _getFilteredStudents();
+  if (list.length === 1) {
+    e.preventDefault();
+    openStudentProfileModal(String(list[0]._id));
+  } else if (list.length > 1) {
+    showToast(`${list.length} students match — click a name to open the profile.`, 'info');
+  }
+}
+
+function openStudentProfileFromCard(e, sid) {
+  if (e) {
+    if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target && e.target.closest && e.target.closest('input, label, a')) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  openStudentProfileModal(sid);
+}
+
+async function openStudentProfileModal(userId, hint) {
+  userId = String(userId || '');
+  if (!/^[a-f0-9]{24}$/i.test(userId)) return;
+
+  const old = document.getElementById('studentProfileModal');
+  if (old) old.remove();
+
+  const cached = (Array.isArray(_allStudentsCache) ? _allStudentsCache : [])
+    .find(s => String(s._id) === userId) || {};
+  hint = Object.assign({}, cached, hint || {});
+  const displayName = hint.fullName || hint.username || 'Student';
+  const uname = hint.username || '';
+
+  const modal = document.createElement('div');
+  modal.id = 'studentProfileModal';
+  modal.className = 'sum-overlay sp-overlay';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', 'Student learning profile');
+  modal.innerHTML = `
+    <div class="sum-shell sp-shell" role="document">
+      <header class="sum-header">
+        <div class="sum-avatar">${escapeHtml(getInitials(displayName).slice(0, 2))}</div>
+        <div class="sum-title-block">
+          <h2 class="sum-name" id="spName">${escapeHtml(displayName)}</h2>
+          <div class="sp-sub" id="spSub">
+            ${uname ? `<span>@${escapeHtml(uname)}</span>` : ''}
+            ${hint.email ? `<span><i class="fas fa-envelope"></i> ${escapeHtml(hint.email)}</span>` : ''}
+            <button type="button" class="sp-id" data-sp-copy="${escapeHtml(userId)}" title="Copy student ID">
+              <i class="fas fa-fingerprint"></i> ID ${escapeHtml(userId.slice(-8))} <i class="fas fa-copy"></i>
+            </button>
+          </div>
+          <div class="sum-meta" id="spMeta">
+            <span class="sum-meta-pill"><i class="fas fa-circle-notch fa-spin"></i> Loading learning history…</span>
+          </div>
+        </div>
+        <button type="button" class="sum-close" data-sp-close aria-label="Close" title="Close (Esc)">
+          <i class="fas fa-times"></i>
+        </button>
+      </header>
+
+      <nav class="sp-tabs" role="tablist" aria-label="Profile sections">
+        <button type="button" role="tab" class="sp-tab active" data-sp-tab="overview" aria-selected="true">
+          <i class="fas fa-chart-simple"></i> Activity overview
+        </button>
+        <button type="button" role="tab" class="sp-tab" data-sp-tab="history" aria-selected="false">
+          <i class="fas fa-clock-rotate-left"></i> Study history
+        </button>
+        <button type="button" role="tab" class="sp-tab" data-sp-tab="courses" aria-selected="false">
+          <i class="fas fa-graduation-cap"></i> Courses &amp; quizzes
+        </button>
+      </nav>
+
+      <div class="sum-body" id="spBody">
+        <section class="sp-pane" data-sp-pane="overview">
+          <div class="sp-rangebar">
+            <span class="sp-rangebar-lbl">Show the last</span>
+            <div class="sp-seg" role="group" aria-label="Date range">
+              ${SP_RANGES.map(r => `<button type="button" class="sp-seg-btn${r.days === 30 ? ' active' : ''}" data-sp-range="${r.days}">${r.label}</button>`).join('')}
+            </div>
+            <span class="sp-range-note"><i class="fas fa-circle-info"></i> Study time is kept for 180 days</span>
+          </div>
+          <div id="spUsage">
+            <div class="sum-loading"><div class="pdfv-spinner"></div><p>Fetching this student's activity…</p></div>
+          </div>
+        </section>
+        <section class="sp-pane" data-sp-pane="history" hidden>
+          <div class="sum-loading"><div class="pdfv-spinner"></div><p>Loading study history…</p></div>
+        </section>
+        <section class="sp-pane" data-sp-pane="courses" hidden>
+          <div class="sum-loading"><div class="pdfv-spinner"></div><p>Loading courses and quizzes…</p></div>
+        </section>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = 'hidden';
+
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    document.body.style.overflow = prevOverflow || '';
+    modal.classList.remove('active');
+    setTimeout(() => { try { modal.remove(); } catch (e) {} }, 220);
+    document.removeEventListener('keydown', onEsc, true);
+  };
+  const onEsc = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+  requestAnimationFrame(() => modal.classList.add('active'));
+
+  const q = (sel) => modal.querySelector(sel);
+  const state = { range: 30, rangeCache: new Map(), rangeSeq: 0, profile: null, opens: [], hasMore: false, loadingMore: false };
+
+  /* ---- Tabs ---- */
+  const showTab = (name) => {
+    modal.querySelectorAll('.sp-tab').forEach(t => {
+      const on = t.getAttribute('data-sp-tab') === name;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    modal.querySelectorAll('.sp-pane').forEach(p => { p.hidden = p.getAttribute('data-sp-pane') !== name; });
+    const b = q('#spBody'); if (b) b.scrollTop = 0;
+  };
+
+  /* ---- Range (Tab 1) — the Live Activity view ---- */
+  const loadRange = async (days) => {
+    state.range = days;
+    modal.querySelectorAll('.sp-seg-btn').forEach(b =>
+      b.classList.toggle('active', Number(b.getAttribute('data-sp-range')) === days));
+    const host = q('#spUsage');
+    if (!host) return;
+    const label = (SP_RANGES.find(r => r.days === days) || {}).label || `${days} days`;
+    const seq = ++state.rangeSeq;
+    let data = state.rangeCache.get(days);
+    if (!data) {
+      host.innerHTML = `<div class="sum-loading"><div class="pdfv-spinner"></div><p>Fetching the last ${escapeHtml(label)}…</p></div>`;
+      try {
+        data = await fetchJSON(`${API_BASE}/admin/usage/student/${encodeURIComponent(userId)}?days=${days}&_t=${Date.now()}`,
+          { cache: 'no-store' });
+      } catch (e) {
+        data = { success: false, message: e.message };
+      }
+      if (data && data.success) state.rangeCache.set(days, data);
+    }
+    if (closed || seq !== state.rangeSeq) return;
+    if (!data || !data.success) {
+      host.innerHTML = `<div class="sum-empty"><i class="fas fa-triangle-exclamation"></i>
+        <p>${escapeHtml((data && data.message) || 'Could not load usage data.')}</p></div>`;
+      return;
+    }
+    host.innerHTML = _sumUsageView(data, label).bodyHtml;
+  };
+
+  /* ---- Delegated clicks ---- */
+  modal.addEventListener('click', async (e) => {
+    if (e.target === modal) { close(); return; }
+    const t = e.target.closest ? e.target : null;
+    if (!t) return;
+    if (t.closest('[data-sp-close]')) { close(); return; }
+    const tab = t.closest('[data-sp-tab]');
+    if (tab) { showTab(tab.getAttribute('data-sp-tab')); return; }
+    const rng = t.closest('[data-sp-range]');
+    if (rng) { const d = Number(rng.getAttribute('data-sp-range')); if (d !== state.range || !state.rangeCache.has(d)) loadRange(d); return; }
+    const cp = t.closest('[data-sp-copy]');
+    if (cp) {
+      const id = cp.getAttribute('data-sp-copy');
+      try { await navigator.clipboard.writeText(id); showToast('Student ID copied', 'success'); }
+      catch (err) { showToast('Student ID: ' + id, 'info'); }
+      return;
+    }
+    if (t.closest('[data-sp-more]')) { loadMoreOpens(); return; }
+  });
+
+  /* ---- Opened-materials log ---- */
+  const opensHtml = () => {
+    if (!state.opens.length) {
+      return `<div class="sum-panel-empty"><i class="fas fa-folder-open"></i><p>No materials opened yet.</p></div>`;
+    }
+    const groups = [];
+    state.opens.forEach(o => {
+      const key = _spIstKey(o.at);
+      let g = groups[groups.length - 1];
+      if (!g || g.key !== key) { g = { key, rows: [] }; groups.push(g); }
+      g.rows.push(o);
+    });
+    return `<div class="sp-log">` + groups.map(g => `
+      <div class="sp-log-day">
+        <div class="sp-log-date"><i class="fas fa-calendar-day"></i> ${escapeHtml(_spDayHeading(g.key))}
+          <span>${g.rows.length} opened</span></div>
+        ${g.rows.map(o => `
+          <div class="sp-log-row">
+            <span class="sp-log-time">${escapeHtml(_spClock(o.at))}</span>
+            <span class="sp-log-icon kind-${escapeHtml(String(o.kind || 'document').toLowerCase())}"><i class="fas ${_spKindIcon(o.kind)}"></i></span>
+            <div class="sp-log-info">
+              <strong>${escapeHtml(o.title || '(untitled)')}</strong>
+              <span>${escapeHtml(o.courseName || '(removed course)')}${o.courseCode ? ' · ' + escapeHtml(o.courseCode) : ''}</span>
+            </div>
+            ${o.preview ? `<span class="sp-tag">Preview</span>` : ''}
+          </div>`).join('')}
+      </div>`).join('') + `</div>` +
+      (state.hasMore
+        ? `<div class="sp-more-wrap"><button type="button" class="btn btn-outline btn-sm" data-sp-more>
+             <i class="fas fa-clock-rotate-left"></i> Load older</button></div>`
+        : `<div class="sp-log-end">That's the full history.</div>`);
+  };
+  const paintOpens = () => {
+    const el = q('#spOpens');
+    if (el) el.innerHTML = opensHtml();
+  };
+  const loadMoreOpens = async () => {
+    if (state.loadingMore || !state.hasMore || !state.opens.length) return;
+    state.loadingMore = true;
+    const btn = q('[data-sp-more]');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Loading…'; }
+    try {
+      const last = state.opens[state.opens.length - 1];
+      const r = await fetchJSON(`${API_BASE}/admin/students/${encodeURIComponent(userId)}/access-history?before=${encodeURIComponent(new Date(last.at).toISOString())}&_t=${Date.now()}`,
+        { cache: 'no-store' });
+      if (closed) return;
+      if (!r || !r.success) throw new Error((r && r.message) || 'Could not load more.');
+      state.opens = state.opens.concat(Array.isArray(r.items) ? r.items : []);
+      state.hasMore = !!r.hasMore;
+    } catch (e) {
+      showToast(e.message || 'Could not load more.', 'error');
+    } finally {
+      state.loadingMore = false;
+      if (!closed) paintOpens();
+    }
+  };
+
+  /* ---- Day-by-day activity map (26 weeks, IST days) ---- */
+  const heatHtml = (heat) => {
+    const map = new Map((heat || []).map(h => [h.date, Number(h.seconds) || 0]));
+    const todayKey = _spIstKey();
+    const [ty, tm, td] = todayKey.split('-').map(Number);
+    const today = Date.UTC(ty, tm - 1, td);
+    const dow = (new Date(today).getUTCDay() + 6) % 7;          // Mon = 0
+    const start = today - (25 * 7 + dow) * 86400000;
+    const lvl = (s) => s <= 0 ? 0 : s < 900 ? 1 : s < 2700 ? 2 : s < 5400 ? 3 : 4;
+    let cols = '';
+    let months = '';
+    let lastMonth = -1;
+    for (let w = 0; w < 26; w++) {
+      let cells = '';
+      const colStart = new Date(start + w * 7 * 86400000);
+      const mo = colStart.getUTCMonth();
+      months += `<span>${mo !== lastMonth ? escapeHtml(colStart.toLocaleDateString('en-IN', { month: 'short', timeZone: 'UTC' })) : ''}</span>`;
+      lastMonth = mo;
+      for (let d = 0; d < 7; d++) {
+        const t = start + (w * 7 + d) * 86400000;
+        if (t > today) { cells += `<i class="sp-cell future"></i>`; continue; }
+        const key = new Date(t).toISOString().slice(0, 10);
+        const s = map.get(key) || 0;
+        cells += `<i class="sp-cell l${lvl(s)}" title="${escapeHtml(_spDateKeyLabel(key, true))}: ${s ? escapeHtml(_spDur(s)) : 'no study'}"></i>`;
+      }
+      cols += `<div class="sp-heat-col">${cells}</div>`;
+    }
+    return `
+      <div class="sp-heat-wrap">
+        <div class="sp-heat-months">${months}</div>
+        <div class="sp-heat-grid">
+          <div class="sp-heat-days"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span>Sun</span></div>
+          ${cols}
+        </div>
+        <div class="sp-heat-legend">Less
+          <i class="sp-cell l0"></i><i class="sp-cell l1"></i><i class="sp-cell l2"></i><i class="sp-cell l3"></i><i class="sp-cell l4"></i>
+          More <span>· under 15 min · 15–45 min · 45–90 min · 90 min+</span></div>
+      </div>`;
+  };
+
+  const tile = (icon, tone, num, lbl) => `
+    <div class="sum-stat">
+      <div class="sum-stat-icon tone-${tone}"><i class="fas ${icon}"></i></div>
+      <div class="sum-stat-body">
+        <div class="sum-stat-num">${num}</div>
+        <div class="sum-stat-lbl">${lbl}</div>
+      </div>
+    </div>`;
+
+  /* ---- Paint tabs 2 + 3 and the header from the profile payload ---- */
+  const paintProfile = (p) => {
+    const st = p.student || {};
+    const lt = p.lifetime || {};
+    const name = st.fullName || st.username || displayName;
+    const nm = q('#spName'); if (nm) nm.textContent = name;
+    const av = q('.sum-avatar'); if (av) av.textContent = getInitials(name).slice(0, 2);
+    const sub = q('#spSub');
+    if (sub) {
+      sub.innerHTML = `
+        ${st.username ? `<span>@${escapeHtml(st.username)}</span>` : ''}
+        ${st.email ? `<span><i class="fas fa-envelope"></i> ${escapeHtml(st.email)}</span>` : ''}
+        ${st.phone ? `<span><i class="fas fa-phone"></i> ${escapeHtml(st.phone)}</span>` : ''}
+        <button type="button" class="sp-id" data-sp-copy="${escapeHtml(userId)}" title="Copy student ID">
+          <i class="fas fa-fingerprint"></i> ID ${escapeHtml(userId.slice(-8))} <i class="fas fa-copy"></i>
+        </button>
+        ${st.premium ? `<span class="student-premium-badge active"><i class="fas fa-crown"></i> Premium</span>` : ''}
+        ${st.suspended ? `<span class="student-status-badge suspended"><i class="fas fa-ban"></i> Suspended</span>` : ''}`;
+    }
+    const meta = q('#spMeta');
+    if (meta) {
+      const joined = st.createdAt ? new Date(st.createdAt).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '';
+      meta.innerHTML = `
+        <span class="sum-meta-pill" title="All recorded study time (last 180 days)"><i class="fas fa-clock"></i><strong>${_spDur(lt.totalSeconds)}</strong> studied</span>
+        <span class="sum-meta-pill"><i class="fas fa-calendar-check"></i><strong>${Number(lt.activeDays) || 0}</strong> active day${Number(lt.activeDays) === 1 ? '' : 's'}</span>
+        <span class="sum-meta-pill"><i class="fas fa-fire"></i><strong>${Number(st.streakCount) || 0}</strong> day streak</span>
+        ${st.lastSeenAt ? `<span class="sum-meta-pill"><i class="fas fa-signal"></i> Last active <strong>${escapeHtml(timeAgo(st.lastSeenAt))}</strong></span>` : ''}
+        ${joined ? `<span class="sum-meta-pill"><i class="fas fa-user-plus"></i> Joined <strong>${escapeHtml(joined)}</strong></span>` : ''}`;
+    }
+
+    /* ---------- Tab 2 — Study history ---------- */
+    const topMats = Array.isArray(p.topMaterials) ? p.topMaterials : [];
+    const topSec = topMats.length ? (topMats[0].seconds || 1) : 1;
+    const matsHtml = topMats.length
+      ? `<div class="sum-course-list">` + topMats.map((m, i) => `
+          <div class="sum-course-row">
+            <div class="sum-course-rank ${i === 0 ? 'top1' : i === 1 ? 'top2' : i === 2 ? 'top3' : ''}">${i + 1}</div>
+            <div class="sum-course-info">
+              <div class="sum-course-head">
+                <strong>${escapeHtml(m.title || '(removed)')}</strong>
+                ${m.courseName ? `<span class="sum-course-code">${escapeHtml(m.courseName)}</span>` : ''}
+              </div>
+              <div class="sum-course-bar"><div class="sum-course-fill" style="width:${Math.max(2, Math.round((m.seconds / topSec) * 100))}%"></div></div>
+              <div class="sum-course-meta">
+                <span><i class="fas fa-clock"></i> ${_spDur(m.seconds)}</span>
+                <span><i class="fas fa-calendar-day"></i> ${m.days} day${m.days === 1 ? '' : 's'}</span>
+                ${m.lastDate ? `<span><i class="fas fa-rotate"></i> Last ${escapeHtml(_spDateKeyLabel(m.lastDate))}</span>` : ''}
+              </div>
+            </div>
+          </div>`).join('') + `</div>`
+      : `<div class="sum-panel-empty"><i class="fas fa-book"></i><p>No study time recorded yet.</p></div>`;
+
+    const ls = st.lastStudied;
+    const histPane = q('[data-sp-pane="history"]');
+    if (histPane) {
+      histPane.innerHTML = `
+        <div class="sum-stats">
+          ${tile('fa-clock', 'brand', _spDur(lt.totalSeconds), 'Total study time')}
+          ${tile('fa-calendar-check', 'emerald', Number(lt.activeDays) || 0, 'Days with activity')}
+          ${tile('fa-gauge-high', 'cyan', _spDur(lt.avgPerActiveDay), 'Average per active day')}
+          ${tile('fa-layer-group', 'gold', Number(lt.materialsStudied) || 0, 'Materials studied')}
+        </div>
+        <div class="sp-facts">
+          ${lt.firstDate ? `<span><i class="fas fa-flag"></i> Tracked since <strong>${escapeHtml(_spDateKeyLabel(lt.firstDate))}</strong></span>` : ''}
+          ${lt.bestDay && lt.bestDay.seconds ? `<span><i class="fas fa-trophy"></i> Best day <strong>${escapeHtml(_spDur(lt.bestDay.seconds))}</strong> on ${escapeHtml(_spDateKeyLabel(lt.bestDay.date))}</span>` : ''}
+          <span><i class="fas fa-folder-open"></i> <strong>${Number(lt.materialsOpened) || 0}</strong> materials opened</span>
+          <span><i class="fas fa-right-to-bracket"></i> <strong>${Number(lt.sessions) || 0}</strong> sessions</span>
+          ${ls && ls.at ? `<span><i class="fas fa-bookmark"></i> Last studied <strong>${escapeHtml(ls.title || 'a material')}</strong>${ls.courseName ? ' · ' + escapeHtml(ls.courseName) : ''} · ${escapeHtml(timeAgo(ls.at))}</span>` : ''}
+        </div>
+        <section class="sum-panel sp-heat-panel">
+          <header class="sum-panel-head">
+            <h3><i class="fas fa-calendar-days"></i> Study calendar</h3>
+            <span class="sum-panel-sub">Last 26 weeks · hover a day for its study time</span>
+          </header>
+          ${heatHtml(p.heat)}
+        </section>
+        <div class="sum-grid">
+          <section class="sum-panel">
+            <header class="sum-panel-head">
+              <h3><i class="fas fa-ranking-star"></i> Most studied materials</h3>
+              <span class="sum-panel-sub">Ranked by total time</span>
+            </header>
+            ${matsHtml}
+          </section>
+          <section class="sum-panel">
+            <header class="sum-panel-head">
+              <h3><i class="fas fa-list-ul"></i> Materials opened</h3>
+              <span class="sum-panel-sub">Newest first · ${Number(lt.materialsOpened) || 0} in total</span>
+            </header>
+            <div id="spOpens"></div>
+          </section>
+        </div>`;
+      paintOpens();
+    }
+
+    /* ---------- Tab 3 — Courses & quizzes ---------- */
+    const cp = Array.isArray(p.courseProgress) ? p.courseProgress : [];
+    const quizzes = Array.isArray(p.quizzes) ? p.quizzes : [];
+    const coursesHtml = cp.length
+      ? `<div class="sum-course-list">` + cp.map(c => `
+          <div class="sum-course-row">
+            <div class="sp-ring" style="--p:${Math.max(0, Math.min(100, Number(c.pct) || 0))}"><span>${Number(c.pct) || 0}%</span></div>
+            <div class="sum-course-info">
+              <div class="sum-course-head">
+                <strong>${escapeHtml(c.name || '(removed)')}</strong>
+                ${c.code ? `<span class="sum-course-code">${escapeHtml(c.code)}</span>` : ''}
+                ${c.owned ? `<span class="sp-tag ok"><i class="fas fa-unlock"></i> Enrolled</span>` : ''}
+              </div>
+              <div class="sum-course-bar"><div class="sum-course-fill" style="width:${Math.max(0, Math.min(100, Number(c.pct) || 0))}%"></div></div>
+              <div class="sum-course-meta">
+                <span><i class="fas fa-circle-check"></i> ${c.done}/${c.total} materials done</span>
+                ${c.videosTotal ? `<span><i class="fas fa-circle-play"></i> ${c.videosDone}/${c.videosTotal} videos</span>` : ''}
+                <span><i class="fas fa-clock"></i> ${_spDur(c.seconds)} studied</span>
+                ${c.lastDate ? `<span><i class="fas fa-rotate"></i> Last ${escapeHtml(_spDateKeyLabel(c.lastDate))}</span>` : ''}
+              </div>
+            </div>
+          </div>`).join('') + `</div>`
+      : `<div class="sum-panel-empty"><i class="fas fa-graduation-cap"></i><p>Not enrolled in or studying any course yet.</p></div>`;
+
+    const quizHtml = quizzes.length
+      ? `<div class="sp-quiz-list">` + quizzes.map(z => {
+          const pct = z.percent == null ? null : Number(z.percent);
+          const tone = pct == null ? '' : pct >= 75 ? 'good' : pct >= 40 ? 'mid' : 'low';
+          const marks = z.marksPossible ? `${z.marksEarned}/${z.marksPossible} marks` : (z.total ? `${z.score}/${z.total} correct` : '');
+          return `
+            <div class="sp-quiz-row">
+              <div class="sp-quiz-score ${tone}">${pct == null ? '—' : pct + '%'}</div>
+              <div class="sp-quiz-info">
+                <strong>${escapeHtml(z.title)}</strong>
+                <span>${escapeHtml(z.courseName || '')}${marks ? (z.courseName ? ' · ' : '') + escapeHtml(marks) : ''}</span>
+                <span class="sp-quiz-meta">
+                  ${z.attempts ? `<i class="fas fa-repeat"></i> ${z.attempts} attempt${z.attempts === 1 ? '' : 's'}` : ''}
+                  ${z.lastAttemptAt ? ` · ${escapeHtml(new Date(z.lastAttemptAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }))}` : ''}
+                </span>
+              </div>
+              ${z.pending ? `<span class="sp-tag warn"><i class="fas fa-hourglass-half"></i> Awaiting evaluation</span>` : ''}
+            </div>`;
+        }).join('') + `</div>`
+      : `<div class="sum-panel-empty"><i class="fas fa-file-pen"></i><p>No quizzes attempted yet.</p></div>`;
+
+    const crsPane = q('[data-sp-pane="courses"]');
+    if (crsPane) {
+      crsPane.innerHTML = `
+        <div class="sum-stats">
+          ${tile('fa-book-open-reader', 'brand', Number(st.coursesOwned) || 0, 'Courses enrolled')}
+          ${tile('fa-circle-play', 'cyan', `${Number(st.videosCompleted) || 0}<small>/${Number(st.videosStarted) || 0}</small>`, 'Videos completed / started')}
+          ${tile('fa-file-pen', 'gold', quizzes.length, 'Quizzes attempted')}
+          ${tile('fa-fire', 'emerald', `${Number(st.streakCount) || 0}<small> best ${Number(st.longestStreak) || 0}</small>`, 'Day streak')}
+        </div>
+        <div class="sum-grid">
+          <section class="sum-panel">
+            <header class="sum-panel-head">
+              <h3><i class="fas fa-bars-progress"></i> Course progress</h3>
+              <span class="sum-panel-sub">${cp.length} course${cp.length === 1 ? '' : 's'}</span>
+            </header>
+            ${coursesHtml}
+          </section>
+          <section class="sum-panel">
+            <header class="sum-panel-head">
+              <h3><i class="fas fa-square-poll-vertical"></i> Quiz results</h3>
+              <span class="sum-panel-sub">Newest first · XP ${Number(st.xp) || 0} · Level ${Number(st.level) || 1}</span>
+            </header>
+            ${quizHtml}
+          </section>
+        </div>`;
+    }
+  };
+
+  const failPanes = (msg) => {
+    const html = `<div class="sum-empty"><i class="fas fa-triangle-exclamation"></i><p>${escapeHtml(msg)}</p></div>`;
+    ['history', 'courses'].forEach(n => { const p = q(`[data-sp-pane="${n}"]`); if (p) p.innerHTML = html; });
+    const meta = q('#spMeta');
+    if (meta) meta.innerHTML = `<span class="sum-meta-pill"><i class="fas fa-triangle-exclamation"></i> Profile unavailable</span>`;
+  };
+
+  /* Range view and profile load in parallel */
+  loadRange(30);
+  try {
+    const p = await fetchJSON(`${API_BASE}/admin/students/${encodeURIComponent(userId)}/learning-profile?_t=${Date.now()}`,
+      { cache: 'no-store' });
+    if (closed) return;
+    if (!p || !p.success) { failPanes((p && p.message) || 'Could not load this student\'s profile.'); return; }
+    state.profile = p;
+    state.opens = Array.isArray(p.recentOpens) ? p.recentOpens : [];
+    state.hasMore = !!p.hasMoreOpens;
+    paintProfile(p);
+  } catch (e) {
+    if (!closed) failPanes(e.message || 'Could not load this student\'s profile.');
+  }
 }
 initApp();
 

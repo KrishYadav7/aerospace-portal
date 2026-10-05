@@ -10597,6 +10597,247 @@ app.get('/api/admin/students/:userId/overview', requireAdminAuth, async (req, re
 });
 
 /* ============================================================
+   ⭐ STUDENT LEARNING PROFILE (2026-10-05)
+   ------------------------------------------------------------
+   Admin → Students → click a student → full learning profile.
+     GET /api/admin/students/:userId/learning-profile
+         lifetime study time (all retained DailyUsage days),
+         most-studied courses / materials, a day-by-day activity
+         map, course progress, quiz results and the latest
+         materials opened (AccessLog).
+     GET /api/admin/students/:userId/access-history?before=ISO
+         older "materials opened" rows, 40 at a time.
+   Read-only, admin-only, bounded: DailyUsage keeps ≤180 docs per
+   student (TTL), AccessLog is read through its {userId, at} index
+   with a hard limit. The range views reuse the existing
+   /api/admin/usage/student/:userId endpoint.
+   ============================================================ */
+const PROFILE_OPENS_PAGE = 40;
+
+function _profileOpenRow(r, courseInfo) {
+  const c = courseInfo[String(r.courseId)] || null;
+  return {
+    courseId:   String(r.courseId || ''),
+    materialId: String(r.materialId || ''),
+    title:      r.title || '',
+    kind:       r.kind || 'document',
+    preview:    !!r.preview,
+    courseName: c ? c.name : '',
+    courseCode: c ? (c.code || '') : '',
+    at:         r.at
+  };
+}
+
+app.get('/api/admin/students/:userId/learning-profile', requireAdminAuth, async (req, res) => {
+  try {
+    const uid = String(req.params.userId || '');
+    if (!_validId(uid)) return res.status(400).json({ success: false, message: 'Invalid user id.' });
+
+    const u = await User.findById(uid)
+      .select('username fullName email phone role createdAt purchases progress videoProgress quizResults streakCount longestStreak xp level suspended activeSession.lastSeenAt lastActivity subscription.active subscription.status subscription.expiresAt')
+      .lean();
+    if (!u) return res.status(404).json({ success: false, message: 'Student not found.' });
+
+    const [usageDocs, courses, recent, opensTotal] = await Promise.all([
+      DailyUsage.find({ userId: uid })
+        .select('date totalSeconds courses materials views quizzesTaken materialsCompleted sessionCount -_id')
+        .sort({ date: 1 })
+        .limit(400)
+        .lean(),
+      Course.find().select('name code materials._id materials.title materials.type').lean(),
+      AccessLog.find({ userId: uid })
+        .sort({ at: -1 })
+        .limit(PROFILE_OPENS_PAGE + 1)
+        .select('courseId materialId title kind preview at -_id')
+        .lean(),
+      AccessLog.countDocuments({ userId: uid })
+    ]);
+
+    /* ---- name lookups ---- */
+    const courseInfo = {};
+    const materialInfo = {};
+    courses.forEach(c => {
+      const cid = String(c._id);
+      courseInfo[cid] = { name: c.name || '', code: c.code || '' };
+      (c.materials || []).forEach(m => {
+        materialInfo[String(m._id)] = { title: m.title || '', type: m.type || '', courseId: cid };
+      });
+    });
+
+    /* ---- lifetime usage ---- */
+    const lifetime = {
+      totalSeconds: 0, activeDays: 0, daysRecorded: usageDocs.length,
+      views: 0, quizzesTaken: 0, materialsCompleted: 0, sessions: 0,
+      firstDate: usageDocs.length ? usageDocs[0].date : null,
+      lastDate:  usageDocs.length ? usageDocs[usageDocs.length - 1].date : null,
+      bestDay: null
+    };
+    const heat = [];
+    const courseAgg = new Map();
+    const materialAgg = new Map();
+    usageDocs.forEach(d => {
+      const sec = Number(d.totalSeconds) || 0;
+      lifetime.totalSeconds += sec;
+      if (sec > 60) lifetime.activeDays += 1;
+      lifetime.views += Number(d.views) || 0;
+      lifetime.quizzesTaken += Number(d.quizzesTaken) || 0;
+      lifetime.materialsCompleted += Number(d.materialsCompleted) || 0;
+      lifetime.sessions += Number(d.sessionCount) || 0;
+      if (!lifetime.bestDay || sec > lifetime.bestDay.seconds) lifetime.bestDay = { date: d.date, seconds: sec };
+      heat.push({ date: d.date, seconds: sec });
+      Object.entries(d.courses || {}).forEach(([cid, s]) => {
+        const a = courseAgg.get(cid) || { seconds: 0, days: 0, lastDate: null };
+        a.seconds += Number(s) || 0; a.days += 1; a.lastDate = d.date;
+        courseAgg.set(cid, a);
+      });
+      Object.entries(d.materials || {}).forEach(([mid, s]) => {
+        const a = materialAgg.get(mid) || { seconds: 0, days: 0, lastDate: null };
+        a.seconds += Number(s) || 0; a.days += 1; a.lastDate = d.date;
+        materialAgg.set(mid, a);
+      });
+    });
+
+    const topCourses = Array.from(courseAgg.entries()).map(([cid, a]) => ({
+      courseId: cid,
+      name: (courseInfo[cid] && courseInfo[cid].name) || '(removed)',
+      code: (courseInfo[cid] && courseInfo[cid].code) || '',
+      seconds: a.seconds, days: a.days, lastDate: a.lastDate
+    })).sort((x, y) => y.seconds - x.seconds).slice(0, 30);
+
+    const materialsStudied = materialAgg.size;
+    const topMaterials = Array.from(materialAgg.entries()).map(([mid, a]) => {
+      const m = materialInfo[mid];
+      const c = m ? courseInfo[m.courseId] : null;
+      return {
+        materialId: mid,
+        title: (m && m.title) || '(removed)',
+        type: (m && m.type) || '',
+        courseName: c ? c.name : '',
+        seconds: a.seconds, days: a.days, lastDate: a.lastDate
+      };
+    }).sort((x, y) => y.seconds - x.seconds).slice(0, 60);
+
+    /* ---- course progress (same rules as /overview) ---- */
+    const progress = u.progress || {};
+    const vp = u.videoProgress || {};
+    const owned = new Set((u.purchases || []).map(String));
+    const courseProgress = courses.map(c => {
+      const cid = String(c._id);
+      const ids = (c.materials || []).map(m => String(m._id));
+      const done = (progress[cid] || []).filter(id => ids.includes(id)).length;
+      const vids = (c.materials || []).filter(m => m.type === 'video').map(m => String(m._id));
+      const vidsDone = vids.filter(id => vp[id] && vp[id].completed).length;
+      const agg = courseAgg.get(cid);
+      return {
+        courseId: cid, name: c.name || '', code: c.code || '',
+        done, total: ids.length, pct: ids.length ? Math.round(done / ids.length * 100) : 0,
+        videosDone: vidsDone, videosTotal: vids.length,
+        owned: owned.has(cid),
+        seconds: agg ? agg.seconds : 0,
+        lastDate: agg ? agg.lastDate : null
+      };
+    }).filter(c => c.done > 0 || c.owned || c.videosDone > 0 || c.seconds > 0)
+      .sort((x, y) => (y.seconds - x.seconds) || (y.pct - x.pct));
+
+    /* ---- quiz results (scores only — answers/uploads never leave the server) ---- */
+    const quizzes = Object.entries(u.quizResults || {}).map(([mid, r]) => {
+      r = r || {};
+      const m = materialInfo[mid];
+      const c = m ? courseInfo[m.courseId] : null;
+      const published = !!r.manuallyEvaluated && r.finalPercent != null;
+      const pct = published ? Number(r.finalPercent) : Number(r.percent);
+      return {
+        materialId: mid,
+        title: (m && m.title) || '(removed quiz)',
+        courseName: c ? c.name : '',
+        percent: Number.isFinite(pct) ? Math.round(pct) : null,
+        score: Number(r.score) || 0,
+        total: Number(r.total) || 0,
+        marksEarned: published ? Number(r.finalMarksEarned) || 0 : Number(r.marksEarned) || 0,
+        marksPossible: published ? Number(r.finalMarksPossible) || 0 : Number(r.marksPossible) || 0,
+        attempts: Number(r.attempts) || 0,
+        lastAttemptAt: r.lastAttemptAt || null,
+        pending: !!r.pendingEvaluation && !r.manuallyEvaluated
+      };
+    }).sort((x, y) => new Date(y.lastAttemptAt || 0) - new Date(x.lastAttemptAt || 0)).slice(0, 100);
+
+    const vpVals = Object.values(vp);
+    const sub = u.subscription || {};
+    const subExp = sub.expiresAt ? new Date(sub.expiresAt).getTime() : null;
+    const la = u.lastActivity || {};
+    const laMat = la.materialId ? materialInfo[String(la.materialId)] : null;
+
+    res.json({
+      success: true,
+      student: {
+        _id: String(u._id), username: u.username, fullName: u.fullName || '',
+        email: u.email || '', phone: u.phone || '', createdAt: u.createdAt,
+        streakCount: u.streakCount || 0, longestStreak: u.longestStreak || 0,
+        xp: u.xp || 0, level: u.level || 1,
+        suspended: !!(u.suspended && u.suspended.active),
+        premium: !!(sub.active === true && sub.status === 'active' && (subExp === null || subExp > Date.now())),
+        lastSeenAt: (u.activeSession && u.activeSession.lastSeenAt) || null,
+        lastStudied: la.timestamp ? {
+          at: la.timestamp,
+          title: laMat ? laMat.title : '',
+          courseName: la.courseId && courseInfo[String(la.courseId)] ? courseInfo[String(la.courseId)].name : ''
+        } : null,
+        videosStarted: vpVals.length,
+        videosCompleted: vpVals.filter(v => v && v.completed).length,
+        coursesOwned: owned.size
+      },
+      lifetime: Object.assign(lifetime, {
+        materialsStudied,
+        coursesStudied: courseAgg.size,
+        materialsOpened: opensTotal,
+        avgPerActiveDay: lifetime.activeDays ? Math.round(lifetime.totalSeconds / lifetime.activeDays) : 0,
+        retentionDays: 180
+      }),
+      heat,
+      topCourses,
+      topMaterials,
+      courseProgress,
+      quizzes,
+      recentOpens: recent.slice(0, PROFILE_OPENS_PAGE).map(r => _profileOpenRow(r, courseInfo)),
+      hasMoreOpens: recent.length > PROFILE_OPENS_PAGE
+    });
+  } catch (e) {
+    console.error('[admin-users/learning-profile]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+app.get('/api/admin/students/:userId/access-history', requireAdminAuth, async (req, res) => {
+  try {
+    const uid = String(req.params.userId || '');
+    if (!_validId(uid)) return res.status(400).json({ success: false, message: 'Invalid user id.' });
+    const q = { userId: uid };
+    const before = req.query.before ? new Date(String(req.query.before)) : null;
+    if (before && !isNaN(before.getTime())) q.at = { $lt: before };
+    const rows = await AccessLog.find(q)
+      .sort({ at: -1 })
+      .limit(PROFILE_OPENS_PAGE + 1)
+      .select('courseId materialId title kind preview at -_id')
+      .lean();
+    const page = rows.slice(0, PROFILE_OPENS_PAGE);
+    const cids = Array.from(new Set(page.map(r => String(r.courseId)).filter(_validId)));
+    const courseInfo = {};
+    if (cids.length) {
+      (await Course.find({ _id: { $in: cids } }).select('name code').lean())
+        .forEach(c => { courseInfo[String(c._id)] = { name: c.name || '', code: c.code || '' }; });
+    }
+    res.json({
+      success: true,
+      items: page.map(r => _profileOpenRow(r, courseInfo)),
+      hasMore: rows.length > PROFILE_OPENS_PAGE
+    });
+  } catch (e) {
+    console.error('[admin-users/access-history]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+
+/* ============================================================
    ⭐ CONTENT SHIELD — capture-attempt audit (2026-10-04)
    content-shield.js reports PrintScreen / screenshot shortcuts /
    print / screen-record attempts. Kept per student (last 20) so
@@ -14093,7 +14334,8 @@ app.get('/api/admin/usage/report-daily', requireAdminAuth, async (req, res) => {
 app.get('/api/admin/usage/student/:userId', requireAdminAuth, async (req, res) => {
   try {
     const userId = String(req.params.userId);
-    const days   = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 30);
+    /* ≤180 = DailyUsage retention; Live Activity still asks for 7. */
+    const days   = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 180);
 
     const dateKeys = [];
     for (let i = 0; i < days; i++) {

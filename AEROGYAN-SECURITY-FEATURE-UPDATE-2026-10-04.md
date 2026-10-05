@@ -255,3 +255,22 @@ logo. A website cannot change that — only a real app can.
 **Other platforms:** iPhone home-screen apps (Safari) and Chrome/Edge desktop installs never show a
 browser badge, so they keep the current install. A native iPhone app would need an Apple Developer
 account and App Store review.
+
+## 13. Student learning profile in Admin → Students (2026-10-05)
+- **Search** now also finds a student by **student ID** (the full ID or any 6+ characters of it,
+  `id:` or `#` prefix optional) besides name, username, email and phone. Press **Enter** when exactly
+  one student matches to open their profile; **Esc** clears the search.
+- **Click a student's name/avatar** (or the new "Learning profile ›" link on each card) to open the
+  full profile. It uses the same dialog design as Live Activity:
+  - **Activity overview** — exactly the Live Activity breakdown (total time, active days, courses,
+    materials completed, course engagement, day-by-day timeline) with a 7 / 30 / 90 / 180-day switch.
+  - **Study history** — lifetime study time, average per active day, materials studied, best day,
+    a 26-week study calendar, most-studied materials and every material opened (newest first,
+    "Load older" pages back through the full log).
+  - **Courses & quizzes** — progress per course (materials and videos done, time studied) and quiz
+    scores, attempts and "awaiting evaluation".
+- Live Activity's student dialog has a **Full profile** button that opens the same view.
+- Server: two read-only admin endpoints (`/api/admin/students/:id/learning-profile`,
+  `/api/admin/students/:id/access-history`); `/api/admin/usage/student/:id` accepts up to 180 days
+  (Live Activity still asks for 7). Study time is kept 180 days; the opened-materials log 365 days.
+  Quiz answers and uploaded files are never sent to the browser — only scores.

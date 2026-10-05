@@ -627,10 +627,12 @@
               <input type="text"
                      id="studentSearchInput"
                      class="student-search-input"
-                     placeholder="Search student by name, username or email…"
+                     placeholder="Search by name, username, email, phone or student ID…"
                      autocomplete="off"
                      spellcheck="false"
-                     oninput="setStudentSearchFilter(this.value)">
+                     title="Press Enter to open the profile when one student matches"
+                     oninput="setStudentSearchFilter(this.value)"
+                     onkeydown="studentSearchKeydown(event)">
               <button type="button" class="student-search-clear" id="studentSearchClear"
                       title="Clear search" hidden onclick="clearStudentSearch()">
                 <i class="fas fa-times"></i>
