@@ -2359,6 +2359,7 @@ function classifyMutation(method, path) {
 
   // Admin content mutations → broadcast
   if (method === 'PUT' && /^\/admin\/courses\/order\/?$/.test(path)) return 'courses:order';
+  if (method === 'PUT' && /^\/courses\/[^/]+\/materials\/reorder\/?$/.test(path)) return 'courses:material-order';
   if (method === 'POST' && /^\/courses\/?$/.test(path)) return 'courses:created';
   if (method === 'PUT' && /^\/courses\/[^/]+$/.test(path)) return 'courses:updated';
   if (method === 'DELETE' && /^\/courses\/[^/]+$/.test(path)) return 'courses:deleted';
@@ -6612,6 +6613,83 @@ app.post('/api/courses/:courseId/materials', requireAdminAuth, async (req, res) 
     console.error('[materials/POST] Stack:', e.stack);
     console.error('[materials/POST] Body:', JSON.stringify(req.body).slice(0, 500));
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
+   ⭐ MATERIAL ORDER INSIDE A COURSE (2026-10-06)
+   ------------------------------------------------------------
+   PUT /api/courses/:courseId/materials/reorder   { order: [materialId, …] }
+   (registered BEFORE …/materials/:materialId so "reorder" is never
+   taken for a material id)
+
+   The materials array itself is put in the new order, so every page
+   that lists a course's materials (student course page, type tabs,
+   admin pages, question papers…) follows it with no other change.
+
+   Done inside MongoDB in one atomic update: no material data (PDF
+   base64, quizzes) is read into Node. Materials missing from the list
+   (e.g. one added a moment ago in another tab) keep their relative
+   order and go after the listed ones; ids that no longer exist are
+   ignored. Falls back to a normal load-and-save if the server's
+   MongoDB cannot run update pipelines (older than 4.2).
+   ============================================================ */
+app.put('/api/courses/:courseId/materials/reorder', requireAdminAuth, async (req, res) => {
+  try {
+    const courseId = String(req.params.courseId || '');
+    if (!/^[a-f0-9]{24}$/i.test(courseId)) {
+      return res.status(400).json({ success: false, message: 'Invalid course id.' });
+    }
+    const raw = req.body && req.body.order;
+    if (!Array.isArray(raw) || !raw.length || raw.length > 3000) {
+      return res.status(400).json({ success: false, message: 'Send the new order as a list of material ids.' });
+    }
+    const ids = raw.map(x => String(x || '').trim());
+    if (ids.some(id => !/^[a-f0-9]{24}$/i.test(id)) || new Set(ids).size !== ids.length) {
+      return res.status(400).json({ success: false, message: 'The list contains an invalid or repeated material id.' });
+    }
+    const cOid = new mongoose.Types.ObjectId(courseId);
+    const oids = ids.map(id => new mongoose.Types.ObjectId(id));
+
+    let done = false;
+    try {
+      const listed = oids.map(oid => ({
+        $filter: { input: '$materials', as: 'm', cond: { $eq: ['$$m._id', oid] } }
+      }));
+      const rest = { $filter: { input: '$materials', as: 'm', cond: { $not: [{ $in: ['$$m._id', oids] }] } } };
+      const r = await Course.collection.updateOne(
+        { _id: cOid, materials: { $type: 'array' } },
+        [{ $set: { materials: { $concatArrays: listed.concat([rest]) } } }]
+      );
+      if (!r || !r.matchedCount) {
+        const exists = await Course.exists({ _id: cOid });
+        return res.status(404).json({ success: false, message: exists ? 'This course has no materials yet.' : 'Course not found.' });
+      }
+      done = true;
+    } catch (pipeErr) {
+      console.warn('[materials/reorder] pipeline update unavailable, using load-and-save:', pipeErr.message);
+    }
+
+    if (!done) {
+      const course = await Course.findById(cOid);
+      if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+      const rank = new Map(ids.map((id, i) => [id, i]));
+      const cur = course.materials.slice();
+      const listed = cur.filter(m => rank.has(String(m._id))).sort((a, b) => rank.get(String(a._id)) - rank.get(String(b._id)));
+      const rest = cur.filter(m => !rank.has(String(m._id)));
+      course.materials = listed.concat(rest);
+      await course.save();
+    }
+
+    cacheClear('courses:');
+    const after = await Course.findById(cOid).select('materials._id').lean();
+    res.json({
+      success: true,
+      order: ((after && after.materials) || []).map(m => String(m._id))
+    });
+  } catch (e) {
+    console.error('[materials/reorder]', e);
+    res.status(500).json({ success: false, message: 'Could not save the new order. Please try again.' });
   }
 });
 

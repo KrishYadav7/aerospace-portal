@@ -1018,10 +1018,11 @@ function checkCertificateEligibility(course) {
     try { _analyticsCacheAt = 0; } catch (e) {}
     try { invalidateCommunityCache(); } catch (e) {}
 
-    /* ⭐ Course order changed (Admin → Courses). Only the course list is
+    /* ⭐ Course order (Admin → Courses) or the material order inside a
+       course (course editor → Materials) changed. Only the course list is
        refetched — quietly, no toast. The admin's own change is already on
        screen, so its echo is ignored. */
-    if (scope === 'courses:order') {
+    if (scope === 'courses:order' || scope === 'courses:material-order') {
       if (Date.now() - (window.__aeroCourseOrderSelfAt || 0) < 6000) return;
       if (isBusy()) { window.__aeroSyncPending = { scope, detail }; return; }
       try { if (typeof fetchCoursesFromDB === 'function') fetchCoursesFromDB(true).catch(() => {}); } catch (e) {}
@@ -8090,12 +8091,305 @@ function renderEditorMaterials(course) {
     return html;
   }
 
+  /* ⭐ Drag ⋮⋮ (or ↑ ↓) to change the order students see */
+  const total = course.materials.length;
+  html += renderMaterialOrderHint(total);
+  html += `<div class="mord-list" id="mordList" data-course-id="${course.id}">`;
   course.materials.forEach((m, idx) => {
-    html += renderMaterialEditorCard(course.id, m, idx);
+    html += renderMaterialEditorCard(course.id, m, idx, total);
   });
+  html += `</div>`;
 
   return html;
 }
+/* ============================================================
+   ⭐ MATERIAL ORDER INSIDE A COURSE (2026-10-06)
+   ------------------------------------------------------------
+   Course editor → Materials: every material has a ⋮⋮ handle
+   (drag up / down with mouse, trackpad or touch; or focus it and
+   press ↑ ↓) and ↑ / ↓ buttons. The list changes at once — no
+   reload, so half-typed edits in open cards are kept — the order
+   is saved in the background (PUT …/materials/reorder; quick moves
+   are combined, saves never overlap) and students' course pages
+   re-sort live through the 'courses:material-order' sync event.
+   ============================================================ */
+var _mordDrag = null;
+const _mordSave = new Map();         // courseId → { timer, inflight, pending, saved }
+
+function renderMaterialOrderHint(total) {
+  if (!(total > 1)) return '';
+  return `
+    <div class="mord-hint">
+      <i class="fas fa-arrow-down-short-wide"></i>
+      <span>Drag <i class="fas fa-grip-vertical" aria-hidden="true"></i> or use <b>↑ ↓</b> to change the order students see these materials in.</span>
+      <span class="mord-state" id="mordState" aria-live="polite"></span>
+    </div>`;
+}
+
+function mordCards(list) {
+  return Array.from(list.querySelectorAll(':scope > .material-editor[data-mat-id]'));
+}
+function mordIds(list) {
+  return mordCards(list).map(el => el.getAttribute('data-mat-id'));
+}
+
+/* #numbers and the first / last arrow states, without a re-render */
+function mordRefresh(list) {
+  const cards = mordCards(list);
+  cards.forEach((el, i) => {
+    const idx = el.querySelector(':scope > summary .me-index');
+    if (idx) idx.textContent = '#' + (i + 1);
+    const up = el.querySelector(':scope > summary [data-mord="up"]');
+    const down = el.querySelector(':scope > summary [data-mord="down"]');
+    if (up) up.disabled = i === 0;
+    if (down) down.disabled = i === cards.length - 1;
+  });
+}
+
+/* Put the course's materials array (in memory) in the given order */
+function mordApplyLocal(courseId, ids) {
+  const c = findCourse(courseId);
+  if (!c || !Array.isArray(c.materials)) return;
+  const key = m => String(m.id || m._id);
+  const byId = new Map(c.materials.map(m => [key(m), m]));
+  const listed = ids.map(id => byId.get(String(id))).filter(Boolean);
+  const set = new Set(ids.map(String));
+  const rest = c.materials.filter(m => !set.has(key(m)));
+  c.materials.splice(0, c.materials.length, ...listed, ...rest);
+}
+
+/* Put the cards on screen in the given order */
+function mordOrderDom(list, ids) {
+  const byId = new Map(mordCards(list).map(el => [el.getAttribute('data-mat-id'), el]));
+  ids.forEach(id => { const el = byId.get(String(id)); if (el) list.appendChild(el); });
+  mordRefresh(list);
+}
+
+function mordFlash(el) {
+  if (!el) return;
+  el.classList.remove('mord-dropped'); void el.offsetWidth;
+  el.classList.add('mord-dropped');
+  setTimeout(() => el.classList.remove('mord-dropped'), 800);
+}
+
+/* Called after every change on screen */
+function mordChanged(courseId, list, beforeIds) {
+  const ids = mordIds(list);
+  if (ids.join('|') === beforeIds.join('|')) return;
+  mordRefresh(list);
+  let st = _mordSave.get(courseId);
+  if (!st) { st = { timer: 0, inflight: false, pending: null, saved: null }; _mordSave.set(courseId, st); }
+  if (!st.saved) st.saved = beforeIds.slice();          // last order known to be in the database
+  mordApplyLocal(courseId, ids);
+  st.pending = ids;
+  mordState('saving');
+  clearTimeout(st.timer);
+  st.timer = setTimeout(() => mordFlush(courseId), 300);
+}
+
+/* ↑ / ↓ buttons and the handle's arrow keys. The NEIGHBOUR card is
+   moved, so the focused button / handle never loses focus. */
+function mordMove(courseId, matId, dir) {
+  if (_mordDrag) return;
+  const list = document.getElementById('mordList');
+  if (!list) return;
+  const el = list.querySelector(`:scope > .material-editor[data-mat-id="${CSS.escape(String(matId))}"]`);
+  if (!el) return;
+  const before = mordIds(list);
+  const cards = mordCards(list);
+  const i = cards.indexOf(el);
+  const other = cards[i + dir];
+  if (!other) return;
+  if (dir < 0) list.insertBefore(other, el.nextSibling);
+  else list.insertBefore(other, el);
+  mordChanged(courseId, list, before);
+  mordFlash(el);
+  /* a button that just became disabled can't keep focus → use its twin */
+  const ae = document.activeElement;
+  if (ae && ae.classList && ae.classList.contains('mord-btn') && ae.disabled) {
+    const twin = el.querySelector(`:scope > summary [data-mord="${dir < 0 ? 'down' : 'up'}"]`);
+    if (twin) twin.focus();
+  }
+  const r = el.getBoundingClientRect();
+  if (r.top < 70 || r.bottom > window.innerHeight) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function mordGripKey(e, courseId, matId) {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); return; }
+  if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+  e.preventDefault(); e.stopPropagation();
+  mordMove(courseId, matId, e.key === 'ArrowUp' ? -1 : 1);
+}
+
+/* ---------- saving: debounced, one request at a time per course ---------- */
+async function mordFlush(courseId) {
+  const st = _mordSave.get(courseId);
+  if (!st || st.inflight || !st.pending) return;
+  const ids = st.pending;
+  st.pending = null;
+  st.inflight = true;
+  window.__aeroCourseOrderSelfAt = Date.now();      // ignore the echo of our own change
+  let ok = false, data = null, msg = '';
+  try {
+    const res = await fetch(`${API_BASE}/courses/${encodeURIComponent(courseId)}/materials/reorder`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ order: ids })
+    });
+    try { data = await res.json(); } catch (e) {}
+    ok = res.ok && data && data.success === true;
+    if (!ok) msg = (data && data.message) || ('Could not save the new order (HTTP ' + res.status + '). Please try again.');
+  } catch (e) {
+    msg = 'Could not save the new order — check your internet connection and try again.';
+  } finally {
+    window.__aeroCourseOrderSelfAt = Date.now();
+    st.inflight = false;
+  }
+  if (st.pending) { mordFlush(courseId); return; }   // a newer order is waiting
+  const list = document.getElementById('mordList');
+  const onScreen = list && list.getAttribute('data-course-id') === String(courseId);
+  if (ok) {
+    st.saved = Array.isArray(data.order) && data.order.length ? data.order.slice() : ids.slice();
+    mordState('saved');
+  } else {
+    /* go back to the order the database really has */
+    if (st.saved) {
+      mordApplyLocal(courseId, st.saved);
+      if (onScreen) mordOrderDom(list, st.saved);
+    }
+    mordState('error');
+    showToast(msg, 'error');
+  }
+}
+
+function mordState(state) {
+  const el = document.getElementById('mordState');
+  if (!el) return;
+  clearTimeout(el._t);
+  if (state === 'saving') { el.className = 'mord-state run'; el.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+  else if (state === 'saved') {
+    el.className = 'mord-state ok'; el.innerHTML = '<i class="fas fa-circle-check"></i> Order saved';
+    el._t = setTimeout(() => { el.className = 'mord-state'; el.innerHTML = ''; }, 2500);
+  } else if (state === 'error') { el.className = 'mord-state err'; el.innerHTML = '<i class="fas fa-triangle-exclamation"></i> Not saved'; }
+  else { el.className = 'mord-state'; el.innerHTML = ''; }
+}
+
+/* ---------- drag & drop (pointer events: mouse, pen, touch) ---------- */
+function mordDragStart(e, courseId, matId) {
+  if (_mordDrag) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  const handle = e.currentTarget;
+  const card = handle && handle.closest('.material-editor');
+  const list = card && card.parentElement;
+  if (!card || !list || list.id !== 'mordList') return;
+  const startOrder = mordIds(list);
+  if (startOrder.length < 2) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  /* an open card is tall — fold it while it moves */
+  const wasOpen = card.open;
+  if (wasOpen) card.open = false;
+
+  const rect = card.getBoundingClientRect();
+  const ph = document.createElement('div');
+  ph.className = 'mord-ph';
+  ph.style.height = rect.height + 'px';
+  list.insertBefore(ph, card);
+
+  card.classList.add('mord-dragging');
+  card.style.width = rect.width + 'px';
+  card.style.left = rect.left + 'px';
+  card.style.top = rect.top + 'px';
+  document.body.classList.add('mord-drag-on');
+  try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+
+  _mordDrag = { courseId: String(courseId), matId: String(matId), card, list, ph, handle, wasOpen, startOrder,
+                offY: e.clientY - rect.top, y: e.clientY, raf: 0, pointerId: e.pointerId };
+
+  const onMove = (ev) => {
+    if (!_mordDrag || ev.pointerId !== _mordDrag.pointerId) return;
+    ev.preventDefault();
+    _mordDrag.y = ev.clientY;
+    mordDragPlace();
+  };
+  const onUp = (ev) => {
+    if (!_mordDrag || (ev && ev.pointerId !== undefined && ev.pointerId !== _mordDrag.pointerId)) return;
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    window.removeEventListener('keydown', onEsc, true);
+    mordDragFinish(!!(ev && ev.cancelled));
+  };
+  const onEsc = (ev) => {
+    if (ev.key !== 'Escape' || !_mordDrag) return;
+    ev.preventDefault(); ev.stopPropagation();
+    onUp({ cancelled: true });
+  };
+  window.addEventListener('pointermove', onMove, { passive: false });
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+  window.addEventListener('keydown', onEsc, true);
+
+  const tick = () => {
+    if (!_mordDrag) return;
+    const edge = 90, y = _mordDrag.y, h = window.innerHeight;
+    let dy = 0;
+    if (y < edge) dy = -Math.ceil((edge - y) / 5);
+    else if (y > h - edge) dy = Math.ceil((y - (h - edge)) / 5);
+    if (dy) { window.scrollBy(0, dy); mordDragPlace(); }
+    _mordDrag.raf = requestAnimationFrame(tick);
+  };
+  _mordDrag.raf = requestAnimationFrame(tick);
+}
+
+function mordDragPlace() {
+  const d = _mordDrag;
+  if (!d) return;
+  d.card.style.top = (d.y - d.offY) + 'px';
+  const cards = mordCards(d.list).filter(c => c !== d.card);
+  let before = null;
+  for (const c of cards) {
+    const r = c.getBoundingClientRect();
+    if (d.y < r.top + r.height / 2) { before = c; break; }
+  }
+  if (before) { if (d.ph.nextSibling !== before) d.list.insertBefore(d.ph, before); }
+  else if (d.list.lastElementChild !== d.ph) d.list.appendChild(d.ph);
+  /* live numbers while dragging */
+  let n = 0;
+  Array.from(d.list.children).forEach(el => {
+    if (el === d.card) return;
+    const target = el === d.ph ? d.card : (el.classList.contains('material-editor') ? el : null);
+    if (!target) return;
+    n++;
+    const idx = target.querySelector(':scope > summary .me-index');
+    if (idx) idx.textContent = '#' + n;
+  });
+}
+
+function mordDragFinish(cancelled) {
+  const d = _mordDrag;
+  if (!d) return;
+  cancelAnimationFrame(d.raf);
+  try { d.handle.releasePointerCapture(d.pointerId); } catch (e) {}
+  if (cancelled) {
+    const next = d.startOrder[d.startOrder.indexOf(d.matId) + 1];
+    const ref = next ? d.list.querySelector(`:scope > .material-editor[data-mat-id="${CSS.escape(next)}"]`) : null;
+    d.list.insertBefore(d.ph, ref);
+  }
+  d.list.insertBefore(d.card, d.ph);
+  d.ph.remove();
+  d.card.classList.remove('mord-dragging');
+  d.card.style.width = d.card.style.left = d.card.style.top = '';
+  if (d.wasOpen) d.card.open = true;
+  document.body.classList.remove('mord-drag-on');
+  _mordDrag = null;
+  mordRefresh(d.list);
+  mordChanged(d.courseId, d.list, d.startOrder);
+  if (mordIds(d.list).join('|') !== d.startOrder.join('|')) mordFlash(d.card);
+  try { d.handle.focus({ preventScroll: true }); } catch (e) {}
+}
+
 /* ============================================================
    COURSE EDITOR — "Quizzes" tab
    Lists every material with its quiz status + prominent buttons
@@ -8205,15 +8499,34 @@ function renderEditorQuizzes(course) {
   return html;
 }
 
-function renderMaterialEditorCard(courseId, m, idx) {
+function renderMaterialEditorCard(courseId, m, idx, total) {
   const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
   const customId = 'meCustom-' + m.id;
   const isCustom = !isKnownMaterialType(m.type);
+  /* ⭐ order controls — only when the card is part of the course list */
+  const ordered = Number.isFinite(total) && total > 1;
+  const grip = ordered ? `
+          <button type="button" class="mord-grip" title="Drag to move (or focus and use ↑ ↓)"
+                  aria-label="Move ${escapeHtml(m.title)} — drag, or use the arrow keys"
+                  onpointerdown="mordDragStart(event, '${courseId}', '${m.id}')"
+                  onkeydown="mordGripKey(event, '${courseId}', '${m.id}')"
+                  onclick="event.preventDefault(); event.stopPropagation();">
+            <i class="fas fa-grip-vertical"></i>
+          </button>` : '';
+  const arrows = ordered ? `
+          <span class="mord-arrows">
+            <button type="button" class="mord-btn" data-mord="up" title="Move up" aria-label="Move ${escapeHtml(m.title)} up"
+                    onclick="event.preventDefault(); event.stopPropagation(); mordMove('${courseId}', '${m.id}', -1)" ${idx === 0 ? 'disabled' : ''}>
+              <i class="fas fa-arrow-up"></i></button>
+            <button type="button" class="mord-btn" data-mord="down" title="Move down" aria-label="Move ${escapeHtml(m.title)} down"
+                    onclick="event.preventDefault(); event.stopPropagation(); mordMove('${courseId}', '${m.id}', 1)" ${idx === total - 1 ? 'disabled' : ''}>
+              <i class="fas fa-arrow-down"></i></button>
+          </span>` : '';
 
   return `
     <details class="material-editor" data-mat-id="${m.id}">
       <summary>
-        <div class="me-summary-left">
+        <div class="me-summary-left">${grip}
           <span class="me-index">#${idx + 1}</span>
           <span class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</span>
           <strong>${escapeHtml(m.title)}</strong>
@@ -8222,7 +8535,7 @@ function renderMaterialEditorCard(courseId, m, idx) {
             ? `<span class="mat-quiz-badge"><i class="fas fa-file-pen"></i> ${quizCount} question${quizCount === 1 ? '' : 's'}</span>`
             : `<span class="mat-quiz-badge empty"><i class="fas fa-file-circle-plus"></i> No paper</span>`}
         </div>
-        <div class="me-summary-right" style="gap:8px;">
+        <div class="me-summary-right" style="gap:8px;">${arrows}
           <button type="button"
                   class="btn btn-sm ${quizCount > 0 ? 'btn-warning' : 'btn-success'}"
                   onclick="event.preventDefault(); event.stopPropagation(); openQuizEditor('${courseId}', '${m.id}');"
