@@ -3791,6 +3791,7 @@ function logout() {
   liveCourses = [];
 
   currentUser = null; currentCourseId = null; editingCourseId = null;
+  try { _aeroSetGuest(false); } catch (e) {}
   window.currentSelectedCourseId = null;
   currentMaterialFilter = 'all'; studentNav = 'home'; adminTab = 'overview';
   clearSession();
@@ -3966,9 +3967,20 @@ async function _handleRegisterOtp(otp) {
   const data = await res.json();
   if (!data.success) throw new Error(data.message || 'Registration failed.');
 
+  /* ⭐ Registered from the guest catalog → sign in right away and
+     continue to the lesson they clicked (no trip to the login page). */
+  const creds = { username: _otpContext.data && _otpContext.data.username, password: _otpContext.data && _otpContext.data.password };
+  const fromGuest = isGuestBrowsing();
+
   _otpContext = null;
   tempRegisterData = null;
   closeModal('otpVerificationModal');
+  if (fromGuest && creds.username && creds.password) {
+    showToast('🎉 Account created! Signing you in…', 'success');
+    const ok = await aeroGuestSignIn(creds.username, creds.password);
+    if (!ok) showToast('Your account is ready — please sign in to continue.', 'info');
+    return;
+  }
   showToast('🎉 Registration successful! You can now log in.', 'success');
 }
 
@@ -4883,7 +4895,7 @@ function _enforceViewInvariant() {
 
   if (currentUser) {
     // ── Logged in ──
-    document.body.classList.remove('aero-logged-out');
+    document.body.classList.remove('aero-logged-out', 'aero-guest');
     if (loginView.classList.contains('active')) {
       loginView.classList.remove('active');
     }
@@ -4894,9 +4906,15 @@ function _enforceViewInvariant() {
       submitBtn.disabled = false;
       submitBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Sign In';
     }
+  } else if (isGuestBrowsing()) {
+    // ── ⭐ Visitor browsing the course catalog (no account yet) ──
+    document.body.classList.add('aero-logged-out', 'aero-guest');
+    if (loginView.classList.contains('active')) loginView.classList.remove('active');
+    if (header) header.style.display = 'flex';
   } else {
     // ── Logged out ──
     document.body.classList.add('aero-logged-out');
+    document.body.classList.remove('aero-guest');
     if (!loginView.classList.contains('active')) {
       loginView.classList.add('active');
     }
@@ -4931,13 +4949,16 @@ function _renderAppNow() {
   $('appFooter').style.display = 'none';
 
   if (!currentUser) {
+    /* ⭐ Visitor browsing the catalog (landing → Explore Courses) */
+    if (isGuestBrowsing()) { renderGuestApp(); return; }
     $('loginView').classList.add('active');
     document.body.classList.add('aero-logged-out');
+    document.body.classList.remove('aero-guest');
     $('appHeader').style.display = 'flex';
     return;
   }
 
-  document.body.classList.remove('aero-logged-out');
+  document.body.classList.remove('aero-logged-out', 'aero-guest');
   $('appHeader').style.display = 'flex';
   $('appFooter').style.display = 'block';
   $('userDisplay').textContent = currentUser.username;
@@ -9967,7 +9988,7 @@ function renderStudentCourses() {
     return;
   }
 
-  let html = `<div class="course-grid">`;
+  let html = aeroGuestBannerHTML('catalog') + `<div class="course-grid">`;
   filtered.forEach(c => { html += renderStudentCourseCard(c); });
   html += `</div>`;
   $('studentCourseList').innerHTML = html;
@@ -10151,6 +10172,8 @@ function renderCourseDetail(courseId) {
     </div>
   `;
 
+  html += aeroGuestBannerHTML('course');      // ⭐ visitors only (empty for signed-in users)
+
   if (course.learningOutcomes && course.learningOutcomes.length > 0) {
     html += `<div class="learning-outcomes">
       <h3><i class="fas fa-bullseye"></i> What you'll learn</h3>
@@ -10169,7 +10192,7 @@ function renderCourseDetail(courseId) {
     </div>`;
   }
 
-  if (isPremiumCourse && currentUser.role === 'student' && !isPurchased && !isSubscribed) {
+  if (isPremiumCourse && (currentUser && currentUser.role) === 'student' && !isPurchased && !isSubscribed) {
     html += `<div class="premium-notice">
       <div><i class="fas fa-info-circle"></i> Premium materials locked.</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -10178,7 +10201,7 @@ function renderCourseDetail(courseId) {
     </div>`;
   }
 
-  if (liveSubscriptionSettings.enabled && currentUser.role === 'student' && !isSubscribed) {
+  if (liveSubscriptionSettings.enabled && (currentUser && currentUser.role) === 'student' && !isSubscribed) {
     html += `<div class="subscribe-cta">
       <div class="subscribe-cta-text">
         <i class="fas fa-repeat"></i>
@@ -10190,7 +10213,7 @@ function renderCourseDetail(courseId) {
     </div>`;
   }
 
-  if (currentUser.role === 'student') {
+  if ((currentUser && currentUser.role) === 'student') {
     const canAccess = !isPremiumCourse || isPurchased;
     const certEnabled = !!(course.certificate && course.certificate.enabled);
 
@@ -10352,6 +10375,9 @@ function renderMaterialCard(course, m, isPurchased) {
   const materialLocked = isMatPremium    && !isMatPurchased && !isSubscribed;
   const isLocked       = !isAdminUser && (courseLocked || materialLocked);
   const canAccess      = !isLocked;
+  /* ⭐ Visitor browsing the catalog without an account: every lesson is
+     listed but locked — clicking it asks them to register / sign in. */
+  const isGuestView    = !currentUser;
 
   const viewed    = isMaterialViewed(course.id, m.id);
   const quizCount = m.quizCount !== undefined ? m.quizCount : (m.quiz || []).length;
@@ -10370,7 +10396,7 @@ function renderMaterialCard(course, m, isPurchased) {
     if (cachedThumb) {
       thumbHtml = `<div class="material-thumb has-thumb" data-material-id="${m.id}">
         <img src="${cachedThumb}" alt="" loading="lazy" decoding="async">
-        ${isLocked ? '<div class="material-thumb-lock"><i class="fas fa-lock"></i></div>' : ''}
+        ${(isLocked || isGuestView) ? '<div class="material-thumb-lock"><i class="fas fa-lock"></i></div>' : ''}
       </div>`;
     } else {
       thumbHtml = `<div class="material-thumb" data-material-id="${m.id}"
@@ -10379,7 +10405,7 @@ function renderMaterialCard(course, m, isPurchased) {
           <i class="fas fa-file-pdf"></i>
           <span>${escapeHtml(String(m.type || 'PDF').toUpperCase())}</span>
         </div>
-        ${isLocked ? '<div class="material-thumb-lock"><i class="fas fa-lock"></i></div>' : ''}
+        ${(isLocked || isGuestView) ? '<div class="material-thumb-lock"><i class="fas fa-lock"></i></div>' : ''}
       </div>`;
     }
   }
@@ -10438,8 +10464,15 @@ function renderMaterialCard(course, m, isPurchased) {
     }
   }
 
+  if (isGuestView) {
+    fileActionHtml = `<button class="btn btn-primary btn-sm guest-open-btn"
+                        onclick="event.stopPropagation();aeroGuestGate('${course.id}', '${m.id}')">
+                        <i class="fas fa-lock"></i> Register free to open
+                      </button>`;
+  }
+
   let progressBtnHtml = '';
-  if (currentUser.role === 'student' && canAccess) {
+  if ((currentUser && currentUser.role) === 'student' && canAccess) {
     progressBtnHtml = `<button class="btn ${viewed ? 'btn-success' : 'btn-outline'} btn-sm"
                         onclick="event.stopPropagation();toggleMaterialViewed(event, '${course.id}', '${m.id}')">
                         <i class="fas ${viewed ? 'fa-check-circle' : 'fa-circle'}"></i>
@@ -10521,7 +10554,7 @@ function renderMaterialCard(course, m, isPurchased) {
     : '';
 
   return `
-    <div class="material-item ${isLocked ? 'locked-mat' : ''}">
+    <div class="material-item ${isLocked ? 'locked-mat' : ''}${isGuestView ? ' guest-locked' : ''}"${isGuestView ? ` data-gmid="${m.id}"` : ''}>
       ${thumbHtml}
       <div class="mat-head">
         <div class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</div>
@@ -10530,7 +10563,7 @@ function renderMaterialCard(course, m, isPurchased) {
       </div>
       <h4>${escapeHtml(m.title)}</h4>
       <div class="mat-desc">${escapeHtml(m.description) || ''}</div>
-      ${(m.type === 'video' && canAccess && currentUser.role === 'student') ? videoProgressStripHtml(m.id) : ''}
+      ${(m.type === 'video' && canAccess && (currentUser && currentUser.role) === 'student') ? videoProgressStripHtml(m.id) : ''}
       <div class="mat-actions">${fileActionHtml}${progressBtnHtml}${isAdminUser ? `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openMaterialViewers('${course.id}', '${m.id}', ${jsStr(m.title || '')})" title="Who opened this material (invisible access log)"><i class="fas fa-users-viewfinder"></i> Viewers</button>` : ''}</div>
     </div>
   `;
@@ -10540,7 +10573,7 @@ function renderQASection(course) {
   const doubts = [...(course.doubts || [])];
   let html = `<div class="qa-section"><h3><i class="fas fa-comments"></i> Course Q&A / Doubts</h3>`;
 
-  if (currentUser.role === 'student') {
+  if ((currentUser && currentUser.role) === 'student') {
     html += `<div class="qa-ask-box">
       <label>Ask a New Doubt</label>
       <textarea id="newDoubtText" placeholder="Type your doubt here..."></textarea>
@@ -10588,9 +10621,9 @@ function renderQASection(course) {
       const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
       const emailText = d.studentEmail ? escapeHtml(d.studentEmail) : '';
       const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
-      const isAsker = d.studentUsername === currentUser.username;
+      const isAsker = d.studentUsername === (currentUser && currentUser.username);
       const isAdminUser = isAdmin(currentUser);
-      const canReply = isAdminUser || currentUser.role === 'student';
+      const canReply = isAdminUser || (currentUser && currentUser.role) === 'student';
 
       const replies = d.replies || [];
       let repliesHtml = '';
@@ -10682,7 +10715,7 @@ function renderCoursePlaylists(course) {
             ${firstThree}
             ${more}
           </ul>
-          ${plProg.total && currentUser.role === 'student' ? `
+          ${plProg.total && (currentUser && currentUser.role) === 'student' ? `
           <div class="vprog playlist ${plProg.done === plProg.total ? 'done' : ''}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${plProg.pct}" aria-label="Playlist progress">
             <div class="vprog-bar"><span style="width:${plProg.pct}%"></span></div>
             <div class="vprog-label">${plProg.done} of ${plProg.total} watched · ${plProg.pct}%</div>
@@ -10699,6 +10732,7 @@ function renderCoursePlaylists(course) {
 }
 
 async function openPlaylistPlayer(courseId, playlistId, startIndex = 0) {
+  if (!currentUser && isGuestBrowsing()) return aeroGuestGate(courseId, null);
   if (!currentUser) return showToast('Please log in first.', 'error');
   const course = findCourse(courseId);
   if (!course) return;
@@ -12241,6 +12275,7 @@ function _detachAllProctorListeners() {
    OPEN — Shows pre-exam consent first
    ============================================================ */
 async function openQuizPlayer(courseId, materialId) {
+  if (!currentUser && isGuestBrowsing()) return aeroGuestGate(courseId, materialId);
   const course = findCourse(courseId); if (!course) return;
   const mat = (course.materials || []).find(m => m.id === materialId); if (!mat) return;
 
@@ -13782,7 +13817,8 @@ function previewQuizPaper() {
 function assertMaterialUnlocked(courseId, materialId, opts) {
   opts = opts || {};
   if (!currentUser) {
-    if (!opts.silent) showToast('Please log in to open this material.', 'error');
+    if (!opts.silent && isGuestBrowsing()) aeroGuestGate(courseId, materialId);
+    else if (!opts.silent) showToast('Please log in to open this material.', 'error');
     return false;
   }
   if (isAdmin(currentUser)) return true;
@@ -13968,6 +14004,7 @@ async function openRenderedOfficeFile(course, mat, meta, pdfJsPromise) {
 }
 
 async function viewFileOnline(courseId, materialId) {
+  if (!currentUser && isGuestBrowsing()) return aeroGuestGate(courseId, materialId);
   const course = findCourse(courseId);
   if (!course) return showToast('Course not found.', 'error');
 
@@ -14463,6 +14500,7 @@ async function openMaterialVideo(courseId, materialId) {
 
 async function toggleBookmark(e, courseId) {
   if (e) e.stopPropagation();
+  if (!currentUser && isGuestBrowsing()) return aeroGuestGate(courseId, null);
   if (!currentUser?._id) return;
   try {
     const res = await fetch(`/api/user/bookmarks/${courseId}`, {
@@ -14480,6 +14518,7 @@ async function toggleBookmark(e, courseId) {
 }
 
 async function toggleMaterialViewed(e, courseId, materialId) {
+  if (!currentUser && isGuestBrowsing()) { if (e) e.stopPropagation(); return aeroGuestGate(courseId, materialId); }
   if (e) e.stopPropagation();
   const currently = isMaterialViewed(courseId, materialId);
   try {
@@ -14840,6 +14879,7 @@ async function acceptReply(courseId, doubtId, replyId) {
    ============================================================ */
 async function showPaymentModal(courseId, materialId = null) {
   if (!currentUser) {
+    if (isGuestBrowsing()) return aeroGuestGate(courseId, materialId);
     return showToast('Please log in first.', 'error');
   }
   if (String(currentUser.role || '').toLowerCase() === 'admin') {
@@ -15019,6 +15059,349 @@ function showToast(message, type = 'info') {
 /* ============================================================
    INIT
    ============================================================ */
+/* ============================================================
+   ⭐ GUEST COURSE CATALOG + SIGN-UP GATE (2026-10-06)
+   ------------------------------------------------------------
+   Landing page → "Explore Courses" (/app?intent=explore) lets a
+   visitor browse the full catalog and every course's curriculum
+   (types, lesson titles, playlists) exactly as students see it —
+   without an account.
+
+   • All lessons stay locked: any click on a lesson, PDF, video,
+     quiz, playlist, bookmark or purchase opens the "Create your
+     free account" pop-up instead (aeroGuestGate). The server also
+     refuses lesson files / videos / quizzes to visitors.
+   • Register (email + phone OTP) or Sign in inside the pop-up.
+     After it succeeds the pop-up closes, the visitor is signed
+     in on the same page, and the lesson they clicked opens.
+   • Signed-in users never see any of this. A logged-out visitor
+     who did not choose to browse still gets the normal login page.
+   ============================================================ */
+var AERO_GUEST_KEY = 'aero_guest_browse';
+var _aeroGuest = false;
+var _aeroGuestPending = null;          // { courseId, materialId } clicked before signing up
+try { _aeroGuest = sessionStorage.getItem(AERO_GUEST_KEY) === '1'; } catch (e) {}
+
+function isGuestBrowsing() { return !currentUser && _aeroGuest; }
+
+function _aeroSetGuest(on) {
+  _aeroGuest = !!on;
+  try {
+    if (on) sessionStorage.setItem(AERO_GUEST_KEY, '1');
+    else sessionStorage.removeItem(AERO_GUEST_KEY);
+  } catch (e) {}
+  if (!on) document.body.classList.remove('aero-guest');
+}
+
+/* Start browsing as a visitor (landing "Explore Courses", login page link) */
+function aeroStartGuestBrowse(courseId) {
+  if (currentUser) { navigateStudent('courses'); return; }
+  _aeroSetGuest(true);
+  editingCourseId = null;
+  currentMaterialFilter = 'all';
+  if (courseId) {
+    currentCourseId = courseId;
+    window.currentSelectedCourseId = courseId;
+    try { history.replaceState(null, '', '#/course/' + courseId); } catch (e) {}
+  } else {
+    currentCourseId = null;
+    window.currentSelectedCourseId = null;
+    studentNav = 'courses';
+    try { history.replaceState(null, '', '#/courses'); } catch (e) {}
+  }
+  renderApp();
+}
+
+/* Called once from initApp() before the first paint (no saved session) */
+function aeroConsumeLandingIntent() {
+  if (currentUser) { _aeroSetGuest(false); return; }
+  let intent = '';
+  try { intent = sessionStorage.getItem('aero_landing_intent') || ''; } catch (e) {}
+  if (intent === 'explore') {
+    try { sessionStorage.removeItem('aero_landing_intent'); } catch (e) {}
+    _aeroSetGuest(true);
+  }
+  if (!_aeroGuest) return;
+  /* only the catalog and course pages exist for visitors */
+  if (!currentCourseId) {
+    studentNav = 'courses';
+    try { history.replaceState(null, '', '#/courses'); } catch (e) {}
+  }
+}
+
+/* Header buttons for visitors: Sign in · Register free */
+function aeroEnsureGuestBar() {
+  if (document.getElementById('guestHeaderActions')) return;
+  const info = document.querySelector('#appHeader .user-info');
+  if (!info) return;
+  const bar = document.createElement('div');
+  bar.id = 'guestHeaderActions';
+  bar.className = 'guest-header-actions';
+  bar.innerHTML = `
+    <button type="button" class="btn btn-outline btn-sm" onclick="aeroGuestGate(null, null, 'signin')">
+      <i class="fas fa-right-to-bracket"></i> <span>Sign in</span>
+    </button>
+    <button type="button" class="btn btn-primary btn-sm" onclick="aeroGuestRegister()">
+      <i class="fas fa-user-plus"></i> <span>Register free</span>
+    </button>`;
+  info.insertBefore(bar, info.firstChild);
+}
+
+/* Small banner on the catalog / course page for visitors */
+function aeroGuestBannerHTML(where) {
+  if (currentUser) return '';
+  return `
+    <div class="guest-banner">
+      <div class="guest-banner-icon"><i class="fas fa-eye"></i></div>
+      <div class="guest-banner-text">
+        <strong>You're previewing AeroGyan as a guest.</strong>
+        <span>${where === 'course'
+          ? 'Every lecture, note and PYQ of this course is listed below — register free to open them.'
+          : 'Browse every course and its full curriculum. Register free to open the lectures, notes and PYQs.'}</span>
+      </div>
+      <div class="guest-banner-actions">
+        <button type="button" class="btn btn-primary btn-sm" onclick="aeroGuestRegister()"><i class="fas fa-rocket"></i> Register free</button>
+        <button type="button" class="btn btn-outline btn-sm" onclick="aeroGuestGate(null, null, 'signin')">Sign in</button>
+      </div>
+    </div>`;
+}
+
+/* The visitor's version of the app: catalog + course pages only */
+function renderGuestApp() {
+  document.body.classList.add('aero-logged-out', 'aero-guest');
+  $('appHeader').style.display = 'flex';
+  $('appFooter').style.display = 'block';
+  aeroEnsureGuestBar();
+  const brand = document.querySelector('#appHeader .brand');
+  if (brand) brand.style.cursor = 'pointer';
+
+  if (!liveCourses.length && !_coursesLoading) {
+    fetchCoursesFromDB(true).catch(err => console.warn('[guest] course fetch failed:', err));
+  }
+
+  if (currentCourseId) {
+    $('courseDetailView').classList.add('active');
+    if (!findCourse(currentCourseId) && (!liveCourses.length || _coursesLoading)) {
+      const el = $('courseDetailContent');
+      if (el) el.innerHTML = renderCoursesLoadingSkeleton('Loading course…');
+      return;
+    }
+    renderCourseDetail(currentCourseId);
+    return;
+  }
+  if (studentNav !== 'courses') {
+    studentNav = 'courses';
+    try { history.replaceState(null, '', '#/courses'); } catch (e) {}
+  }
+  $('studentCoursesView').classList.add('active');
+  renderStudentCourses();
+}
+
+/* ---------- The "create your free account" pop-up ---------- */
+function _aeroGateModal() {
+  let el = document.getElementById('guestGateModal');
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'modal-overlay';
+  el.id = 'guestGateModal';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.setAttribute('aria-labelledby', 'guestGateTitle');
+  el.innerHTML = `
+    <div class="modal-box guest-gate">
+      <button type="button" class="guest-gate-close" aria-label="Close" onclick="aeroCloseGuestGate()"><i class="fas fa-xmark"></i></button>
+      <div class="guest-gate-icon"><i class="fas fa-lock-open"></i></div>
+      <h3 id="guestGateTitle">Create your free account to continue</h3>
+      <p class="modal-sub" id="guestGateSub"></p>
+      <ul class="guest-gate-perks">
+        <li><i class="fas fa-check"></i> Every lecture, note, PYQ and tutorial</li>
+        <li><i class="fas fa-check"></i> Track your progress and resume anywhere</li>
+        <li><i class="fas fa-check"></i> Free — takes about 30 seconds</li>
+      </ul>
+      <button type="button" class="btn btn-primary btn-block guest-gate-register" onclick="aeroGuestRegister()">
+        <i class="fas fa-user-plus"></i> Register free
+      </button>
+      <div class="guest-gate-or"><span>Already have an account?</span></div>
+      <form class="guest-gate-signin" onsubmit="aeroGuestSignInSubmit(event)" autocomplete="on">
+        <div class="form-group"><label for="guestGateUser">Username</label>
+          <input type="text" id="guestGateUser" autocomplete="username" required></div>
+        <div class="form-group"><label for="guestGatePass">Password</label>
+          <input type="password" id="guestGatePass" autocomplete="current-password" required></div>
+        <button type="submit" class="btn btn-outline btn-block" id="guestGateSignInBtn"><i class="fas fa-right-to-bracket"></i> Sign in</button>
+        <a href="#" class="link-inline guest-gate-forgot" onclick="event.preventDefault();aeroCloseGuestGate(true);showForgotPasswordModal();">Forgot password?</a>
+      </form>
+    </div>`;
+  el.addEventListener('click', (e) => { if (e.target === el) aeroCloseGuestGate(); });
+  document.body.appendChild(el);
+  return el;
+}
+
+function aeroGuestGate(courseId, materialId, mode) {
+  if (currentUser) return;                       // already signed in → nothing to gate
+  if (courseId || materialId) _aeroGuestPending = { courseId: courseId || currentCourseId || null, materialId: materialId || null };
+  const el = _aeroGateModal();
+  const sub = el.querySelector('#guestGateSub');
+  const course = courseId ? findCourse(courseId) : (currentCourseId ? findCourse(currentCourseId) : null);
+  const mat = course && materialId ? (course.materials || []).find(m => m.id === materialId) : null;
+  if (sub) {
+    sub.innerHTML = mat
+      ? `<strong>“${escapeHtml(mat.title)}”</strong>${course ? ` in ${escapeHtml(course.name)}` : ''} is available to registered students.`
+      : (mode === 'signin'
+          ? 'Sign in to open lectures, notes and PYQs — or register free if you are new.'
+          : 'Course lessons are available to registered students.');
+  }
+  el.classList.add('active');
+  document.addEventListener('keydown', _aeroGateEsc, true);
+  setTimeout(() => {
+    const f = mode === 'signin' ? el.querySelector('#guestGateUser') : el.querySelector('.guest-gate-register');
+    if (f) try { f.focus(); } catch (e) {}
+  }, 60);
+}
+
+function _aeroGateEsc(e) {
+  if (e.key === 'Escape') { e.preventDefault(); aeroCloseGuestGate(); }
+}
+
+/* keepPending: the visitor moved on to register / reset password */
+function aeroCloseGuestGate(keepPending) {
+  const el = document.getElementById('guestGateModal');
+  if (el) el.classList.remove('active');
+  document.removeEventListener('keydown', _aeroGateEsc, true);
+  if (!keepPending) _aeroGuestPending = null;
+}
+
+function aeroGuestRegister() {
+  if (currentUser) return;
+  aeroCloseGuestGate(true);
+  showRegisterModal();
+}
+
+async function aeroGuestSignInSubmit(e) {
+  e.preventDefault();
+  const u = (document.getElementById('guestGateUser') || {}).value || '';
+  const p = (document.getElementById('guestGatePass') || {}).value || '';
+  if (!u.trim() || !p) return showToast('Please enter your username and password.', 'error');
+  const btn = document.getElementById('guestGateSignInBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in…'; }
+  try {
+    await aeroGuestSignIn(u.trim(), p);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-right-to-bracket"></i> Sign in'; }
+  }
+}
+
+/* Sign in without leaving the page. Returns true on success. */
+async function aeroGuestSignIn(username, password) {
+  let data = null;
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, role: 'student' })
+    });
+    const raw = await res.text();
+    try { data = raw ? JSON.parse(raw) : {}; } catch (e) { data = { success: false, message: 'Server returned HTTP ' + res.status + '.' }; }
+  } catch (err) {
+    showToast('Could not reach the server. Please check your connection.', 'error');
+    return false;
+  }
+  if (data && data.requires2FA) {
+    /* Admin accounts use the full sign-in page (email code) */
+    aeroCloseGuestGate();
+    _aeroSetGuest(false);
+    currentCourseId = null; window.currentSelectedCourseId = null;
+    try { history.replaceState(null, '', '#/home'); } catch (e) {}
+    renderApp();
+    showToast('Admin accounts sign in here, with the code sent to your email.', 'info');
+    return false;
+  }
+  if (!data || !data.success || !data.user) {
+    showToast((data && data.message) || 'Sign-in failed. Please try again.', 'error');
+    return false;
+  }
+  aeroFinishGuestAuth(data);
+  return true;
+}
+
+/* Signed in (after Sign in, or right after registering) — stay on the
+   same page and open the lesson the visitor had clicked. */
+function aeroFinishGuestAuth(data) {
+  const pending = _aeroGuestPending;
+  _aeroGuestPending = null;
+  currentUser = data.user;
+  saveSession(data.user, data.token);
+  _aeroSetGuest(false);
+  aeroCloseGuestGate();
+  closeModal('registerModal');
+  closeModal('otpVerificationModal');
+  _sessionKilled = false;
+  startSessionHeartbeat();
+
+  const isAdminRole = String(data.user.role || '').trim().toLowerCase() === 'admin';
+  if (isAdminRole) {
+    currentCourseId = null; window.currentSelectedCourseId = null;
+    adminTab = 'overview';
+    try { history.replaceState(null, '', '#/admin/overview'); } catch (e) {}
+  } else {
+    try { ensureStudentAIHomeView(); } catch (e) {}
+  }
+  showToast(`Welcome${data.user.fullName ? ', ' + data.user.fullName.split(' ')[0] : ''}! You now have full access.`, 'success');
+  renderApp();
+
+  Promise.allSettled([
+    fetchCoursesFromDB(true),
+    fetchProfessorsFromDB(true),
+    fetchSubscriptionSettings(),
+    fetchOwnerProfile(true)
+  ]).then(() => {
+    try { renderApp(); } catch (e) {}
+    if (!isAdminRole && pending && pending.courseId && pending.materialId) {
+      const c = findCourse(pending.courseId);
+      if (c && (c.materials || []).some(m => m.id === pending.materialId)) {
+        setTimeout(() => { try { openMaterialSmart(pending.courseId, pending.materialId); } catch (e) {} }, 150);
+      }
+    }
+  });
+  setTimeout(() => {
+    refreshUserData().catch(() => {});
+    loadNotifications().catch(() => {});
+  }, 800);
+}
+
+/* Visitors: any click on a lesson / button inside the catalog or a course
+   page (other than browsing controls) opens the sign-up pop-up instead.
+   Runs in the capture phase, before the element's own onclick. */
+document.addEventListener('click', function (e) {
+  if (!isGuestBrowsing()) return;
+  const t = e.target;
+  if (!t || !t.closest) return;
+  const area = t.closest('#courseDetailContent, #studentCourseList');
+  if (!area) return;
+  /* browsing controls that stay available to visitors */
+  if (t.closest('.material-tabs button, .playlist-banner button, .guest-banner, [data-guest-ok]')) return;
+
+  let gated = false;
+  if (area.id === 'studentCourseList') {
+    /* the course card itself opens the course page; its buttons need an account */
+    gated = !!t.closest('.bookmark-btn, button');
+  } else {
+    gated = !!t.closest('button, a[href], [onclick], .material-item, .material-thumb, input, textarea, select, summary, label, video, iframe');
+  }
+  if (!gated) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+
+  const item = t.closest('[data-gmid]');
+  const card = t.closest('.course-card');
+  let courseId = currentCourseId || null;
+  if (!courseId && card) {
+    const m = String(card.getAttribute('onclick') || '').match(/viewCourseDetail\('([^']+)'/);
+    if (m) courseId = m[1];
+  }
+  aeroGuestGate(courseId, item ? item.getAttribute('data-gmid') : null);
+}, true);
+
 function initApp() {
   const savedUser = loadSessionUser();
   if (savedUser) {
@@ -15032,6 +15415,8 @@ function initApp() {
   _applyCustomLogoIfAny().catch(() => {});
   updateThemeIcon();
   syncHashToState();
+  /* ⭐ Landing "Explore Courses" → browse the catalog as a visitor */
+  try { aeroConsumeLandingIntent(); } catch (e) {}
 
   // Make sure the AI home section exists (idempotent — returns early if already injected)
   if (currentUser && String(currentUser.role || '').toLowerCase() === 'student') {

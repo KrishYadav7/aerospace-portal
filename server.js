@@ -1189,6 +1189,7 @@ function _renderErrorPayload(e) {
 app.get('/api/courses/:courseId/materials/:materialId/render', attachUserFromToken, async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, private');
+    if (_visitorWithoutAccount(req)) return _sendSignupRequired(res);
     if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
       return res.status(400).json({ success: false, message: 'Invalid course ID.' });
     }
@@ -2685,6 +2686,20 @@ async function resolveSessionUser(token) {
 
 /* Optional auth — attaches req.authUser when the token is valid,
    otherwise the request proceeds as a guest (premium gates then deny). */
+/* ⭐ 2026-10-06 — visitors browsing the public catalog (no account, no
+   token at all) may see course and lesson titles, but not open lessons.
+   Requests that carry a token are left exactly as before. */
+function _visitorWithoutAccount(req) {
+  return !req.authUser && !_extractToken(req, false);
+}
+function _sendSignupRequired(res) {
+  res.setHeader('Cache-Control', 'no-store, private');
+  return res.status(401).json({
+    success: false, code: 'login-required', requiresLogin: true,
+    message: 'Please register or sign in to open this lesson.'
+  });
+}
+
 async function attachUserFromToken(req, res, next) {
   try {
     const token = _extractToken(req, false);
@@ -6274,6 +6289,7 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
   attachUserFromToken,
   async (req, res) => {
     try {
+      if (_visitorWithoutAccount(req)) return _sendSignupRequired(res);
       if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
         return res.status(400).json({ success: false, message: 'Invalid course ID.' });
       }
@@ -6411,6 +6427,7 @@ app.get('/api/courses/:courseId/materials/:materialId/full-quiz',
   attachUserFromToken,
   async (req, res) => {
     try {
+      if (_visitorWithoutAccount(req)) return _sendSignupRequired(res);
       if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
         return res.status(400).json({ success: false, message: 'Invalid course ID.' });
       }
@@ -11298,6 +11315,7 @@ app.post('/api/materials/:courseId/:materialId/video-session',
   attachUserFromToken,
   async (req, res) => {
   try {
+    if (_visitorWithoutAccount(req)) return _sendSignupRequired(res);
     /* ⚠️ SECURITY: We must NOT trust a client-supplied userId — a
        student could pass another student's _id and stream their
        premium video. The attachUserFromToken middleware reads the
