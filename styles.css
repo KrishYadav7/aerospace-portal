@@ -15946,3 +15946,28 @@ html.aero-in-app .app-install-pill { display: none !important; }
 @keyframes aigFadeIn  { from { opacity: 0; } to { opacity: 1; } }
 @keyframes aigSlideUp { from { opacity: 0; transform: translateY(20px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (max-width: 520px) { .aero-install-guide .aig-card { padding: 24px 20px; } }
+
+/* ============================================================
+   ⚡ PDF READER — progressive background rendering (2026-10-07)
+   ============================================================ */
+/* Light snapshot shown until the sharp page (canvas + text) is drawn */
+.pdfv-snap {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  display: block; background: #fff;
+  pointer-events: none;
+  -webkit-touch-callout: none !important;
+  -webkit-user-select: none !important; user-select: none !important;
+  -webkit-user-drag: none !important;
+}
+/* "⚡ 42 / 310 pages ready" chip in the reader toolbar */
+.pdfv-bgstatus {
+  margin-left: 10px; padding: 3px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+  color: #c7d2fe; background: rgba(99,102,241,.16); border: 1px solid rgba(129,140,248,.28);
+  font-variant-numeric: tabular-nums;
+  transition: opacity .3s ease;
+}
+.pdfv-bgstatus.is-done { color: #6ee7b7; background: rgba(16,185,129,.14); border-color: rgba(16,185,129,.35); }
+.pdfv-bgstatus[hidden] { display: none !important; }
+@media (max-width: 760px) { .pdfv-bgstatus { display: none !important; } }
