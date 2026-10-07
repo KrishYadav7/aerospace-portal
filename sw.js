@@ -6,7 +6,7 @@
    come from the network. Only truly static assets (manifest, images)
    go in the cache.
    ============================================================ */
-const CACHE_NAME = 'aero-shell-v138';
+const CACHE_NAME = 'aero-shell-v139';
 
 /* ONLY these go into the offline cache — they never change silently */
 const SHELL_ASSETS = [
@@ -52,7 +52,8 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((keys) =>
         Promise.all(
-          keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
+          /* keep the on-device PDF page cache (media-viewer.js) */
+          keys.filter((k) => k !== CACHE_NAME && k.indexOf('aero-pdf-pages') !== 0).map((k) => caches.delete(k))
         )
       )
       .then(() => self.clients.claim())

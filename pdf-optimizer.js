@@ -141,7 +141,101 @@ async function optimizePdf(srcPath, outPath, opts) {
   return { changed: true, images, resized, beforeBytes: st.size, afterBytes: saved.length };
 }
 
-module.exports = { optimizePdf, OPTIMIZER_DEFAULTS: DEFAULTS };
+/* ============================================================
+   ⚡ INSTANT POSTERS (2026-10-07)
+   ------------------------------------------------------------
+   Small JPEG pictures of the first pages, shown the moment a
+   student opens the PDF (≈ 60–120 KB each) while the real page is
+   prepared behind them. Pages that are one full-page picture
+   (scans / photographed notes) are cut straight from that picture
+   — no PDF renderer needed. Other pages are reported in `missing`
+   so the server can draw them with pdftoppm when it is installed.
+   Writes <prefix>1.jpg … and <prefix>info.json
+   ============================================================ */
+async function makePosters(srcPath, prefix, opts) {
+  const o = Object.assign({ pages: 3, width: 1000, quality: 72 }, opts || {});
+  const { PDFDocument, PDFName, PDFRawStream, PDFNumber, PDFArray, PDFDict, PDFRef } = require('pdf-lib');
+  const sharp = require('sharp');
+  const bytes = await fs.promises.readFile(srcPath);
+  const doc = await PDFDocument.load(bytes, { updateMetadata: false, throwOnInvalidObject: false });
+  const ctx = doc.context;
+  const N = (n) => PDFName.of(n);
+  const num = (v) => (v instanceof PDFNumber ? v.asNumber() : NaN);
+  const { decodePDFRawStream } = require('pdf-lib');
+  const contentOf = (page) => {
+    const c = page.node.Contents();
+    const parts = [];
+    const add = (st) => {
+      if (!st) return;
+      try { parts.push(Buffer.from(st instanceof PDFRawStream ? decodePDFRawStream(st).decode() : st.getContents()).toString('latin1')); }
+      catch (_) { parts.push('\u0000UNREADABLE'); }
+    };
+    if (c instanceof PDFArray) { for (let k = 0; k < c.size(); k++) add(ctx.lookup(c.get(k))); }
+    else add(c);
+    return parts.join('\n');
+  };
+  /* A page that only draws one picture (scan / photo): returns true and
+     writes the poster, placing the picture exactly where the page puts it
+     (photos are often letter-boxed with white margins). */
+  const posterFromSinglePicture = async (page, n, w, h, rot) => {
+    if (rot || !(w > 0 && h > 0)) return false;
+    const res = page.node.Resources();
+    const xo = res && res.lookup(N('XObject'));
+    if (!(xo instanceof PDFDict)) return false;
+    const text = contentOf(page);
+    if (text.indexOf('\u0000UNREADABLE') >= 0) return false;
+    /* nothing visible besides the picture: no text shown, no paths painted */
+    if (/\b(Tj|TJ)\b|['"]\s*$|\bre\b|\b[fFsSbB]\*?\s|\bsh\b|\bBI\b/m.test(text.replace(/BT[\s\S]*?ET/g, (m) => /\b(Tj|TJ)\b/.test(m) ? m : ''))) return false;
+    const draws = [...text.matchAll(/(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+cm\s*\/([^\s/]+)\s+Do/g)];
+    if (draws.length !== 1 || (text.match(/\bDo\b/g) || []).length !== 1) return false;
+    const [, a, b, c, d, e, f, name] = draws[0];
+    const A = +a, B = +b, C = +c, D = +d, E = +e, F = +f;
+    if (Math.abs(B) > 1e-3 || Math.abs(C) > 1e-3 || !(A > 0) || !(D > 0)) return false;
+    const ref = xo.get(N(name));
+    const img = ref instanceof PDFRef ? ctx.lookup(ref) : null;
+    if (!(img instanceof PDFRawStream) || img.dict.get(N('Subtype')) !== N('Image')) return false;
+    const dd = img.dict;
+    const fl = dd.get(N('Filter'));
+    const isDct = fl === N('DCTDecode') || (fl instanceof PDFArray && fl.size() === 1 && fl.get(0) === N('DCTDecode'));
+    const cs = dd.get(N('ColorSpace'));
+    if (!isDct || !(cs === N('DeviceRGB') || cs === N('DeviceGray')) || dd.get(N('Decode')) || dd.get(N('SMask'))) return false;
+    /* page box origin (MediaBox may not start at 0,0) */
+    let x0 = 0, y0 = 0;
+    try { const mb = page.getMediaBox(); x0 = mb.x; y0 = mb.y; } catch (_) {}
+    const W = o.width, H = Math.round(o.width * h / w), k = W / w;
+    const left = Math.round((E - x0) * k), top = Math.round((h - (F - y0) - D) * k);
+    const iw = Math.max(1, Math.round(A * k)), ih = Math.max(1, Math.round(D * k));
+    if (left < -2 || top < -2 || left + iw > W + 2 || top + ih > H + 2) return false;   // picture spills off the page
+    const pic = await sharp(Buffer.from(img.contents), { failOn: 'none' }).resize(iw, ih, { fit: 'fill' }).toBuffer();
+    const out = await sharp({ create: { width: W, height: H, channels: 3, background: '#ffffff' } })
+      .composite([{ input: pic, left: Math.max(0, left), top: Math.max(0, top) }])
+      .jpeg({ quality: o.quality, mozjpeg: true }).toBuffer();
+    await fs.promises.writeFile(prefix + n + '.jpg', out);
+    return true;
+  };
+  const pages = doc.getPages();
+  const info = { numPages: pages.length, pages: {}, made: [], missing: [] };
+  const count = Math.min(o.pages, pages.length);
+  for (let i = 0; i < count; i++) {
+    const n = i + 1;
+    const page = pages[i];
+    let w = 0, h = 0;
+    try { const sz = page.getSize(); w = Math.abs(sz.width); h = Math.abs(sz.height); } catch (_) {}
+    let rot = 0;
+    try { const r = page.getRotation(); rot = ((r && r.angle) || 0) % 360; } catch (_) {}
+    if (rot === 90 || rot === 270) { const t = w; w = h; h = t; }
+    info.pages[n] = { w, h };
+    let made = false;
+    try {
+      made = await posterFromSinglePicture(page, n, w, h, rot);
+    } catch (_) { made = false; }
+    (made ? info.made : info.missing).push(n);
+  }
+  await fs.promises.writeFile(prefix + 'info.json', JSON.stringify(info));
+  return info;
+}
+
+module.exports = { optimizePdf, makePosters, OPTIMIZER_DEFAULTS: DEFAULTS };
 
 /* ---- Child-process mode ------------------------------------------------
    server.js runs the optimizer as a separate, low-priority process:
@@ -150,9 +244,11 @@ module.exports = { optimizePdf, OPTIMIZER_DEFAULTS: DEFAULTS };
    freeze the web server for seconds if it ran inside it. Prints one line
    of JSON with the result. */
 if (require.main === module) {
-  const [src, out] = process.argv.slice(2);
+  const args = process.argv.slice(2);
   try { require('sharp').concurrency(1); } catch (_) {}
-  optimizePdf(src, out)
+  const posters = args[0] === '--posters';
+  const [src, out] = posters ? args.slice(1) : args;
+  (posters ? makePosters(src, out) : optimizePdf(src, out))
     .then((r) => { process.stdout.write(JSON.stringify(r) + '\n'); process.exit(0); })
     .catch((e) => { process.stdout.write(JSON.stringify({ changed: false, reason: 'error: ' + (e && e.message) }) + '\n'); process.exit(0); });
 }

@@ -1401,6 +1401,82 @@ class VideoPlayer {
   let _pdfvSessionSeq   = 0;
   let _sharedPdfWorker  = null;
 
+  /* ============================================================
+     ⚡ ON-DEVICE PAGE CACHE (2026-10-07)
+     ------------------------------------------------------------
+     Pictures of pages already seen are kept in the browser's Cache
+     Storage, per student and per file version. Re-opening a PDF then
+     shows the whole document instantly — no waiting at all — while
+     the sharp pages are prepared behind the pictures.
+     • the newest 15 documents are kept, older ones are removed;
+     • cleared on log-out (AeroPdfCache.clearAll from app.js);
+     • nothing is shown unless the reader has full access.
+     ============================================================ */
+  const PAGE_CACHE = 'aero-pdf-pages-v1';
+  const PAGE_CACHE_DOCS = 15;
+  const PAGE_CACHE_INDEX = 'aero_pdf_cache_idx';
+  const _pcUrl = (key, name) => '/__aero_pages__/' + encodeURIComponent(key) + '/' + name;
+  const AeroPdfCache = {
+    ok() { try { return typeof caches !== 'undefined' && !!caches.open; } catch (_) { return false; } },
+    async load(key) {
+      if (!key || !this.ok()) return null;
+      try {
+        const c = await caches.open(PAGE_CACHE);
+        const mres = await c.match(_pcUrl(key, 'manifest.json'));
+        if (!mres) return null;
+        const manifest = await mres.json();
+        if (!manifest || !manifest.total || !manifest.pages) return null;
+        const pages = new Map();
+        await Promise.all(Object.keys(manifest.pages).map(async (n) => {
+          const r = await c.match(_pcUrl(key, 'p' + n + '.jpg'));
+          if (r) pages.set(Number(n), await r.blob());
+        }));
+        this.touch(key);
+        return { manifest, pages };
+      } catch (_) { return null; }
+    },
+    async put(key, n, blob) {
+      if (!key || !blob || !this.ok()) return;
+      try {
+        const c = await caches.open(PAGE_CACHE);
+        await c.put(_pcUrl(key, 'p' + n + '.jpg'), new Response(blob, { headers: { 'Content-Type': 'image/jpeg' } }));
+      } catch (_) {}
+    },
+    async putManifest(key, manifest) {
+      if (!key || !this.ok()) return;
+      try {
+        const c = await caches.open(PAGE_CACHE);
+        await c.put(_pcUrl(key, 'manifest.json'), new Response(JSON.stringify(manifest), { headers: { 'Content-Type': 'application/json' } }));
+        this.touch(key);
+      } catch (_) {}
+    },
+    touch(key) {
+      try {
+        let idx = JSON.parse(localStorage.getItem(PAGE_CACHE_INDEX) || '[]').filter(e => e && e.k !== key);
+        idx.unshift({ k: key, t: Date.now() });
+        const drop = idx.slice(PAGE_CACHE_DOCS);
+        idx = idx.slice(0, PAGE_CACHE_DOCS);
+        localStorage.setItem(PAGE_CACHE_INDEX, JSON.stringify(idx));
+        if (drop.length) this._drop(drop.map(e => e.k));
+      } catch (_) {}
+    },
+    async _drop(keys) {
+      try {
+        const c = await caches.open(PAGE_CACHE);
+        const prefixes = keys.map(k => _pcUrl(k, ''));
+        for (const req of await c.keys()) {
+          const u = new URL(req.url).pathname;
+          if (prefixes.some(pf => u.indexOf(pf) === 0)) await c.delete(req);
+        }
+      } catch (_) {}
+    },
+    async clearAll() {
+      try { localStorage.removeItem(PAGE_CACHE_INDEX); } catch (_) {}
+      try { if (this.ok()) await caches.delete(PAGE_CACHE); } catch (_) {}
+    }
+  };
+  window.AeroPdfCache = AeroPdfCache;
+
   function _getSharedPdfWorker() {
     try {
       if (!window.pdfjsLib || typeof pdfjsLib.PDFWorker !== 'function') return null;
@@ -1474,6 +1550,13 @@ class VideoPlayer {
       this._renderTasks = new Map();     // ⚡ page → PDF.js render task (cancellable)
       this._farPages = null;             // ⚡ pages outside the keep zone
       this._bg = null;                   // ⚡ background renderer state
+      this._shell = false;               // ⚡ opened instantly, document not attached yet
+      this._shellToken = null;
+      this._instant = null;              // ⚡ pages already on screen from cache / posters
+      this._cacheKey = null;             // ⚡ on-device page cache key (full access only)
+      this._manifest = null;
+      this._manifestTimer = null;
+      this._userZoomed = false;
       this._snaps = new Map();           // ⚡ page → { url, bytes, scale, w, h } light snapshots
       this._snapBytes = 0;
       this._lastScrollAt = 0;
@@ -1486,20 +1569,151 @@ class VideoPlayer {
       this._onVisibility = this._onVisibility.bind(this);
       this._onPageHide = this._onPageHide.bind(this);   // ⭐ new
     }
-    async open(opts) {
-      if (this.active) return;
+    /* ============================================================
+       ⚡ INSTANT OPEN (2026-10-07)
+       openShell() puts the reader on screen the moment a material is
+       tapped — before the server has answered — and fills it at once
+       with pages already on this device (cache) or the server's
+       instant posters. open() then attaches the real document to the
+       same reader (pass the returned token as opts.shellToken).
+       ============================================================ */
+    openShell(opts) {
+      if (this.active) return null;
+      opts = opts || {};
       this.active = true;
-      /* Each open gets its own id, so a slow load from a viewer that
-         was already closed can never write into the next one. */
       const session = ++_pdfvSessionSeq;
       this._session = session;
-      const stale = () => !this.active || this._session !== session;
+      this._shell = true;
+      this._shellToken = 'sh' + session + '-' + Date.now();
+      this.materialId = opts.materialId || 'doc';
+      this.courseId   = opts.courseId || null;
+      this.username   = opts.username || 'Student';
+      this.title      = opts.title || 'Document';
+      this.viewMode   = 'document';
+      this._cacheKey  = opts.cacheKey || null;
+      this._prevBodyOverflow = document.body.style.overflow;
+      this._buildUI();
+      this._loadHighlights();
+      this._loadReadingProgress();
+      const titleEl = this.modal.querySelector('#pdfvTitle');
+      if (titleEl) titleEl.textContent = this.title;
+      this.modal.classList.add('active');
+      document.body.style.overflow = 'hidden';
+      this.loaderEl.style.display = 'flex';
+      this._setLoaderText('Opening…');
+      this._fillInstant(opts, session);
+      return this._shellToken;
+    }
 
+    /* Cached pages first (whole document); otherwise the server posters */
+    async _fillInstant(opts, session) {
+      const live = () => this.active && this._session === session && !this.pdfDoc;
+      try {
+        const cached = this._cacheKey ? await AeroPdfCache.load(this._cacheKey) : null;
+        if (!live()) return;
+        if (cached && cached.pages.size) {
+          const m = cached.manifest;
+          this._manifest = m;
+          const sizes = new Map();
+          Object.keys(m.sizes || {}).forEach(n => sizes.set(Number(n), m.sizes[n]));
+          const w1 = (m.sizes && m.sizes[1] && m.sizes[1][0]) || 595;
+          this.scale = this._fitScale(w1);
+          cached.pages.forEach((blob, n) => {
+            const sz = sizes.get(n) || [w1, (m.sizes && m.sizes[1] && m.sizes[1][1]) || 842];
+            this._snaps.set(n, { url: URL.createObjectURL(blob), bytes: blob.size, scale: (m.pages[n] && m.pages[n].s) || this.scale,
+                                 w: sz[0], h: sz[1], persisted: true });
+            this._snapBytes += blob.size;
+          });
+          this._buildInstantLayout(m.total, sizes, 'cache');
+          return;
+        }
+        if (!opts.posterBase) return;
+        /* posters: page 1 first (fast), then 2 and 3 */
+        const one = await this._fetchPoster(opts.posterBase, 1);
+        if (!one || !live()) return;
+        this.scale = this._fitScale(one.w);
+        const sizes = new Map([[1, [one.w, one.h]]]);
+        this._snaps.set(1, { url: one.url, bytes: one.bytes, scale: this.scale, w: one.w, h: one.h, poster: true });
+        this._buildInstantLayout(one.total, sizes, 'poster');
+        for (const n of [2, 3]) {
+          if (n > one.total) break;
+          const p = await this._fetchPoster(opts.posterBase, n);
+          if (!p || !this.active || this._session !== session) break;
+          if (this._snaps.has(n)) { try { URL.revokeObjectURL(p.url); } catch (_) {} continue; }
+          this._snaps.set(n, { url: p.url, bytes: p.bytes, scale: this.scale, w: p.w, h: p.h, poster: true });
+          this._paintSnapshot(n);
+        }
+      } catch (_) { /* the normal loader simply stays */ }
+    }
+
+    async _fetchPoster(base, n) {
+      try {
+        const r = await fetch(base + n);
+        if (!r.ok) return null;
+        const total = parseInt(r.headers.get('X-Pdf-Pages'), 10) || 0;
+        const w = parseFloat(r.headers.get('X-Page-W')) || 0, h = parseFloat(r.headers.get('X-Page-H')) || 0;
+        if (!total || !w || !h) return null;
+        const blob = await r.blob();
+        return { url: URL.createObjectURL(blob), bytes: blob.size, total, w, h };
+      } catch (_) { return null; }
+    }
+
+    /* Page frames for the whole document, pictures where we have them */
+    _buildInstantLayout(total, sizes, source) {
+      if (!this.pagesEl || !total) return;
+      const s1 = sizes.get(1) || [595, 842];
+      this.pagesEl.innerHTML = '';
+      this.pageEls.clear();
+      const frag = document.createDocumentFragment();
+      for (let n = 1; n <= total; n++) {
+        const sz = sizes.get(n) || s1;
+        const el = document.createElement('div');
+        el.className = 'pdfv-page';
+        el.dataset.page = String(n);
+        el.style.width  = Math.round(sz[0] * this.scale) + 'px';
+        el.style.height = Math.round(sz[1] * this.scale) + 'px';
+        el.style.position = 'relative';
+        el.style.background = '#ffffff';
+        frag.appendChild(el);
+        this.pageEls.set(n, el);
+      }
+      this.pagesEl.appendChild(frag);
+      this._instant = { total, scale: this.scale, source };
+      this._snaps.forEach((_, n) => this._paintSnapshot(n));
+      const pc = this.modal && this.modal.querySelector('#pdfvPageCount');
+      if (pc) pc.textContent = total;
+      this._updateZoomLabel();
+      if (this._snaps.has(1) || (this._resumePage > 1 && this._snaps.has(this._resumePage))) {
+        this.loaderEl.style.display = 'none';
+      }
+      try { this._applyReadingResume(); } catch (_) {}
+    }
+
+    /* Page width that fits the screen (phones), never above 120 % */
+    _fitScale(widthPt) {
+      const bw = (this.bodyEl && this.bodyEl.clientWidth) || window.innerWidth || 800;
+      const gutter = bw < 760 ? 16 : 60;
+      const fit = (bw - gutter) / (widthPt || 595);
+      return Math.max(0.4, Math.min(1.2, isFinite(fit) && fit > 0 ? fit : 1.2));
+    }
+
+    async open(opts) {
+      /* ⚡ attach to the reader opened by openShell() */
+      const reuse = !!(opts && opts.shellToken && this.active && this._shell && opts.shellToken === this._shellToken);
+      if (opts && opts.shellToken && !reuse) return;      // the reader was closed meanwhile
+      if (this.active && !reuse) return;
       if (!window.pdfjsLib) {
-        this.active = false;
+        if (reuse) this.close();
         userToast('PDF engine not loaded. Please refresh.', 'error');
         return;
       }
+      this.active = true;
+      /* Each open gets its own id, so a slow load from a viewer that
+         was already closed can never write into the next one. */
+      const session = reuse ? this._session : ++_pdfvSessionSeq;
+      this._session = session;
+      this._shell = false;
+      const stale = () => !this.active || this._session !== session;
       try {
         if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
           /* Same-origin worker — see index.html loadPDFJS().
@@ -1512,7 +1726,8 @@ class VideoPlayer {
       this.materialId = opts.materialId || 'doc';
       this.username   = opts.username || 'Student';
       this.title      = opts.title || opts.fileName || 'Document';
-      this._prevBodyOverflow = document.body.style.overflow;
+      if (!reuse) this._prevBodyOverflow = document.body.style.overflow;
+      if (!reuse) this._cacheKey = opts.cacheKey || null;
 
       /* ⭐ CRITICAL — Premium-access fields.
          ------------------------------------------------------------
@@ -1554,18 +1769,21 @@ class VideoPlayer {
       /* ⭐ 'slides' = rendered PowerPoint → fit whole slide, highlight Present */
       this.viewMode       = opts.mode === 'slides' ? 'slides' : 'document';
 
-      this._buildUI();
-      if (this.viewMode === 'slides') this.modal.classList.add('pdfv-slides-mode');
-      this._loadHighlights();
-      /* ⭐ FIX: the saved page was written on every scroll but never read
-         back, so "resume where you left off" never happened. */
-      this._loadReadingProgress();
-      this._renderWatermark();
-
-      this.modal.classList.add('active');
-      document.body.style.overflow = 'hidden';
-      this._setLoaderText('Loading document…');
-      this.loaderEl.style.display = 'flex';
+      if (!reuse) {
+        this._buildUI();
+        if (this.viewMode === 'slides') this.modal.classList.add('pdfv-slides-mode');
+        this._loadHighlights();
+        /* ⭐ FIX: the saved page was written on every scroll but never read
+           back, so "resume where you left off" never happened. */
+        this._loadReadingProgress();
+        this._renderWatermark();
+        this.modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+      }
+      if (!this._instant) {
+        this._setLoaderText('Opening…');
+        this.loaderEl.style.display = 'flex';
+      }
 
       try {
         let source;
@@ -1612,6 +1830,22 @@ class VideoPlayer {
           if (stale()) return;
         }
 
+        /* ⚡ Fit the page to the screen width (phones showed a 120 %
+           page wider than the screen: cut-off edges and 3–4× more pixels
+           to draw than needed). Desktop keeps 120 %. */
+        if (this.viewMode !== 'slides' && !this._userZoomed) {
+          try {
+            const p1 = await this.pdfDoc.getPage(1);
+            const vp = p1.getViewport({ scale: 1 });
+            const fit = this._fitScale(vp.width);
+            if (Math.abs(fit - this.scale) > 0.001) {
+              this.scale = fit;
+              this._updateZoomLabel();
+            }
+          } catch (_) {}
+          if (stale()) return;
+        }
+
         await this._renderAllPages();
         if (stale()) return;
         this.loaderEl.style.display = 'none';
@@ -1622,6 +1856,7 @@ class VideoPlayer {
         if (stale()) return;            // viewer was closed — nothing to report
         console.error('[PDFViewer]', err);
         if (this.loaderEl) {
+          this.loaderEl.style.display = 'flex';
           this.loaderEl.innerHTML =
             '<div class="pdfv-error">' +
               '<i class="fas fa-exclamation-triangle"></i>' +
@@ -1785,8 +2020,8 @@ class VideoPlayer {
           '<div class="pdfv-body" id="pdfvBody">' +
             '<div class="pdfv-pages" id="pdfvPages"></div>' +
             '<div class="pdfv-loader" id="pdfvLoader">' +
-              '<div class="pdfv-spinner"></div>' +
-              '<p id="pdfvLoaderText">Connecting to server…</p>' +
+              '<div class="pdfv-skel-sheet" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>' +
+              '<p id="pdfvLoaderText">Opening…</p>' +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -1878,13 +2113,21 @@ class VideoPlayer {
          never appends its stale placeholders. */
       const gen = (this._layoutGen = (this._layoutGen || 0) + 1);
       this._stopBackgroundRender();
-      this.pagesEl.innerHTML = '';
-      this.pageEls.clear();
+      const inst = this._instant;
+      this._instant = null;
       this.textLayers.clear();
       this._disconnectPageObserver();
 
       const total = this.pdfDoc.numPages;
       this.totalPages = total;
+      /* ⚡ The pages shown instantly (cache / posters) stay on screen —
+         the real pages are drawn into the same frames. */
+      const reuse = !!(inst && inst.total === total && this.hasFullAccess &&
+                       Math.abs(inst.scale - this.scale) < 0.001 && this.pageEls.size === total);
+      if (!reuse) {
+        this.pagesEl.innerHTML = '';
+        this.pageEls.clear();
+      }
 
       /* ── Compute render ceiling (unchanged) ── */
       let renderLimit;
@@ -1951,21 +2194,30 @@ class VideoPlayer {
 
       if (!this.active || gen !== this._layoutGen) return;
 
-      /* Create page 1's placeholder */
-      const page1El = document.createElement('div');
-      page1El.className = 'pdfv-page';
-      page1El.dataset.page = '1';
-      page1El.style.width  = placeholderW + 'px';
-      page1El.style.height = placeholderH + 'px';
-      page1El.style.position = 'relative';
-      page1El.style.background = '#ffffff';
-      this.pagesEl.appendChild(page1El);
-      this.pageEls.set(1, page1El);
+      /* Create page 1's placeholder (or reuse the instant one) */
+      let page1El = reuse ? this.pageEls.get(1) : null;
+      if (!page1El) {
+        page1El = document.createElement('div');
+        page1El.className = 'pdfv-page';
+        page1El.dataset.page = '1';
+        page1El.style.width  = placeholderW + 'px';
+        page1El.style.height = placeholderH + 'px';
+        page1El.style.position = 'relative';
+        page1El.style.background = '#ffffff';
+        this.pagesEl.appendChild(page1El);
+        this.pageEls.set(1, page1El);
+      }
 
-      /* Render page 1 */
-      await this._renderPage(1);
-      if (!this.active || gen !== this._layoutGen) return;
-      page1El.dataset.rendered = '1';
+      if (reuse) {
+        /* Reader already sees pages: attach observers straight away so
+           whatever page they are on is drawn sharp first. */
+        this.loaderEl.style.display = 'none';
+      } else {
+        /* Render page 1 */
+        await this._renderPage(1);
+        if (!this.active || gen !== this._layoutGen) return;
+        page1El.dataset.rendered = '1';
+      }
 
       /* ⚡ Prefetch page 2 while page 1 is still on screen.
          Most readers scroll within 1 s — having page 2 already
@@ -2007,6 +2259,7 @@ class VideoPlayer {
         const frag = document.createDocumentFragment();
 
         for (let i = 2; i <= renderLimit; i++) {
+          if (reuse && this.pageEls.get(i)) continue;
           const pageEl = document.createElement('div');
           pageEl.className = 'pdfv-page';
           pageEl.dataset.page = i;
@@ -2063,7 +2316,9 @@ class VideoPlayer {
         });
       };
 
-      if (typeof window.requestIdleCallback === 'function') {
+      if (reuse) {
+        buildRest();
+      } else if (typeof window.requestIdleCallback === 'function') {
         window.requestIdleCallback(buildRest, { timeout: 400 });
       } else {
         setTimeout(buildRest, 0);
@@ -2620,6 +2875,7 @@ class VideoPlayer {
 
       /* Apply saved highlights for this page as soon as it renders */
       this._applyPageHighlights(n);
+      this._snapFromCanvas(n, canvas, cssViewport.width / this.scale, cssViewport.height / this.scale);
     }
 
     /* ============================================================
@@ -2742,9 +2998,11 @@ class VideoPlayer {
       const page = await doc.getPage(n);
       if (!alive()) return;
       const scale = this.scale;
-      let vp = page.getViewport({ scale });
+      /* sharp enough to read on the device (≤ 2× density, ≤ 2.2 MP) */
+      const dens = Math.max(1, Math.min(window.devicePixelRatio || 1, PDF_MAX_DPR));
+      let vp = page.getViewport({ scale: scale * dens });
       const px = vp.width * vp.height;
-      if (px > PDF_SNAP_MAX_PIXELS) vp = page.getViewport({ scale: scale * Math.sqrt(PDF_SNAP_MAX_PIXELS / px) });
+      if (px > PDF_SNAP_MAX_PIXELS) vp = page.getViewport({ scale: scale * dens * Math.sqrt(PDF_SNAP_MAX_PIXELS / px) });
 
       const canvas = document.createElement('canvas');
       canvas.width  = Math.max(1, Math.floor(vp.width));
@@ -2773,10 +3031,54 @@ class VideoPlayer {
       if (old) { try { URL.revokeObjectURL(old.url); } catch (_) {} this._snapBytes -= old.bytes; }
       this._snaps.set(n, { url: URL.createObjectURL(blob), bytes: blob.size, scale, w: unscaled.width, h: unscaled.height });
       this._snapBytes += blob.size;
+      this._persistSnap(n, blob, unscaled.width, unscaled.height, scale);
       /* Free the worker's parsed copy of this page unless it is on screen */
       const el = this.pageEls.get(n);
       if (!el || el.dataset.rendered !== '1') { try { page.cleanup(); } catch (_) {} }
       this._paintSnapshot(n);
+    }
+
+    /* ⚡ After a page is drawn sharp, keep a light copy of it (made from
+       the finished canvas — no second decode) for scrolling back, for
+       the background status and for the on-device cache. */
+    _snapFromCanvas(n, canvas, wPt, hPt) {
+      const scale = this.scale;
+      const cur = this._snaps.get(n);
+      if (cur && !cur.poster && cur.scale > scale * 0.8 && cur.scale < scale * 1.25) return;
+      const session = this._session;
+      _idle(() => {
+        if (!this.active || this._session !== session || !canvas.width) return;
+        try {
+          const k = Math.min(1, Math.sqrt(PDF_SNAP_MAX_PIXELS / (canvas.width * canvas.height)));
+          const c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(canvas.width * k));
+          c.height = Math.max(1, Math.round(canvas.height * k));
+          c.getContext('2d', { alpha: false }).drawImage(canvas, 0, 0, c.width, c.height);
+          c.toBlob((blob) => {
+            c.width = 0; c.height = 0;
+            if (!blob || !this.active || this._session !== session) return;
+            const old = this._snaps.get(n);
+            if (old) { try { URL.revokeObjectURL(old.url); } catch (_) {} this._snapBytes -= old.bytes || 0; }
+            this._snaps.set(n, { url: URL.createObjectURL(blob), bytes: blob.size, scale, w: wPt, h: hPt });
+            this._snapBytes += blob.size;
+            this._persistSnap(n, blob, wPt, hPt, scale);
+          }, 'image/jpeg', PDF_SNAP_QUALITY);
+        } catch (_) {}
+      }, 1500);
+    }
+
+    _persistSnap(n, blob, wPt, hPt, scale) {
+      const key = this._cacheKey;
+      if (!key || !this.hasFullAccess || !this.pdfDoc) return;
+      AeroPdfCache.put(key, n, blob);
+      const m = this._manifest && this._manifest.key === key ? this._manifest
+              : { v: 1, key, total: this.pdfDoc.numPages, sizes: {}, pages: {} };
+      m.total = this.pdfDoc.numPages;
+      m.sizes[n] = [Math.round(wPt * 100) / 100, Math.round(hPt * 100) / 100];
+      m.pages[n] = { s: scale };
+      this._manifest = m;
+      clearTimeout(this._manifestTimer);
+      this._manifestTimer = setTimeout(() => AeroPdfCache.putManifest(key, m), 800);
     }
 
     /* Show a page's snapshot if the page has no sharp canvas yet */
@@ -2896,6 +3198,7 @@ class VideoPlayer {
 
     async _setZoom(scale) {
       scale = Math.max(0.4, Math.min(3.5, scale));
+      this._userZoomed = true;
       if (Math.abs(scale - this.scale) < 0.01) return;
       /* Zoom pressed while the document is still loading (or after the
          viewer closed) — nothing to re-lay out yet. */
@@ -2929,7 +3232,8 @@ class VideoPlayer {
       if (!this.pdfDoc) return;
       const page = await this.pdfDoc.getPage(1);
       const vp = page.getViewport({ scale: 1 });
-      const target = (this.bodyEl.clientWidth - 60) / vp.width;
+      const gutter = this.bodyEl.clientWidth < 760 ? 16 : 60;
+      const target = (this.bodyEl.clientWidth - gutter) / vp.width;
       this._setZoom(target);
     }
 
@@ -3162,6 +3466,11 @@ class VideoPlayer {
         clearTimeout(this._saveProgressTimer);
         this._saveProgressTimer = null;
       }
+      /* Nothing on screen yet, or the saved page has not been restored
+         yet → keep the saved page (closing while loading used to reset
+         it to page 1). */
+      if (!this.pageEls || !this.pageEls.size) return;
+      if ((this._resumePage || 1) > 1 && !this._resumeApplied) return;
       try {
         const payload = {
           page: this.currentPage || 1,
@@ -3611,6 +3920,10 @@ class VideoPlayer {
       }
       this._disconnectPageObserver();
       this._stopBackgroundRender();
+      if (this._manifestTimer && this._manifest && this._cacheKey) {
+        clearTimeout(this._manifestTimer);
+        AeroPdfCache.putManifest(this._cacheKey, this._manifest);
+      }
       this._freeSnapshots();
       /* ⚡ Stop any download still in progress and free the document
          in the worker (the shared worker itself stays ready for the

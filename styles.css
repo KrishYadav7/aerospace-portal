@@ -15986,3 +15986,32 @@ html.aero-in-app .app-install-pill { display: none !important; }
 .subjective-result-thumbs .subjective-result-pdf i { font-size: 26px; color: #ef4444; }
 .subjective-result-thumbs .subjective-result-pdf span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subjective-result-thumbs .subjective-result-pdf:hover { border-color: var(--brand-400, #818cf8); transform: translateY(-1px); }
+
+/* ============================================================
+   ⚡ PDF READER — instant open (2026-10-07)
+   ============================================================ */
+/* Pages wider than the screen used to be centred with their left edge
+   unreachable; auto margins centre them and still allow scrolling. */
+.pdfv-pages { align-items: flex-start; }
+.pdfv-pages > * { margin-left: auto; margin-right: auto; }
+
+/* Opening state: a page-shaped placeholder instead of a spinner */
+.pdfv-loader { background: #131727; justify-content: flex-start; padding-top: 22px; gap: 14px; }
+.pdfv-loader > p { font-size: 12.5px; color: rgba(255,255,255,.6); margin: 0; }
+.pdfv-skel-sheet {
+  position: relative; overflow: hidden;
+  width: min(calc(100% - 16px), 714px); aspect-ratio: 595 / 842; max-height: calc(100% - 70px);
+  background: #fff; border-radius: 4px; box-shadow: 0 12px 40px rgba(0,0,0,.5);
+  padding: 9% 8%; display: flex; flex-direction: column; gap: 4.2%;
+}
+.pdfv-skel-sheet i { display: block; height: 2.2%; min-height: 8px; border-radius: 4px; background: #e9ecf3; }
+.pdfv-skel-sheet i:nth-child(1) { width: 55%; height: 3.2%; background: #dfe3ec; }
+.pdfv-skel-sheet i:nth-child(3n) { width: 82%; }
+.pdfv-skel-sheet i:nth-child(4n) { width: 68%; }
+.pdfv-skel-sheet::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(99,102,241,.08) 50%, transparent 80%);
+  transform: translateX(-100%); animation: pdfvSkelShimmer 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) { .pdfv-skel-sheet::after { animation: none; } }
+@media (max-width: 760px) { .pdfv-loader { padding-top: 14px; } }

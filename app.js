@@ -3792,6 +3792,8 @@ function logout() {
 
   stopSessionHeartbeat();
   _sessionKilled = false;
+  /* ⚡ pages kept on this device for instant re-opening belong to this student */
+  try { if (window.AeroPdfCache) window.AeroPdfCache.clearAll(); } catch (e) {}
 
   _courseCacheAt = 0;
   liveCourses = [];
@@ -14263,6 +14265,55 @@ async function _viewFileOnlineImpl(courseId, materialId) {
   /* Client-side access is only used as a FALLBACK if meta fails. */
   const access = getMaterialAccessInfo(course, mat);
 
+  /* ⚡ INSTANT OPEN (2026-10-07): a PDF the student owns opens on screen
+     immediately — pages already on this device (or the server's instant
+     posters) appear at once — while the server is still answering. The
+     real document is attached to this same reader below; any other
+     outcome (locked, PowerPoint, error…) simply closes it again. */
+  let shellToken = null;
+  const dropShell = () => {
+    try {
+      const V = window.PDFViewer;
+      if (shellToken && V && V._shell && V._shellToken === shellToken) V.close();
+    } catch (_) {}
+    shellToken = null;
+  };
+  try {
+    if (currentUser && access && access.hasFullAccess === true && _aeroLooksLikePdf(mat) &&
+        window.PDFViewer && typeof window.PDFViewer.openShell === 'function' && !window.PDFViewer.active) {
+      shellToken = window.PDFViewer.openShell({
+        materialId: mat.id,
+        courseId:   course.id,
+        title:      mat.title,
+        username:   currentUser.fullName || currentUser.username || 'Student',
+        cacheKey:   aeroPdfCacheKey(mat),
+        posterBase: `${API_BASE}/courses/${course.id}/materials/${mat.id}/poster/`
+      });
+      if (shellToken) AeroOpening.stop();      // the reader itself is the feedback now
+    }
+  } catch (_) { shellToken = null; }
+  try {
+    return await _viewFileOnlineAttach(course, mat, access, shellToken, dropShell);
+  } finally {
+    dropShell();                               // never leave an empty reader behind
+  }
+}
+
+function _aeroLooksLikePdf(m) {
+  const clean = String(m.url || '').toLowerCase().split('?')[0].split('#')[0];
+  return String(m.fileName || '').toLowerCase().endsWith('.pdf') || clean.endsWith('.pdf');
+}
+/* Per student + per file version: a replaced file never shows old pages */
+function aeroPdfCacheKey(m) {
+  const src = String(m.url || '') + '|' + String(m.fileName || '') + '|' + String(m.diskName || '');
+  let h = 5381;
+  for (let i = 0; i < src.length; i++) h = ((h << 5) + h + src.charCodeAt(i)) >>> 0;
+  return String(currentUser && currentUser._id || 'anon') + '-' + m.id + '-' + h.toString(36);
+}
+
+async function _viewFileOnlineAttach(course, mat, access, shellToken, dropShell) {
+  const courseId = course.id, materialId = mat.id;
+
   /* ① Kick off PDF.js load (+ its worker) and the meta fetch in PARALLEL.
      (The old unsigned HEAD "warm-up" of /uploads/ was removed: it ran a
      full access check on the server for every open while the meta call
@@ -14357,6 +14408,7 @@ async function _viewFileOnlineImpl(courseId, materialId) {
     const url = (meta && meta.signedUrl)
       ? effectiveUrl
       : (isDiskUrl ? withAuthToken(effectiveUrl) : effectiveUrl);
+    if (!hasFullAccess) dropShell();
 
     window.PDFViewer.open({
       url,
@@ -14374,7 +14426,9 @@ async function _viewFileOnlineImpl(courseId, materialId) {
       /* ⚡ server accepts the signature as a header → stable URL, so the
          browser re-uses its cached copy instead of downloading again */
       sigInHeader:    !!(meta && meta.sigHeader === true && meta.signedUrl && effectiveUrl === serverFileUrl),
-      fileSize:       (meta && effectiveUrl === serverFileUrl && Number(meta.fileSize)) || 0
+      fileSize:       (meta && effectiveUrl === serverFileUrl && Number(meta.fileSize)) || 0,
+      cacheKey:       hasFullAccess ? aeroPdfCacheKey(mat) : null,
+      shellToken:     (hasFullAccess && shellToken) ? shellToken : undefined
     });
     return;
   }
@@ -14401,6 +14455,7 @@ async function _viewFileOnlineImpl(courseId, materialId) {
     /* ⭐ PowerPoint / Word / Excel → rendered on the server to a protected
        PDF and shown in the in-app viewer (slideshow for presentations).
        The original file is never downloaded. */
+    if (!isPdf) dropShell();
     if (!isPdf && meta && meta.renderable) {
       return openRenderedOfficeFile(course, mat, meta, pdfJsPromise);
     }
@@ -14470,6 +14525,7 @@ if (_viewUrl.startsWith('/')) {
     }
 
   /* ⑤c LEGACY BASE64 FALLBACK — only when streaming isn't possible */
+  dropShell();
   try { await pdfJsPromise; }
   catch { return showToast('Could not load PDF viewer.', 'error'); }
 

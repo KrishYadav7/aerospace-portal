@@ -1341,7 +1341,7 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
     return res.status(403).json({ success: false, message: 'This link has expired. Please open the file again from the course page.' });
   }
   /* ⚡ Fast-view PDF copies — same rule: signed URL (or admin) only */
-  if (FASTVIEW_ANY_RE.test(filename) && !_isAdminUser(req.authUser)) {
+  if ((FASTVIEW_ANY_RE.test(filename) || POSTER_RE.test(filename)) && !_isAdminUser(req.authUser)) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(403).json({ success: false, message: 'This link has expired. Please open the file again from the course page.' });
   }
@@ -6218,6 +6218,7 @@ function fastViewFor(fn) {
   try {
     fn = String(fn || '');
     if (!/^[A-Za-z0-9._-]+\.pdf$/i.test(fn) || FASTVIEW_ANY_RE.test(fn)) return null;
+    posterInfoFor(fn);                       // queues the instant posters if missing
     const st = fs.statSync(path.join(UPLOAD_DIR, fn));
     if (!st.isFile() || st.size < FASTVIEW_MIN_BYTES || st.size > FASTVIEW_MAX_BYTES) return null;
     const fv = fastViewNameFor(fn);
@@ -6244,7 +6245,15 @@ function _queueFastView(fn, mtimeMs) {
 
 async function _runFastViewQueue() {
   try {
-    while (_fastViewQueue.length) {
+    while (_fastViewQueue.length || _posterQueue.length) {
+      /* posters first — they take ~2 s and make the next open instant */
+      if (_posterQueue.length) {
+        const fn = _posterQueue.shift();
+        try { await _buildPosters(fn); }
+        catch (e) { console.warn('[posters]', fn, '·', e.message); }
+        finally { _posterQueued.delete(fn); }
+        continue;
+      }
       const fn = _fastViewQueue.shift();
       try { await _buildFastView(fn); }
       catch (e) { console.warn('[fastview]', fn, '·', e.message); }
@@ -6255,13 +6264,140 @@ async function _runFastViewQueue() {
   }
 }
 
+/* ============================================================
+   ⚡ INSTANT POSTERS (2026-10-07)
+   ------------------------------------------------------------
+   <name>_poster1..3.jpg + <name>_posterinfo.json next to each PDF:
+   light pictures of the first pages that the reader shows the moment
+   it opens, while the real pages are prepared behind them. Built once
+   per file in the background (pdf-optimizer.js; pages that are not a
+   single scanned picture are drawn with pdftoppm when installed).
+   Served only through /api/…/poster/:n with the normal access check.
+   ============================================================ */
+const POSTER_RE = /_poster(?:\d+\.jpg|info\.json)$/i;
+const POSTER_PAGES = 3;
+const _posterQueue  = [];
+const _posterQueued = new Set();
+const _posterTried  = new Map();     // filename → source mtime already attempted
+const _posterInfoCache = new Map();  // filename → { mtimeMs, info }
+let   _noPdftoppm = false;
+function posterPrefixFor(fn) { return String(fn).replace(/\.pdf$/i, '') + '_poster'; }
+
+function posterInfoFor(fn) {
+  try {
+    fn = String(fn || '');
+    if (!/^[A-Za-z0-9._-]+\.pdf$/i.test(fn) || FASTVIEW_ANY_RE.test(fn)) return null;
+    const st = fs.statSync(path.join(UPLOAD_DIR, fn));
+    const ip = path.join(UPLOAD_DIR, posterPrefixFor(fn) + 'info.json');
+    let ist = null;
+    try { ist = fs.statSync(ip); } catch (_) {}
+    if (!ist || ist.mtimeMs < st.mtimeMs) { _queuePosters(fn, st.mtimeMs); return null; }
+    const c = _posterInfoCache.get(fn);
+    if (c && c.mtimeMs === ist.mtimeMs) return c.info;
+    const info = JSON.parse(fs.readFileSync(ip, 'utf8'));
+    _posterInfoCache.set(fn, { mtimeMs: ist.mtimeMs, info });
+    if (_posterInfoCache.size > 2000) _posterInfoCache.clear();
+    return info;
+  } catch (_) { return null; }
+}
+
+function _queuePosters(fn, mtimeMs) {
+  if (_posterQueued.has(fn) || _posterTried.get(fn) === mtimeMs) return;
+  if (_posterQueue.length >= 500) return;
+  _posterQueued.add(fn);
+  _posterQueue.push(fn);
+  if (!_fastViewBusy) { _fastViewBusy = true; setImmediate(_runFastViewQueue); }
+}
+
+function _runPdftoppm(src, n, outRoot) {
+  return new Promise((resolve) => {
+    if (_noPdftoppm) return resolve(false);
+    execFile('pdftoppm', ['-f', String(n), '-l', String(n), '-singlefile', '-jpeg', '-jpegopt', 'quality=72',
+                          '-scale-to-x', '1000', '-scale-to-y', '-1', src, outRoot],
+      { timeout: 60000 }, (err) => {
+        if (err && err.code === 'ENOENT') {
+          _noPdftoppm = true;
+          console.warn('[posters] pdftoppm is not installed — instant previews are made for scanned PDFs only (sudo apt install poppler-utils adds all PDFs).');
+        }
+        resolve(!err);
+      });
+  });
+}
+
+async function _buildPosters(fn) {
+  const src = path.join(UPLOAD_DIR, fn);
+  const st = await fs.promises.stat(src);
+  _posterTried.set(fn, st.mtimeMs);
+  const prefix = path.join(UPLOAD_DIR, posterPrefixFor(fn));
+  /* the fast copy (smaller pictures) is quicker to read when it exists */
+  let from = src;
+  try {
+    const fst = await fs.promises.stat(path.join(UPLOAD_DIR, fastViewNameFor(fn)));
+    if (fst.mtimeMs >= st.mtimeMs) from = path.join(UPLOAD_DIR, fastViewNameFor(fn));
+  } catch (_) {}
+  const t0 = Date.now();
+  let info = null;
+  if (st.size <= FASTVIEW_OPTIMIZE_MAX_BYTES) {
+    const r = await _runPdfOptimizer(from, prefix, ['--posters']);
+    if (r && typeof r.numPages === 'number') info = r;
+  }
+  if (!info) info = { numPages: 0, pages: {}, made: [], missing: [1, 2, 3] };
+  for (const n of (info.missing || []).slice()) {
+    if (info.numPages && n > info.numPages) continue;
+    if (await _runPdftoppm(from, n, prefix + n)) {
+      try { await fs.promises.access(prefix + n + '.jpg'); info.made.push(n); info.missing = info.missing.filter(x => x !== n); } catch (_) {}
+    }
+  }
+  info.made.sort((a, b) => a - b);
+  await fs.promises.writeFile(prefix + 'info.json', JSON.stringify(info));
+  _posterInfoCache.delete(fn);
+  if (info.made.length) console.log(`[posters] 🖼  ${fn}: page(s) ${info.made.join(', ')} ready · ${Date.now() - t0} ms`);
+}
+
+/* GET /api/courses/:courseId/materials/:materialId/poster/:n
+   → JPEG of page n (1–3) for readers with full access. 404 (not cached)
+   while the posters are still being made — the reader simply skips them. */
+app.get('/api/courses/:courseId/materials/:materialId/poster/:n', attachUserFromToken, async (req, res) => {
+  const none = (code) => { res.setHeader('Cache-Control', 'no-store'); return res.status(code).end(); };
+  try {
+    if (!req.authUser) return none(401);
+    const n = parseInt(req.params.n, 10);
+    if (!(n >= 1 && n <= POSTER_PAGES)) return none(404);
+    if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) return none(400);
+    const course = await _loadCourseWithOneMaterial(req.params.courseId, req.params.materialId);
+    const mat = course && (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
+    if (!mat) return none(404);
+    const access = evaluateMaterialAccess(req.authUser, course, mat);
+    if (!access.allowed) return none(403);
+    const g = checkBulkAccess(req.authUser, mat._id);
+    if (g.paused) return none(429);
+    const rawUrl = String(mat.url || '');
+    if (!rawUrl.startsWith('/uploads/')) return none(404);
+    const fn = path.basename(rawUrl.split('?')[0]);
+    if (!/^[A-Za-z0-9._-]+\.pdf$/i.test(fn)) return none(404);
+    const info = posterInfoFor(fn);
+    if (!info || !(info.made || []).includes(n)) return none(404);
+    const pg = (info.pages && info.pages[n]) || {};
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.setHeader('X-Pdf-Pages', String(info.numPages || 0));
+    res.setHeader('X-Page-W', String(pg.w || 0));
+    res.setHeader('X-Page-H', String(pg.h || 0));
+    res.setHeader('Content-Type', 'image/jpeg');
+    return res.sendFile(path.join(UPLOAD_DIR, posterPrefixFor(fn) + n + '.jpg'), { dotfiles: 'deny' }, (err) => {
+      if (err && !res.headersSent) none(404);
+    });
+  } catch (e) {
+    return none(500);
+  }
+});
+
 /* Image step in a child process (nice +10, 1 GB heap, 5 min cap). */
-function _runPdfOptimizer(src, out) {
+function _runPdfOptimizer(src, out, extraArgs) {
   return new Promise((resolve) => {
     let child, outText = '';
     try {
       child = require('child_process').spawn(process.execPath,
-        ['--max-old-space-size=1024', path.join(__dirname, 'pdf-optimizer.js'), src, out],
+        ['--max-old-space-size=1024', path.join(__dirname, 'pdf-optimizer.js')].concat(extraArgs || [], [src, out]),
         { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     } catch (e) { return resolve({ changed: false, reason: e.message }); }
     try { require('os').setPriority(child.pid, 10); } catch (_) {}
