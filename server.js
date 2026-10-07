@@ -1318,7 +1318,10 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
      Overhead per range request: ~2 ms (HMAC verify only)
      vs. ~50 ms before (JWT decode + DB lookup + access eval).
      ============================================================ */
-  const signedToken = req.query.st;
+  /* The token may come in the query (?st=) or — so the file's URL stays
+     the same across token renewals and the browser can reuse its cached
+     copy — in the X-Aero-St header. */
+  const signedToken = req.query.st || req.get('x-aero-st');
   const signedUser  = req.query.su;
 
   if (signedToken && signedUser &&
@@ -1333,7 +1336,7 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
   /* Files fetched / decoded for the in-app viewer (ro-…) have no course
      record to check against, so they are reachable ONLY through the
      signed URL issued by /render (or by an admin). */
-  if (DERIVED_OFFICE_RE.test(filename) && !_isAdminUser(req.authUser)) {
+  if ((DERIVED_OFFICE_RE.test(filename) || DERIVED_PDF_RE.test(filename)) && !_isAdminUser(req.authUser)) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(403).json({ success: false, message: 'This link has expired. Please open the file again from the course page.' });
   }
@@ -4248,6 +4251,12 @@ async function serveUploadFile(filename, req, res) {
   if (process.env.USE_NGINX_ACCEL === 'true') {
     res.setHeader('X-Accel-Redirect', '/protected-uploads/' + filename);
     res.setHeader('Accept-Ranges', 'bytes');
+    /* ⚡ Let the student's browser keep the file: nginx passes this header
+       through, so a re-opened PDF / video comes from the device's cache. */
+    res.setHeader('Cache-Control',
+      ['.pdf', '.mp4', '.webm', '.mov', '.mp3'].includes(ext)
+        ? 'private, max-age=2592000, immutable'
+        : 'private, max-age=3600');
     res.setHeader('Content-Length', String(stat.size)); // ← now safe
     if (MIME_MAP[ext]) {
       res.setHeader('Content-Type', MIME_MAP[ext]);
@@ -6284,6 +6293,149 @@ async function _buildFastView(fn) {
   }
 }
 
+/* ============================================================
+   ⚡ SSD MIRROR FOR PDFs THAT LIVE ELSEWHERE (2026-10-07)
+   ------------------------------------------------------------
+   rp-<hmac>.pdf — a private local copy of a PDF material whose
+   content is an external https link or a legacy base64 copy in
+   the database. Unguessable name, served only through a signed
+   URL (or to admins), exactly like the ro-… office copies.
+   ============================================================ */
+const DERIVED_PDF_RE = /^rp-[a-f0-9]{24}\.pdf$/;
+const PDF_MIRROR_MAX_PARALLEL = 2;
+const PDF_MIRROR_RETRY_MS = 60 * 60 * 1000;
+const _pdfMirrorJobs = new Map();          // name → Promise
+const _pdfMirrorFailed = new Map();        // name → time of last failure
+
+function _derivedPdfName(seed) {
+  return 'rp-' + crypto.createHmac('sha256', String(JWT_SECRET)).update('pdf-src:' + seed).digest('hex').slice(0, 24) + '.pdf';
+}
+function _looksPdfName(s) { return /\.pdf$/i.test(String(s || '').split('?')[0].split('#')[0]); }
+
+function _localPdfSourceOf(mat) {
+  if (!mat) return null;
+  const rawUrl = String(mat.url || '').trim();
+  if (rawUrl.startsWith('/uploads/')) return null;                 // already on the SSD
+  if (/^https:\/\//i.test(rawUrl)) {
+    if (!_looksPdfName(rawUrl) && !_looksPdfName(mat.fileName)) return null;
+    return { kind: 'remote', name: _derivedPdfName('url:' + rawUrl), url: rawUrl };
+  }
+  const fd = typeof mat.fileData === 'string' ? mat.fileData : '';
+  if (fd.length > 100 && (_looksPdfName(mat.fileName) || fd.startsWith('data:application/pdf'))) {
+    return { kind: 'inline', name: _derivedPdfName('inline:' + String(mat._id) + ':' + fd.length), fileData: fd };
+  }
+  const cu = String(mat.cloudUrl || '').trim();
+  if (!rawUrl && /^https:\/\//i.test(cu) && (_looksPdfName(cu) || _looksPdfName(mat.fileName))) {
+    return { kind: 'remote', name: _derivedPdfName('url:' + cu), url: cu };
+  }
+  return null;
+}
+
+async function _isPdfFile(fp) {
+  try {
+    const fh = await fs.promises.open(fp, 'r');
+    try {
+      const b = Buffer.alloc(1024);
+      const { bytesRead } = await fh.read(b, 0, 1024, 0);
+      return b.slice(0, bytesRead).toString('latin1').includes('%PDF-');
+    } finally { await fh.close(); }
+  } catch (_) { return false; }
+}
+
+async function _diskHasRoomFor(bytes) {
+  try {
+    if (typeof fs.promises.statfs !== 'function') return true;
+    const sf = await fs.promises.statfs(UPLOAD_DIR);
+    const free = Number(sf.bavail) * Number(sf.bsize);
+    return free > 2 * 1024 * 1024 * 1024 && free > (bytes || 0) * 5;
+  } catch (_) { return true; }
+}
+
+/* true  → the local copy is ready on disk now
+   false → not (yet): a background copy may have been started */
+async function _ensureLocalPdf(src) {
+  const fp = path.join(UPLOAD_DIR, src.name);
+  try { const st = await fs.promises.stat(fp); if (st.isFile() && st.size > 0) return true; } catch (_) {}
+
+  if (src.kind === 'inline') {
+    const fd = src.fileData;
+    const b64 = fd.startsWith('data:') ? fd.slice(fd.indexOf(',') + 1) : fd;
+    const buf = Buffer.from(b64, 'base64');
+    if (buf.length < 64 || !buf.slice(0, 1024).toString('latin1').includes('%PDF-')) return false;
+    if (!(await _diskHasRoomFor(buf.length))) return false;
+    const tmp = fp + '.tmp' + crypto.randomBytes(3).toString('hex');
+    await fs.promises.writeFile(tmp, buf);
+    await fs.promises.rename(tmp, fp);
+    console.log(`[pdf-mirror] 💾 database copy → SSD: ${src.name} (${Math.round(buf.length / 1024)} KB)`);
+    return true;
+  }
+
+  /* remote → copy in the background; this open keeps using the link */
+  const failedAt = _pdfMirrorFailed.get(src.name);
+  if (failedAt && Date.now() - failedAt < PDF_MIRROR_RETRY_MS) return false;
+  if (_pdfMirrorJobs.has(src.name) || _pdfMirrorJobs.size >= PDF_MIRROR_MAX_PARALLEL) return false;
+  if (!(await _diskHasRoomFor(0))) return false;
+  const job = (async () => {
+    let ok = false;
+    try { ok = await _downloadTo(src.url, fp); } catch (_) { ok = false; }
+    if (ok && !(await _isPdfFile(fp))) {
+      ok = false;
+      await fs.promises.rm(fp, { force: true }).catch(() => {});
+    }
+    if (ok) {
+      console.log('[pdf-mirror] ☁️ → 💾 external PDF copied to SSD:', src.name);
+      setTimeout(() => { try { fastViewFor(src.name); } catch (_) {} }, 1000);
+    } else {
+      _pdfMirrorFailed.set(src.name, Date.now());
+      console.warn('[pdf-mirror] could not copy', src.url.slice(0, 120));
+    }
+  })().finally(() => _pdfMirrorJobs.delete(src.name));
+  _pdfMirrorJobs.set(src.name, job);
+  return false;
+}
+
+/* Where does each material's file live? Logged once after start-up and
+   available to admins at GET /api/admin/storage-report. */
+async function buildStorageReport() {
+  const rows = await Course.aggregate([
+    { $project: { name: 1, materials: { $map: { input: { $ifNull: ['$materials', []] }, as: 'm', in: {
+        _id: '$$m._id', title: '$$m.title', type: '$$m.type', url: '$$m.url', cloudUrl: '$$m.cloudUrl', fileName: '$$m.fileName',
+        hasData: { $and: [{ $eq: [{ $type: '$$m.fileData' }, 'string'] }, { $gt: ['$$m.fileData', ''] }] }
+    } } } } }
+  ]);
+  const r = { onDisk: 0, missingOnDisk: 0, external: 0, externalMirrored: 0, database: 0, databaseMirrored: 0, noFile: 0, examples: [] };
+  for (const c of rows) for (const m of (c.materials || [])) {
+    const url = String(m.url || '').trim();
+    const note = (kind) => { if (r.examples.length < 25) r.examples.push({ course: c.name, material: m.title, kind }); };
+    if (url.startsWith('/uploads/')) {
+      const fn = path.basename(url.split('?')[0]);
+      if (/^[A-Za-z0-9._-]+$/.test(fn) && fs.existsSync(path.join(UPLOAD_DIR, fn))) r.onDisk++;
+      else { r.missingOnDisk++; note('missing on disk (restored from backup on first open)'); }
+    } else if (/^https?:\/\//i.test(url) || (!url && /^https?:\/\//i.test(String(m.cloudUrl || '')))) {
+      if (/youtube\.com|youtu\.be|vimeo\.com/i.test(url)) continue;     // streamed videos — not files
+      const src = _localPdfSourceOf({ url: url || '', cloudUrl: m.cloudUrl, fileName: m.fileName });
+      if (src && fs.existsSync(path.join(UPLOAD_DIR, src.name))) r.externalMirrored++;
+      else { r.external++; note(src ? 'external PDF link (copied to SSD on first open)' : 'external link'); }
+    } else if (m.hasData) {
+      r.database++; note('stored in the database (copied to SSD on first open)');
+    } else {
+      r.noFile++;
+    }
+  }
+  return r;
+}
+app.get('/api/admin/storage-report', requireAdminAuth, async (req, res) => {
+  try { res.json({ success: true, report: await buildStorageReport() }); }
+  catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+setTimeout(() => {
+  buildStorageReport().then(r => {
+    console.log(`[storage] files: ${r.onDisk} on SSD · ${r.missingOnDisk} missing on disk · ` +
+                `${r.external} external links (+${r.externalMirrored} already copied) · ` +
+                `${r.database} in database · ${r.noFile} without a file`);
+  }).catch(e => console.warn('[storage] report failed:', e.message));
+}, 20000).unref();
+
 /* ---- On-demand full material fetch (quiz questions) ---- */
 /* ---- On-demand file fetch (PDF base64) — PREMIUM PROTECTED ---- */
 app.get('/api/courses/:courseId/materials/:materialId/file',
@@ -6377,9 +6529,44 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
           }
         }
 
+        /* ⚡ SSD MIRROR (2026-10-07) — PDFs that are NOT in the uploads
+           folder (an external https link such as Cloudinary, or a legacy
+           copy stored inside the database) get a private copy on the
+           server's disk. From then on they are served from the SSD like
+           every other upload: byte ranges, fast-view, browser caching.
+           Database copies are written instantly; external links are
+           fetched in the background on the first open (that open still
+           uses the link), so no student ever waits for the copy. */
+        let servedFrom = rawUrl.startsWith('/uploads/') ? (diskFileExists ? 'disk' : 'missing') : (rawUrl ? 'external' : 'database');
+        if (!signedUrlIssued && !rawUrl.startsWith('/uploads/') && access.allowed && req.authUser && !_officeSrc) {
+          const src = _localPdfSourceOf(mat);
+          if (src) {
+            try {
+              if (await _ensureLocalPdf(src)) {
+                const fv = fastViewFor(src.name);
+                const serveName = fv || src.name;
+                const tok = signUploadToken(serveName, String(req.authUser._id));
+                fileUrl = `/uploads/${encodeURIComponent(serveName)}` +
+                          `?su=${encodeURIComponent(String(req.authUser._id))}` +
+                          `&st=${encodeURIComponent(tok)}`;
+                signedUrlIssued = true;
+                diskFileExists = true;
+                fastView = !!fv;
+                servedFrom = 'disk-mirror';
+              }
+            } catch (e) {
+              console.warn('[pdf-mirror]', e.message);
+            }
+          }
+        }
+        res.setHeader('X-Aero-Served-From', servedFrom);
+
         return res.json({
           success:        true,
           meta:           true,
+          servedFrom,
+          /* the client may send the token as a header (stable, cacheable URL) */
+          sigHeader:      true,
           fileName:       mat.fileName || '',
           fileUrl,
           originalUrl:    rawUrl,

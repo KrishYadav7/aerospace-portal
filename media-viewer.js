@@ -1564,7 +1564,7 @@ class VideoPlayer {
       try {
         let source;
         if (opts.url) {
-          source = await this._buildPdfSource(opts.url, opts.fastView === true);
+          source = await this._buildPdfSource(opts.url, opts.fastView === true, opts.sigInHeader === true);
         } else {
           const dataURL = String(opts.data || '').indexOf('data:') === 0
             ? opts.data
@@ -1654,11 +1654,29 @@ class VideoPlayer {
        Signed /uploads URLs are cacheable, so re-opening a PDF is
        served from the browser cache.
        ============================================================ */
-    async _buildPdfSource(url, fastView) {
-      if (fastView) {
-        return { url, rangeChunkSize: PDF_FAST_RANGE_CHUNK, disableStream: true };
+    async _buildPdfSource(url, fastView, sigInHeader) {
+      /* ⚡ Stable, cacheable URL: the signed token rotates every few hours,
+         and because it sat in the URL the browser treated each rotation as
+         a brand-new file and downloaded the whole PDF again. Sending it as
+         a header keeps the URL the same, so a PDF opened before is read
+         from the device's own cache (served with a 30-day cache header). */
+      let httpHeaders = null;
+      if (sigInHeader) {
+        try {
+          const u = new URL(url, location.origin);
+          const st = u.searchParams.get('st');
+          if (st && u.origin === location.origin && u.pathname.indexOf('/uploads/') === 0) {
+            u.searchParams.delete('st');
+            url = u.pathname + u.search;
+            httpHeaders = { 'X-Aero-St': st };
+          }
+        } catch (_) {}
       }
-      return { url, rangeChunkSize: PDF_RANGE_CHUNK };
+      const src = fastView
+        ? { url, rangeChunkSize: PDF_FAST_RANGE_CHUNK, disableStream: true }
+        : { url, rangeChunkSize: PDF_RANGE_CHUNK };
+      if (httpHeaders) src.httpHeaders = httpHeaders;
+      return src;
     }
 
     /* Open the document on the shared worker. If that worker has

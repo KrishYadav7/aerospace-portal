@@ -1046,7 +1046,7 @@ function checkCertificateEligibility(course) {
       if (currentUser && isAdmin(currentUser)) {
         if (adminTab === 'overview' &&
             typeof renderAdminOverview === 'function') {
-          Promise.resolve(renderAdminOverview()).catch(() => {});
+          Promise.resolve(renderAdminOverview({ force: true })).catch(() => {});
         }
         if (adminTab === 'students' &&
             typeof renderAdminStudents === 'function') {
@@ -5447,7 +5447,7 @@ async function downloadCourseZip(courseId) {
   }
 }
 
-async function renderAdminOverview() {
+async function renderAdminOverview(opts) {
   const myGen = ++_overviewFetchGeneration;
 
   const courses    = getCourses();
@@ -5459,40 +5459,85 @@ async function renderAdminOverview() {
   );
   $('statProfessors').textContent = professors.length;
 
-  // Show a placeholder while we fetch — but never leave it stuck.
-  $('statStudents').textContent = '…';
+  /* ⚡ STUDENT COUNT (2026-10-07)
+     Before: the tile showed "…" and downloaded the WHOLE student list
+     (every student's record, uncached) just to count it — so it always
+     appeared long after the other three tiles.
+     Now: the last known number is painted together with the other
+     tiles, and a tiny count-only request (an index lookup on the
+     server) refreshes it. Re-renders within 15 s reuse the fresh value;
+     roster changes (SSE) always refetch. */
+  const statEl = $('statStudents');
+  const known = _adminStudentCountKnown();
+  statEl.textContent = known != null ? known : '…';
+  statEl.classList.toggle('is-stale', known != null && !_adminStudentCountFresh());
+  if (_adminStudentCountFresh() && !(opts && opts.force)) return;
 
   try {
-    // ⭐ Cache-buster + no-store → guaranteed fresh network read.
-    //    Without these, some browsers serve a cached 200 within
-    //    the same tab session and the count looks frozen.
-    const res = await fetch(`/api/students?_t=${Date.now()}`, {
-      cache: 'no-store'
-    });
-
-    // A newer render started while we were waiting → drop this result.
-    if (myGen !== _overviewFetchGeneration) return;
-
-    if (!res.ok) {
-      $('statStudents').textContent = '—';
-      return;
-    }
-
-    const data = await res.json();
-
-    // Re-check in case a newer render started during the JSON parse.
-    if (myGen !== _overviewFetchGeneration) return;
-
-    if (data && data.success && Array.isArray(data.students)) {
-      $('statStudents').textContent = data.students.length;
-    } else {
-      $('statStudents').textContent = '—';
-    }
+    const n = await _fetchAdminStudentCount();
+    if (myGen !== _overviewFetchGeneration) return;   // a newer render owns the tile
+    if (n == null) { if (known == null) statEl.textContent = '—'; return; }
+    statEl.textContent = n;
+    statEl.classList.remove('is-stale');
   } catch (e) {
     if (myGen !== _overviewFetchGeneration) return;
-    console.warn('[renderAdminOverview] student fetch failed:', e);
-    $('statStudents').textContent = '—';
+    console.warn('[renderAdminOverview] student count failed:', e);
+    if (known == null) statEl.textContent = '—';
+    statEl.classList.remove('is-stale');
   }
+}
+
+const ADMIN_STUDENT_COUNT_KEY = 'aero_admin_student_count';
+const ADMIN_STUDENT_COUNT_FRESH_MS = 15000;
+let _adminStudentCount = null;       // { n, at }
+let _adminStudentCountInflight = null;
+
+function _adminStudentCountKnown() {
+  if (_adminStudentCount) return _adminStudentCount.n;
+  try {
+    const v = JSON.parse(localStorage.getItem(ADMIN_STUDENT_COUNT_KEY) || 'null');
+    if (v && typeof v.n === 'number') { _adminStudentCount = { n: v.n, at: 0 }; return v.n; }
+  } catch (_) {}
+  if (Array.isArray(_allStudentsCache) && _allStudentsCache.length) return _allStudentsCache.length;
+  return null;
+}
+function _adminStudentCountFresh() {
+  return !!(_adminStudentCount && Date.now() - _adminStudentCount.at < ADMIN_STUDENT_COUNT_FRESH_MS);
+}
+function _rememberAdminStudentCount(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return;
+  _adminStudentCount = { n, at: Date.now() };
+  try { localStorage.setItem(ADMIN_STUDENT_COUNT_KEY, JSON.stringify({ n })); } catch (_) {}
+}
+/* One request at a time; falls back to the full roster on a server
+   that does not have the count endpoint yet. */
+function _fetchAdminStudentCount() {
+  if (_adminStudentCountInflight) return _adminStudentCountInflight;
+  _adminStudentCountInflight = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/admin/stats/student-count`, { cache: 'no-store' });
+      if (res.ok) {
+        const d = await res.json().catch(() => null);
+        if (d && d.success && typeof d.count === 'number') { _rememberAdminStudentCount(d.count); return d.count; }
+      }
+      /* Signed-out / no permission → nothing to show. Anything else
+         (older server without this endpoint) → count the roster. */
+      if (res.status === 401 || res.status === 403 || res.status === 429) return null;
+      const r2 = await fetch(`/api/students?_t=${Date.now()}`, { cache: 'no-store' });
+      if (!r2.ok) return null;
+      const d2 = await r2.json().catch(() => null);
+      if (d2 && d2.success && Array.isArray(d2.students)) { _rememberAdminStudentCount(d2.students.length); return d2.students.length; }
+      return null;
+    } finally {
+      _adminStudentCountInflight = null;
+    }
+  })();
+  return _adminStudentCountInflight;
+}
+/* Start the count as soon as an admin session is known, so it is
+   already there when the dashboard paints. */
+function aeroPrefetchAdminStats() {
+  try { if (currentUser && isAdmin(currentUser) && !_adminStudentCountFresh()) _fetchAdminStudentCount().catch(() => {}); } catch (_) {}
 }
 
 /* ============================================================
@@ -13720,9 +13765,17 @@ function renderResultDetail(q, r) {
       </div>
       ${uploads.length > 0 ? `
         <div class="subjective-result-thumbs">
-          ${uploads.map(u => `<a href="${escapeHtml(u.url)}" target="_blank" rel="noopener">
-            <img src="${escapeHtml(u.url)}" alt="answer" loading="lazy" decoding="async">
-          </a>`).join('')}
+          ${uploads.map(u => {
+            const _pdf = u.isPdf === true || /\.pdf(\b|$|\?|#)/i.test(u.url || '') || /\.pdf(\b|$|\?|#)/i.test(u.fileName || '');
+            return _pdf
+              ? `<a href="${escapeHtml(u.url)}" target="_blank" rel="noopener" class="subjective-result-pdf"
+                    onclick="return aeroOpenPdfUrl(event, ${jsStr(u.url || '')}, ${jsStr(u.fileName || 'Your answer')})">
+                   <i class="fas fa-file-pdf"></i><span>${escapeHtml(u.fileName || 'PDF')}</span>
+                 </a>`
+              : `<a href="${escapeHtml(u.url)}" target="_blank" rel="noopener">
+                   <img src="${escapeHtml(u.url)}" alt="answer" loading="lazy" decoding="async">
+                 </a>`;
+          }).join('')}
         </div>` : '<div class="quiz-answer-row"><em>No photos uploaded.</em></div>'}
       <div class="quiz-answer-row subjective-pending-note">
         <i class="fas fa-hourglass-half"></i>
@@ -14142,6 +14195,32 @@ function aeroMaterialCardClick(event, courseId, materialId, action) {
 }
 window.aeroMaterialCardClick = aeroMaterialCardClick;
 
+/* ⚡ Any other PDF on the site (e.g. a student's uploaded answer) opens
+   in the same fast in-app reader — first pages at once, the rest in the
+   background — instead of the browser's own viewer in a new tab.
+   Files from other sites keep opening in a new tab. Returns false to
+   cancel the link's default action when the reader takes over. */
+function aeroOpenPdfUrl(event, url, title) {
+  url = String(url || '');
+  if (!/^\/uploads\/[^?#]+\.pdf(\?|#|$)/i.test(url)) return true;
+  if (event) { event.preventDefault(); event.stopPropagation(); }
+  const fallback = () => { try { window.open(withAuthToken(url), '_blank', 'noopener'); } catch (_) {} };
+  AeroOpening.run('pdf:' + url, async () => {
+    try { await window.loadPDFJS(); } catch (_) { return fallback(); }
+    if (!window.PDFViewer || typeof window.PDFViewer.open !== 'function') return fallback();
+    window.PDFViewer.open({
+      url:            withAuthToken(url),
+      materialId:     'file-' + url.split('?')[0].split('/').pop(),
+      title:          title || 'Document',
+      username:       currentUser ? (currentUser.fullName || currentUser.username || 'Student') : 'Guest',
+      hasFullAccess:  true,
+      previewPercent: 0
+    });
+  });
+  return false;
+}
+window.aeroOpenPdfUrl = aeroOpenPdfUrl;
+
 /* ⚡ Idle warm-up of the PDF engine on course pages.
    Before, PDF.js (~300 KB) only started loading when the mouse
    hovered a card — on phones that is a split second before the tap,
@@ -14291,7 +14370,10 @@ async function _viewFileOnlineImpl(courseId, materialId) {
       previewPercent,
       lockReason,
       /* ⚡ the server sent its re-packed fast-view copy → load on demand */
-      fastView:       !!(meta && meta.fastView === true && effectiveUrl === serverFileUrl)
+      fastView:       !!(meta && meta.fastView === true && effectiveUrl === serverFileUrl),
+      /* ⚡ server accepts the signature as a header → stable URL, so the
+         browser re-uses its cached copy instead of downloading again */
+      sigInHeader:    !!(meta && meta.sigHeader === true && meta.signedUrl && effectiveUrl === serverFileUrl)
     });
     return;
   }
@@ -15581,6 +15663,8 @@ function initApp() {
   if (savedUser) {
     currentUser = savedUser;
     if (currentUser.role === 'admin') adminTab = 'overview';
+    // ⚡ Start the student count now so the Overview tile is ready on first paint
+    try { aeroPrefetchAdminStats(); } catch (_) {}
     // Restart heartbeat immediately if we already have a live session
     _sessionKilled = false;
     startSessionHeartbeat();
@@ -20072,7 +20156,8 @@ function renderSubjectiveUpload(u, qi, idx) {
     return `
       <div class="subjective-upload-tile pdf" data-upload-idx="${idx}">
         <a href="${escapeHtml(u.url)}" target="_blank" rel="noopener noreferrer"
-           class="subjective-pdf-link" title="Open in new tab">
+           class="subjective-pdf-link" title="Open"
+           onclick="return aeroOpenPdfUrl(event, ${jsStr(u.url || '')}, ${jsStr(u.fileName || 'Uploaded PDF')})">
           <i class="fas fa-file-pdf"></i>
           <span>PDF</span>
         </a>
