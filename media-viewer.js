@@ -1358,6 +1358,9 @@ class VideoPlayer {
      ============================================================ */
   const PDF_RANGE_CHUNK       = 2 * 1024 * 1024;  // range size for ordinary PDFs (unchanged)
   const PDF_FAST_RANGE_CHUNK  = 256 * 1024;   // range size for server-packed "fast view" PDFs
+  const PDF_LARGE_RANGE_CHUNK = 512 * 1024;   // range size for other large PDFs
+  const PDF_RANGES_ONLY_BYTES = 3 * 1024 * 1024;  // above this, load only the pieces that are needed
+  const PDF_MAX_DPR           = 2;            // 2× is already sharp; 3× phones paid 2.25× the work
   const PDF_MAX_CANVAS_PIXELS = 12e6;         // ≈ 48 MB of pixels per page canvas
   const PDF_KEEP_ALL_PAGES    = 12;           // documents this short keep every page
   const PDF_RENDER_SETTLE_MS  = 120;          // page must stay in range this long before it renders
@@ -1554,6 +1557,9 @@ class VideoPlayer {
       this._buildUI();
       if (this.viewMode === 'slides') this.modal.classList.add('pdfv-slides-mode');
       this._loadHighlights();
+      /* ⭐ FIX: the saved page was written on every scroll but never read
+         back, so "resume where you left off" never happened. */
+      this._loadReadingProgress();
       this._renderWatermark();
 
       this.modal.classList.add('active');
@@ -1564,7 +1570,7 @@ class VideoPlayer {
       try {
         let source;
         if (opts.url) {
-          source = await this._buildPdfSource(opts.url, opts.fastView === true, opts.sigInHeader === true);
+          source = await this._buildPdfSource(opts.url, opts.fastView === true, opts.sigInHeader === true, Number(opts.fileSize) || 0);
         } else {
           const dataURL = String(opts.data || '').indexOf('data:') === 0
             ? opts.data
@@ -1654,7 +1660,7 @@ class VideoPlayer {
        Signed /uploads URLs are cacheable, so re-opening a PDF is
        served from the browser cache.
        ============================================================ */
-    async _buildPdfSource(url, fastView, sigInHeader) {
+    async _buildPdfSource(url, fastView, sigInHeader, fileSize) {
       /* ⚡ Stable, cacheable URL: the signed token rotates every few hours,
          and because it sat in the URL the browser treated each rotation as
          a brand-new file and downloaded the whole PDF again. Sending it as
@@ -1672,9 +1678,20 @@ class VideoPlayer {
           }
         } catch (_) {}
       }
-      const src = fastView
-        ? { url, rangeChunkSize: PDF_FAST_RANGE_CHUNK, disableStream: true }
-        : { url, rangeChunkSize: PDF_RANGE_CHUNK };
+      /* ⚡ Large files: read only the pieces of the file that the pages
+         being shown need, in the order they are needed. Before, the whole
+         file was streamed from the start AND background-fetched at the
+         same time — on a 60 MB PDF a phone had pulled ~12 MB before page 1
+         appeared. The background page renderer now drives what is fetched
+         next (the pages just after the one being read). Small files are
+         still fetched in one go. */
+      let src;
+      if (fastView || fileSize > PDF_RANGES_ONLY_BYTES) {
+        src = { url, rangeChunkSize: fastView ? PDF_FAST_RANGE_CHUNK : PDF_LARGE_RANGE_CHUNK,
+                disableStream: true, disableAutoFetch: !fastView };   // fast copies are light → keep fetching ahead
+      } else {
+        src = { url, rangeChunkSize: PDF_RANGE_CHUNK };
+      }
       if (httpHeaders) src.httpHeaders = httpHeaders;
       return src;
     }
@@ -2069,11 +2086,36 @@ class VideoPlayer {
          a long document no longer queues dozens of pages the reader
          never stopped at (which delayed the page they did stop at). */
       this._nearPages = new Set();
+      /* ⚡ Is the page actually on screen (not just in the look-ahead margin)? */
+      const onScreen = (el) => {
+        try {
+          const r = el.getBoundingClientRect(), b = this.bodyEl.getBoundingClientRect();
+          return r.bottom > b.top && r.top < b.bottom;
+        } catch (_) { return true; }
+      };
       const startRender = (pageEl, pageNum) => {
         if (!this._pageObserver || !this._nearPages || !this._nearPages.has(pageNum)) return;
         if (pageEl.dataset.rendered === '1' || this.pageEls.get(pageNum) !== pageEl) return;
         if (!this._renderingPages) this._renderingPages = new Set();
         if (this._renderingPages.has(pageNum)) return;
+        /* ⚡ Pages on screen first: a page that is only in the look-ahead
+           margin waits while an on-screen page is still being drawn (on
+           heavy scanned pages, drawing the page above first used to delay
+           the page actually being looked at by seconds). */
+        if (!onScreen(pageEl)) {
+          let visibleBusy = false;
+          this._renderingPages.forEach((n) => {
+            const el = this.pageEls.get(n);
+            if (el && onScreen(el)) visibleBusy = true;
+          });
+          if (visibleBusy) { setTimeout(() => startRender(pageEl, pageNum), 150); return; }
+        } else {
+          /* An on-screen page needs drawing → pause every off-screen page
+             still being drawn (they are re-queued and finish afterwards).
+             The PDF engine works on one page at a time, so without this the
+             page being looked at waited behind its neighbours. */
+          this._pauseOffscreenRenders(onScreen);
+        }
 
         /* Inject the loading skeleton only for pages the user is
            about to see. Off-screen pages stay as plain white
@@ -2102,6 +2144,11 @@ class VideoPlayer {
               console.warn('[PDFViewer] lazy render failed page ' + pageNum, err);
             }
             if (this._renderingPages) this._renderingPages.delete(pageNum);
+            /* paused or skipped → watch it again so it is drawn when due */
+            if (err && err.name === 'RenderingCancelledException' && this._pageObserver &&
+                this.pageEls.get(pageNum) === pageEl && pageEl.dataset.rendered !== '1') {
+              this._pageObserver.observe(pageEl);
+            }
           });
       };
 
@@ -2118,7 +2165,7 @@ class VideoPlayer {
             return;
           }
           if (this._nearPages) this._nearPages.add(pageNum);
-          setTimeout(() => startRender(pageEl, pageNum), PDF_RENDER_SETTLE_MS);
+          setTimeout(() => startRender(pageEl, pageNum), onScreen(pageEl) ? PDF_RENDER_SETTLE_MS : PDF_RENDER_SETTLE_MS + 60);
         });
       }, {
         root: this.bodyEl,
@@ -2151,6 +2198,41 @@ class VideoPlayer {
         });
         this.pageEls.forEach((el) => this._releaseObserver.observe(el));
       }
+    }
+
+    _isPageOnScreen(n) {
+      const el = this.pageEls.get(n);
+      if (!el || !this.bodyEl) return false;
+      try {
+        const r = el.getBoundingClientRect(), b = this.bodyEl.getBoundingClientRect();
+        return r.bottom > b.top && r.top < b.bottom;
+      } catch (_) { return false; }
+    }
+    _onScreenRenderBusy(except) {
+      if (!this._inflight) return false;
+      for (const n of this._inflight.keys()) {
+        if (n !== except && this._isPageOnScreen(n)) {
+          const el = this.pageEls.get(n);
+          if (el && el.dataset.rendered !== '1') return true;
+        }
+      }
+      return false;
+    }
+
+    /* Cancel the drawing of off-screen pages (and the background job) so
+       the page on screen gets the PDF engine first. Cancelled pages are
+       put back under observation and drawn again when they are due. */
+    _pauseOffscreenRenders(onScreen) {
+      if (this._bg && this._bg.task && !this._bg.ownRender) { try { this._bg.task.cancel(); } catch (_) {} }
+      if (!this._renderTasks) return;
+      this._renderTasks.forEach((task, n) => {
+        const el = this.pageEls.get(n);
+        if (!el || onScreen(el)) return;
+        try { task.cancel(); } catch (_) {}
+        if (this._pageObserver && el.dataset.rendered !== '1') {
+          try { this._pageObserver.observe(el); } catch (_) {}
+        }
+      });
     }
 
     _releasePage(n) {
@@ -2421,6 +2503,17 @@ class VideoPlayer {
       const doc = this.pdfDoc;
       if (!doc) return;
       const page = await doc.getPage(n);
+      /* ⚡ On-screen pages first: an off-screen page (look-ahead margin,
+         priority pages) waits here while a page that is actually on
+         screen is being drawn — the PDF engine handles one page at a time. */
+      if (!this._isPageOnScreen(n)) {
+        let waited = 0;
+        while (this.active && this.pdfDoc === doc && waited < 15000 && this._onScreenRenderBusy(n)) {
+          await new Promise((r) => setTimeout(r, 80));
+          waited += 80;
+        }
+        if (!this.active || this.pdfDoc !== doc) return;
+      }
       /* The reader skimmed past this page while it was queued → skip it
          (it is drawn again when scrolled back to). Keeps the worker free
          for the pages actually on screen. */
@@ -2438,7 +2531,7 @@ class VideoPlayer {
       // Cap at 3 to avoid blowing up memory on ultra-dense screens,
       // and keep one canvas under PDF_MAX_CANVAS_PIXELS (high zoom on
       // a dense screen used to allocate 70+ MB for a single page).
-      let dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
+      let dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, PDF_MAX_DPR));
       const cssArea = cssViewport.width * cssViewport.height;
       if (cssArea > 0 && cssArea * dpr * dpr > PDF_MAX_CANVAS_PIXELS) {
         dpr = Math.max(1, Math.sqrt(PDF_MAX_CANVAS_PIXELS / cssArea));
@@ -2565,11 +2658,20 @@ class VideoPlayer {
         }
         return d;
       };
-      /* Reading order: from the current page forward, then backward */
+      /* Reading order: from the current page forward, then backward.
+         ⚡ Heavy pages (scans / photos: > 250 ms each to prepare) are only
+         prepared in a window around the reader (12 ahead, 3 behind) that
+         moves along as they read — so background work never delays the
+         page actually being looked at. Light documents are done in full. */
+      bg.times = [];
+      const heavy = () => bg.times.length >= 3 &&
+        (bg.times.reduce((a, b) => a + b, 0) / bg.times.length) > 250;
       const pickNext = () => {
         const cur = Math.max(1, Math.min(limit, this.currentPage || 1));
-        for (let n = cur; n <= limit; n++) if (needsWork(n)) return n;
-        for (let n = cur - 1; n >= 1; n--) if (needsWork(n)) return n;
+        const hi = heavy() ? Math.min(limit, cur + 12) : limit;
+        const lo = heavy() ? Math.max(1, cur - 3) : 1;
+        for (let n = cur; n <= hi; n++) if (needsWork(n)) return n;
+        for (let n = cur - 1; n >= lo; n--) if (needsWork(n)) return n;
         return 0;
       };
       const busy = () =>
@@ -2592,10 +2694,13 @@ class VideoPlayer {
         }
         const n = pickNext();
         if (!n) {
+          /* heavy document: the window is done — check again as the reader moves */
+          if (heavy() && countDone() < limit) { this._setBgStatus(countDone(), limit, false); return schedule(1500); }
           this._setBgStatus(limit, limit, true);
           bg.stopped = true;
           return;
         }
+        const tStart = performance.now();
         try {
           if (shortDoc) {
             const el = this.pageEls.get(n);
@@ -2611,8 +2716,10 @@ class VideoPlayer {
           if (!err || err.name !== 'RenderingCancelledException') bg.failed.add(n);
         }
         if (!alive()) return;
+        bg.times.push(performance.now() - tStart);
+        if (bg.times.length > 8) bg.times.shift();
         this._setBgStatus(countDone(), limit, false);
-        schedule(0);
+        schedule(heavy() ? 150 : 0);
       };
 
       this._setBgStatus(countDone(), limit, false);
@@ -3295,7 +3402,7 @@ class VideoPlayer {
       try {
         if (st.task) { try { st.task.cancel(); } catch (e) {} }
         const W = window.innerWidth, H = window.innerHeight;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+        const dpr = Math.min(window.devicePixelRatio || 1, PDF_MAX_DPR);
         const key = W + 'x' + H + 'x' + dpr;
         if (!st.cache) st.cache = new Map();
 
@@ -3374,7 +3481,7 @@ class VideoPlayer {
           job.p = (async () => {
             const page = await this.pdfDoc.getPage(m);
             const W = window.innerWidth, H = window.innerHeight;
-            const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+            const dpr = Math.min(window.devicePixelRatio || 1, PDF_MAX_DPR);
             const base = page.getViewport({ scale: 1 });
             const vp = page.getViewport({ scale: Math.min(W / base.width, H / base.height) * dpr });
             const cv = document.createElement('canvas');

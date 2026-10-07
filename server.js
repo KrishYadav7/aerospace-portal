@@ -6187,23 +6187,35 @@ async function _restoreUploadFromBackup(fn, cloudUrl) {
        has plenty of free space; any failure → the original is used.
      • The copy is ignored automatically if the original is newer.
    ============================================================ */
-const FASTVIEW_ANY_RE         = /_fastview(?:_tmp[a-f0-9]{6})?\.pdf$/i;
+/* ⚡ FAST-VIEW v2 (2026-10-07)
+   The fast-view copy is now built in two steps, in a separate low-
+   priority process so the web server never stalls:
+     1. pdf-optimizer.js shrinks page images that are far larger than
+        any screen can show (typical for scanned / photographed notes:
+        12-megapixel JPEG per page → ~4 MP, ≈ 60 % smaller file),
+     2. qpdf linearizes it ("web-optimized": page 1 at the front of the
+        file) and packs objects — when qpdf is installed.
+   Either step alone still produces a useful copy. The original upload
+   is never changed. v1 copies (…_fastview.pdf) are replaced by v2
+   copies (…_fastview2.pdf) automatically on the next open. */
+const FASTVIEW_ANY_RE         = /_fastview\d*(?:_tmp[a-f0-9]{6})?\.pdf$/i;
 const FASTVIEW_MIN_BYTES      = 1024 * 1024;               // smaller PDFs load in one request anyway
 const FASTVIEW_MAX_BYTES      = 500 * 1024 * 1024;
+const FASTVIEW_OPTIMIZE_MAX_BYTES = 150 * 1024 * 1024;     // image step: bounded memory
 const FASTVIEW_MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024;    // keep ≥ 3 GB free on the disk
 const _fastViewQueue  = [];
 const _fastViewQueued = new Set();
-const _fastViewSkip   = new Map();       // filename → original mtime that could not be packed
+const _fastViewSkip   = new Map();       // filename → original mtime that could not be improved
 let   _fastViewBusy   = false;
-let   _fastViewNoQpdf = false;
+let   _fastViewNoQpdf = false;           // qpdf missing → image step only
 
-function fastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview.pdf'); }
+function fastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview2.pdf'); }
+function _oldFastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview.pdf'); }
 
 /* The fast copy's filename when an up-to-date one exists; otherwise
    null (and a copy is queued so the next open is fast). */
 function fastViewFor(fn) {
   try {
-    if (_fastViewNoQpdf) return null;
     fn = String(fn || '');
     if (!/^[A-Za-z0-9._-]+\.pdf$/i.test(fn) || FASTVIEW_ANY_RE.test(fn)) return null;
     const st = fs.statSync(path.join(UPLOAD_DIR, fn));
@@ -6221,7 +6233,7 @@ function fastViewFor(fn) {
 
 function _queueFastView(fn, mtimeMs) {
   if (_fastViewQueued.has(fn) || _fastViewSkip.get(fn) === mtimeMs) return;
-  if (_fastViewQueue.length >= 100) return;
+  if (_fastViewQueue.length >= 500) return;
   _fastViewQueued.add(fn);
   _fastViewQueue.push(fn);
   if (!_fastViewBusy) {
@@ -6243,6 +6255,54 @@ async function _runFastViewQueue() {
   }
 }
 
+/* Image step in a child process (nice +10, 1 GB heap, 5 min cap). */
+function _runPdfOptimizer(src, out) {
+  return new Promise((resolve) => {
+    let child, outText = '';
+    try {
+      child = require('child_process').spawn(process.execPath,
+        ['--max-old-space-size=1024', path.join(__dirname, 'pdf-optimizer.js'), src, out],
+        { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    } catch (e) { return resolve({ changed: false, reason: e.message }); }
+    try { require('os').setPriority(child.pid, 10); } catch (_) {}
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 5 * 60 * 1000);
+    child.stdout.on('data', (d) => { if (outText.length < 4096) outText += d; });
+    child.on('error', () => {});
+    child.on('close', () => {
+      clearTimeout(timer);
+      try { resolve(JSON.parse(outText.trim().split('\n').pop())); }
+      catch (_) { resolve({ changed: false, reason: 'optimizer exited' }); }
+    });
+  });
+}
+
+function _runQpdf(args) {
+  return new Promise((resolve) => {
+    execFile('qpdf', args, { timeout: 180000, maxBuffer: 4 * 1024 * 1024 }, (err, _o, stderr) => {
+      if (!err) return resolve(true);
+      if (err.code === 'ENOENT') {
+        if (!_fastViewNoQpdf) console.warn('[fastview] qpdf is not installed — fast copies get the image step only (sudo apt install qpdf adds "page 1 first" ordering).');
+        _fastViewNoQpdf = true;
+        return resolve(false);
+      }
+      if (err.code === 3) return resolve(true);            // success with warnings
+      console.warn('[fastview] qpdf:', String(stderr || err.message || '').trim().split('\n')[0]);
+      resolve(false);
+    });
+  });
+}
+
+async function _isGoodPdf(fp) {
+  try {
+    const st = await fs.promises.stat(fp);
+    if (st.size < 1024) return false;
+    const head = Buffer.alloc(5);
+    const fh = await fs.promises.open(fp, 'r');
+    try { await fh.read(head, 0, 5, 0); } finally { await fh.close(); }
+    return head.toString('latin1') === '%PDF-';
+  } catch (_) { return false; }
+}
+
 async function _buildFastView(fn) {
   const src = path.join(UPLOAD_DIR, fn);
   const out = path.join(UPLOAD_DIR, fastViewNameFor(fn));
@@ -6253,45 +6313,75 @@ async function _buildFastView(fn) {
   } catch (_) {}
 
   /* Disk guard — never let the copies fill the disk. */
-  if (typeof fs.promises.statfs !== 'function') { _fastViewNoQpdf = true; return; }
-  const sf = await fs.promises.statfs(UPLOAD_DIR);
-  const free = Number(sf.bavail) * Number(sf.bsize);
-  if (!(free > FASTVIEW_MIN_FREE_BYTES && free > st.size * 10)) {
-    _fastViewSkip.set(fn, st.mtimeMs);
-    console.warn('[fastview] skipped (low disk space):', fn);
-    return;
-  }
-
-  const tmp = out.replace(/\.pdf$/i, '') + '_tmp' + crypto.randomBytes(3).toString('hex') + '.pdf';
-  const t0 = Date.now();
-  const ok = await new Promise((resolve) => {
-    execFile('qpdf', ['--object-streams=generate', '--stream-data=preserve', src, tmp],
-      { timeout: 120000, maxBuffer: 4 * 1024 * 1024 },
-      (err, _o, stderr) => {
-        if (!err) return resolve(true);
-        if (err.code === 'ENOENT') { _fastViewNoQpdf = true; console.warn('[fastview] qpdf is not installed — PDFs are served as they are.'); return resolve(false); }
-        if (err.code === 3) return resolve(true);           // success with warnings
-        console.warn('[fastview] qpdf could not pack', fn, '·', String(stderr || err.message || '').trim().split('\n')[0]);
-        resolve(false);
-      });
-  });
-  try {
-    if (!ok) { _fastViewSkip.set(fn, st.mtimeMs); return; }
-    const tst = await fs.promises.stat(tmp);
-    const head = Buffer.alloc(5);
-    const fh = await fs.promises.open(tmp, 'r');
-    try { await fh.read(head, 0, 5, 0); } finally { await fh.close(); }
-    const st2 = await fs.promises.stat(src);
-    if (tst.size < 1024 || head.toString('latin1') !== '%PDF-' || st2.mtimeMs !== st.mtimeMs) {
+  if (typeof fs.promises.statfs === 'function') {
+    const sf = await fs.promises.statfs(UPLOAD_DIR);
+    const free = Number(sf.bavail) * Number(sf.bsize);
+    if (!(free > FASTVIEW_MIN_FREE_BYTES && free > st.size * 10)) {
       _fastViewSkip.set(fn, st.mtimeMs);
+      console.warn('[fastview] skipped (low disk space):', fn);
       return;
     }
-    await fs.promises.rename(tmp, out);
-    console.log(`[fastview] ⚡ ${fn} → ${path.basename(out)} (${Math.round(tst.size / 1024)} KB, ${Date.now() - t0} ms)`);
+  }
+
+  const tag = '_tmp' + crypto.randomBytes(3).toString('hex');
+  const base = out.replace(/\.pdf$/i, '');
+  const tmpOpt = base + tag + '.pdf';
+  const tmpLin = base + '_tmp' + crypto.randomBytes(3).toString('hex') + '.pdf';
+  const t0 = Date.now();
+  try {
+    /* 1) shrink oversized page images */
+    let input = src, note = [];
+    if (st.size <= FASTVIEW_OPTIMIZE_MAX_BYTES) {
+      const r = await _runPdfOptimizer(src, tmpOpt);
+      if (r && r.changed && await _isGoodPdf(tmpOpt)) {
+        input = tmpOpt;
+        note.push(`images ${r.resized}/${r.images} resized`);
+      }
+    }
+    /* 2) linearize ("page 1 first") + object streams */
+    let result = null;
+    if (!_fastViewNoQpdf && await _runQpdf(['--linearize', '--object-streams=generate', '--stream-data=preserve', input, tmpLin]) &&
+        await _isGoodPdf(tmpLin)) {
+      result = tmpLin;
+      note.push('linearized');
+    } else if (input !== src) {
+      result = input;
+    }
+    if (!result) { _fastViewSkip.set(fn, st.mtimeMs); return; }
+
+    const st2 = await fs.promises.stat(src);
+    if (st2.mtimeMs !== st.mtimeMs) { _fastViewSkip.set(fn, st.mtimeMs); return; }   // replaced meanwhile
+    await fs.promises.rename(result, out);
+    const tst = await fs.promises.stat(out);
+    console.log(`[fastview] ⚡ ${fn} → ${path.basename(out)} · ${Math.round(st.size / 1048576 * 10) / 10} MB → ` +
+                `${Math.round(tst.size / 1048576 * 10) / 10} MB · ${note.join(', ')} · ${Date.now() - t0} ms`);
+    /* the old v1 copy is no longer used */
+    fs.promises.rm(path.join(UPLOAD_DIR, _oldFastViewNameFor(fn)), { force: true }).catch(() => {});
   } finally {
-    fs.promises.rm(tmp, { force: true }).catch(() => {});
+    fs.promises.rm(tmpOpt, { force: true }).catch(() => {});
+    fs.promises.rm(tmpLin, { force: true }).catch(() => {});
   }
 }
+
+/* ⚡ After start-up, prepare fast copies of the PDFs that already exist,
+   one at a time in the background — so the first student to open an
+   old file does not get the slow version. */
+setTimeout(async () => {
+  try {
+    const rows = await Course.aggregate([
+      { $project: { urls: { $map: { input: { $ifNull: ['$materials', []] }, as: 'm', in: '$$m.url' } } } }
+    ]);
+    let n = 0;
+    for (const r of rows) for (const u of (r.urls || [])) {
+      const url = String(u || '');
+      if (!url.startsWith('/uploads/')) continue;
+      const fn = path.basename(url.split('?')[0]);
+      if (!/\.pdf$/i.test(fn)) continue;
+      if (fastViewFor(fn) === null) n++;
+    }
+    if (n) console.log(`[fastview] preparing fast copies of ${n} existing PDF(s) in the background`);
+  } catch (e) { console.warn('[fastview] start-up sweep failed:', e.message); }
+}, 60000).unref();
 
 /* ============================================================
    ⚡ SSD MIRROR FOR PDFs THAT LIVE ELSEWHERE (2026-10-07)
@@ -6561,10 +6651,19 @@ app.get('/api/courses/:courseId/materials/:materialId/file',
         }
         res.setHeader('X-Aero-Served-From', servedFrom);
 
+        /* Size of the file the reader will load — large files are read
+           in pieces (only the pages needed) instead of one long download */
+        let fileSize = 0;
+        try {
+          const mm = /^\/uploads\/([^?#]+)/.exec(String(fileUrl || ''));
+          if (mm && diskFileExists) fileSize = (await fs.promises.stat(path.join(UPLOAD_DIR, path.basename(decodeURIComponent(mm[1]))))).size;
+        } catch (_) {}
+
         return res.json({
           success:        true,
           meta:           true,
           servedFrom,
+          fileSize,
           /* the client may send the token as a header (stable, cacheable URL) */
           sigHeader:      true,
           fileName:       mat.fileName || '',

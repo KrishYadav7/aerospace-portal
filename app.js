@@ -14373,7 +14373,8 @@ async function _viewFileOnlineImpl(courseId, materialId) {
       fastView:       !!(meta && meta.fastView === true && effectiveUrl === serverFileUrl),
       /* ⚡ server accepts the signature as a header → stable URL, so the
          browser re-uses its cached copy instead of downloading again */
-      sigInHeader:    !!(meta && meta.sigHeader === true && meta.signedUrl && effectiveUrl === serverFileUrl)
+      sigInHeader:    !!(meta && meta.sigHeader === true && meta.signedUrl && effectiveUrl === serverFileUrl),
+      fileSize:       (meta && effectiveUrl === serverFileUrl && Number(meta.fileSize)) || 0
     });
     return;
   }
