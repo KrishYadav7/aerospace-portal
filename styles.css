@@ -16015,3 +16015,119 @@ html.aero-in-app .app-install-pill { display: none !important; }
 }
 @media (prefers-reduced-motion: reduce) { .pdfv-skel-sheet::after { animation: none; } }
 @media (max-width: 760px) { .pdfv-loader { padding-top: 14px; } }
+
+/* ============================================================
+   ⭐ PROFESSOR ROLE (2026-10-07)
+   ============================================================ */
+/* Professor mode: admin-only fields and every remove / delete control
+   are hidden (the server refuses them too). */
+body.aero-prof .admin-only,
+body.aero-prof [onclick^="deleteMaterialFromEditor"],
+body.aero-prof [onclick^="deleteAnnouncement"],
+body.aero-prof [onclick^="deletePlaylist"],
+body.aero-prof [onclick^="removeVideoFromPlaylist"],
+body.aero-prof [onclick^="removeThumbnail"],
+body.aero-prof [onclick^="removeQuizQuestion"],
+body.aero-prof [onclick^="renamePlaylist"],
+body.aero-prof [onclick^="autoGeneratePlaylist"],
+body.aero-prof [onclick^="downloadCourseZip"],
+body.aero-prof [onclick^="publishQuizResultsNow"],
+body.aero-prof [onclick*="openMaterialViewers"],
+body.aero-prof .ann-delete,
+body.aero-prof .playlist-item-remove { display: none !important; }
+
+/* login: three role buttons fit on small phones */
+.login-role-toggle button { min-width: 0; }
+@media (max-width: 420px) { .login-role-toggle button { font-size: 12.5px; padding-left: 6px; padding-right: 6px; } }
+
+/* registration modal */
+.prof-reg-box { max-width: 720px; width: 100%; max-height: calc(100vh - 32px); overflow-y: auto; }
+.prof-reg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+.prof-reg-section { margin: 14px 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--brand-600); display: flex; gap: 8px; align-items: center; }
+[data-theme="dark"] .prof-reg-section, [data-theme="dim"] .prof-reg-section { color: var(--brand-300, #a5b4fc); }
+@media (max-width: 640px) { .prof-reg-grid { grid-template-columns: 1fr; } }
+
+/* small dialogs */
+.aero-dialog-ov { position: fixed; inset: 0; z-index: 10050; background: rgba(10,14,31,.6); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center; padding: 16px; animation: aigFadeIn .15s ease-out; }
+.aero-dialog { background: var(--bg-surface); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 16px;
+  max-width: 440px; width: 100%; padding: 22px; box-shadow: 0 24px 60px rgba(0,0,0,.35); }
+.aero-dialog h3 { margin: 0 0 8px; font-size: 18px; }
+.aero-dialog p { margin: 0 0 16px; color: var(--text-secondary); line-height: 1.55; font-size: 14px; }
+.aero-dialog-icon { width: 46px; height: 46px; border-radius: 14px; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--brand-500), var(--accent-500, #06b6d4)); color: #fff; font-size: 20px; margin-bottom: 12px; }
+.aero-dialog-label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+.aero-dialog textarea { width: 100%; box-sizing: border-box; margin-bottom: 14px; }
+.aero-dialog-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.aero-shake { animation: aeroShake .35s; border-color: var(--rose-500, #f43f5e) !important; }
+@keyframes aeroShake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+
+/* professor dashboard */
+#professorContent { max-width: 1180px; margin: 0 auto; padding: 8px 0 40px; }
+.prof-hero { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 22px; border-radius: 18px; margin-bottom: 18px;
+  background: linear-gradient(135deg, rgba(99,102,241,.12), rgba(6,182,212,.08)); border: 1px solid color-mix(in srgb, var(--brand-500) 22%, var(--border-subtle)); }
+.prof-hero-avatar { width: 60px; height: 60px; border-radius: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--brand-600), var(--accent-500, #06b6d4)); color: #fff; font-weight: 800; font-size: 20px; }
+.prof-hero-text { flex: 1 1 260px; min-width: 0; }
+.prof-hero-text h2 { margin: 6px 0 4px; font-size: 22px; }
+.prof-hero-text p { margin: 0; color: var(--text-secondary); }
+.prof-hero-stats { display: flex; gap: 12px; }
+.prof-hero-stats > div { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 10px 16px; text-align: center; min-width: 92px; }
+.prof-hero-stats strong { display: block; font-size: 22px; }
+.prof-hero-stats span { font-size: 12px; color: var(--text-tertiary); }
+.prof-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 700; }
+.prof-chip.ok { background: rgba(16,185,129,.14); color: #059669; }
+.prof-chip.wait { background: rgba(245,158,11,.16); color: #b45309; }
+.prof-chip.bad { background: rgba(244,63,94,.14); color: #e11d48; }
+[data-theme="dark"] .prof-chip.ok, [data-theme="dim"] .prof-chip.ok { color: #6ee7b7; }
+[data-theme="dark"] .prof-chip.wait, [data-theme="dim"] .prof-chip.wait { color: #fcd34d; }
+[data-theme="dark"] .prof-chip.bad, [data-theme="dim"] .prof-chip.bad { color: #fda4af; }
+.prof-tabs, .pa-subtabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+.prof-tabs button, .pa-subtabs button { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-secondary); font: inherit; font-weight: 600; font-size: 13.5px; }
+.prof-tabs button.active, .pa-subtabs button.active { background: linear-gradient(135deg, var(--brand-500), var(--brand-600)); color: #fff; border-color: transparent; }
+.prof-course-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.prof-course-card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; }
+.prof-course-top { padding: 18px; color: #fff; background: linear-gradient(135deg, var(--brand-600), var(--accent-500, #06b6d4)); }
+.prof-course-top h3 { margin: 6px 0 0; font-size: 17px; color: #fff; }
+.prof-course-top .course-code { font-size: 11.5px; font-weight: 700; opacity: .9; }
+.prof-course-body { padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+.prof-course-meta { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-tertiary); }
+.prof-course-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+.prof-empty .btn { margin-top: 10px; }
+.prof-rules { display: flex; gap: 12px; align-items: flex-start; margin-top: 20px; padding: 14px 16px; border-radius: 14px; font-size: 13.5px; line-height: 1.55;
+  background: rgba(16,185,129,.07); border: 1px solid rgba(16,185,129,.22); color: var(--text-secondary); }
+.prof-rules > i { color: #10b981; margin-top: 3px; }
+.prof-grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; align-items: start; }
+@media (max-width: 860px) { .prof-grid-2 { grid-template-columns: 1fr; } }
+.prof-req-list { display: flex; flex-direction: column; gap: 10px; }
+.prof-req { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border-subtle); background: var(--bg-surface-2, transparent); }
+.prof-req-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.prof-req-top .prof-chip { margin-left: auto; }
+.prof-req-meta { font-size: 12px; color: var(--text-tertiary); margin-top: 4px; }
+.prof-req-note { font-size: 13px; margin-top: 8px; display: flex; gap: 8px; align-items: baseline; }
+.prof-req-note.ok { color: #059669; } .prof-req-note.bad { color: #e11d48; }
+
+/* admin: Professor Access */
+.pa-intro { padding: 12px 14px; border-radius: 12px; margin-bottom: 14px; font-size: 13.5px; color: var(--text-secondary);
+  background: rgba(99,102,241,.07); border: 1px solid rgba(99,102,241,.2); }
+.pa-card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 16px 18px; margin-bottom: 12px; }
+.pa-card-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; margin-bottom: 10px; }
+.pa-card-head h4 { margin: 0 0 6px; font-size: 16px; }
+.pa-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.pa-details { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 16px; font-size: 13px; }
+.pa-details span { display: block; color: var(--text-tertiary); font-size: 11.5px; }
+.pa-details strong { font-weight: 600; word-break: break-word; }
+.pa-bio { margin: 10px 0 0; font-size: 13.5px; color: var(--text-secondary); line-height: 1.5; }
+.pa-sub { font-size: 12.5px; color: var(--text-tertiary); }
+.pa-warn { color: #b45309; font-size: 13px; }
+.pa-grant { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+.pa-grant label { font-size: 13px; font-weight: 600; color: var(--text-secondary, #555); }
+.pa-grant select { min-width: 260px; max-width: 100%; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border-default, #d8dbe6); background: var(--bg-surface, #fff); color: var(--text-primary, #1a1a2e); font: inherit; font-size: 13.5px; }
+@media (max-width: 600px) { .pa-grant select { min-width: 0; width: 100%; } }
+.pa-match { font-size: 12px; color: #059669; } .pa-match.none { color: var(--text-tertiary); }
+.pa-courses { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+.pa-course-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 12px; border-radius: 999px; background: rgba(99,102,241,.1); font-weight: 600; font-size: 12.5px; }
+.pa-course-chip button { border: 0; background: transparent; color: inherit; cursor: pointer; width: 22px; height: 22px; border-radius: 50%; }
+.pa-course-chip button:hover { background: rgba(244,63,94,.15); color: #e11d48; }
+.pa-hist { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); font-size: 13.5px; }

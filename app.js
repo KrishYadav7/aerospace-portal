@@ -1029,6 +1029,13 @@ function checkCertificateEligibility(course) {
       return;
     }
 
+    /* ⭐ Professor applications / requests / decisions: only the admin's
+       Professor Access tab and the professor's own dashboard care. */
+    if (scope === 'professors:changed') {
+      try { aeroOnProfessorsChanged(); } catch (e) {}
+      return;
+    }
+
     /* If the user is mid-flow, queue and bail */
     if (isBusy()) {
       window.__aeroSyncPending = { scope, detail };
@@ -1890,7 +1897,8 @@ async function fetchCoursesFromDB(force = false, page = 1) {
      savePlaylistFromModal, autoGeneratePlaylist, renamePlaylist,
      deletePlaylist, addSelectedVideoToPlaylist, …) without editing
      any of them.                                                */
-  const effectiveForce = force === true || isAdmin;
+  const isProfUser = !!(currentUser && String(currentUser.role || '').toLowerCase() === 'professor');
+  const effectiveForce = force === true || isAdmin || isProfUser;
 
   // Fast path: fresh cache + first page + non-admin
   if (!effectiveForce && page === 1 && liveCourses.length > 0
@@ -1926,7 +1934,9 @@ async function fetchCoursesFromDB(force = false, page = 1) {
     // ⚡ NO _t= cache-buster on normal fetches → browser HTTP cache
     //    + server in-memory cache both work. Force-refresh (admin
     //    button, after mutations) still bypasses everything.
-    const baseUrl = `${API_BASE}/courses?limit=${PER_PAGE}&page=${page}`;
+    /* ⭐ a professor only ever loads the courses approved for them */
+    const baseUrl = isProfUser ? `${API_BASE}/professor/courses?page=${page}`
+                               : `${API_BASE}/courses?limit=${PER_PAGE}&page=${page}`;
     const url     = effectiveForce ? `${baseUrl}&_t=${Date.now()}` : baseUrl;
     const opts    = effectiveForce ? { cache: 'no-store' } : {};
 
@@ -2030,6 +2040,7 @@ let currentUser = null;
 let currentCourseId = null;
 let currentMaterialFilter = 'all';
 let loginRole = 'student';
+let professorNav = 'courses';         // ⭐ professor dashboard: 'courses' | 'requests'
 let studentNav = 'home';
 let adminTab = 'overview';
 let editingCourseId = null;
@@ -2788,6 +2799,12 @@ function getMaterialAccessInfo(course, mat) {
     };
   }
 
+  /* ⭐ A professor has full access to the courses approved for them */
+  if (typeof profCanEdit === 'function' && profCanEdit(course.id)) {
+    return { hasFullAccess: true, canPreview: false, previewPercent: 0, isCoursePremium, isMatPremium,
+             ownsCourse: false, ownsMaterial: false, subscribed: false, isFreeContent: false };
+  }
+
   /* Guests — course-level premium still requires login,
      but material-level premium can be previewed anonymously. */
   if (!currentUser) {
@@ -2986,6 +3003,8 @@ function syncHashToState() {
   addingCourse = false; addingProfessor = false; addingMaterialCourseId = null; addingStudent = false;
   if (parts[0] === 'admin') {
     adminTab = parts[1] || 'overview';
+  } else if (parts[0] === 'professor') {
+    professorNav = parts[1] === 'requests' ? 'requests' : 'courses';
   } else if (parts[0] === 'courses') {
     studentNav = 'courses';
   } else if (parts[0] === 'saved') {
@@ -3697,14 +3716,18 @@ async function handleLogin(e) {
 
         const serverRole = String(data.user.role || '').trim().toLowerCase();
 
-        if (loginRole === 'admin' && serverRole !== 'admin') {
+        if (loginRole !== serverRole && (loginRole === 'admin' || loginRole === 'professor')) {
           showToast(
-            'This account is a student account. Logging you in as a student.',
+            `This is a ${serverRole} account — signing you in as a ${serverRole}.`,
             'info'
           );
         }
 
-        if (serverRole === 'admin') {
+        if (serverRole === 'professor') {
+          professorNav = 'courses';
+          try { history.replaceState(null, '', '#/professor'); }
+          catch (e) { location.hash = '#/professor'; }
+        } else if (serverRole === 'admin') {
           adminTab = 'overview';
           studentNav = 'home';
           try { history.replaceState(null, '', '#/admin/overview'); }
@@ -3746,6 +3769,16 @@ async function handleLogin(e) {
 
       // ─── Real server reply, definitive failure (bad credentials, etc.) ───
       // Do NOT retry — this is intentional.
+      if (data.professorStatus) {
+        /* ⭐ professor account not (or no longer) approved — explain clearly */
+        const st = data.professorStatus;
+        aeroInfoDialog(
+          st === 'pending' ? 'Waiting for admin approval' : st === 'rejected' ? 'Application not approved' : 'Professor access withdrawn',
+          escapeHtml(data.message || ''),
+          st === 'pending' ? 'fa-hourglass-half' : 'fa-circle-exclamation');
+        resetBtn();
+        return;
+      }
       showToast(data.message || 'Login failed. Please try again.', 'error');
       resetBtn();
 
@@ -3947,6 +3980,8 @@ async function submitOtpVerification() {
   try {
     if (_otpContext.type === 'register') {
       await _handleRegisterOtp(otp);
+    } else if (_otpContext.type === 'professor-register') {
+      await _handleProfessorRegisterOtp(otp);
     } else if (_otpContext.type === 'forgot-username') {
       await _handleForgotUsernameOtp(otp);
     } else if (_otpContext.type === 'forgot-password') {
@@ -4555,7 +4590,7 @@ function renderAdminAddMaterial(courseId) {
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-cog"></i> Access & Settings</h3>
       <div class="editor-grid-3">
-        <div class="form-group"><label>Access Level</label>
+        <div class="form-group admin-only"><label>Access Level</label>
           <label class="toggle-box pro" style="margin-top:6px;">
             <input type="checkbox" id="newMatPremium"
                    onchange="document.getElementById('newMatPriceGroup').style.display=this.checked?'block':'none';document.getElementById('newMatPreviewGroup').style.display=this.checked?'block':'none';">
@@ -4565,10 +4600,10 @@ function renderAdminAddMaterial(courseId) {
         <div class="form-group"><label>Estimated Time (Optional)</label><input type="text" id="newMatTime" placeholder="e.g. 45 mins"></div>
         <div class="form-group"><label>Tags (Optional)</label><input type="text" id="newMatTags" placeholder="e.g. aerodynamics, basics"></div>
       </div>
-      <div class="form-group" id="newMatPriceGroup" style="display:none; margin-top:10px;">
+      <div class="form-group admin-only" id="newMatPriceGroup" style="display:none; margin-top:10px;">
         <label>Unlock Price (₹)</label><input type="number" id="newMatPrice" placeholder="e.g. 49" min="0" step="1">
       </div>
-      <div class="form-group" id="newMatPreviewGroup" style="display:none; margin-top:10px;">
+      <div class="form-group admin-only" id="newMatPreviewGroup" style="display:none; margin-top:10px;">
         <label><i class="fas fa-eye"></i> Free Preview Percentage</label>
         <input type="number" id="newMatPreview" value="0" min="0" max="100" step="1" placeholder="e.g. 10">
         <span class="hint">Percentage of PDF pages free to read. <strong>0 = no preview.</strong> 10 = first 10% of pages.</span>
@@ -4951,7 +4986,7 @@ window.addEventListener('hashchange', function () {
 });
 
 function _renderAppNow() {
-  ['loginView', 'adminView', 'adminEditView', 'studentAIHomeView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
+  ['loginView', 'adminView', 'adminEditView', 'professorView', 'studentAIHomeView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
     .forEach(id => { const el = $(id); if (el) el.classList.remove('active'); });
   $('appHeader').style.display = 'none';
   $('appFooter').style.display = 'none';
@@ -4985,7 +5020,7 @@ function _renderAppNow() {
     if (userDropdownName) userDropdownName.textContent = currentUser.fullName || currentUser.username;
 
     if (roleBadgeDropdown) {
-      roleBadgeDropdown.textContent = currentUser.role === 'admin' ? 'Admin' : 'Student';
+      roleBadgeDropdown.textContent = currentUser.role === 'admin' ? 'Admin' : currentUser.role === 'professor' ? 'Professor' : 'Student';
       roleBadgeDropdown.className = 'role-badge ' + currentUser.role;
     }
   }
@@ -5009,17 +5044,21 @@ function _renderAppNow() {
   }
 
   renderNotificationBadge();
+  /* ⭐ professor mode: hides every delete / admin-only control (the
+     server refuses them anyway — this keeps the screen honest) */
+  document.body.classList.toggle('aero-prof', isProfessor(currentUser));
   buildNav();
-  if (quizEditingCourseId && quizEditingMaterialId && isAdmin(currentUser)) {
+  const _adminNow = isAdmin(currentUser);
+  if (quizEditingCourseId && quizEditingMaterialId && (_adminNow || profCanEdit(quizEditingCourseId))) {
     $('adminQuizEditorView').classList.add('active');
     renderQuizEditor();
     return;
   }
-  if (addingCourse)          { $('adminAddCourseView').classList.add('active');    renderAdminAddCourse(); return; }
-  if (addingProfessor)       { $('adminAddProfessorView').classList.add('active'); renderAdminAddProfessor(); return; }
-  if (addingMaterialCourseId){ $('adminAddMaterialView').classList.add('active');  renderAdminAddMaterial(addingMaterialCourseId); return; }
-  if (addingStudent)         { $('adminAddStudentView').classList.add('active');   renderAdminAddStudent(); return; }
-  if (editingCourseId && isAdmin(currentUser)) {
+  if (addingCourse && _adminNow)    { $('adminAddCourseView').classList.add('active');    renderAdminAddCourse(); return; }
+  if (addingProfessor && _adminNow) { $('adminAddProfessorView').classList.add('active'); renderAdminAddProfessor(); return; }
+  if (addingMaterialCourseId && (_adminNow || profCanEdit(addingMaterialCourseId))) { $('adminAddMaterialView').classList.add('active');  renderAdminAddMaterial(addingMaterialCourseId); return; }
+  if (addingStudent && _adminNow)   { $('adminAddStudentView').classList.add('active');   renderAdminAddStudent(); return; }
+  if (editingCourseId && (_adminNow || profCanEdit(editingCourseId))) {
     $('adminEditView').classList.add('active');
     renderCourseEditor(editingCourseId); return;
   }
@@ -5027,6 +5066,7 @@ function _renderAppNow() {
   // Case-insensitive role check — defends against legacy "Admin" values
   const _isAdminRole = String(currentUser.role || '').trim().toLowerCase() === 'admin';
   if (_isAdminRole) { $('adminView').classList.add('active'); renderAdminDashboard(); return; }
+  if (isProfessor(currentUser)) { $('professorView').classList.add('active'); renderProfessorDashboard(); return; }
 
   // ─── AI DOUBT SOLVER (default landing page for students) ───
   if (studentNav === 'ai') {
@@ -5070,6 +5110,13 @@ function _renderAppNow() {
 function buildNav() {
   if (isAdmin(currentUser)) {
     $('mainNav').innerHTML = `<a href="#" class="active" onclick="event.preventDefault();">Dashboard</a>`;
+    return;
+  }
+  if (isProfessor(currentUser)) {
+    const onDash = !currentCourseId && !editingCourseId && !quizEditingCourseId;
+    $('mainNav').innerHTML = `
+      <a href="#" class="${onDash && professorNav === 'courses' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> My Courses</a>
+      <a href="#" class="${onDash && professorNav === 'requests' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request Course Access</a>`;
     return;
   }
   const aiActive        = (studentNav === 'ai'        && !currentCourseId) ? 'active' : '';
@@ -5132,6 +5179,7 @@ function updateAdminTabUI() {
   const actionsEl = $('adminHeaderActions');
   const titleMap = {
     overview:      { icon: 'fa-tachometer-alt', text: 'Admin Dashboard' },
+    profaccess:    { icon: 'fa-user-shield',    text: 'Professor Access' },
     live:          { icon: 'fa-bolt',           text: 'Live Activity' },
     courses:       { icon: 'fa-graduation-cap', text: 'Manage Courses' },
     professors:    { icon: 'fa-user-tie',       text: 'Manage Professors' },
@@ -5200,10 +5248,12 @@ function updateAdminTabUI() {
 
 function renderAdminDashboard() {
   updateAdminTabUI();
+  try { refreshProfAccessBadge(); } catch (e) {}
   if (adminTab === 'overview') renderAdminOverview();
   else if (adminTab === 'live')          renderAdminLiveActivity();
   else if (adminTab === 'courses') renderAdminCourses();
   else if (adminTab === 'professors') renderAdminProfessors();
+  else if (adminTab === 'profaccess') renderAdminProfAccess();
   else if (adminTab === 'students') renderAdminStudents();
   else if (adminTab === 'replies') renderAdminEmailReplies();
   else if (adminTab === 'subscriptions') renderAdminSubscriptions();
@@ -7841,7 +7891,7 @@ function closeCourseEditor() {
   addingStudent = false;
   currentCourseId = null;
   window.currentSelectedCourseId = null;
-  pushHash('#/admin/courses');
+  pushHash(isProfessor(currentUser) ? '#/professor' : '#/admin/courses');
   renderApp();
 }
 function switchEditorTab(tab) { editingTab = tab; renderCourseEditor(editingCourseId); }
@@ -7925,7 +7975,7 @@ function renderEditorDetails(course) {
   return `
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-info-circle"></i> Basic Information</h3>
-      <div class="editor-grid-2">
+      <div class="editor-grid-2 admin-only">
         <div class="form-group"><label>Course Name *</label><input type="text" id="edName" value="${escapeHtml(course.name)}"></div>
         <div class="form-group"><label>Course Code *</label><input type="text" id="edCode" value="${escapeHtml(course.code)}"></div>
         <div class="form-group"><label>Semester</label>
@@ -7943,7 +7993,7 @@ function renderEditorDetails(course) {
     <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-layer-group"></i> Classification</h3>
       <div class="editor-grid-3">
-        <div class="form-group"><label>Category</label>
+        <div class="form-group admin-only"><label>Category</label>
           <select id="edCategory">
             ${['Aerodynamics','Propulsion','Structures','Avionics','Mathematics','General'].map(c => `<option value="${c}" ${course.category === c ? 'selected' : ''}>${c}</option>`).join('')}
           </select>
@@ -7956,10 +8006,10 @@ function renderEditorDetails(course) {
         <div class="form-group"><label>Duration</label>
           <input type="text" id="edDuration" value="${escapeHtml(course.duration) || ''}" placeholder="e.g. 12 hours">
         </div>
-        <div class="form-group"><label>Credits (Optional)</label>
+        <div class="form-group admin-only"><label>Credits (Optional)</label>
           <input type="number" id="edCredits" value="${course.credits || 0}" min="0" step="1">
         </div>
-        <div class="form-group"><label>Language (Optional)</label>
+        <div class="form-group admin-only"><label>Language (Optional)</label>
           <input type="text" id="edLanguage" value="${escapeHtml(course.language) || ''}" placeholder="e.g. English">
         </div>
       </div>
@@ -7969,7 +8019,7 @@ function renderEditorDetails(course) {
       <p class="editor-hint">One outcome per line.</p>
       <textarea id="edOutcomes" rows="5" placeholder="Understand aerodynamic principles&#10;Apply Bernoulli's equation...">${escapeHtml(outcomes)}</textarea>
     </div>
-    <div class="editor-section">
+    <div class="editor-section admin-only">
       <h3 class="editor-section-title"><i class="fas fa-cog"></i> Status & Visibility</h3>
       <div class="editor-grid-3">
         <div class="form-group"><label>Status</label>
@@ -7996,7 +8046,7 @@ function renderEditorDetails(course) {
         <input type="number" id="edPrice" value="${course.price || 0}" min="0" step="1">
       </div>
     </div>
-    <div class="editor-section">
+    <div class="editor-section admin-only">
       <h3 class="editor-section-title"><i class="fas fa-certificate"></i> Certificate</h3>
       <p class="editor-hint">
         When enabled, students who meet the criteria below can download a
@@ -8124,7 +8174,7 @@ function renderEditorMaterials(course) {
           <input type="file" id="newMatInlineFile">
         </div>
 
-        <div class="editor-grid-2">
+        <div class="editor-grid-2 admin-only">
           <div class="form-group">
             <label>Access Level</label>
             <label class="toggle-box pro" style="margin-top:6px;">
@@ -8139,7 +8189,7 @@ function renderEditorMaterials(course) {
           </div>
         </div>
 
-        <div class="form-group" id="newMatInlinePreviewGroup" style="display:none;">
+        <div class="form-group admin-only" id="newMatInlinePreviewGroup" style="display:none;">
           <label><i class="fas fa-eye"></i> Free Preview Percentage</label>
           <input type="number" id="newMatInlinePreview" value="0" min="0" max="100" step="1">
           <span class="hint">0 = no preview. 10 = first 10% of the PDF is free to read.</span>
@@ -8633,7 +8683,7 @@ function renderMaterialEditorCard(courseId, m, idx, total) {
         </div>
         <div class="form-group"><label>Description</label><textarea class="me-desc" rows="2">${escapeHtml(m.description) || ''}</textarea></div>
         <div class="form-group"><label>Link</label><input type="text" class="me-url" value="${escapeHtml(m.url) || ''}"></div>
-        <div class="editor-grid-2">
+        <div class="editor-grid-2 admin-only">
           <div class="form-group"><label>Access</label>
             <label class="toggle-box pro" style="margin-top:6px;">
               <input type="checkbox" class="me-premium" ${m.isPremium ? 'checked' : ''}>
@@ -8642,7 +8692,7 @@ function renderMaterialEditorCard(courseId, m, idx, total) {
           </div>
           <div class="form-group"><label>Price (₹)</label><input type="number" class="me-price" value="${m.price || 0}" min="0" step="1"></div>
         </div>
-        <div class="editor-grid-2">
+        <div class="editor-grid-2 admin-only">
           <div class="form-group">
             <label><i class="fas fa-eye"></i> Free Preview Percentage</label>
             <input type="number" class="me-preview" value="${m.previewPercent || 0}" min="0" max="100" step="1">
@@ -10430,7 +10480,7 @@ function renderMaterialCard(course, m, isPurchased) {
 
   const courseLocked   = isCoursePremium && !isPurchased    && !isSubscribed;
   const materialLocked = isMatPremium    && !isMatPurchased && !isSubscribed;
-  const isLocked       = !isAdminUser && (courseLocked || materialLocked);
+  const isLocked       = !isAdminUser && !profCanEdit(course.id) && (courseLocked || materialLocked);
   const canAccess      = !isLocked;
   /* ⭐ Visitor browsing the catalog without an account: every lesson is
      listed but locked — clicking it asks them to register / sign in. */
@@ -11247,7 +11297,7 @@ function closeQuizEditor() {
   quizEditingMaterialId = null;
   quizDraft = [];
   if (cid) openCourseEditor(cid);
-  else { pushHash('#/admin/courses'); renderApp(); }
+  else { pushHash(isProfessor(currentUser) ? '#/professor' : '#/admin/courses'); renderApp(); }
 }
 
 function normalizeQuestion(q) {
@@ -24407,3 +24457,464 @@ async function maRemoveRelease() {
     showInstallGuide(g.title, g.steps);
   };
 })();
+
+/* ============================================================
+   ⭐ PROFESSOR ROLE — client (2026-10-07)
+   ------------------------------------------------------------
+   • Login page: "Professor" tab + "Register as a Professor"
+     (email OTP, then the account waits for admin approval).
+   • Professor dashboard: My Courses (only admin-approved ones) +
+     Request Course Access (course name + code → admin).
+   • Course editor reused in "professor mode": add & edit only.
+     Every delete / admin-only control is hidden (body.aero-prof)
+     and guarded here; the server refuses them regardless.
+   • Admin → "Professor Access" tab: approve / reject applications,
+     grant / decline course requests, revoke, remove a course.
+   ============================================================ */
+function isProfessor(u) {
+  return !!u && String(u.role || '').trim().toLowerCase() === 'professor';
+}
+function profCanEdit(courseId) {
+  if (!isProfessor(currentUser) || !courseId) return false;
+  const mine = ((currentUser.professor && currentUser.professor.courses) || []).map(String);
+  return mine.includes(String(courseId));
+}
+function navigateProfessor(tab) {
+  professorNav = tab === 'requests' ? 'requests' : 'courses';
+  editingCourseId = null; currentCourseId = null; window.currentSelectedCourseId = null;
+  quizEditingCourseId = null; quizEditingMaterialId = null; addingMaterialCourseId = null;
+  pushHash(professorNav === 'requests' ? '#/professor/requests' : '#/professor');
+  renderApp();
+}
+
+/* ---------- small dialogs (prompt()/alert() do not work in the Android app) ---------- */
+function aeroInfoDialog(title, html, icon) {
+  const ov = document.createElement('div');
+  ov.className = 'aero-dialog-ov';
+  ov.innerHTML = `<div class="aero-dialog" role="dialog" aria-modal="true">
+      <div class="aero-dialog-icon"><i class="fas ${icon || 'fa-circle-info'}"></i></div>
+      <h3>${escapeHtml(title)}</h3><p>${html}</p>
+      <div class="aero-dialog-actions"><button type="button" class="btn btn-primary">OK</button></div></div>`;
+  const close = () => ov.remove();
+  ov.querySelector('button').onclick = close;
+  ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+  document.body.appendChild(ov);
+  setTimeout(() => { try { ov.querySelector('button').focus(); } catch (_) {} }, 30);
+}
+function aeroAskText(title, label, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'aero-dialog-ov';
+    ov.innerHTML = `<div class="aero-dialog" role="dialog" aria-modal="true">
+        <h3>${escapeHtml(title)}</h3>
+        <label class="aero-dialog-label">${escapeHtml(label)}</label>
+        <textarea rows="3" maxlength="500" placeholder="${escapeHtml(opts.placeholder || '')}"></textarea>
+        <div class="aero-dialog-actions">
+          <button type="button" class="btn btn-outline" data-a="cancel">Cancel</button>
+          <button type="button" class="btn ${opts.danger ? 'btn-danger' : 'btn-primary'}" data-a="ok">${escapeHtml(opts.okText || 'Confirm')}</button>
+        </div></div>`;
+    const ta = ov.querySelector('textarea');
+    const done = (v) => { ov.remove(); resolve(v); };
+    ov.querySelector('[data-a="cancel"]').onclick = () => done(null);
+    ov.querySelector('[data-a="ok"]').onclick = () => {
+      const v = ta.value.trim();
+      if (opts.required && !v) { ta.focus(); ta.classList.add('aero-shake'); setTimeout(() => ta.classList.remove('aero-shake'), 400); return; }
+      done(v);
+    };
+    document.body.appendChild(ov);
+    setTimeout(() => ta.focus(), 30);
+  });
+}
+function aeroConfirm(title, html, okText, danger) {
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'aero-dialog-ov';
+    ov.innerHTML = `<div class="aero-dialog" role="dialog" aria-modal="true"><h3>${escapeHtml(title)}</h3><p>${html}</p>
+        <div class="aero-dialog-actions"><button type="button" class="btn btn-outline" data-a="no">Cancel</button>
+        <button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-a="yes">${escapeHtml(okText || 'Confirm')}</button></div></div>`;
+    const done = (v) => { ov.remove(); resolve(v); };
+    ov.querySelector('[data-a="no"]').onclick = () => done(false);
+    ov.querySelector('[data-a="yes"]').onclick = () => done(true);
+    document.body.appendChild(ov);
+  });
+}
+
+/* ---------- registration ---------- */
+let _profRegData = null;
+function showProfessorRegisterModal() {
+  const f = $('professorRegisterForm');
+  if (f) f.reset();
+  openModal('professorRegisterModal');
+  setTimeout(() => { try { $('prRegFullName').focus(); } catch (_) {} }, 50);
+}
+async function registerProfessor(e) {
+  e.preventDefault();
+  const v = (id) => (($(id) && $(id).value) || '').trim();
+  const data = {
+    fullName: v('prRegFullName'), username: v('prRegUsername').toLowerCase(), email: v('prRegEmail').toLowerCase(),
+    phone: v('prRegPhone'), password: ($('prRegPassword') && $('prRegPassword').value) || '',
+    designation: v('prRegDesignation'), department: v('prRegDepartment'), institution: v('prRegInstitution'),
+    qualification: v('prRegQualification'), specialization: v('prRegSpecialization'),
+    experienceYears: parseInt(v('prRegExperience'), 10) || 0, employeeId: v('prRegEmployeeId'),
+    profileUrl: v('prRegProfileUrl'), bio: v('prRegBio')
+  };
+  if (!data.fullName || !data.username || !data.email || !data.phone || !data.password) return showToast('Please fill in all the basic details.', 'error');
+  if (!data.designation || !data.department || !data.institution) return showToast('Designation, department and institution are required.', 'error');
+  if (!/^[a-z0-9._-]{3,40}$/.test(data.username)) return showToast('Username: 3–40 letters, numbers, dot, dash or underscore.', 'error');
+  if (data.password.length < 8) return showToast('Password must be at least 8 characters.', 'error');
+  if (data.password !== (($('prRegPassword2') && $('prRegPassword2').value) || '')) return showToast('The two passwords do not match.', 'error');
+  if (!/^\d{10,15}$/.test(data.phone.replace(/\D/g, ''))) return showToast('Please enter a valid contact number.', 'error');
+  if (data.profileUrl && !/^https?:\/\//i.test(data.profileUrl)) return showToast('Profile URL must start with http:// or https://', 'error');
+
+  const btn = e.target.querySelector('button[type="submit"]');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending OTP…'; }
+  try {
+    const res = await fetch(`${API_BASE}/send-otp`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: data.email, username: data.username, phone: data.phone }) });
+    const d = await res.json().catch(() => ({}));
+    if (!d.success) return showToast(d.message || 'Could not send the OTP.', 'error');
+    _profRegData = data;
+    closeModal('professorRegisterModal');
+    openOtpModal({ title: 'Verify your email', subtitle: `We've sent a 6-digit code to ${data.email}. Enter it to submit your application.`,
+                   type: 'professor-register', data });
+  } catch (_) {
+    showToast('Network error — please try again.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Verify email &amp; submit'; }
+  }
+}
+async function _handleProfessorRegisterOtp(otp) {
+  const res = await fetch(`${API_BASE}/professor/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(Object.assign({}, _otpContext.data, { otp })) });
+  const data = await res.json().catch(() => ({}));
+  if (!data.success) throw new Error(data.message || 'Registration failed.');
+  _otpContext = null; _profRegData = null;
+  closeModal('otpVerificationModal');
+  aeroInfoDialog('Application submitted',
+    'Thank you! Your professor account is now <strong>waiting for admin approval</strong>. You will get an email as soon as it is approved — then sign in with the <strong>Professor</strong> tab.',
+    'fa-hourglass-half');
+}
+
+/* ---------- professor dashboard ---------- */
+let _profMe = null, _profMeAt = 0, _profMeLoading = null;
+async function loadProfessorMe(force) {
+  if (!force && _profMe && Date.now() - _profMeAt < 15000) return _profMe;
+  if (_profMeLoading) return _profMeLoading;
+  _profMeLoading = (async () => {
+    try {
+      const d = await fetchJSON(`${API_BASE}/professor/me?_t=${Date.now()}`, { cache: 'no-store' });
+      if (d && d.success) {
+        _profMe = d; _profMeAt = Date.now();
+        /* keep the session copy current — course list drives what can be edited */
+        const before = JSON.stringify(((currentUser && currentUser.professor) || {}).courses || []);
+        if (currentUser) { currentUser.professor = d.professor; try { saveSessionUser(currentUser); } catch (_) {} }
+        const loaded = (liveCourses || []).map(c => String(c.id)).sort().join(',');
+        const wanted = (d.professor.courses || []).map(String).sort().join(',');
+        if (before !== JSON.stringify(d.professor.courses || []) || loaded !== wanted) {
+          try { await fetchCoursesFromDB(true); } catch (_) {}
+        }
+      }
+      return _profMe;
+    } finally { _profMeLoading = null; }
+  })();
+  return _profMeLoading;
+}
+
+function renderProfessorDashboard() {
+  const root = $('professorContent');
+  if (!root) return;
+  const me = _profMe;
+  if (!me) {
+    root.innerHTML = `<div class="prof-loading">${typeof renderCoursesLoadingSkeleton === 'function' ? renderCoursesLoadingSkeleton('Loading your dashboard…') : 'Loading…'}</div>`;
+    loadProfessorMe(true).then(() => { if (isProfessor(currentUser)) renderProfessorDashboard(); }).catch(() => {});
+    return;
+  }
+  /* refresh quietly in the background (≤ once per 15 s) */
+  if (Date.now() - _profMeAt > 15000) loadProfessorMe(true).then(() => renderProfessorDashboard()).catch(() => {});
+
+  const p = me.professor || {};
+  const name = (currentUser && (currentUser.fullName || currentUser.username)) || 'Professor';
+  const myCourses = (liveCourses || []).filter(c => (p.courses || []).map(String).includes(String(c.id)));
+  const pendingReqs = (p.requests || []).filter(r => r.status === 'pending').length;
+
+  let html = `
+    <div class="prof-hero">
+      <div class="prof-hero-avatar">${escapeHtml(name.split(' ').map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase())}</div>
+      <div class="prof-hero-text">
+        <span class="prof-chip ok"><i class="fas fa-circle-check"></i> Approved professor</span>
+        <h2>Welcome, ${escapeHtml(name)}</h2>
+        <p>${escapeHtml([p.designation, p.department, p.institution].filter(Boolean).join(' · '))}</p>
+      </div>
+      <div class="prof-hero-stats">
+        <div><strong>${myCourses.length}</strong><span>course${myCourses.length === 1 ? '' : 's'}</span></div>
+        <div><strong>${pendingReqs}</strong><span>pending request${pendingReqs === 1 ? '' : 's'}</span></div>
+      </div>
+    </div>
+    <div class="prof-tabs" role="tablist">
+      <button class="${professorNav === 'courses' ? 'active' : ''}" onclick="navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> My Courses</button>
+      <button class="${professorNav === 'requests' ? 'active' : ''}" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request Course Access${pendingReqs ? ` <span class="nav-count">${pendingReqs}</span>` : ''}</button>
+    </div>`;
+
+  if (professorNav === 'requests') {
+    html += `
+      <div class="prof-grid-2">
+        <div class="section-card prof-request-card">
+          <h3><i class="fas fa-paper-plane"></i> Request access to a course</h3>
+          <p class="editor-hint">Type the course exactly as it appears in your timetable. The admin checks it and grants access — the course appears under <strong>My Courses</strong> once approved.</p>
+          <form onsubmit="submitProfessorCourseRequest(event)">
+            <div class="form-group"><label>Course name *</label><input type="text" id="profReqName" maxlength="160" required placeholder="e.g. Aerodynamics I"></div>
+            <div class="form-group"><label>Course code *</label><input type="text" id="profReqCode" maxlength="40" required placeholder="e.g. AE21001" style="text-transform:uppercase;"></div>
+            <div class="form-group"><label>Message to the admin</label><textarea id="profReqMsg" rows="3" maxlength="600" placeholder="e.g. I teach this course in the autumn semester."></textarea></div>
+            <button type="submit" class="btn btn-primary btn-block"><i class="fas fa-paper-plane"></i> Send request</button>
+          </form>
+        </div>
+        <div class="section-card">
+          <h3><i class="fas fa-list-check"></i> My requests</h3>
+          ${(p.requests || []).length ? `<div class="prof-req-list">${(p.requests || []).slice().reverse().map(r => {
+            const granted = r.courseId ? (me.courses || []).find(c => c.id === r.courseId) : null;
+            return `<div class="prof-req ${r.status}">
+              <div class="prof-req-top"><strong>${escapeHtml(r.courseCode)}</strong> · ${escapeHtml(r.courseName)}
+                <span class="prof-chip ${r.status === 'approved' ? 'ok' : r.status === 'rejected' ? 'bad' : 'wait'}">${r.status === 'approved' ? '<i class="fas fa-check"></i> Approved' : r.status === 'rejected' ? '<i class="fas fa-xmark"></i> Declined' : '<i class="fas fa-hourglass-half"></i> Pending'}</span></div>
+              <div class="prof-req-meta">Sent ${new Date(r.requestedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}${r.reviewedAt ? ' · reviewed ' + new Date(r.reviewedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''}</div>
+              ${granted ? `<div class="prof-req-note ok"><i class="fas fa-unlock"></i> Access granted to ${escapeHtml((granted.code ? granted.code + ' — ' : '') + granted.name)}</div>` : ''}
+              ${r.status === 'rejected' && r.reviewNote ? `<div class="prof-req-note bad"><i class="fas fa-comment"></i> ${escapeHtml(r.reviewNote)}</div>` : ''}
+            </div>`; }).join('')}</div>` : `<div class="empty-state"><i class="fas fa-inbox"></i><p>No requests yet.</p></div>`}
+        </div>
+      </div>`;
+  } else {
+    html += myCourses.length ? `<div class="prof-course-grid">${myCourses.map(c => `
+        <div class="prof-course-card">
+          <div class="prof-course-top" style="${typeof accentStyle === 'function' ? accentStyle(c.code || c.name) : ''}">
+            <span class="course-code">${escapeHtml(c.code || '')}</span>
+            <h3>${escapeHtml(c.name)}</h3>
+          </div>
+          <div class="prof-course-body">
+            <div class="prof-course-meta"><span><i class="fas fa-layer-group"></i> ${(c.materials || []).length} materials</span>
+              <span><i class="fas fa-bullhorn"></i> ${(c.announcements || []).length} announcements</span></div>
+            <div class="prof-course-actions">
+              <button class="btn btn-primary btn-sm" onclick="openCourseEditor('${c.id}')"><i class="fas fa-pen-to-square"></i> Add & edit content</button>
+              <button class="btn btn-outline btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View as student</button>
+            </div>
+          </div>
+        </div>`).join('')}</div>`
+      : `<div class="empty-state prof-empty"><i class="fas fa-chalkboard"></i>
+           <p><strong>No courses yet.</strong></p>
+           <p>Ask the admin for access to the courses you teach — they appear here once approved.</p>
+           <button class="btn btn-primary" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request course access</button></div>`;
+    html += `<div class="prof-rules"><i class="fas fa-shield-halved"></i>
+      <div><strong>What you can do:</strong> open your approved courses, add new materials, question papers, playlists and announcements, and edit existing content.
+      Removing anything is reserved for the admin — ask the admin if something needs to be deleted.</div></div>`;
+  }
+  root.innerHTML = html;
+}
+
+async function submitProfessorCourseRequest(e) {
+  e.preventDefault();
+  const courseName = (($('profReqName') || {}).value || '').trim();
+  const courseCode = (($('profReqCode') || {}).value || '').trim();
+  const message = (($('profReqMsg') || {}).value || '').trim();
+  if (!courseName || !courseCode) return showToast('Course name and code are both required.', 'error');
+  const btn = e.target.querySelector('button[type="submit"]');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…'; }
+  try {
+    const d = await fetchJSON(`${API_BASE}/professor/course-requests`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ courseName, courseCode, message }) });
+    if (!d.success) throw new Error(d.message || 'Could not send the request.');
+    showToast('✅ Request sent to the admin.', 'success');
+    await loadProfessorMe(true);
+    renderProfessorDashboard();
+  } catch (err) {
+    showToast(err.message || 'Could not send the request.', 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send request'; }
+  }
+}
+
+/* live updates from the server (approval / new request …) */
+function aeroOnProfessorsChanged() {
+  if (isAdmin(currentUser)) {
+    _profAccessBadgeAt = 0;
+    refreshProfAccessBadge();
+    if (adminTab === 'profaccess' && !editingCourseId) renderAdminProfAccess();
+  } else if (isProfessor(currentUser)) {
+    loadProfessorMe(true).then(() => {
+      if (!editingCourseId && !currentCourseId && !quizEditingCourseId) renderProfessorDashboard();
+    }).catch(() => {});
+  }
+}
+
+/* ---------- professor mode guards (defence in depth; the server refuses too) ---------- */
+(function guardProfessorDeletes() {
+  const blocked = ['deleteMaterialFromEditor', 'deleteAnnouncement', 'deletePlaylist', 'removeVideoFromPlaylist', 'removeThumbnail',
+                   'removeQuizQuestion', 'renamePlaylist', 'autoGeneratePlaylist', 'downloadCourseZip', 'publishQuizResultsNow', 'openMaterialViewers'];
+  blocked.forEach((name) => {
+    const orig = window[name];
+    if (typeof orig !== 'function') return;
+    window[name] = function () {
+      if (isProfessor(currentUser)) { showToast('This action is reserved for the admin.', 'info'); return; }
+      return orig.apply(this, arguments);
+    };
+  });
+})();
+
+/* ---------- admin: Professor Access tab ---------- */
+let _profAccessSub = 'applications';
+let _profAccessBadgeAt = 0;
+async function refreshProfAccessBadge() {
+  if (!isAdmin(currentUser) || Date.now() - _profAccessBadgeAt < 30000) return;
+  _profAccessBadgeAt = Date.now();
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/professors?status=pending&_t=${Date.now()}`, { cache: 'no-store' });
+    const n = d && d.counts ? (d.counts.pending || 0) + (d.counts.pendingRequests || 0) : 0;
+    const b = $('profAccessBadge');
+    if (b) { b.textContent = n; b.style.display = n ? 'inline-flex' : 'none'; }
+  } catch (_) {}
+}
+function switchProfAccessSub(sub) { _profAccessSub = sub; renderAdminProfAccess(); }
+
+async function renderAdminProfAccess() {
+  const box = $('adminTabProfaccess');
+  if (!box) return;
+  if (!box.innerHTML.trim()) box.innerHTML = typeof renderCoursesLoadingSkeleton === 'function' ? renderCoursesLoadingSkeleton('Loading professors…') : 'Loading…';
+  let profs, reqs;
+  try {
+    [profs, reqs] = await Promise.all([
+      fetchJSON(`${API_BASE}/admin/professors?status=all&_t=${Date.now()}`, { cache: 'no-store' }),
+      fetchJSON(`${API_BASE}/admin/professor-requests?status=all&_t=${Date.now()}`, { cache: 'no-store' })
+    ]);
+  } catch (e) {
+    box.innerHTML = `<div class="empty-state"><p>Could not load: ${escapeHtml(e.message || '')}</p><button class="btn btn-outline" onclick="renderAdminProfAccess()">Try again</button></div>`;
+    return;
+  }
+  if (adminTab !== 'profaccess') return;
+  const list = (profs && profs.professors) || [];
+  const counts = (profs && profs.counts) || {};
+  const allReqs = (reqs && reqs.requests) || [];
+  const courses = (reqs && reqs.courses) || [];
+  const b = $('profAccessBadge');
+  const badgeN = (counts.pending || 0) + (counts.pendingRequests || 0);
+  if (b) { b.textContent = badgeN; b.style.display = badgeN ? 'inline-flex' : 'none'; }
+
+  const fmt = (d) => d ? new Date(d).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  const detailRows = (p) => {
+    const x = p.professor || {};
+    const row = (k, v) => v ? `<div><span>${k}</span><strong>${v}</strong></div>` : '';
+    return `<div class="pa-details">
+      ${row('Designation', escapeHtml(x.designation))}${row('Department', escapeHtml(x.department))}${row('Institution', escapeHtml(x.institution))}
+      ${row('Qualification', escapeHtml(x.qualification))}${row('Specialization', escapeHtml(x.specialization))}
+      ${row('Experience', x.experienceYears ? escapeHtml(String(x.experienceYears)) + ' yrs' : '')}${row('Employee ID', escapeHtml(x.employeeId))}
+      ${row('Email', escapeHtml(p.email))}${row('Phone', escapeHtml(p.phone))}${row('Username', escapeHtml(p.username))}
+      ${x.profileUrl ? `<div><span>Profile</span><strong><a href="${escapeHtml(x.profileUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(x.profileUrl)}</a></strong></div>` : ''}
+      ${row('Applied', fmt(x.appliedAt))}
+    </div>${x.bio ? `<p class="pa-bio">${escapeHtml(x.bio)}</p>` : ''}`;
+  };
+  const pendingApps = list.filter(p => p.professor.status === 'pending');
+  const pendingReqs = allReqs.filter(r => r.status === 'pending');
+  const approved = list.filter(p => p.professor.status === 'approved');
+  const closed = list.filter(p => p.professor.status === 'rejected' || p.professor.status === 'revoked');
+
+  let html = `
+    <div class="pa-intro">Two-step access: <strong>1.</strong> approve the professor's account → <strong>2.</strong> approve each course they request. Professors can add and edit content in their approved courses but can never delete anything.</div>
+    <div class="pa-subtabs">
+      <button class="${_profAccessSub === 'applications' ? 'active' : ''}" onclick="switchProfAccessSub('applications')"><i class="fas fa-user-clock"></i> Applications ${counts.pending ? `<span class="nav-count">${counts.pending}</span>` : ''}</button>
+      <button class="${_profAccessSub === 'requests' ? 'active' : ''}" onclick="switchProfAccessSub('requests')"><i class="fas fa-key"></i> Course requests ${pendingReqs.length ? `<span class="nav-count">${pendingReqs.length}</span>` : ''}</button>
+      <button class="${_profAccessSub === 'professors' ? 'active' : ''}" onclick="switchProfAccessSub('professors')"><i class="fas fa-chalkboard-user"></i> Professors (${approved.length})</button>
+      <button class="${_profAccessSub === 'history' ? 'active' : ''}" onclick="switchProfAccessSub('history')"><i class="fas fa-clock-rotate-left"></i> History</button>
+    </div>`;
+
+  if (_profAccessSub === 'applications') {
+    html += pendingApps.length ? pendingApps.map(p => `
+      <div class="pa-card">
+        <div class="pa-card-head"><div><h4>${escapeHtml(p.fullName || p.username)}</h4><span class="prof-chip wait"><i class="fas fa-hourglass-half"></i> Waiting for approval</span></div>
+          <div class="pa-actions">
+            <button class="btn btn-success btn-sm" onclick="adminDecideProfessor('${p._id}', 'approve')"><i class="fas fa-check"></i> Approve</button>
+            <button class="btn btn-outline btn-sm" onclick="adminDecideProfessor('${p._id}', 'reject')"><i class="fas fa-xmark"></i> Reject</button>
+          </div></div>
+        ${detailRows(p)}
+      </div>`).join('') : `<div class="empty-state"><i class="fas fa-user-check"></i><p>No applications waiting.</p></div>`;
+  } else if (_profAccessSub === 'requests') {
+    html += pendingReqs.length ? pendingReqs.map(r => {
+      const opts = courses.map(c => `<option value="${c.id}" ${r.suggestedCourse && r.suggestedCourse.id === c.id ? 'selected' : ''}>${escapeHtml((c.code ? c.code + ' — ' : '') + c.name)}</option>`).join('');
+      return `<div class="pa-card">
+        <div class="pa-card-head"><div><h4>${escapeHtml(r.courseCode)} · ${escapeHtml(r.courseName)}</h4>
+          <span class="pa-sub">Requested by <strong>${escapeHtml(r.professorName)}</strong> (${escapeHtml([r.designation, r.department, r.institution].filter(Boolean).join(', '))}) · ${fmt(r.requestedAt)}</span></div></div>
+        ${r.message ? `<p class="pa-bio"><i class="fas fa-comment"></i> ${escapeHtml(r.message)}</p>` : ''}
+        ${r.professorStatus !== 'approved' ? `<p class="pa-warn"><i class="fas fa-triangle-exclamation"></i> This professor's account is ${escapeHtml(r.professorStatus)} — approve the account first.</p>` : ''}
+        <div class="pa-grant">
+          <label>Grant this course:</label>
+          <select id="paCourse_${r._id}"><option value="">— choose a course —</option>${opts}</select>
+          ${r.suggestedCourse ? `<span class="pa-match"><i class="fas fa-wand-magic-sparkles"></i> matched by ${r.suggestedCourse.by}${r.alreadyHasSuggested ? ' · already has it' : ''}</span>` : '<span class="pa-match none">no exact match — pick the course</span>'}
+        </div>
+        <div class="pa-actions">
+          <button class="btn btn-success btn-sm" onclick="adminDecideCourseRequest('${r.professorId}', '${r._id}', 'approve')"><i class="fas fa-unlock"></i> Approve access</button>
+          <button class="btn btn-outline btn-sm" onclick="adminDecideCourseRequest('${r.professorId}', '${r._id}', 'reject')"><i class="fas fa-xmark"></i> Decline</button>
+        </div>
+      </div>`; }).join('') : `<div class="empty-state"><i class="fas fa-key"></i><p>No course requests waiting.</p></div>`;
+  } else if (_profAccessSub === 'professors') {
+    html += approved.length ? approved.map(p => `
+      <div class="pa-card">
+        <div class="pa-card-head"><div><h4>${escapeHtml(p.fullName || p.username)}</h4><span class="prof-chip ok"><i class="fas fa-circle-check"></i> Approved ${p.professor.reviewedAt ? '· ' + fmt(p.professor.reviewedAt) : ''}</span></div>
+          <div class="pa-actions"><button class="btn btn-outline btn-sm" onclick="adminDecideProfessor('${p._id}', 'revoke')"><i class="fas fa-user-slash"></i> Revoke access</button></div></div>
+        ${detailRows(p)}
+        <div class="pa-courses"><span>Courses:</span> ${(p.professor.courseList || []).length ? p.professor.courseList.map(c => `
+          <span class="pa-course-chip">${escapeHtml((c.code ? c.code + ' — ' : '') + c.name)}
+            <button title="Remove this course from the professor" onclick="adminRemoveProfessorCourse('${p._id}', '${c.id}', ${jsStr((c.code ? c.code + ' — ' : '') + c.name)})"><i class="fas fa-xmark"></i></button></span>`).join('') : '<em>none yet</em>'}</div>
+      </div>`).join('') : `<div class="empty-state"><i class="fas fa-chalkboard-user"></i><p>No approved professors yet.</p></div>`;
+  } else {
+    const decided = allReqs.filter(r => r.status !== 'pending');
+    html += `<div class="section-card"><h3><i class="fas fa-user-xmark"></i> Rejected / revoked accounts</h3>
+      ${closed.length ? closed.map(p => `<div class="pa-hist"><strong>${escapeHtml(p.fullName || p.username)}</strong> — ${escapeHtml(p.professor.status)} ${fmt(p.professor.reviewedAt)}
+        ${p.professor.reviewNote ? `<span class="pa-sub">“${escapeHtml(p.professor.reviewNote)}”</span>` : ''}
+        <button class="btn btn-outline btn-sm" onclick="adminDecideProfessor('${p._id}', 'approve')"><i class="fas fa-rotate-left"></i> Approve now</button></div>`).join('') : '<p class="editor-hint">None.</p>'}</div>
+      <div class="section-card"><h3><i class="fas fa-clock-rotate-left"></i> Decided course requests</h3>
+      ${decided.length ? decided.map(r => `<div class="pa-hist"><strong>${escapeHtml(r.courseCode)}</strong> ${escapeHtml(r.courseName)} — ${escapeHtml(r.professorName)}
+        <span class="prof-chip ${r.status === 'approved' ? 'ok' : 'bad'}">${escapeHtml(r.status)}</span> ${fmt(r.reviewedAt)}
+        ${r.reviewNote ? `<span class="pa-sub">“${escapeHtml(r.reviewNote)}”</span>` : ''}</div>`).join('') : '<p class="editor-hint">None.</p>'}</div>`;
+  }
+  box.innerHTML = html;
+}
+
+async function adminDecideProfessor(id, action) {
+  let body = {};
+  if (action === 'reject' || action === 'revoke') {
+    const reason = await aeroAskText(action === 'reject' ? 'Reject this application' : 'Revoke professor access',
+      'Reason (the professor will see this):', { required: true, danger: true, okText: action === 'reject' ? 'Reject' : 'Revoke' });
+    if (reason == null) return;
+    body.reason = reason;
+  } else if (!(await aeroConfirm('Approve professor', 'They will be able to sign in and request course access. They will not see any course until you approve it separately.', 'Approve'))) return;
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/professors/${id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!d.success) throw new Error(d.message || 'Failed.');
+    showToast(d.message || 'Done.', 'success');
+    _profAccessBadgeAt = 0;
+    renderAdminProfAccess();
+  } catch (e) { showToast(e.message || 'Failed.', 'error'); }
+}
+async function adminDecideCourseRequest(profId, reqId, action) {
+  const body = {};
+  if (action === 'approve') {
+    const sel = $('paCourse_' + reqId);
+    if (!sel || !sel.value) return showToast('Choose the course to grant first.', 'error');
+    body.courseId = sel.value;
+  } else {
+    const reason = await aeroAskText('Decline course request', 'Reason (the professor will see this):', { required: true, danger: true, okText: 'Decline' });
+    if (reason == null) return;
+    body.reason = reason;
+  }
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/professor-requests/${profId}/${reqId}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!d.success) throw new Error(d.message || 'Failed.');
+    showToast(d.message || 'Done.', 'success');
+    _profAccessBadgeAt = 0;
+    renderAdminProfAccess();
+  } catch (e) { showToast(e.message || 'Failed.', 'error'); }
+}
+async function adminRemoveProfessorCourse(profId, courseId, label) {
+  if (!(await aeroConfirm('Remove course access', `The professor will no longer see <strong>${escapeHtml(label)}</strong>. Nothing they added is deleted.`, 'Remove access', true))) return;
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/professors/${profId}/courses/${courseId}/remove`, { method: 'POST' });
+    if (!d.success) throw new Error(d.message || 'Failed.');
+    showToast('Course access removed.', 'success');
+    renderAdminProfAccess();
+  } catch (e) { showToast(e.message || 'Failed.', 'error'); }
+}

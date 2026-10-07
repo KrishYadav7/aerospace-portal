@@ -240,6 +240,9 @@
             <button class="active" data-role="student" onclick="setLoginRole('student')">
               <i class="fas fa-user-graduate"></i> Student
             </button>
+            <button data-role="professor" onclick="setLoginRole('professor')">
+              <i class="fas fa-chalkboard-user"></i> Professor
+            </button>
             <button data-role="admin" onclick="setLoginRole('admin')">
               <i class="fas fa-user-cog"></i> Admin
             </button>
@@ -265,6 +268,9 @@
             <a href="#" onclick="showRegisterModal();return false;" class="link-inline">
               <i class="fas fa-user-plus"></i> Register as Student
             </a>
+            <a href="#" onclick="showProfessorRegisterModal();return false;" class="link-inline">
+              <i class="fas fa-chalkboard-user"></i> Register as a Professor
+            </a>
             <a href="#/courses" onclick="aeroStartGuestBrowse();return false;" class="link-inline">
               <i class="fas fa-compass"></i> Explore courses first
             </a>
@@ -280,6 +286,11 @@
           </div>
         </div>
       </section>
+      <!-- ⭐ PROFESSOR DASHBOARD (content built by app.js → renderProfessorDashboard) -->
+      <section id="professorView" class="view">
+        <div id="professorContent"></div>
+      </section>
+
       <!-- ============================================================
            STUDENT — AI DOUBT SOLVER (NEW HOME PAGE)
            ============================================================ -->
@@ -461,6 +472,9 @@
           <button class="admin-tab" data-tab="professors" onclick="switchAdminTab('professors')">
             <i class="fas fa-user-tie"></i> Professors
           </button>
+          <button class="admin-tab" data-tab="profaccess" onclick="switchAdminTab('profaccess')">
+            <i class="fas fa-user-shield"></i> Professor Access <span class="nav-count" id="profAccessBadge" style="display:none;">0</span>
+          </button>
           <button class="admin-tab" data-tab="students" onclick="switchAdminTab('students')">
             <i class="fas fa-user-graduate"></i> Students
           </button>
@@ -632,6 +646,7 @@
           <div id="adminProfessorList"></div>
         </div>
 
+        <div id="adminTabProfaccess" class="admin-tab-content"></div>
         <div id="adminTabStudents" class="admin-tab-content">
           <div class="tab-toolbar">
             <div class="tab-toolbar-text">
@@ -927,6 +942,48 @@
         <div class="modal-actions">
           <button type="button" class="btn btn-outline" onclick="closeModal('registerModal')">Cancel</button>
           <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Send OTP</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ⭐ Professor Registration Modal -->
+  <div class="modal-overlay" id="professorRegisterModal">
+    <div class="modal-box prof-reg-box">
+      <h3><i class="fas fa-chalkboard-user"></i> Register as a Professor</h3>
+      <p class="modal-sub">Your account is reviewed by the AeroGyan admin before you can sign in. Once approved, you can request access to the courses you teach.</p>
+      <form id="professorRegisterForm" onsubmit="registerProfessor(event)" autocomplete="on">
+        <div class="prof-reg-section"><i class="fas fa-user"></i> Basic details</div>
+        <div class="prof-reg-grid">
+          <div class="form-group"><label>Full Name *</label><input type="text" id="prRegFullName" placeholder="e.g. Dr. Asha Rao" required maxlength="120" autocomplete="name"></div>
+          <div class="form-group"><label>Username *</label><input type="text" id="prRegUsername" placeholder="e.g. asha.rao" required maxlength="40" autocomplete="username"></div>
+          <div class="form-group"><label>Official Email *</label><input type="email" id="prRegEmail" placeholder="name@institute.ac.in" required autocomplete="email"></div>
+          <div class="form-group"><label>Contact Number *</label><input type="tel" id="prRegPhone" placeholder="+91 98765 43210" required autocomplete="tel"></div>
+          <div class="form-group"><label>Password *</label><input type="password" id="prRegPassword" placeholder="At least 8 characters" required minlength="8" autocomplete="new-password"></div>
+          <div class="form-group"><label>Confirm Password *</label><input type="password" id="prRegPassword2" placeholder="Repeat the password" required minlength="8" autocomplete="new-password"></div>
+        </div>
+        <div class="prof-reg-section"><i class="fas fa-briefcase"></i> Professional details</div>
+        <div class="prof-reg-grid">
+          <div class="form-group"><label>Designation *</label>
+            <select id="prRegDesignation" required>
+              <option value="">Select…</option>
+              <option>Professor</option><option>Associate Professor</option><option>Assistant Professor</option>
+              <option>Visiting / Guest Faculty</option><option>Adjunct Faculty</option><option>Lecturer</option>
+              <option>Teaching Assistant</option><option>Industry Expert</option><option>Other</option>
+            </select>
+          </div>
+          <div class="form-group"><label>Department *</label><input type="text" id="prRegDepartment" placeholder="e.g. Aerospace Engineering" required maxlength="120"></div>
+          <div class="form-group"><label>Institution / Organisation *</label><input type="text" id="prRegInstitution" placeholder="e.g. IIT Kharagpur" required maxlength="160" autocomplete="organization"></div>
+          <div class="form-group"><label>Highest Qualification</label><input type="text" id="prRegQualification" placeholder="e.g. PhD (Aerospace)" maxlength="120"></div>
+          <div class="form-group"><label>Specialization / Subjects</label><input type="text" id="prRegSpecialization" placeholder="e.g. CFD, Propulsion" maxlength="160"></div>
+          <div class="form-group"><label>Teaching Experience (years)</label><input type="number" id="prRegExperience" min="0" max="70" step="1" placeholder="0"></div>
+          <div class="form-group"><label>Employee / Faculty ID</label><input type="text" id="prRegEmployeeId" placeholder="Optional — helps the admin verify you" maxlength="60"></div>
+          <div class="form-group"><label>Faculty Profile / LinkedIn URL</label><input type="url" id="prRegProfileUrl" placeholder="https://…" maxlength="300"></div>
+        </div>
+        <div class="form-group"><label>Short Bio</label><textarea id="prRegBio" rows="3" maxlength="1000" placeholder="Courses you teach, research areas…"></textarea></div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-outline" onclick="closeModal('professorRegisterModal')">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Verify email &amp; submit</button>
         </div>
       </form>
     </div>

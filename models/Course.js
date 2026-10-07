@@ -60,6 +60,10 @@ const materialSchema = new mongoose.Schema({
   estimatedTime: { type: String, default: '' },
   tags: { type: String, default: '' },
 
+  /* ⭐ Who added / last changed this material (professor role, 2026-10-07) */
+  addedBy:      { id: String, name: String, role: String, at: Date },
+  lastEditedBy: { id: String, name: String, role: String, at: Date },
+
    examConfig: {
     subject:    { type: String, default: '' },
     paperCode:  { type: String, default: '' },

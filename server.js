@@ -2397,6 +2397,10 @@ function classifyMutation(method, path) {
   if (method === 'POST' && /^\/admin\/students\/import-csv\/?$/.test(path))
     return 'users:created';
 
+  // ⭐ Professor applications / course requests / admin decisions
+  if (method === 'POST' && /^\/professor\/(register|course-requests)\/?$/.test(path)) return 'professors:changed';
+  if (/^\/admin\/professor/.test(path)) return 'professors:changed';
+
   // Admin deletes a student (DELETE /api/admin/students/:userId)
   if (method === 'DELETE' && /^\/admin\/students\/[^/]+$/.test(path))
     return 'users:deleted';
@@ -2571,6 +2575,68 @@ async function requireAdminAuth(req, res, next) {
   req.authUserId = String(r.user._id);
   next();
 }
+
+/* ============================================================
+   ⭐ PROFESSOR ROLE — permission gates (2026-10-07)
+   ------------------------------------------------------------
+   requireProfessor     an approved professor (pending / rejected /
+                        revoked tokens are already refused by
+                        resolveSessionUser).
+   requireCourseEditor  the admin, OR an approved professor whose
+                        approved courses include this course
+                        (:courseId or :id). Sets req.editorRole to
+                        'admin' | 'professor' so each route can apply
+                        the professor limits (no deleting, no prices).
+   Every DELETE route stays requireAdminAuth — professors can never
+   reach them.
+   ============================================================ */
+function _isProfessorUser(u) {
+  return !!u && String(u.role || '').trim().toLowerCase() === 'professor';
+}
+async function requireProfessor(req, res, next) {
+  const token = _extractToken(req, false);
+  if (!token) return res.status(401).json({ success: false, code: 'NO_TOKEN', message: 'Please log in to continue.' });
+  const r = await resolveSessionUser(token);
+  if (!r.user) {
+    return res.status(r.code === 'AUTH_UNAVAILABLE' ? 503 : 401).json({ success: false, code: r.code, message: r.message });
+  }
+  if (!_isProfessorUser(r.user)) return res.status(403).json({ success: false, message: 'Professor accounts only.' });
+  req.authUser = r.user;
+  req.authUserId = String(r.user._id);
+  next();
+}
+async function requireCourseEditor(req, res, next) {
+  const token = _extractToken(req, true);
+  if (!token) return res.status(401).json({ success: false, code: 'NO_TOKEN', message: 'Authentication required.' });
+  const r = await resolveSessionUser(token);
+  if (!r.user) {
+    return res.status(r.code === 'AUTH_UNAVAILABLE' ? 503 : 401).json({ success: false, code: r.code, message: r.message });
+  }
+  req.authUser = r.user;
+  req.authUserId = String(r.user._id);
+  if (_isAdminUser(r.user)) { req.adminUser = r.user; req.editorRole = 'admin'; return next(); }
+  if (_isProfessorUser(r.user)) {
+    const courseId = String(req.params.courseId || req.params.id || '');
+    const mine = ((r.user.professor && r.user.professor.courses) || []).map(String);
+    if (courseId && mine.includes(courseId)) { req.editorRole = 'professor'; return next(); }
+    return res.status(403).json({ success: false, code: 'NOT_YOUR_COURSE', message: 'You do not have access to this course.' });
+  }
+  return res.status(403).json({ success: false, message: 'Admin access only.' });
+}
+function _editorStamp(req) {
+  const u = req.authUser || {};
+  return { id: String(u._id || ''), name: String(u.fullName || u.username || ''), role: req.editorRole || 'admin', at: new Date() };
+}
+/* Course ids a professor token may see (null for everyone else) */
+async function _professorScope(req) {
+  try {
+    const token = _extractToken(req, false);
+    if (!token) return null;
+    const r = await resolveSessionUser(token);
+    if (r.user && _isProfessorUser(r.user)) return new Set(((r.user.professor && r.user.professor.courses) || []).map(String));
+  } catch (_) {}
+  return null;
+}
 /* ============================================================
    AUTH — optional token attach (v2 — CACHED)
    ------------------------------------------------------------
@@ -2635,7 +2701,7 @@ function _clearAuthUserCache() { _authUserCache.clear(); }
    Results are cached per token for 30 s; logout / suspend /
    force-logout / purchases call _clearAuthUserCache().
    ============================================================ */
-const AUTH_USER_FIELDS = 'role username fullName email purchases subscription activeSession suspended';
+const AUTH_USER_FIELDS = 'role username fullName email purchases subscription activeSession suspended professor.status professor.courses';
 
 function _extractToken(req, allowLegacyQueryParam) {
   const auth = req.headers.authorization || '';
@@ -2674,6 +2740,8 @@ async function resolveSessionUser(token) {
     result = { user: null, code: 'USER_NOT_FOUND', message: 'Account no longer exists.' };
   } else if (u.suspended && u.suspended.active) {
     result = { user: null, code: 'SUSPENDED', message: 'This account has been suspended. Please contact the admin.' };
+  } else if (String(u.role || '').toLowerCase() === 'professor' && !(u.professor && u.professor.status === 'approved')) {
+    result = { user: null, code: 'PROFESSOR_NOT_APPROVED', message: 'Your professor account is not active. Please contact the admin.' };
   } else {
     const current = u.activeSession && u.activeSession.sessionId;
     if (!current) {
@@ -2808,6 +2876,15 @@ function evaluateMaterialAccess(user, course, material) {
   /* ---- Admins always get full access ---- */
   if (String((user && user.role) || '').trim().toLowerCase() === 'admin') {
     return { allowed: true, canPreview: false, previewPercent: 0 };
+  }
+
+  /* ---- ⭐ Professors: full access to the courses the admin approved for
+          them, nothing at all anywhere else ---- */
+  if (String((user && user.role) || '').trim().toLowerCase() === 'professor') {
+    const ok = !!(course && user.professor && user.professor.status === 'approved' &&
+                  (user.professor.courses || []).map(String).includes(String(course._id)));
+    return ok ? { allowed: true, canPreview: false, previewPercent: 0 }
+              : { allowed: false, canPreview: false, previewPercent: 0, reason: 'not-assigned' };
   }
 
   const purchases    = Array.isArray(user.purchases) ? user.purchases : [];
@@ -3881,7 +3958,34 @@ function serializeUser(user) {
     referralStats: user.referralStats || {
       totalReferred: 0, totalSubscribed: 0, rewardsEarned: 0,
       rewardedFor: 0, lastRewardAt: null
-    }
+    },
+    /* ⭐ professor accounts only */
+    professor: String(user.role || '').toLowerCase() === 'professor' ? serializeProfessor(user) : undefined
+  };
+}
+
+function serializeProfessor(user) {
+  const p = (user && user.professor) || {};
+  return {
+    status:          p.status || 'pending',
+    designation:     p.designation || '',
+    department:      p.department || '',
+    institution:     p.institution || '',
+    qualification:   p.qualification || '',
+    specialization:  p.specialization || '',
+    experienceYears: p.experienceYears || 0,
+    employeeId:      p.employeeId || '',
+    profileUrl:      p.profileUrl || '',
+    bio:             p.bio || '',
+    appliedAt:       p.appliedAt || null,
+    reviewedAt:      p.reviewedAt || null,
+    reviewNote:      p.reviewNote || '',
+    courses:         Array.isArray(p.courses) ? p.courses.map(String) : [],
+    requests:        (p.requests || []).map(r => ({
+      _id: String(r._id), courseName: r.courseName || '', courseCode: r.courseCode || '',
+      message: r.message || '', status: r.status || 'pending', courseId: r.courseId || null,
+      requestedAt: r.requestedAt || null, reviewedAt: r.reviewedAt || null, reviewNote: r.reviewNote || ''
+    }))
   };
 }
 
@@ -4609,6 +4713,20 @@ app.post('/api/login', async (req, res) => {
         code: 'SUSPENDED',
         message: 'This account has been suspended. Please contact the admin.'
       });
+    }
+
+    // ---------- ⭐ Professors: only approved accounts may sign in ----------
+    if (String(user.role || '').toLowerCase() === 'professor') {
+      const ps = (user.professor && user.professor.status) || 'pending';
+      if (ps !== 'approved') {
+        const msg = ps === 'rejected'
+          ? 'Your professor application was not approved.' + (user.professor.reviewNote ? ' Reason: ' + user.professor.reviewNote : '') + ' Please contact the admin.'
+          : ps === 'revoked'
+            ? 'Your professor access has been withdrawn by the admin.' + (user.professor.reviewNote ? ' Reason: ' + user.professor.reviewNote : '')
+            : 'Your professor account is waiting for admin approval. You will receive an email as soon as it is approved.';
+        console.log(`[login] ⏳ professor "${user.username}" not approved (status=${ps})`);
+        return res.status(403).json({ success: false, code: 'PROFESSOR_' + ps.toUpperCase(), professorStatus: ps, message: msg });
+      }
     }
 
     // ---------- Role check — LENIENT (warn only, never block) ----------
@@ -6018,6 +6136,36 @@ app.put('/api/professors/:id/visibility', requireAdminAuth, async (req, res) => 
 /* Course list — LIGHTWEIGHT VERSION
    Strips: fileData (base64), quiz questions
    Keeps: quizCount (computed), basic metadata, playlists, announcements */
+/* The slim course-list projection (shared by the public list and the
+   professor's own list). */
+const COURSE_LIST_PROJECT_STAGE = {
+    $project: {
+      name: 1, code: 1, semester: 1, instructor: 1, description: 1,
+      category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
+      learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
+      isPremium: 1, price: 1, announcements: 1, playlists: 1,
+      certificate: 1, sortOrder: 1,
+      createdAt: 1, updatedAt: 1,
+      doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
+      materials: {
+        $map: {
+          input: { $ifNull: ['$materials', []] },
+          as: 'm',
+          in: {
+            _id: '$$m._id', title: '$$m.title', type: '$$m.type',
+            description: '$$m.description', url: '$$m.url',
+            fileName: '$$m.fileName', isPremium: '$$m.isPremium',
+            price: '$$m.price',
+            previewPercent: '$$m.previewPercent',
+            estimatedTime: '$$m.estimatedTime',
+            tags: '$$m.tags', examConfig: '$$m.examConfig',
+            quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
+          }
+        }
+      }
+    }
+  };
+
 app.get('/api/courses', async (req, res) => {
   try {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
@@ -6025,7 +6173,15 @@ app.get('/api/courses', async (req, res) => {
     const skip  = (page - 1) * limit;
 
     const cacheKey = `courses:list:${page}:${limit}`;
+    /* ⭐ A professor sees only the courses approved for them */
+    const profScope = await _professorScope(req);
+    const sendScoped = (payload) => {
+      res.setHeader('Cache-Control', 'private, no-store');
+      const courses = (payload.courses || []).filter(c => profScope.has(String(c._id)));
+      return res.json(Object.assign({}, payload, { courses, pagination: { page: 1, limit, total: courses.length, totalPages: 1, hasMore: false } }));
+    };
     const cached = cacheGet(cacheKey);
+    if (cached && profScope) return sendScoped(cached);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
       // ⚡ Let the browser reuse this for 30s → instant repeat navigations.
@@ -6041,33 +6197,7 @@ app.get('/api/courses', async (req, res) => {
            materials' base64 data), then the admin order is applied —
            courses without a position first (featured, then name), then
            by position. The app sorts the same way on screen. */
-        {
-          $project: {
-            name: 1, code: 1, semester: 1, instructor: 1, description: 1,
-            category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
-            learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
-            isPremium: 1, price: 1, announcements: 1, playlists: 1,
-            certificate: 1, sortOrder: 1,
-            createdAt: 1, updatedAt: 1,
-            doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
-            materials: {
-              $map: {
-                input: { $ifNull: ['$materials', []] },
-                as: 'm',
-                in: {
-                  _id: '$$m._id', title: '$$m.title', type: '$$m.type',
-                  description: '$$m.description', url: '$$m.url',
-                  fileName: '$$m.fileName', isPremium: '$$m.isPremium',
-                  price: '$$m.price',
-                  previewPercent: '$$m.previewPercent',
-                  estimatedTime: '$$m.estimatedTime',
-                  tags: '$$m.tags', examConfig: '$$m.examConfig',
-                  quizCount: { $size: { $ifNull: ['$$m.quiz', []] } }
-                }
-              }
-            }
-          }
-        },
+        COURSE_LIST_PROJECT_STAGE,
         { $sort: { sortOrder: 1, featured: -1, name: 1, _id: 1 } },
         { $skip: skip },
         { $limit: limit }
@@ -6086,6 +6216,7 @@ app.get('/api/courses', async (req, res) => {
     };
 
     cacheSet(cacheKey, payload, 60000);
+    if (profScope) return sendScoped(payload);
     res.setHeader('X-Cache', 'MISS');
     // ⚡ Browser-side 30s cache — repeat visits need zero network round trip.
     res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=180');
@@ -6891,6 +7022,12 @@ app.get('/api/courses/:id', async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ success: false, message: 'Invalid course ID' });
     }
+    /* ⭐ courses not approved for a professor do not exist for them */
+    const profScope = await _professorScope(req);
+    if (profScope) {
+      res.setHeader('Cache-Control', 'private, no-store');
+      if (!profScope.has(String(req.params.id))) return res.status(404).json({ success: false, message: 'Course not found' });
+    }
 
     /* Server-side cache — 60 s. Auto-invalidated by cacheClear('courses:'). */
     const cacheKey = 'courses:single:' + req.params.id;
@@ -6977,11 +7114,21 @@ app.post('/api/courses', requireAdminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
 });
 
-app.put('/api/courses/:id', requireAdminAuth, async (req, res) => {
+app.put('/api/courses/:id', requireCourseEditor, async (req, res) => {
   try {
-    const allowed = ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price','certificate'];
+    /* ⭐ Professors may improve the teaching fields only — never the name,
+       code, status, visibility, price or certificate rules, and they
+       cannot clear the thumbnail (that would be removing content). */
+    const allowed = req.editorRole === 'professor'
+      ? ['description', 'learningOutcomes', 'duration', 'difficulty', 'thumbnail']
+      : ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price','certificate'];
     const update = {};
     allowed.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
+    if (req.editorRole === 'professor') {
+      if ('thumbnail' in update && !String(update.thumbnail || '').trim()) delete update.thumbnail;
+      if (!Object.keys(update).length) return res.status(400).json({ success: false, message: 'Nothing to update.' });
+      console.log(`[prof] ✏️  ${req.authUser.username} edited course ${req.params.id} (${Object.keys(update).join(', ')})`);
+    }
     const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
     if (!updated) return res.status(404).json({ success: false, message: 'Course not found' });
     cacheClear('courses:');
@@ -7040,11 +7187,23 @@ app.put('/api/admin/courses/order', requireAdminAuth, async (req, res) => {
 /* ============================================================
    MATERIALS
    ============================================================ */
-app.post('/api/courses/:courseId/materials', requireAdminAuth, async (req, res) => {
+app.post('/api/courses/:courseId/materials', requireCourseEditor, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ message: 'Course not found' });
-    course.materials.push(req.body);
+    let body = req.body || {};
+    if (req.editorRole === 'professor') {
+      /* ⭐ Professors add content; pricing stays with the admin */
+      const keep = ['title', 'type', 'description', 'url', 'cloudUrl', 'fileName', 'fileData', 'cloudinaryPublicId', 'estimatedTime', 'tags', 'examConfig'];
+      const clean = {};
+      keep.forEach(k => { if (body[k] !== undefined) clean[k] = body[k]; });
+      clean.isPremium = false; clean.price = 0; clean.previewPercent = 0;
+      if (!String(clean.title || '').trim()) return res.status(400).json({ success: false, message: 'Title is required.' });
+      body = clean;
+      console.log(`[prof] ➕ ${req.authUser.username} added "${String(clean.title).slice(0, 80)}" to course ${req.params.courseId}`);
+    }
+    body.addedBy = _editorStamp(req);
+    course.materials.push(body);
     await course.save();
     cacheClear('courses:');
     res.json({ success: true, message: 'Material added successfully!', course });
@@ -7074,7 +7233,7 @@ app.post('/api/courses/:courseId/materials', requireAdminAuth, async (req, res) 
    ignored. Falls back to a normal load-and-save if the server's
    MongoDB cannot run update pipelines (older than 4.2).
    ============================================================ */
-app.put('/api/courses/:courseId/materials/reorder', requireAdminAuth, async (req, res) => {
+app.put('/api/courses/:courseId/materials/reorder', requireCourseEditor, async (req, res) => {   // moving never removes anything
   try {
     const courseId = String(req.params.courseId || '');
     if (!/^[a-f0-9]{24}$/i.test(courseId)) {
@@ -7133,7 +7292,7 @@ app.put('/api/courses/:courseId/materials/reorder', requireAdminAuth, async (req
   }
 });
 
-app.put('/api/courses/:courseId/materials/:materialId', requireAdminAuth, async (req, res) => {
+app.put('/api/courses/:courseId/materials/:materialId', requireCourseEditor, async (req, res) => {
   try {
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
@@ -7141,8 +7300,22 @@ app.put('/api/courses/:courseId/materials/:materialId', requireAdminAuth, async 
     const mat = course.materials.id(req.params.materialId);
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
 
-    const fields = ['title', 'type', 'description', 'url', 'isPremium', 'price', 'previewPercent', 'fileData', 'fileName'];
+    const isProf = req.editorRole === 'professor';
+    const fields = isProf
+      ? ['title', 'type', 'description', 'url', 'fileData', 'fileName']      // no prices for professors
+      : ['title', 'type', 'description', 'url', 'isPremium', 'price', 'previewPercent', 'fileData', 'fileName'];
+    if (isProf) {
+      /* ⭐ Editing must never turn into deleting: a professor can replace
+         the file or link but not empty it, and cannot blank the title. */
+      const had = !!(String(mat.url || '').trim() || String(mat.fileName || '').trim() || String(mat.fileData || '').trim());
+      const next = (f) => (req.body[f] !== undefined ? req.body[f] : mat[f]);
+      const will = !!(String(next('url') || '').trim() || String(next('fileName') || '').trim() || String(next('fileData') || '').trim());
+      if (had && !will) return res.status(403).json({ success: false, code: 'NO_DELETE', message: 'Professors cannot remove a file. Upload a replacement instead.' });
+      if (req.body.title !== undefined && !String(req.body.title || '').trim()) return res.status(400).json({ success: false, message: 'Title cannot be empty.' });
+    }
     fields.forEach(f => { if (req.body[f] !== undefined) mat[f] = req.body[f]; });
+    mat.lastEditedBy = _editorStamp(req);
+    if (isProf) console.log(`[prof] ✏️  ${req.authUser.username} edited material ${req.params.materialId} in course ${req.params.courseId}`);
 
     await course.save();
     cacheClear('courses:');
@@ -7196,9 +7369,13 @@ app.delete('/api/courses/:courseId/materials/:materialId', requireAdminAuth, asy
 /* ============================================================
    ANNOUNCEMENTS
    ============================================================ */
-app.post('/api/courses/:courseId/announcements', requireAdminAuth, async (req, res) => {
+app.post('/api/courses/:courseId/announcements', requireCourseEditor, async (req, res) => {
   try {
-    const { title, body, authorName } = req.body;
+    const { title, body } = req.body;
+    /* professors post under their own name */
+    const authorName = req.editorRole === 'professor'
+      ? ('Prof. ' + String(req.authUser.fullName || req.authUser.username || '').trim())
+      : req.body.authorName;
     if (!title || !title.trim()) return res.status(400).json({ success: false, message: 'Title required' });
     const ann = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -7330,11 +7507,25 @@ app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', requir
 /* ============================================================
    QUIZ — Save paper (admin)
    ============================================================ */
-app.post('/api/courses/:courseId/materials/:materialId/quiz', requireAdminAuth, async (req, res) => {
+app.post('/api/courses/:courseId/materials/:materialId/quiz', requireCourseEditor, async (req, res) => {
   try {
     const { quiz, examConfig } = req.body || {};
     if (!Array.isArray(quiz)) {
       return res.status(400).json({ success: false, message: 'quiz must be an array' });
+    }
+    if (req.editorRole === 'professor') {
+      /* ⭐ Professors may add and edit questions, never remove them */
+      const rows = await Course.aggregate([
+        { $match: { _id: new mongoose.Types.ObjectId(String(req.params.courseId)) } },
+        { $project: { m: { $filter: { input: '$materials', as: 'm', cond: { $eq: [{ $toString: '$$m._id' }, String(req.params.materialId)] } } } } },
+        { $project: { n: { $size: { $ifNull: [{ $arrayElemAt: ['$m.quiz', 0] }, []] } } } }
+      ]);
+      const existing = (rows[0] && rows[0].n) || 0;
+      if (quiz.length < existing) {
+        return res.status(403).json({ success: false, code: 'NO_DELETE',
+          message: `Professors cannot delete questions (this paper has ${existing}; ${quiz.length} were sent). Edit the question instead.` });
+      }
+      console.log(`[prof] 📝 ${req.authUser.username} saved paper ${req.params.materialId} (${existing} → ${quiz.length} questions)`);
     }
 
     const update = { 'materials.$.quiz': quiz };
@@ -11164,6 +11355,327 @@ app.post('/api/user/notifications/:userId/mark-read', requireUser, requireSelfOr
 /* ============================================================
    STUDENTS LIST
    ============================================================ */
+
+/* ============================================================
+   ⭐ PROFESSOR ROLE — registration, approvals, course access
+   (2026-10-07)
+   ------------------------------------------------------------
+   1. POST /api/professor/register       (email OTP from /api/send-otp)
+        → account created with professor.status = 'pending'
+   2. Admin: GET  /api/admin/professors?status=…
+             POST /api/admin/professors/:id/approve | reject | revoke
+   3. Professor (approved): POST /api/professor/course-requests
+        { courseName, courseCode, message } → pending request
+   4. Admin: GET  /api/admin/professor-requests?status=…
+             POST /api/admin/professor-requests/:profId/:reqId/approve { courseId }
+             POST /api/admin/professor-requests/:profId/:reqId/reject  { reason }
+             POST /api/admin/professors/:id/courses/:courseId/remove
+   Only then does the course appear for the professor (see
+   _professorScope / requireCourseEditor / evaluateMaterialAccess).
+   ============================================================ */
+const PROF_TEXT = (v, max) => String(v == null ? '' : v).replace(/[\u0000-\u001f]+/g, ' ').trim().slice(0, max);
+
+async function _mailBestEffort(to, subject, text) {
+  try {
+    if (!to) return;
+    await withTimeout(transporter.sendMail({ to, subject, text }), 20000, subject);
+  } catch (e) { console.warn('[prof-mail] could not send "' + subject + '":', e.message); }
+}
+async function _notifyUser(userId, title, body, type) {
+  try {
+    await User.updateOne({ _id: userId }, { $push: { notifications: { $each: [{
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      type: type || 'info', title, body, createdAt: new Date(), read: false
+    }], $slice: -100 } } });
+  } catch (_) {}
+}
+async function _notifyAdmins(title, body) {
+  try {
+    await User.updateMany({ role: 'admin' }, { $push: { notifications: { $each: [{
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      type: 'info', title, body, createdAt: new Date(), read: false
+    }], $slice: -100 } } });
+  } catch (_) {}
+  const adminEmail = String(process.env.ADMIN_EMAIL || '').trim();
+  if (adminEmail) _mailBestEffort(adminEmail, 'AeroGyan — ' + title, body + '\n\nOpen the admin panel → Professors to review.');
+}
+
+/* ---- 1. Registration ---- */
+app.post('/api/professor/register', authLimiter, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const fullName = PROF_TEXT(b.fullName, 120);
+    const cleanUsername = String(b.username || '').trim().toLowerCase();
+    const cleanEmail = String(b.email || '').trim().toLowerCase();
+    const cleanPhone = normalizePhone(b.phone);
+    const password = b.password;
+    const prof = {
+      designation:     PROF_TEXT(b.designation, 80),
+      department:      PROF_TEXT(b.department, 120),
+      institution:     PROF_TEXT(b.institution, 160),
+      qualification:   PROF_TEXT(b.qualification, 120),
+      specialization:  PROF_TEXT(b.specialization, 160),
+      experienceYears: Math.max(0, Math.min(70, parseInt(b.experienceYears, 10) || 0)),
+      employeeId:      PROF_TEXT(b.employeeId, 60),
+      profileUrl:      /^https?:\/\//i.test(String(b.profileUrl || '').trim()) ? PROF_TEXT(b.profileUrl, 300) : '',
+      bio:             PROF_TEXT(b.bio, 1000)
+    };
+    if (!fullName || !cleanUsername || !cleanEmail || !cleanPhone || !password) {
+      return res.status(400).json({ success: false, message: 'Full name, username, email, contact number and password are required.' });
+    }
+    if (!prof.designation || !prof.department || !prof.institution) {
+      return res.status(400).json({ success: false, message: 'Designation, department and institution are required.' });
+    }
+    if (typeof password !== 'string' || password.length < 8 || password.length > 200) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
+    }
+    if (!/^[a-z0-9._-]{3,40}$/.test(cleanUsername)) {
+      return res.status(400).json({ success: false, message: 'Username must be 3–40 characters: letters, numbers, dot, dash or underscore.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
+    }
+    const clash = await User.findOne({ $or: [{ username: cleanUsername }, { email: cleanEmail }, { phone: cleanPhone }] }).select('username email phone').lean();
+    if (clash) {
+      const field = clash.email === cleanEmail ? 'Email' : clash.phone === cleanPhone ? 'Contact number' : 'Username';
+      return res.status(400).json({ success: false, message: `${field} already exists!` });
+    }
+    /* email ownership — the same OTP flow students use */
+    const record = await otpGet(cleanEmail);
+    if (!record) return res.status(400).json({ success: false, message: 'No OTP was requested for this email (or it expired).' });
+    if (record.attempts >= 5) { await otpDel(cleanEmail); return res.status(400).json({ success: false, message: 'Too many incorrect attempts. Request a new OTP.' }); }
+    if (String(b.otp || '').trim() !== record.otp) {
+      await otpBumpAttempts(cleanEmail);
+      return res.status(400).json({ success: false, message: 'Invalid OTP. Please try again.' });
+    }
+
+    const user = new User({
+      fullName, username: cleanUsername, email: cleanEmail, phone: cleanPhone,
+      password: await bcrypt.hash(password, 10),
+      role: 'professor',
+      professor: Object.assign(prof, { status: 'pending', appliedAt: new Date(), courses: [], requests: [] })
+    });
+    await user.save();
+    await otpDel(cleanEmail);
+    console.log(`[prof] 🆕 professor application: ${cleanUsername} · ${prof.designation}, ${prof.department}, ${prof.institution}`);
+    _notifyAdmins('New professor application',
+      `${fullName} (${prof.designation}, ${prof.department}, ${prof.institution}) has registered as a professor and is waiting for approval.`);
+    res.json({ success: true, status: 'pending',
+      message: 'Application submitted! Your account is now waiting for admin approval — you will get an email as soon as it is approved.' });
+  } catch (e) {
+    console.error('[professor/register]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ---- Professor: own status, approved courses, requests ---- */
+app.get('/api/professor/me', requireProfessor, async (req, res) => {
+  try {
+    const u = await User.findById(req.authUserId).select('username fullName email phone role professor').lean();
+    if (!u) return res.status(404).json({ success: false, message: 'Account not found.' });
+    const p = serializeProfessor(u);
+    const courses = p.courses.length
+      ? await Course.find({ _id: { $in: p.courses.filter(id => mongoose.Types.ObjectId.isValid(id)) } }).select('name code').lean()
+      : [];
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, professor: p, courses: courses.map(c => ({ id: String(c._id), name: c.name, code: c.code })) });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+});
+
+/* The professor's approved courses, in the same shape as GET /api/courses */
+app.get('/api/professor/courses', requireProfessor, async (req, res) => {
+  try {
+    const ids = ((req.authUser.professor && req.authUser.professor.courses) || [])
+      .map(String).filter(id => mongoose.Types.ObjectId.isValid(id)).map(id => new mongoose.Types.ObjectId(id));
+    const courses = ids.length
+      ? await Course.aggregate([{ $match: { _id: { $in: ids } } }, COURSE_LIST_PROJECT_STAGE, { $sort: { sortOrder: 1, name: 1, _id: 1 } }])
+      : [];
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ success: true, courses, pagination: { page: 1, limit: courses.length, total: courses.length, totalPages: 1, hasMore: false } });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+});
+
+/* ---- 3. Course-access request ---- */
+app.post('/api/professor/course-requests', requireProfessor, async (req, res) => {
+  try {
+    const courseName = PROF_TEXT((req.body || {}).courseName, 160);
+    const courseCode = PROF_TEXT((req.body || {}).courseCode, 40).toUpperCase();
+    const message    = PROF_TEXT((req.body || {}).message, 600);
+    if (!courseName || !courseCode) return res.status(400).json({ success: false, message: 'Course name and course code are both required.' });
+    const u = await User.findById(req.authUserId).select('professor fullName username');
+    if (!u || !u.professor) return res.status(404).json({ success: false, message: 'Account not found.' });
+    const reqs = u.professor.requests || [];
+    if (reqs.filter(r => r.status === 'pending').length >= 20) {
+      return res.status(429).json({ success: false, message: 'You already have 20 pending requests. Please wait for the admin to review them.' });
+    }
+    if (reqs.some(r => r.status === 'pending' && String(r.courseCode).toUpperCase() === courseCode)) {
+      return res.status(400).json({ success: false, message: `You already have a pending request for ${courseCode}.` });
+    }
+    u.professor.requests.push({ courseName, courseCode, message, status: 'pending', requestedAt: new Date() });
+    await u.save();
+    console.log(`[prof] 📨 ${u.username} requested ${courseCode} "${courseName}"`);
+    _notifyAdmins('Course access request',
+      `Prof. ${u.fullName || u.username} requested access to ${courseCode} — ${courseName}.${message ? '\nMessage: ' + message : ''}`);
+    res.json({ success: true, message: 'Request sent to the admin.', professor: serializeProfessor(u) });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+/* ---- 2. Admin: applications ---- */
+app.get('/api/admin/professors', requireAdminAuth, async (req, res) => {
+  try {
+    const status = String(req.query.status || 'all');
+    const filter = { role: 'professor' };
+    if (['pending', 'approved', 'rejected', 'revoked'].includes(status)) filter['professor.status'] = status;
+    const [list, counts, courseRows] = await Promise.all([
+      User.find(filter).select('username fullName email phone createdAt professor activeSession.lastSeenAt').sort({ createdAt: -1 }).limit(500).lean(),
+      User.aggregate([{ $match: { role: 'professor' } }, { $group: { _id: '$professor.status', n: { $sum: 1 } } }]),
+      Course.find({}).select('name code').lean()
+    ]);
+    const courseName = new Map(courseRows.map(c => [String(c._id), { id: String(c._id), name: c.name, code: c.code }]));
+    const c = { pending: 0, approved: 0, rejected: 0, revoked: 0 };
+    counts.forEach(x => { if (x._id in c) c[x._id] = x.n; });
+    const pendingRequests = await User.aggregate([
+      { $match: { role: 'professor', 'professor.status': 'approved' } },
+      { $project: { n: { $size: { $filter: { input: { $ifNull: ['$professor.requests', []] }, as: 'r', cond: { $eq: ['$$r.status', 'pending'] } } } } } },
+      { $group: { _id: null, n: { $sum: '$n' } } }
+    ]);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      success: true,
+      counts: Object.assign(c, { pendingRequests: (pendingRequests[0] && pendingRequests[0].n) || 0 }),
+      professors: list.map(u => {
+        const p = serializeProfessor(u);
+        return { _id: String(u._id), username: u.username, fullName: u.fullName, email: u.email, phone: u.phone,
+                 createdAt: u.createdAt, lastSeenAt: (u.activeSession && u.activeSession.lastSeenAt) || null,
+                 professor: Object.assign(p, { courseList: p.courses.map(id => courseName.get(id) || { id, name: '(deleted course)', code: '' }) }) };
+      })
+    });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+async function _setProfessorStatus(req, res, status, verb) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid id.' });
+    const note = PROF_TEXT((req.body || {}).reason || (req.body || {}).note, 500);
+    if ((status === 'rejected' || status === 'revoked') && !note) {
+      return res.status(400).json({ success: false, message: 'Please give a short reason — the professor will see it.' });
+    }
+    const set = {
+      'professor.status': status, 'professor.reviewedAt': new Date(),
+      'professor.reviewedBy': String(req.authUser.username || ''), 'professor.reviewNote': note
+    };
+    /* revoking also ends the professor's current session everywhere */
+    if (status === 'revoked') set['activeSession.sessionId'] = null;
+    const u = await User.findOneAndUpdate({ _id: req.params.id, role: 'professor' }, { $set: set }, { new: true })
+      .select('username fullName email professor');
+    if (!u) return res.status(404).json({ success: false, message: 'Professor not found.' });
+    _clearAuthUserCache();
+    console.log(`[prof] 🛂 ${req.authUser.username} ${verb} professor ${u.username}`);
+    const who = u.fullName || u.username;
+    if (status === 'approved') {
+      _notifyUser(u._id, 'Your professor account is approved', 'You can now sign in and request access to your courses.', 'success');
+      _mailBestEffort(u.email, 'AeroGyan — your professor account is approved',
+        `Dear ${who},\n\nYour professor account on AeroGyan has been approved. Sign in with your username "${u.username}" and use "Request course access" to get the courses you teach.\n\n— AeroGyan`);
+    } else if (status === 'rejected') {
+      _mailBestEffort(u.email, 'AeroGyan — professor application update',
+        `Dear ${who},\n\nYour professor application could not be approved.\nReason: ${note}\n\nPlease contact the AeroGyan admin if you think this is a mistake.`);
+    } else if (status === 'revoked') {
+      _mailBestEffort(u.email, 'AeroGyan — professor access withdrawn',
+        `Dear ${who},\n\nYour professor access on AeroGyan has been withdrawn.\nReason: ${note}`);
+    }
+    res.json({ success: true, message: `Professor ${verb}.`, professor: serializeProfessor(u) });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+}
+app.post('/api/admin/professors/:id/approve', requireAdminAuth, (req, res) => _setProfessorStatus(req, res, 'approved', 'approved'));
+app.post('/api/admin/professors/:id/reject',  requireAdminAuth, (req, res) => _setProfessorStatus(req, res, 'rejected', 'rejected'));
+app.post('/api/admin/professors/:id/revoke',  requireAdminAuth, (req, res) => _setProfessorStatus(req, res, 'revoked', 'revoked'));
+
+/* ---- 4. Admin: course-access requests ---- */
+app.get('/api/admin/professor-requests', requireAdminAuth, async (req, res) => {
+  try {
+    const status = String(req.query.status || 'pending');
+    const [profs, courses] = await Promise.all([
+      User.find({ role: 'professor', 'professor.requests.0': { $exists: true } })
+        .select('username fullName email professor.status professor.designation professor.department professor.institution professor.courses professor.requests').lean(),
+      Course.find({}).select('name code').lean()
+    ]);
+    const norm = (x) => String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const out = [];
+    profs.forEach(u => (u.professor.requests || []).forEach(r => {
+      if (status !== 'all' && r.status !== status) return;
+      /* suggest the course whose code (or else name) matches */
+      const byCode = courses.find(c => norm(c.code) && norm(c.code) === norm(r.courseCode));
+      const byName = !byCode && courses.find(c => String(c.name || '').trim().toLowerCase() === String(r.courseName || '').trim().toLowerCase());
+      const match = byCode || byName || null;
+      out.push({
+        _id: String(r._id), professorId: String(u._id), professorName: u.fullName || u.username, username: u.username, email: u.email,
+        professorStatus: u.professor.status, designation: u.professor.designation, department: u.professor.department, institution: u.professor.institution,
+        courseName: r.courseName, courseCode: r.courseCode, message: r.message, status: r.status,
+        requestedAt: r.requestedAt, reviewedAt: r.reviewedAt, reviewNote: r.reviewNote, courseId: r.courseId,
+        suggestedCourse: match ? { id: String(match._id), name: match.name, code: match.code, by: byCode ? 'code' : 'name' } : null,
+        alreadyHasSuggested: !!(match && (u.professor.courses || []).map(String).includes(String(match._id)))
+      });
+    }));
+    out.sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, requests: out, courses: courses.map(c => ({ id: String(c._id), name: c.name, code: c.code })) });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+});
+
+async function _decideCourseRequest(req, res, action) {
+  try {
+    const { profId, reqId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(profId) || !mongoose.Types.ObjectId.isValid(reqId)) return res.status(400).json({ success: false, message: 'Invalid id.' });
+    const u = await User.findOne({ _id: profId, role: 'professor' }).select('username fullName email professor');
+    if (!u || !u.professor) return res.status(404).json({ success: false, message: 'Professor not found.' });
+    const r = u.professor.requests.id(reqId);
+    if (!r) return res.status(404).json({ success: false, message: 'Request not found.' });
+    if (r.status !== 'pending') return res.status(400).json({ success: false, message: 'This request has already been ' + r.status + '.' });
+    const note = PROF_TEXT((req.body || {}).reason || (req.body || {}).note, 500);
+    let course = null;
+    if (action === 'approve') {
+      if (u.professor.status !== 'approved') return res.status(400).json({ success: false, message: 'Approve the professor account first.' });
+      const courseId = String((req.body || {}).courseId || '');
+      if (!mongoose.Types.ObjectId.isValid(courseId)) return res.status(400).json({ success: false, message: 'Choose the course to grant.' });
+      course = await Course.findById(courseId).select('name code').lean();
+      if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
+      if (!u.professor.courses.map(String).includes(courseId)) u.professor.courses.push(courseId);
+      r.courseId = courseId;
+    } else if (!note) {
+      return res.status(400).json({ success: false, message: 'Please give a short reason — the professor will see it.' });
+    }
+    r.status = action === 'approve' ? 'approved' : 'rejected';
+    r.reviewedAt = new Date();
+    r.reviewedBy = String(req.authUser.username || '');
+    r.reviewNote = note;
+    await u.save();
+    _clearAuthUserCache();
+    console.log(`[prof] 🛂 ${req.authUser.username} ${r.status} ${u.username}'s request for ${r.courseCode}${course ? ' → ' + course.code : ''}`);
+    if (course) {
+      _notifyUser(u._id, 'Course access approved', `${course.code ? course.code + ' — ' : ''}${course.name} is now in your dashboard.`, 'success');
+      _mailBestEffort(u.email, 'AeroGyan — course access approved',
+        `Dear ${u.fullName || u.username},\n\nYou now have access to ${course.code ? course.code + ' — ' : ''}${course.name}. It is in your professor dashboard, where you can add and edit its materials.\n\n— AeroGyan`);
+    } else {
+      _notifyUser(u._id, 'Course access request declined', `${r.courseCode} — ${r.courseName}: ${note}`, 'warning');
+    }
+    res.json({ success: true, message: action === 'approve' ? 'Access granted.' : 'Request declined.' });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
+}
+app.post('/api/admin/professor-requests/:profId/:reqId/approve', requireAdminAuth, (req, res) => _decideCourseRequest(req, res, 'approve'));
+app.post('/api/admin/professor-requests/:profId/:reqId/reject',  requireAdminAuth, (req, res) => _decideCourseRequest(req, res, 'reject'));
+
+/* Admin: take one course away from a professor (does not touch content) */
+app.post('/api/admin/professors/:id/courses/:courseId/remove', requireAdminAuth, async (req, res) => {
+  try {
+    const u = await User.findOneAndUpdate({ _id: req.params.id, role: 'professor' },
+      { $pull: { 'professor.courses': String(req.params.courseId) } }, { new: true }).select('username professor');
+    if (!u) return res.status(404).json({ success: false, message: 'Professor not found.' });
+    _clearAuthUserCache();
+    console.log(`[prof] 🛂 ${req.authUser.username} removed course ${req.params.courseId} from ${u.username}`);
+    res.json({ success: true, message: 'Course access removed.', professor: serializeProfessor(u) });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+});
+
 /* ⚡ ADMIN — student count only (2026-10-07)
    The Overview tile used to download the whole student list just to
    count it. This answers with one number from the { role, createdAt }
@@ -11843,7 +12355,7 @@ app.post('/api/materials/:courseId/:materialId/video-session',
 /* ============================================================
    PLAYLISTS
    ============================================================ */
-app.post('/api/courses/:courseId/playlists', requireAdminAuth, async (req, res) => {
+app.post('/api/courses/:courseId/playlists', requireCourseEditor, async (req, res) => {
   try {
     const { title, description, materialIds } = req.body || {};
     if (!title || !title.trim()) return res.status(400).json({ success: false, message: 'Title is required.' });
@@ -11921,7 +12433,7 @@ app.delete('/api/courses/:courseId/playlists/:playlistId', requireAdminAuth, asy
   } catch (e) { res.status(500).json({ success: false, message: 'Server error: ' + e.message }); }
 });
 
-app.post('/api/courses/:courseId/playlists/:playlistId/materials', requireAdminAuth, async (req, res) => {
+app.post('/api/courses/:courseId/playlists/:playlistId/materials', requireCourseEditor, async (req, res) => {
   try {
     const { materialId } = req.body || {};
     if (!materialId) return res.status(400).json({ success: false, message: 'materialId required.' });

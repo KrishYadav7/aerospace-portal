@@ -179,6 +179,45 @@ const userSchema = new mongoose.Schema({
   },
 
   /* ============================================================
+     ⭐ PROFESSOR ACCOUNT (2026-10-07)
+     Only used when role === 'professor'.
+       status: pending  → registered, waiting for the admin
+               approved → may sign in and request courses
+               rejected → application turned down (reviewNote = reason)
+               revoked  → access withdrawn later by the admin
+       courses:  course ids the admin has approved for this professor
+       requests: course-access requests (name + code typed by the professor)
+     ============================================================ */
+  professor: {
+    status:          { type: String, default: null },
+    designation:     { type: String, default: '' },
+    department:      { type: String, default: '' },
+    institution:     { type: String, default: '' },
+    qualification:   { type: String, default: '' },
+    specialization:  { type: String, default: '' },
+    experienceYears: { type: Number, default: 0 },
+    employeeId:      { type: String, default: '' },
+    profileUrl:      { type: String, default: '' },
+    bio:             { type: String, default: '' },
+    appliedAt:       { type: Date,   default: null },
+    reviewedAt:      { type: Date,   default: null },
+    reviewedBy:      { type: String, default: '' },
+    reviewNote:      { type: String, default: '' },
+    courses:         { type: [String], default: [] },
+    requests: [{
+      courseName:  { type: String, default: '' },
+      courseCode:  { type: String, default: '' },
+      message:     { type: String, default: '' },
+      status:      { type: String, default: 'pending' },   // pending | approved | rejected
+      courseId:    { type: String, default: null },        // the course the admin granted
+      requestedAt: { type: Date,   default: Date.now },
+      reviewedAt:  { type: Date,   default: null },
+      reviewedBy:  { type: String, default: '' },
+      reviewNote:  { type: String, default: '' }
+    }]
+  },
+
+  /* ============================================================
      ACTIVE SESSION
      ============================================================ */
   activeSession: {
@@ -195,5 +234,6 @@ userSchema.index({ role: 1, createdAt: -1 });
 userSchema.index({ 'subscription.status': 1 });
 userSchema.index({ role: 1, email: 1 });
 userSchema.index({ 'suspended.active': 1 });
+userSchema.index({ role: 1, 'professor.status': 1 });
 
 module.exports = mongoose.model('User', userSchema);
