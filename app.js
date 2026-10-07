@@ -2695,7 +2695,13 @@ function hydrateMaterialThumbs() {
     if (el.classList.contains('has-thumb')) return;
     const cached = getPDFThumbnail(mid);
     if (cached) {
-      el.innerHTML = `<img src="${cached}" alt="" loading="lazy" decoding="async">`;
+      /* Swap only the placeholder cover — keep the lock badge and the
+         hover "Open" hint that sit on top of the thumbnail. */
+      const cover = el.querySelector('.material-thumb-cover');
+      const img = `<img src="${cached}" alt="" loading="lazy" decoding="async">`;
+      if (cover) cover.outerHTML = img;
+      else el.insertAdjacentHTML('afterbegin', img);
+      el.style.background = '';
       el.classList.add('has-thumb');
     }
   });
@@ -10341,6 +10347,10 @@ function renderCourseDetail(courseId) {
 
   // ⭐ Hydrate cached PDF thumbnails on the newly-rendered cards
   setTimeout(() => hydrateMaterialThumbs(), 30);
+  // ⭐ A re-render during an open must not wipe the "Opening…" state
+  try { AeroOpening.reapply(); } catch (_) {}
+  // ⚡ Get the PDF engine ready while the student is still choosing
+  try { aeroIdleWarmPdfEngine(filtered); } catch (_) {}
 }
 
 function renderMaterialCard(course, m, isPurchased) {
@@ -10553,8 +10563,29 @@ function renderMaterialCard(course, m, isPurchased) {
     ? `<span class="mat-quiz-badge"><i class="fas fa-question-circle"></i> ${quizCount}</span>`
     : '';
 
+  /* ⭐ Whole-card click (2026-10-07): the card does exactly what its
+     main button does — Read / Watch / Preview / Unlock. Inner buttons
+     keep their own actions (they all call event.stopPropagation()). */
+  let cardAction;
+  if (isGuestView) cardAction = 'guest';
+  else if (isLocked) {
+    const _pp = Math.max(0, Math.min(100, Number(m.previewPercent) || 0));
+    cardAction = (!isCoursePremium && _pp > 0) ? 'preview'
+               : (isCoursePremium ? 'buy-course' : 'buy-material');
+  } else if (m.type === 'video' && hasUrl && !hasFile) cardAction = 'video';
+  else cardAction = 'read';
+  const cardHint = { read: 'Open', video: 'Watch', preview: 'Preview',
+                     'buy-course': 'Unlock', 'buy-material': 'Unlock', guest: 'Open' }[cardAction];
+  const cardHintIcon = { read: 'fa-book-open', video: 'fa-play', preview: 'fa-eye',
+                         'buy-course': 'fa-lock', 'buy-material': 'fa-lock', guest: 'fa-lock' }[cardAction];
+  if (thumbHtml) {
+    thumbHtml = thumbHtml.replace(/<\/div>\s*$/, `<span class="mat-open-hint" aria-hidden="true"><i class="fas ${cardHintIcon}"></i> ${cardHint}</span></div>`);
+  }
+
   return `
-    <div class="material-item ${isLocked ? 'locked-mat' : ''}${isGuestView ? ' guest-locked' : ''}"${isGuestView ? ` data-gmid="${m.id}"` : ''}>
+    <div class="material-item mat-clickable ${isLocked ? 'locked-mat' : ''}${isGuestView ? ' guest-locked' : ''}"${isGuestView ? ` data-gmid="${m.id}"` : ''}
+         data-mid="${m.id}" data-cid="${course.id}" data-card-action="${cardAction}"
+         onclick="aeroMaterialCardClick(event, '${course.id}', '${m.id}', '${cardAction}')">
       ${thumbHtml}
       <div class="mat-head">
         <div class="mat-type ${materialTypeSlug(m.type)}">${escapeHtml(String(m.type || 'other').toUpperCase())}</div>
@@ -13909,6 +13940,7 @@ function _detectDocumentKind(fileName, url) {
 let _renderOverlayEl = null;
 let _renderSession = 0;          // bumped on every open / cancel — a stale poll loop stops itself
 function _showRenderOverlay(title, kind) {
+  try { AeroOpening.stop(); } catch (_) {}
   _hideRenderOverlay();
   const el = document.createElement('div');
   el.className = 'render-overlay';
@@ -14003,7 +14035,145 @@ async function openRenderedOfficeFile(course, mat, meta, pdfJsPromise) {
   });
 }
 
-async function viewFileOnline(courseId, materialId) {
+
+/* ============================================================
+   ⭐ INSTANT OPEN FEEDBACK + WHOLE-CARD CLICK (2026-10-07)
+   ------------------------------------------------------------
+   • The moment a material is clicked, its card shows an
+     "Opening…" veil with a spinner and a thin progress bar runs
+     along the top of the screen — before any network request
+     finishes. The state clears as soon as the viewer / player /
+     render overlay is on screen (or an error toast appears).
+   • A second click on the same material while it is opening is
+     ignored (no double requests, no double access-log entries).
+   • Safety net: the state never stays longer than 30 s.
+   ============================================================ */
+const AeroOpening = (function () {
+  let activeId = null;
+  let safety = null;
+  let bar = null;
+
+  function cardFor(mid) {
+    if (!mid) return null;
+    try { return document.querySelector('.material-item[data-mid="' + CSS.escape(String(mid)) + '"]'); }
+    catch (_) { return null; }
+  }
+  function getBar() {
+    if (bar && document.body.contains(bar)) return bar;
+    bar = document.createElement('div');
+    bar.className = 'aero-open-bar';
+    bar.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(bar);
+    return bar;
+  }
+  function paint(mid) {
+    const card = cardFor(mid);
+    if (!card || card.classList.contains('is-opening')) return;
+    card.classList.add('is-opening');
+    card.setAttribute('aria-busy', 'true');
+    if (!card.querySelector('.mat-opening-veil')) {
+      const v = document.createElement('div');
+      v.className = 'mat-opening-veil';
+      v.setAttribute('role', 'status');
+      v.innerHTML = '<span class="mat-opening-spinner" aria-hidden="true"></span><span class="mat-opening-text">Opening…</span>';
+      card.appendChild(v);
+    }
+  }
+  function unpaint() {
+    document.querySelectorAll('.material-item.is-opening').forEach(card => {
+      card.classList.remove('is-opening');
+      card.removeAttribute('aria-busy');
+      const v = card.querySelector('.mat-opening-veil');
+      if (v) v.remove();
+    });
+  }
+  function start(mid) {
+    activeId = mid || '__any__';
+    paint(mid);
+    const b = getBar();
+    b.classList.remove('done');
+    void b.offsetWidth;                         // restart the animation
+    b.classList.add('active');
+    clearTimeout(safety);
+    safety = setTimeout(stop, 30000);
+  }
+  function stop() {
+    clearTimeout(safety);
+    activeId = null;
+    unpaint();
+    if (bar && bar.classList.contains('active')) {
+      bar.classList.add('done');
+      setTimeout(() => { if (!activeId && bar) bar.classList.remove('active', 'done'); }, 320);
+    }
+  }
+  function isBusy(mid) { return !!activeId && activeId === (mid || '__any__'); }
+  function reapply() { if (activeId && activeId !== '__any__') paint(activeId); }
+
+  async function run(mid, fn) {
+    if (isBusy(mid)) return;                    // already opening this one
+    start(mid);
+    /* Let the browser paint the feedback before any heavy work */
+    await new Promise(r => requestAnimationFrame(() => r()));
+    try { return await fn(); }
+    finally { if (activeId === (mid || '__any__')) stop(); }
+  }
+  return { run, start, stop, isBusy, reapply };
+})();
+window.AeroOpening = AeroOpening;
+
+/* Card click → the same action as the card's main button */
+function aeroMaterialCardClick(event, courseId, materialId, action) {
+  const t = event && event.target;
+  /* Inner controls keep their own behaviour */
+  if (t && t.closest && t.closest('button, a[href], input, textarea, select, label, video, iframe, .vprog')) return;
+  /* Don't hijack a text selection */
+  try { const sel = window.getSelection && window.getSelection(); if (sel && String(sel).trim()) return; } catch (_) {}
+  if (AeroOpening.isBusy(materialId)) return;
+
+  switch (action) {
+    case 'guest':        return aeroGuestGate(courseId, materialId);
+    case 'video':        return openMaterialVideo(courseId, materialId);
+    case 'buy-course':   return showPaymentModal(courseId, null);
+    case 'buy-material': return showPaymentModal(courseId, materialId);
+    case 'preview':
+    case 'read':
+    default:             return viewFileOnline(courseId, materialId);
+  }
+}
+window.aeroMaterialCardClick = aeroMaterialCardClick;
+
+/* ⚡ Idle warm-up of the PDF engine on course pages.
+   Before, PDF.js (~300 KB) only started loading when the mouse
+   hovered a card — on phones that is a split second before the tap,
+   so the first open always waited for it. Now it loads in idle time
+   once a signed-in student is looking at a list that has documents.
+   Skipped on Data Saver. Loaded once per page (browser-cached after). */
+let _aeroPdfWarmScheduled = false;
+function aeroIdleWarmPdfEngine(materials) {
+  if (_aeroPdfWarmScheduled || window.pdfjsLib || !currentUser) return;
+  try { if (navigator.connection && navigator.connection.saveData) return; } catch (_) {}
+  const hasDocs = (materials || []).some(m => !(m.type === 'video' && (m.url || m.cloudUrl) && !(m.fileName || m.diskName)));
+  if (!hasDocs) return;
+  _aeroPdfWarmScheduled = true;
+  const go = () => {
+    try {
+      window.loadPDFJS().then(() => {
+        try { if (window.PDFViewer && window.PDFViewer.prewarmWorker) window.PDFViewer.prewarmWorker(); } catch (_) {}
+      }).catch(() => { _aeroPdfWarmScheduled = false; });
+    } catch (_) { _aeroPdfWarmScheduled = false; }
+  };
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(go, { timeout: 2500 });
+  else setTimeout(go, 1200);
+}
+
+/* ⭐ Public entry point — shows instant "Opening…" feedback on the card
+   (and a thin top progress bar) while the real work happens. */
+function viewFileOnline(courseId, materialId) {
+  if (!currentUser && isGuestBrowsing()) return aeroGuestGate(courseId, materialId);
+  return AeroOpening.run(materialId, () => _viewFileOnlineImpl(courseId, materialId));
+}
+
+async function _viewFileOnlineImpl(courseId, materialId) {
   if (!currentUser && isGuestBrowsing()) return aeroGuestGate(courseId, materialId);
   const course = findCourse(courseId);
   if (!course) return showToast('Course not found.', 'error');
@@ -14443,7 +14613,11 @@ function openMaterialSmart(courseId, materialId) {
 /* ============================================================
    openMaterialVideo — PREMIUM GATED
    ============================================================ */
-async function openMaterialVideo(courseId, materialId) {
+function openMaterialVideo(courseId, materialId) {
+  return AeroOpening.run(materialId, () => _openMaterialVideoImpl(courseId, materialId));
+}
+
+async function _openMaterialVideoImpl(courseId, materialId) {
   if (!assertMaterialUnlocked(courseId, materialId)) return;
 
   const course = findCourse(courseId);
@@ -23873,3 +24047,221 @@ async function maRemoveRelease() {
     renderAdminMobileApp();
   } catch (e) { showToast(e.message, 'error'); }
 }
+
+/* ============================================================
+   ⭐ DASHBOARD "GET APP" PILL (2026-10-07)
+   ------------------------------------------------------------
+   The same install button as the landing-page navbar, now also
+   in the signed-in app header (#appInstallPill in index.html).
+   Same look (styles.css → .landing-install-pill) and the same
+   priority order as landing.html:
+     0. Android phone + published APK  → download the real app
+     1. Browser install prompt ready    → one-tap install
+     2. Otherwise                       → step-by-step guide for
+                                          this device
+   Hidden inside the AeroGyan Android app itself.
+   ============================================================ */
+(function initDashboardInstallPill() {
+  'use strict';
+  if (window.__aeroDashInstallInstalled) return;
+  window.__aeroDashInstallInstalled = true;
+
+  const UA = navigator.userAgent || '';
+  const IN_NATIVE_APP = /AeroGyanApp\//.test(UA);
+  if (IN_NATIVE_APP) { document.documentElement.classList.add('aero-in-app'); return; }
+
+  let IS_STANDALONE = false;
+  try {
+    IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  } catch (_) {}
+
+  let apkInfo = window.__aeroApk || null;
+  const fmtMB = (n) => (Number(n || 0) / 1048576).toFixed(1) + ' MB';
+
+  function detectPlatform() {
+    const ua = UA.toLowerCase();
+    const platform = (navigator.platform || '').toLowerCase();
+    if (/android/.test(ua)) return 'android';
+    if (/iphone|ipad|ipod/.test(ua)) return 'ios';
+    if (/windows|win32|win64/.test(ua) || /^win/.test(platform)) return 'windows';
+    if (/macintosh|mac os x|macppc|macintel/.test(ua) || /mac/.test(platform)) return 'mac';
+    if (/linux/.test(ua)) return 'linux';
+    return 'other';
+  }
+
+  const btn = () => document.getElementById('appInstallPill');
+  const dot = () => document.getElementById('appInstallPillDot');
+
+  function setReady(isReady) {
+    const b = btn(); if (!b || b.classList.contains('is-installed')) return;
+    b.classList.toggle('is-ready', !!isReady);
+    const d = dot(); if (d) d.style.display = isReady ? 'inline-block' : 'none';
+  }
+  function setInstalled() {
+    const b = btn(); if (!b) return;
+    b.classList.remove('is-ready');
+    b.classList.add('is-installed');
+    const d = dot(); if (d) d.style.display = 'none';
+    const label = b.querySelector('.landing-install-pill-text');
+    if (label) label.textContent = 'Installed';
+    const icon = b.querySelector('i');
+    if (icon) { icon.classList.remove('fa-download'); icon.classList.add('fa-check'); }
+    b.title = 'AeroGyan is installed';
+    b.setAttribute('aria-label', 'AeroGyan is installed');
+  }
+
+  /* ---- Published Android app? ---- */
+  fetch('/api/app-release', { cache: 'no-cache' })
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      const a = d && d.android;
+      if (!a || !a.available) return;
+      apkInfo = a;
+      window.__aeroApk = a;
+      if (detectPlatform() === 'android') setReady(true);
+    })
+    .catch(() => {});
+
+  /* ---- Browser install prompt (an early copy may have been
+          captured by the inline script in index.html <head>) ---- */
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    window.__pwaInstallPrompt = e;
+    setReady(true);
+  });
+  window.addEventListener('aerogyan:pwa-ready', () => setReady(true));
+  window.addEventListener('appinstalled', () => {
+    window.__pwaInstallPrompt = null;
+    document.documentElement.dataset.aeroAppInstalled = '1';
+    setInstalled();
+    if (typeof window.showToast === 'function') window.showToast('App installed successfully! 🎉', 'success');
+  });
+
+  function initialSync() {
+    if (IS_STANDALONE || document.documentElement.dataset.aeroAppInstalled === '1') setInstalled();
+    else if (window.__pwaInstallPrompt) setReady(true);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initialSync);
+  else initialSync();
+
+  /* ---- Install guide — same overlay as the landing page ---- */
+  function guideFor(platform) {
+    const host = location.host;
+    if (platform === 'android') return { title: 'Install on Android', steps: [
+      'Open <strong>' + host + '</strong> in <strong>Google Chrome</strong> on your Android phone.',
+      'Tap the <strong>⋮ menu</strong> (top right).',
+      'Tap <strong>“Install app”</strong> (not “Add to Home screen”, which only makes a browser shortcut).',
+      'Confirm — AeroGyan appears in your app drawer.'] };
+    if (platform === 'ios') return { title: 'Install on iPhone / iPad', steps: [
+      'Open <strong>' + host + '</strong> in <strong>Safari</strong> on your iPhone or iPad. <em>(Chrome, Firefox, and Edge cannot install PWAs on iOS — Apple requires Safari.)</em>',
+      'Tap the <strong>Share button</strong> — the square with an arrow pointing up ⬆️, at the bottom of the screen.',
+      'Scroll down in the share sheet and tap <strong>“Add to Home Screen”</strong>.',
+      'Tap <strong>“Add”</strong> in the top-right corner — the AeroGyan icon will appear on your home screen.'] };
+    if (platform === 'windows') return { title: 'Install on Windows', steps: [
+      'Open <strong>' + host + '</strong> in <strong>Microsoft Edge</strong> or <strong>Google Chrome</strong>.',
+      'Look for the <strong>install icon</strong> (⊕ or monitor symbol) in the address bar.',
+      'Click it, then click <strong>“Install”</strong>.',
+      'AeroGyan will pin to your taskbar and Start menu.'] };
+    if (platform === 'mac') return { title: 'Install on macOS', steps: [
+      'Open <strong>' + host + '</strong> in <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.',
+      'Look for the <strong>install icon</strong> in the address bar (or <em>File → Install AeroGyan</em>).',
+      'Click <strong>“Install”</strong>.',
+      'The app appears in Launchpad and the Dock.'] };
+    return { title: 'Install on your device', steps: [
+      'Open this page in a modern browser (Chrome, Edge, or Safari).',
+      'Look for an <strong>Install</strong> option in the browser menu or address bar.',
+      'Confirm the installation.'] };
+  }
+
+  function showInstallGuide(title, steps) {
+    const existing = document.getElementById('lpInstallGuide');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'lpInstallGuide';
+    overlay.className = 'aero-install-guide';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    const stepsHtml = steps.map((s, i) =>
+      `<li><span class="aig-num">${i + 1}</span><span class="aig-text">${s}</span></li>`).join('');
+    const otherApk = apkInfo && detectPlatform() !== 'android'
+      ? `<p class="aig-more">Want it on your Android phone? Download <a href="${apkInfo.url || '/download/android'}">AeroGyan.apk</a> (${fmtMB(apkInfo.size)}) and send it to your phone.</p>`
+      : '';
+    overlay.innerHTML = `
+      <div class="aig-card">
+        <div class="aig-head">
+          <div class="aig-icon"><i class="fas fa-download"></i></div>
+          <div>
+            <h3>${title}</h3>
+            <p>One-time setup · takes about 15 seconds</p>
+          </div>
+        </div>
+        <ol class="aig-steps">${stepsHtml}</ol>
+        <div class="aig-tip">
+          <i class="fas fa-lightbulb"></i>
+          <span>Already installed? The app icon lives on your home screen, taskbar, or Launchpad — just tap it.</span>
+        </div>
+        ${otherApk}
+        <div class="aig-actions">
+          <a class="aig-link" href="/#apps" target="_blank" rel="noopener">All download options</a>
+          <button type="button" class="aig-close" id="lpInstallGuideClose">Got it</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const escHandler = (e) => { if (e.key === 'Escape') close(); };
+    const close = () => { overlay.remove(); document.removeEventListener('keydown', escHandler); };
+    overlay.querySelector('#lpInstallGuideClose').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', escHandler);
+    try { overlay.querySelector('#lpInstallGuideClose').focus(); } catch (_) {}
+  }
+
+  function downloadApk() {
+    const url = (apkInfo && apkInfo.url) || '/download/android';
+    const a = document.createElement('a');
+    a.href = url; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    showInstallGuide('Install the AeroGyan app', [
+      'Your download has started' + (apkInfo ? ' — <strong>AeroGyan ' + apkInfo.version + '</strong> (' + fmtMB(apkInfo.size) + ')' : '') + '.',
+      'Open it from the <strong>download notification</strong> or your <strong>Downloads</strong> folder.',
+      'If Android asks, tap <strong>Settings</strong> and turn on <strong>“Allow from this source”</strong> for your browser, then go back. <em>(Only needed the first time.)</em>',
+      'Tap <strong>Install</strong>, then <strong>Open</strong>. AeroGyan is now a normal app in your app drawer — no browser, no badge.',
+      'Had added the website to your home screen before? You can remove that old shortcut.'
+    ]);
+  }
+
+  window.appInstallClick = function (event) {
+    if (event) event.preventDefault();
+    const b = btn();
+    if (b && b.classList.contains('is-installed')) {
+      if (typeof window.showToast === 'function') window.showToast('App is already installed on this device. 🎉', 'success');
+      return;
+    }
+    const platform = detectPlatform();
+
+    // 0) Android phone and the real app is published → download the APK
+    if (apkInfo && platform === 'android') return downloadApk();
+
+    // 1) Browser install prompt ready → one-tap install
+    const prompt = window.__pwaInstallPrompt;
+    if (prompt) {
+      (async () => {
+        try {
+          prompt.prompt();
+          const { outcome } = await prompt.userChoice;
+          if (outcome === 'accepted' && typeof window.showToast === 'function') window.showToast('Installing AeroGyan…', 'success');
+        } catch (err) {
+          console.warn('[app-install] prompt failed:', err);
+          const g = guideFor(platform); showInstallGuide(g.title, g.steps);
+        } finally {
+          window.__pwaInstallPrompt = null;
+          setReady(false);
+        }
+      })();
+      return;
+    }
+
+    // 2) No prompt → step-by-step guide for this device
+    const g = guideFor(platform);
+    showInstallGuide(g.title, g.steps);
+  };
+})();

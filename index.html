@@ -106,6 +106,16 @@
       startup: { typeset: false }
     };
   </script>
+  <script>
+    /* Capture the browser's install prompt as early as possible — it can
+       fire before the deferred app.js has run. app.js picks it up. */
+    window.addEventListener('beforeinstallprompt', function (e) {
+      e.preventDefault();
+      window.__pwaInstallPrompt = e;
+      try { window.dispatchEvent(new Event('aerogyan:pwa-ready')); } catch (_) {}
+    });
+    if (/AeroGyanApp\//.test(navigator.userAgent || '')) document.documentElement.classList.add('aero-in-app');
+  </script>
 </head>
 <body>
   <div id="app">
@@ -174,6 +184,16 @@
               </svg>
             </span>
           </span>
+        </button>
+
+        <!-- ⬇️ Get App — same pill as the landing-page navbar (logic in app.js) -->
+        <button type="button" class="landing-install-pill app-install-pill" id="appInstallPill"
+                onclick="appInstallClick(event)"
+                title="Install AeroGyan App"
+                aria-label="Install AeroGyan App">
+          <i class="fas fa-download"></i>
+          <span class="landing-install-pill-text">Get App</span>
+          <span class="landing-install-pill-dot" id="appInstallPillDot" style="display:none;"></span>
         </button>
 
         <span class="streak-badge" id="streakBadge" style="display:none;" title="Daily streak">
@@ -1757,23 +1777,33 @@
     const PDFJS_LIB_URL    = '/vendor/pdfjs/pdf.min.js';
     const PDFJS_WORKER_URL = '/vendor/pdfjs/pdf.worker.min.js';
 
+    /* ⚡ One shared in-flight load: hover warm-up, idle warm-up and the
+       click itself used to each append their own <script> tag, so the
+       300 KB library could be parsed and run two or three times. */
+    let _pdfjsLoading = null;
     window.loadPDFJS = function () {
-      return new Promise((resolve, reject) => {
-        if (window.pdfjsLib) {
-          if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-          }
-          return resolve();
+      if (window.pdfjsLib) {
+        if (!window.pdfjsLib.GlobalWorkerOptions.workerSrc) {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
         }
+        return Promise.resolve();
+      }
+      if (_pdfjsLoading) return _pdfjsLoading;
+      _pdfjsLoading = new Promise((resolve, reject) => {
         const s = document.createElement('script');
         s.src = PDFJS_LIB_URL;
         s.onload = () => {
           window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
           resolve();
         };
-        s.onerror = reject;
+        s.onerror = (err) => {
+          _pdfjsLoading = null;          // allow a retry on the next click
+          try { s.remove(); } catch (_) {}
+          reject(err);
+        };
         document.head.appendChild(s);
       });
+      return _pdfjsLoading;
     };
     /* MathJax — loads ONLY when a quiz / AI answer needs it */
     window.loadMathJax = function () {

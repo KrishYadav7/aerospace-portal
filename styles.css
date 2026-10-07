@@ -15730,3 +15730,219 @@ body.aero-guest #appHeader .user-info { gap: 0 !important; }
 .guest-gate-forgot { display: block; text-align: center; margin-top: 10px; font-size: 13px; }
 #guestHeaderActions .btn-outline { color: #fff; border-color: rgba(255, 255, 255, .45); background: rgba(255, 255, 255, .06); }
 #guestHeaderActions .btn-outline:hover { background: rgba(255, 255, 255, .16); border-color: rgba(255, 255, 255, .7); color: #fff; }
+
+/* ============================================================
+   ⭐ MATERIAL CARDS — whole card opens the material (2026-10-07)
+   ============================================================ */
+.material-item.mat-clickable { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.material-item.mat-clickable .mat-actions { cursor: default; }
+.material-item.mat-clickable:hover {
+  border-color: var(--brand-400, #818cf8);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-500) 16%, transparent), var(--shadow-md);
+  transform: translateY(-3px);
+}
+.material-item.mat-clickable:hover h4 { color: var(--brand-600); }
+[data-theme="dark"] .material-item.mat-clickable:hover h4,
+[data-theme="dim"]  .material-item.mat-clickable:hover h4 { color: var(--brand-300, #a5b4fc); }
+.material-item.mat-clickable h4 { transition: color .18s var(--ease, ease); }
+/* Press feedback — the card visibly "gives" under the finger / mouse */
+.material-item.mat-clickable:active:not(:has(.mat-actions:active)) {
+  transform: translateY(0) scale(.985);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-500) 28%, transparent), var(--shadow-sm, none);
+  transition-duration: .06s;
+}
+
+/* "Open / Watch / Preview" chip that appears on the thumbnail on hover */
+.mat-open-hint {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%) scale(.9);
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 16px; border-radius: 999px;
+  background: rgba(15, 23, 42, .78); color: #fff;
+  font-size: 13px; font-weight: 700; letter-spacing: .2px;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, .22);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .3);
+  opacity: 0; pointer-events: none;
+  transition: opacity .18s ease, transform .22s cubic-bezier(.34, 1.56, .64, 1);
+}
+.material-item.mat-clickable:hover .mat-open-hint { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.material-item.mat-clickable .material-thumb::after {
+  content: ''; position: absolute; inset: 0; background: rgba(15, 23, 42, 0);
+  transition: background .2s ease; pointer-events: none;
+}
+.material-item.mat-clickable:hover .material-thumb::after { background: rgba(15, 23, 42, .18); }
+@media (hover: none) { .mat-open-hint { display: none; } }
+
+/* ---- "Opening…" state (set the instant the card is clicked) ---- */
+.material-item.is-opening {
+  pointer-events: none;
+  border-color: var(--brand-500) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-500) 30%, transparent), var(--shadow-md) !important;
+  transform: none !important;
+}
+.mat-opening-veil {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  background: color-mix(in srgb, var(--bg-surface, #fff) 74%, transparent);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  border-radius: inherit;
+  color: var(--brand-700, #4338ca); font-weight: 700; font-size: 13.5px; letter-spacing: .2px;
+  animation: matVeilIn .15s ease-out both;
+}
+[data-theme="dark"] .mat-opening-veil,
+[data-theme="dim"]  .mat-opening-veil { color: var(--brand-200, #c7d2fe); }
+.mat-opening-veil::before {             /* thin running bar along the card's top edge */
+  content: ''; position: absolute; top: 0; left: 0; height: 3px; width: 40%;
+  background: linear-gradient(90deg, var(--brand-500, #6366f1), var(--accent-500, #06b6d4));
+  border-radius: 0 3px 3px 0;
+  animation: matVeilBar 1s cubic-bezier(.4, 0, .2, 1) infinite;
+}
+.mat-opening-spinner {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--brand-500) 22%, transparent);
+  border-top-color: var(--brand-500, #6366f1);
+  animation: matSpin .7s linear infinite;
+}
+@keyframes matVeilIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes matVeilBar { 0% { left: -40%; } 100% { left: 100%; } }
+@keyframes matSpin    { to { transform: rotate(360deg); } }
+
+/* Thin progress bar across the top of the screen while a material opens */
+.aero-open-bar {
+  position: fixed; top: 0; left: 0; height: 3px; width: 0; z-index: 100000;
+  background: linear-gradient(90deg, var(--brand-500, #6366f1), var(--accent-500, #06b6d4));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--brand-500) 60%, transparent);
+  opacity: 0; pointer-events: none;
+}
+.aero-open-bar.active { opacity: 1; animation: aeroOpenBar 8s cubic-bezier(.08, .82, .17, 1) forwards; }
+.aero-open-bar.active.done { animation: none; width: 100%; opacity: 0; transition: width .2s ease, opacity .3s ease .15s; }
+@keyframes aeroOpenBar { 0% { width: 0; } 15% { width: 45%; } 100% { width: 92%; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .material-item.mat-clickable:hover, .material-item.mat-clickable:active { transform: none; }
+  .mat-opening-veil::before { animation-duration: 2.4s; }
+  .mat-opening-spinner { animation-duration: 1.4s; }
+}
+
+/* ============================================================
+   ⭐ DASHBOARD "GET APP" PILL — identical to the landing navbar
+   (.landing-install-pill in landing.html), scoped to the app header.
+   ============================================================ */
+.app-install-pill {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 16px; border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.22);
+  background: rgba(255,255,255,.08);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  color: #fff; font-family: inherit; font-size: 13px; font-weight: 700; letter-spacing: .1px;
+  cursor: pointer; transition: .22s cubic-bezier(.4,0,.2,1);
+  flex-shrink: 0; white-space: nowrap;
+  min-height: 0; min-width: 0; width: auto; height: auto;
+}
+.app-install-pill i { font-size: 12.5px; transition: transform .3s cubic-bezier(.34,1.56,.64,1); }
+.app-install-pill:hover {
+  background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.38);
+  transform: translateY(-1px); box-shadow: 0 8px 22px rgba(0,0,0,.28);
+}
+.app-install-pill:hover i { transform: translateY(1px) scale(1.1); }
+.app-install-pill:active { transform: translateY(0) scale(.97); }
+.app-install-pill:focus-visible { outline: 2px solid var(--accent-400, #22d3ee); outline-offset: 2px; }
+.app-install-pill.is-ready {
+  background: linear-gradient(135deg, rgba(16,185,129,.22), rgba(52,211,153,.12));
+  border-color: rgba(52,211,153,.55);
+  box-shadow: 0 0 0 0 rgba(52,211,153,.5);
+  animation: appInstallGlow 2.4s ease-in-out infinite;
+}
+@keyframes appInstallGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(52,211,153,.55); }
+  50%      { box-shadow: 0 0 0 10px rgba(52,211,153,0); }
+}
+.app-install-pill.is-installed {
+  background: rgba(16,185,129,.16); border-color: rgba(16,185,129,.42);
+  color: #6ee7b7; cursor: default; animation: none;
+}
+.app-install-pill.is-installed:hover { transform: none; box-shadow: none; }
+.app-install-pill .landing-install-pill-dot {
+  position: absolute; top: -3px; right: -3px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #34d399; border: 2px solid rgba(10,14,31,.9);
+  box-shadow: 0 0 0 0 rgba(52,211,153,.7);
+  animation: appInstallDot 1.6s ease-in-out infinite;
+}
+@keyframes appInstallDot {
+  0%   { box-shadow: 0 0 0 0 rgba(52,211,153,.7); }
+  70%  { box-shadow: 0 0 0 8px rgba(52,211,153,0); }
+  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+}
+.app-install-pill .landing-install-pill-text { display: inline; }
+@media (max-width: 860px) {
+  .app-install-pill { padding: 8px 10px; gap: 0; min-width: 40px; height: 40px; }
+  .app-install-pill .landing-install-pill-text { display: none; }
+  .app-install-pill i { font-size: 14px; }
+}
+@media (max-width: 520px) {
+  .app-install-pill { padding: 8px 9px; }
+  .app-install-pill i { font-size: 13px; }
+}
+/* Signed-in only (the login screen keeps its one-row header), and never
+   inside the AeroGyan Android app itself. */
+body.aero-logged-out .app-install-pill,
+html.aero-in-app .app-install-pill { display: none !important; }
+
+/* ---- Install guide overlay (same look as the landing page) ---- */
+.aero-install-guide {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(16,18,22,.72);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  display: flex; align-items: center; justify-content: center; padding: 22px;
+  animation: aigFadeIn .2s ease-out;
+}
+.aero-install-guide .aig-card {
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: 22px; max-width: 520px; width: 100%; padding: 32px 30px;
+  box-shadow: 0 32px 80px rgba(0,0,0,.4);
+  max-height: calc(100vh - 44px); overflow-y: auto;
+  animation: aigSlideUp .3s cubic-bezier(.22,1,.36,1);
+}
+.aero-install-guide .aig-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+.aero-install-guide .aig-icon {
+  width: 48px; height: 48px; border-radius: 14px; flex-shrink: 0;
+  background: linear-gradient(135deg,#6366f1,#06b6d4); color: #fff; font-size: 22px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 8px 20px rgba(99,102,241,.35);
+}
+.aero-install-guide h3 { font-size: 19px; font-weight: 800; color: var(--text-primary); margin: 0; letter-spacing: -.3px; }
+.aero-install-guide .aig-head p { font-size: 12.5px; color: var(--text-tertiary); margin: 4px 0 0; }
+.aero-install-guide .aig-steps { list-style: none; padding: 0; margin: 0 0 22px; }
+.aero-install-guide .aig-steps li { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 14px; }
+.aero-install-guide .aig-num {
+  flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; margin-top: 1px;
+  background: linear-gradient(135deg,#6366f1,#06b6d4); color: #fff; font-weight: 800; font-size: 12px;
+  display: flex; align-items: center; justify-content: center;
+}
+.aero-install-guide .aig-text { font-size: 14px; line-height: 1.6; color: var(--text-secondary); }
+.aero-install-guide .aig-tip {
+  padding: 12px 14px; margin-bottom: 18px;
+  background: rgba(16,185,129,.08); border: 1px solid rgba(16,185,129,.25); border-radius: 12px;
+  display: flex; gap: 10px; align-items: flex-start;
+  font-size: 12.5px; color: var(--text-secondary); line-height: 1.55;
+}
+.aero-install-guide .aig-tip i { color: #10b981; flex-shrink: 0; margin-top: 2px; }
+.aero-install-guide .aig-more { font-size: 13px; color: var(--text-secondary); margin: 0 0 18px; line-height: 1.55; }
+.aero-install-guide .aig-more a { font-weight: 700; }
+.aero-install-guide .aig-actions { display: flex; gap: 10px; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+.aero-install-guide .aig-link { font-size: 13px; font-weight: 600; color: var(--brand-600); text-decoration: none; }
+.aero-install-guide .aig-link:hover { text-decoration: underline; }
+[data-theme="dark"] .aero-install-guide .aig-link,
+[data-theme="dim"]  .aero-install-guide .aig-link { color: var(--brand-300, #a5b4fc); }
+.aero-install-guide .aig-close {
+  margin-left: auto; padding: 11px 22px; border-radius: 10px;
+  border: 1.5px solid var(--border-default); background: transparent; color: var(--text-secondary);
+  font-family: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: .2s;
+}
+.aero-install-guide .aig-close:hover { border-color: var(--brand-400, #818cf8); color: var(--text-primary); }
+@keyframes aigFadeIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes aigSlideUp { from { opacity: 0; transform: translateY(20px) scale(.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (max-width: 520px) { .aero-install-guide .aig-card { padding: 24px 20px; } }
