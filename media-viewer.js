@@ -3276,32 +3276,113 @@ class VideoPlayer {
       st.ov.querySelector('[data-p="next"]').disabled = n >= st.max;
       try {
         if (st.task) { try { st.task.cancel(); } catch (e) {} }
+        const W = window.innerWidth, H = window.innerHeight;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+        const key = W + 'x' + H + 'x' + dpr;
+        if (!st.cache) st.cache = new Map();
+
+        /* ⚡ The slide was pre-rendered in the background → instant */
+        if (st.pre && st.pre.n === n && st.pre.key === key) {
+          try { await st.pre.p; } catch (_) {}
+          if (!this._present || st.page !== n) return;
+        } else if (st.pre && st.pre.task) {
+          try { st.pre.task.cancel(); } catch (_) {}
+        }
+        const hit = st.cache.get(n);
+        if (hit && hit.key === key) {
+          const c = st.canvas;
+          c.width = hit.canvas.width;
+          c.height = hit.canvas.height;
+          c.style.width = hit.cssW + 'px';
+          c.style.height = hit.cssH + 'px';
+          c.getContext('2d', { alpha: false }).drawImage(hit.canvas, 0, 0);
+          this._presentPrefetch(n, key);
+          return;
+        }
+
         const page = await this.pdfDoc.getPage(n);
         if (!this._present || st.page !== n) return;
         const base = page.getViewport({ scale: 1 });
-        const W = window.innerWidth, H = window.innerHeight;
         const fit = Math.min(W / base.width, H / base.height);
-        const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
         const vp = page.getViewport({ scale: fit * dpr });
         const c = st.canvas;
         c.width = Math.floor(vp.width);
         c.height = Math.floor(vp.height);
         c.style.width = Math.floor(vp.width / dpr) + 'px';
         c.style.height = Math.floor(vp.height / dpr) + 'px';
-        st.task = page.render({ canvasContext: c.getContext('2d', { alpha: false }), viewport: vp });
+        const ctx = c.getContext('2d', { alpha: false });
+        /* Background snapshot as an instant stand-in while the sharp
+           slide is drawn on top of it */
+        const snap = this._snaps && this._snaps.get(n);
+        if (snap) {
+          try {
+            const img = new Image();
+            img.src = snap.url;
+            await img.decode();
+            if (!this._present || st.page !== n) return;
+            ctx.drawImage(img, 0, 0, c.width, c.height);
+          } catch (_) {}
+        }
+        st.task = page.render({ canvasContext: ctx, viewport: vp });
         await st.task.promise;
-        /* warm the next slide */
-        if (n < st.max) this.pdfDoc.getPage(n + 1).catch(() => {});
+        /* ⚡ prepare the next slides while this one is being presented */
+        this._presentPrefetch(n, key);
       } catch (e) {
         if (e && e.name === 'RenderingCancelledException') return;
         console.warn('[present]', e && e.message);
       }
     }
 
+    /* ⚡ Slideshow look-ahead: the next two slides (and the previous
+       one) are drawn off-screen, so "Next" shows them instantly.
+       Phones keep only the next slide to save memory. */
+    _presentPrefetch(n, key) {
+      const st = this._present;
+      if (!st || !this.pdfDoc) return;
+      let lowMem = false;
+      try { lowMem = (Number(navigator.deviceMemory) || 8) <= 4 || window.matchMedia('(pointer: coarse)').matches; } catch (_) {}
+      const want = (lowMem ? [n + 1] : [n + 1, n + 2, n - 1]).filter(x => x >= 1 && x <= st.max);
+      const keep = new Set(want.concat([n]));
+      st.cache.forEach((v, k) => {
+        if (!keep.has(k) || v.key !== key) { v.canvas.width = 0; v.canvas.height = 0; st.cache.delete(k); }
+      });
+      const token = (st.preToken = (st.preToken || 0) + 1);
+      const run = async () => {
+        for (const m of want) {
+          if (this._present !== st || st.preToken !== token) return;
+          const have = st.cache.get(m);
+          if (have && have.key === key) continue;
+          const job = { n: m, key, task: null, p: null };
+          job.p = (async () => {
+            const page = await this.pdfDoc.getPage(m);
+            const W = window.innerWidth, H = window.innerHeight;
+            const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+            const base = page.getViewport({ scale: 1 });
+            const vp = page.getViewport({ scale: Math.min(W / base.width, H / base.height) * dpr });
+            const cv = document.createElement('canvas');
+            cv.width = Math.floor(vp.width);
+            cv.height = Math.floor(vp.height);
+            job.task = page.render({ canvasContext: cv.getContext('2d', { alpha: false }), viewport: vp });
+            try { await job.task.promise; }
+            catch (err) { cv.width = 0; cv.height = 0; throw err; }
+            if (this._present !== st) { cv.width = 0; cv.height = 0; return; }
+            st.cache.set(m, { key, canvas: cv, cssW: Math.floor(vp.width / dpr), cssH: Math.floor(vp.height / dpr) });
+          })();
+          st.pre = job;
+          try { await job.p; } catch (_) { /* cancelled or failed — drawn on demand instead */ }
+          if (st.pre === job) st.pre = null;
+        }
+      };
+      setTimeout(run, 60);
+    }
+
     _endPresentation(silent) {
       const st = this._present;
       if (!st) return;
       this._present = null;
+      st.preToken = (st.preToken || 0) + 1;
+      if (st.pre && st.pre.task) { try { st.pre.task.cancel(); } catch (_) {} }
+      if (st.cache) { st.cache.forEach((v) => { v.canvas.width = 0; v.canvas.height = 0; }); st.cache.clear(); }
       document.removeEventListener('keydown', st.onKey, true);
       window.removeEventListener('resize', st.onResize);
       document.removeEventListener('fullscreenchange', st.onFs);

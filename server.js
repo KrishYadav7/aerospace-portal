@@ -2412,6 +2412,7 @@ app.use('/api/', (req, res, next) => {
       if (res.statusCode >= 200 && res.statusCode < 300 &&
           body && body.success !== false) {
         const scope = classifyMutation(req.method, req.path);
+        if (scope && String(scope).indexOf('users:') === 0) cacheClear('stats:students');
         if (scope) {
           broadcastContentChange(scope, { path: req.path, method: req.method });
         }
@@ -10741,6 +10742,24 @@ app.post('/api/user/notifications/:userId/mark-read', requireUser, requireSelfOr
 /* ============================================================
    STUDENTS LIST
    ============================================================ */
+/* ⚡ ADMIN — student count only (2026-10-07)
+   The Overview tile used to download the whole student list just to
+   count it. This answers with one number from the { role, createdAt }
+   index — a few milliseconds — and is cached for 15 s; any roster
+   change (register / create / import / delete) clears the cache. */
+app.get('/api/admin/stats/student-count', requireAdminAuth, async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const cached = cacheGet('stats:students-count');
+    if (cached != null) return res.json({ success: true, count: cached, cached: true });
+    const count = await User.countDocuments({ role: 'student' });
+    cacheSet('stats:students-count', count, 15000);
+    res.json({ success: true, count });
+  } catch (e) {
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
 app.get('/api/students', requireAdminAuth, async (req, res) => {
   try {
     /* ⚡ Only the fields the admin UI actually renders. Excluding

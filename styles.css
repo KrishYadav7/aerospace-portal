@@ -15971,3 +15971,18 @@ html.aero-in-app .app-install-pill { display: none !important; }
 .pdfv-bgstatus.is-done { color: #6ee7b7; background: rgba(16,185,129,.14); border-color: rgba(16,185,129,.35); }
 .pdfv-bgstatus[hidden] { display: none !important; }
 @media (max-width: 760px) { .pdfv-bgstatus { display: none !important; } }
+
+/* ⚡ Admin overview — last known student count while the fresh one loads */
+#statStudents.is-stale { opacity: .72; transition: opacity .25s ease; }
+
+/* Quiz result — an uploaded PDF answer (was a broken image) */
+.subjective-result-thumbs .subjective-result-pdf {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  width: 96px; height: 96px; padding: 8px; border-radius: 10px; text-decoration: none;
+  background: var(--bg-surface-2); border: 1px solid var(--border-subtle); color: var(--text-secondary);
+  font-size: 11px; text-align: center; overflow: hidden; cursor: pointer;
+  transition: border-color .15s ease, transform .15s ease;
+}
+.subjective-result-thumbs .subjective-result-pdf i { font-size: 26px; color: #ef4444; }
+.subjective-result-thumbs .subjective-result-pdf span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subjective-result-thumbs .subjective-result-pdf:hover { border-color: var(--brand-400, #818cf8); transform: translateY(-1px); }
