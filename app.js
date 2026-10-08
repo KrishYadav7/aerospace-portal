@@ -3107,7 +3107,7 @@ async function copyToClipboard(text) {
    CSS variable block. Nothing else in the codebase changes.
    ============================================================ */
 const THEME_CONFIG = {
-  order: ['light', 'dim', 'dark'],
+  order: ['light', 'dim', 'dark', 'space'],
   themes: {
     light: {
       id: 'light', family: 'light', label: 'Light', icon: 'fa-sun',
@@ -3123,17 +3123,44 @@ const THEME_CONFIG = {
       id: 'dark', family: 'dark', label: 'Night', icon: 'fa-moon',
       palette: 'dark grey surfaces with off-white text', next: 'light',
       ariaLabel: 'Night mode — click for Light'
+    },
+    /* ⭐ 2026-10-08 — "Space": rendered as data-theme="dark" (so every
+       dark-mode rule keeps working) + data-skin="space" on <html>, which
+       swaps in the deep-space palette, nebula glow and starfield. */
+    space: {
+      id: 'space', family: 'dark', label: 'Space', icon: 'fa-user-astronaut',
+      palette: 'deep-space navy, nebula glow and twinkling stars', next: 'light',
+      ariaLabel: 'Space mode — click for Light'
     }
   }
 };
+const SPACE_SKIN = 'space';
 const THEME_CYCLE = THEME_CONFIG.order;
 
 function getThemeMeta(theme) {
   return THEME_CONFIG.themes[theme] || THEME_CONFIG.themes.light;
 }
 function getCurrentTheme() {
-  const t = document.documentElement.getAttribute('data-theme') || 'light';
+  const root = document.documentElement;
+  if (root.getAttribute('data-skin') === SPACE_SKIN) return 'space';
+  const t = root.getAttribute('data-theme') || 'light';
   return THEME_CONFIG.themes[t] ? t : 'light';
+}
+/* Writes the theme onto <html>. Space = dark base + space skin. */
+function _setThemeAttrs(id) {
+  const root = document.documentElement;
+  if (id === 'space') {
+    root.setAttribute('data-theme', 'dark');
+    root.setAttribute('data-skin', SPACE_SKIN);
+  } else {
+    root.setAttribute('data-theme', id);
+    root.removeAttribute('data-skin');
+  }
+  /* browser / Android status-bar colour follows the theme */
+  try {
+    const m = document.querySelector('meta[name="theme-color"]');
+    if (m) m.setAttribute('content', id === 'space' ? '#050816' : id === 'light' ? '#0b1226' : id === 'dim' ? '#14142b' : '#0c0e12');
+  } catch (_) {}
 }
 function isNightMode() {
   return getThemeMeta(getCurrentTheme()).family === 'dark';
@@ -3173,7 +3200,7 @@ function applyTheme(theme) {
   const id = THEME_CONFIG.themes[theme] ? theme : 'light';
 
   _withThemeTransition(() => {
-    document.documentElement.setAttribute('data-theme', id);
+    _setThemeAttrs(id);
   });
 
   try { localStorage.setItem('aero_theme', id); } catch (e) {}
@@ -3192,7 +3219,7 @@ const PREFERRED_DARK_KEY = 'aero_theme_dark';
 function getPreferredDarkTheme() {
   let t = null;
   try { t = localStorage.getItem(PREFERRED_DARK_KEY); } catch (e) {}
-  return (t === 'dim' || t === 'dark') ? t : 'dark';
+  return (t === 'dim' || t === 'dark' || t === 'space') ? t : 'dark';
 }
 
 /* Kept for backward compatibility with any old onclick="cycleTheme()" */
@@ -3240,7 +3267,7 @@ function renderSettingsThemeUI() {
   if (hint) {
     hint.textContent = night
       ? `${meta.label} theme active — ${meta.palette}. The top-bar switch flips back to Light.`
-      : 'The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here.';
+      : 'The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here — try the new Space theme.';
   }
 }
 
@@ -3373,7 +3400,7 @@ function initBioToggles() {
   const fallback = prefers ? 'dark' : 'light';
   const initial = valid.includes(saved) ? saved : fallback;
   /* Set before first paint — no transition, no flash. */
-  document.documentElement.setAttribute('data-theme', initial);
+  _setThemeAttrs(initial);
 })();
 
 /* ============================================================

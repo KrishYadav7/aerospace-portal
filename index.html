@@ -9,22 +9,24 @@
     (function () {
       try {
         var t = localStorage.getItem('aero_theme');
-        if (t !== 'light' && t !== 'dim' && t !== 'dark') {
+        if (t !== 'light' && t !== 'dim' && t !== 'dark' && t !== 'space') {
           t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
         }
-        document.documentElement.setAttribute('data-theme', t);
+        /* ⭐ Space = dark base + space skin */
+        if (t === 'space') document.documentElement.setAttribute('data-skin', 'space');
+        document.documentElement.setAttribute('data-theme', t === 'space' ? 'dark' : t);
       } catch (e) {}
     })();
   </script>
-<link rel="manifest" href="manifest.json?v=140">
+<link rel="manifest" href="manifest.json?v=141">
   <!-- Logo / Favicon -->
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=140">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=140">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=140">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=140">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=140">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=140">
-  <link rel="shortcut icon" href="/favicon-32.png?v=140">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=141">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=141">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=141">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=141">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=141">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=141">
+  <link rel="shortcut icon" href="/favicon-32.png?v=141">
   <title>AeroGyan Education – Course Portal</title>
 
   <!-- Critical preconnects (only 3 — extra ones waste time) -->
@@ -56,7 +58,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=140">
+  <link rel="stylesheet" href="styles.css?v=141">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -1222,7 +1224,7 @@
         <div class="settings-row settings-row--stacked">
           <div class="settings-row-text">
             <strong>Theme</strong>
-            <span id="nightModeHint">The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here.</span>
+            <span id="nightModeHint">The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here — try the new Space theme.</span>
           </div>
         </div>
 
@@ -1239,6 +1241,12 @@
           <button type="button" class="theme-choice" data-theme-choice="dark" role="radio"
                   aria-checked="false" onclick="setThemeFromSettings('dark')">
             <i class="fas fa-moon"></i> Night
+          </button>
+          <button type="button" class="theme-choice theme-choice-space" data-theme-choice="space" role="radio"
+                  aria-checked="false" onclick="setThemeFromSettings('space')">
+            <span class="tc-stars" aria-hidden="true"></span>
+            <i class="fas fa-user-astronaut"></i> Space
+            <span class="tc-new">New</span>
           </button>
         </div>
       </div>
@@ -1958,11 +1966,11 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=140" defer></script>
-  <script src="content-shield.js?v=140" defer></script>
+ 	<script src="media-viewer.js?v=141" defer></script>
+  <script src="content-shield.js?v=141" defer></script>
   <script src="login-popup.js?v=1" defer></script>
-  <script src="document-viewer.js?v=140" defer></script>
-  <script src="app.js?v=140" defer></script>
+  <script src="document-viewer.js?v=141" defer></script>
+  <script src="app.js?v=141" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
@@ -1970,7 +1978,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=140', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=141', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 

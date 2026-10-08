@@ -16522,3 +16522,232 @@ body.aero-prof .playlist-item-remove { display: none !important; }
 .ai-test-row span { display: block; font-size: 12px; color: var(--text-tertiary); overflow-wrap: anywhere; }
 .ai-test-note { display: block; margin-top: 10px; font-size: 12px; color: #b45309; }
 @media (prefers-reduced-motion: reduce) { .ai-mm, .ai-mm.is-sheet { animation: none; } }
+
+/* ==========================================================================
+   ⭐ 2026-10-08 — SPACE THEME
+   <html data-theme="dark" data-skin="space">
+   Rides on the dark theme (every [data-theme="dark"] rule still applies)
+   and swaps in a deep-space palette, nebula light, a starfield that
+   twinkles, an occasional shooting star and a ringed-planet switch.
+   ========================================================================== */
+html[data-skin="space"] {
+  color-scheme: dark;
+  /* luminous violet-indigo brand on deep navy */
+  --brand-50: #f3f0ff; --brand-100: #e9e4ff; --brand-200: #d6ccff; --brand-300: #b9aaff;
+  --brand-400: #9d8cff; --brand-500: #8070ff; --brand-600: #6a55f5; --brand-700: #5a3fd9;
+  --brand-800: #4630b0; --brand-900: #2e1f7a;
+  --accent-300: #7df3ff; --accent-400: #3fe0f5; --accent-500: #19c6e6; --accent-600: #0ea5c6;
+  --space-nebula-1: rgba(139, 92, 246, .30);
+  --space-nebula-2: rgba(34, 211, 238, .16);
+  --space-nebula-3: rgba(236, 72, 153, .13);
+
+  --bg-page: #050816;
+  --bg-page-accent-1: rgba(139, 92, 246, .22);
+  --bg-page-accent-2: rgba(34, 211, 238, .12);
+  --bg-surface: #0d1230;
+  --bg-surface-2: #121838;
+  --bg-surface-3: #1a2147;
+  --bg-elevated: #141b3e;
+
+  --border-subtle: #1e2655;
+  --border-default: #2a3369;
+  --border-strong: #3d4786;
+
+  --text-primary: #eef0ff;
+  --text-secondary: #b7bce8;
+  --text-tertiary: #858cc0;
+  --text-inverse: #050816;
+
+  --shadow-xs: 0 1px 2px rgba(1, 2, 12, .6);
+  --shadow-sm: 0 1px 3px rgba(1, 2, 12, .65), inset 0 1px 0 rgba(255, 255, 255, .03);
+  --shadow-md: 0 10px 28px rgba(1, 2, 14, .6), inset 0 1px 0 rgba(255, 255, 255, .04);
+  --shadow-lg: 0 22px 54px rgba(1, 2, 14, .65), 0 0 0 1px rgba(157, 140, 255, .06);
+  --shadow-xl: 0 34px 80px rgba(1, 2, 14, .75), 0 0 0 1px rgba(157, 140, 255, .08);
+
+  --header-bg: rgba(6, 8, 26, .62);
+  --header-border: rgba(157, 140, 255, .22);
+}
+
+/* ---------- sky: deep gradient + three nebulae + a planet on the horizon ---------- */
+html[data-skin="space"] body {
+  background:
+    radial-gradient(circle at 104% 112%, #120c3a 0 230px, rgba(167, 139, 250, .55) 232px, rgba(103, 232, 249, .18) 240px, transparent 300px),
+    radial-gradient(1000px 640px at 88% -8%, var(--space-nebula-1), transparent 62%),
+    radial-gradient(820px 560px at -6% 38%, var(--space-nebula-2), transparent 60%),
+    radial-gradient(760px 520px at 55% 118%, var(--space-nebula-3), transparent 62%),
+    linear-gradient(180deg, #04060f 0%, #070a20 45%, #0b0a26 100%);
+  background-attachment: fixed;
+}
+
+/* the app shell is see-through in Space so the sky shows between cards */
+html[data-skin="space"] #app { background: transparent; box-shadow: none; }
+
+/* static star dust (3 densities, tiled at different sizes so it never looks like a grid) */
+html[data-skin="space"] body::before,
+html[data-skin="space"] body::after {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background-repeat: repeat;
+}
+html[data-skin="space"] body::before {
+  background-image:
+    radial-gradient(1px 1px at 12px 24px, rgba(255,255,255,.75), transparent 60%),
+    radial-gradient(1px 1px at 88px 140px, rgba(255,255,255,.55), transparent 60%),
+    radial-gradient(1px 1px at 160px 60px, rgba(199,210,254,.7), transparent 60%),
+    radial-gradient(1px 1px at 210px 190px, rgba(255,255,255,.5), transparent 60%),
+    radial-gradient(1px 1px at 46px 210px, rgba(186,230,253,.6), transparent 60%),
+    radial-gradient(1.2px 1.2px at 130px 230px, rgba(255,255,255,.65), transparent 60%),
+    radial-gradient(1px 1px at 236px 98px, rgba(233,213,255,.6), transparent 60%),
+    radial-gradient(1.5px 1.5px at 60px 90px, rgba(255,255,255,.85), transparent 60%),
+    radial-gradient(1px 1px at 180px 12px, rgba(255,255,255,.45), transparent 60%);
+  background-size: 250px 250px, 310px 310px, 230px 230px, 270px 270px, 190px 190px, 330px 330px, 210px 210px, 290px 290px, 170px 170px;
+  opacity: .95;
+}
+/* brighter stars that twinkle */
+html[data-skin="space"] body::after {
+  background-image:
+    radial-gradient(1.8px 1.8px at 40px 60px, #fff, transparent 70%),
+    radial-gradient(2px 2px at 300px 120px, rgba(253,230,138,.95), transparent 70%),
+    radial-gradient(1.6px 1.6px at 190px 330px, rgba(165,243,252,.95), transparent 70%),
+    radial-gradient(2.2px 2.2px at 420px 260px, #fff, transparent 70%),
+    radial-gradient(1.6px 1.6px at 90px 410px, rgba(221,214,254,.95), transparent 70%),
+    radial-gradient(1.8px 1.8px at 360px 440px, #fff, transparent 70%),
+    radial-gradient(1.4px 1.4px at 250px 30px, rgba(255,255,255,.9), transparent 70%);
+  background-size: 480px 480px;
+  will-change: opacity;
+  animation: spaceTwinkle 5.5s ease-in-out infinite alternate;
+}
+@keyframes spaceTwinkle {
+  0%   { opacity: .35; }
+  45%  { opacity: 1; }
+  70%  { opacity: .55; }
+  100% { opacity: .95; }
+}
+
+/* a shooting star every ~14 s */
+html[data-skin="space"]::after {
+  content: ""; position: fixed; z-index: -1; pointer-events: none;
+  top: 12vh; left: 70vw; width: 160px; height: 1.5px; border-radius: 2px;
+  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.95));
+  filter: drop-shadow(0 0 6px rgba(186,230,253,.9));
+  transform: rotate(-24deg) translateX(0); opacity: 0;
+  animation: spaceShoot 14s linear infinite; animation-delay: 3s;
+}
+@keyframes spaceShoot {
+  0%   { opacity: 0; transform: rotate(-24deg) translateX(0); }
+  1%   { opacity: 1; }
+  7%   { opacity: 0; transform: rotate(-24deg) translateX(-55vw); }
+  100% { opacity: 0; transform: rotate(-24deg) translateX(-55vw); }
+}
+
+/* ---------- glass header with a starlight edge ---------- */
+html[data-skin="space"] #appHeader {
+  background: rgba(5, 7, 24, .6);
+  backdrop-filter: blur(22px) saturate(170%);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  border-bottom: 1px solid transparent;
+  border-image: linear-gradient(90deg, rgba(167,139,250,0) 0%, rgba(167,139,250,.65) 30%, rgba(103,232,249,.65) 65%, rgba(253,230,138,0) 100%) 1;
+  box-shadow: 0 10px 30px rgba(1, 2, 14, .45);
+}
+html[data-skin="space"] #appHeader #mainNav { background: transparent; }
+html[data-skin="space"] .mobile-bottom-nav {
+  background: rgba(6, 8, 26, .9);
+  border-top-color: rgba(157, 140, 255, .22);
+}
+
+/* ---------- hero banners become nebula windows ---------- */
+html[data-skin="space"] .hero-section,
+html[data-skin="space"] .ai-home-hero,
+html[data-skin="space"] .pw-hero {
+  background:
+    radial-gradient(520px 260px at 92% -10%, rgba(192, 132, 252, .38), transparent 62%),
+    radial-gradient(460px 260px at -4% 110%, rgba(34, 211, 238, .24), transparent 62%),
+    radial-gradient(1.2px 1.2px at 18% 30%, #fff, transparent 70%),
+    radial-gradient(1px 1px at 42% 70%, rgba(255,255,255,.8), transparent 70%),
+    radial-gradient(1.4px 1.4px at 66% 22%, rgba(253,230,138,.9), transparent 70%),
+    radial-gradient(1px 1px at 84% 64%, rgba(255,255,255,.7), transparent 70%),
+    radial-gradient(1.2px 1.2px at 30% 88%, rgba(165,243,252,.9), transparent 70%),
+    linear-gradient(135deg, #0a0d2c 0%, #1a124f 55%, #2c0f66 100%);
+  box-shadow: 0 26px 64px rgba(1, 2, 14, .7), 0 0 0 1px rgba(167, 139, 250, .28), inset 0 1px 0 rgba(255,255,255,.06);
+}
+
+/* ---------- surfaces & interactions ---------- */
+html[data-skin="space"] .course-card:hover,
+html[data-skin="space"] .pw-course:hover {
+  box-shadow: 0 18px 44px rgba(1, 2, 14, .7), 0 0 0 1px rgba(157, 140, 255, .35), 0 0 32px rgba(128, 112, 255, .18);
+}
+html[data-skin="space"] .btn-primary {
+  background: linear-gradient(135deg, #7c3aed 0%, #5b4cf0 50%, #2f6bf2 100%);
+  box-shadow: 0 6px 22px rgba(124, 58, 237, .38), inset 0 1px 0 rgba(255, 255, 255, .18);
+  border-color: transparent;
+}
+html[data-skin="space"] .btn-primary:hover:not(:disabled) {
+  box-shadow: 0 10px 30px rgba(124, 58, 237, .5), 0 0 0 1px rgba(196, 181, 253, .35), inset 0 1px 0 rgba(255, 255, 255, .22);
+}
+html[data-skin="space"] .modal-overlay { background: rgba(2, 3, 14, .72); }
+html[data-skin="space"] ::selection { background: rgba(167, 139, 250, .42); color: #fff; }
+html[data-skin="space"] { scrollbar-color: #3d3a86 transparent; }
+html[data-skin="space"] ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #4c3fb3, #2b5fb8); border: 3px solid transparent; background-clip: content-box; }
+html[data-skin="space"] :focus-visible { outline-color: var(--brand-400); }
+html[data-skin="space"] .role-badge.student { box-shadow: 0 3px 12px rgba(34, 211, 238, .35); }
+
+/* ---------- top-bar switch: the moon becomes a ringed planet ---------- */
+html[data-skin="space"] .theme-switch[aria-checked="true"] .ts-track {
+  background:
+    radial-gradient(1px 1px at 30% 35%, #fff, transparent 70%),
+    radial-gradient(1px 1px at 18% 70%, rgba(255,255,255,.8), transparent 70%),
+    linear-gradient(135deg, #0a0d2c 0%, #3b1a8a 100%);
+  border-color: rgba(196, 181, 253, .5);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .4), 0 0 14px rgba(139, 92, 246, .35);
+}
+html[data-skin="space"] .theme-switch[aria-checked="true"] .ts-knob {
+  background: radial-gradient(circle at 35% 30%, #f5f3ff 0%, #c4b5fd 35%, #7c3aed 100%);
+  box-shadow: 0 0 10px rgba(167, 139, 250, .75);
+}
+html[data-skin="space"] .theme-switch[aria-checked="true"] .ts-icon { opacity: 0; }
+html[data-skin="space"] .theme-switch .ts-knob::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 34px; height: 9px; border-radius: 50%;
+  border: 2px solid rgba(253, 230, 138, .9); border-top-color: transparent;
+  transform: translate(-50%, -50%) rotate(-22deg); pointer-events: none;
+}
+
+/* ---------- Settings → Appearance: the Space choice previews itself ---------- */
+.theme-choice.theme-choice-space {
+  position: relative; overflow: hidden; color: #ede9fe; border-color: rgba(167, 139, 250, .45);
+  background:
+    radial-gradient(120px 60px at 85% 0%, rgba(192, 132, 252, .55), transparent 70%),
+    radial-gradient(100px 60px at 0% 100%, rgba(34, 211, 238, .35), transparent 70%),
+    linear-gradient(135deg, #0a0d2c 0%, #24135f 100%);
+}
+.theme-choice.theme-choice-space i { color: #fde68a; position: relative; }
+.theme-choice.theme-choice-space:hover { color: #fff; border-color: #a78bfa; box-shadow: 0 0 18px rgba(139, 92, 246, .35); }
+.theme-choice.theme-choice-space[aria-checked="true"] {
+  color: #fff; border-color: #a78bfa;
+  background:
+    radial-gradient(120px 60px at 85% 0%, rgba(192, 132, 252, .7), transparent 70%),
+    radial-gradient(100px 60px at 0% 100%, rgba(34, 211, 238, .45), transparent 70%),
+    linear-gradient(135deg, #0a0d2c 0%, #2c1672 100%);
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, .3), 0 0 22px rgba(139, 92, 246, .45);
+}
+.theme-choice-space .tc-stars {
+  position: absolute; inset: 0; pointer-events: none;
+  background-image:
+    radial-gradient(1px 1px at 14% 30%, #fff, transparent 70%),
+    radial-gradient(1px 1px at 32% 78%, rgba(255,255,255,.8), transparent 70%),
+    radial-gradient(1.4px 1.4px at 58% 20%, #fde68a, transparent 70%),
+    radial-gradient(1px 1px at 76% 70%, #fff, transparent 70%),
+    radial-gradient(1px 1px at 90% 40%, rgba(165,243,252,.9), transparent 70%);
+  animation: spaceTwinkle 3.5s ease-in-out infinite alternate;
+}
+.theme-choice-space .tc-new {
+  position: absolute; top: 4px; right: 5px; font-size: 8.5px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 99px; color: #422006; background: linear-gradient(135deg, #fde68a, #f59e0b);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-skin="space"] body::after, html[data-skin="space"]::after,
+  .theme-choice-space .tc-stars { animation: none !important; }
+  html[data-skin="space"]::after { display: none; }
+}
+@media print {
+  html[data-skin="space"] body::before, html[data-skin="space"] body::after, html[data-skin="space"]::after { display: none; }
+}

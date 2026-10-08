@@ -36,14 +36,16 @@
     (function () {
       try {
         var t = localStorage.getItem('aero_theme');
-        if (t !== 'light' && t !== 'dim' && t !== 'dark') {
+        if (t !== 'light' && t !== 'dim' && t !== 'dark' && t !== 'space') {
           t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
         }
-        document.documentElement.setAttribute('data-theme', t);
+        /* ⭐ Space = dark base + space skin (same as the app) */
+        if (t === 'space') document.documentElement.setAttribute('data-skin', 'space');
+        document.documentElement.setAttribute('data-theme', t === 'space' ? 'dark' : t);
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="styles.css?v=138">
+  <link rel="stylesheet" href="styles.css?v=141">
   <!-- ⭐ Content shield — public page: block capture shortcuts, printing,
        right-click and copying; no focus cover here. -->
   <script>window.AERO_SHIELD_CONFIG = { coverOnBlur: false, report: false };</script>
@@ -2246,6 +2248,24 @@
 }
 html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a[href="#apps"] { display: none !important; }
 </style>
+  <style>
+    /* ⭐ 2026-10-08 — Space theme on the landing page (sky + stars come from styles.css) */
+    html[data-skin="space"] .landing-nav { background: rgba(5,7,24,.62); border-bottom-color: rgba(167,139,250,.28); }
+    @media (max-width: 860px) { html[data-skin="space"] .landing-links { background: rgba(6,8,26,.98); } }
+    html[data-skin="space"] .landing-hero,
+    html[data-skin="space"] .landing-cta {
+      background:
+        radial-gradient(700px 360px at 88% 0%, rgba(192,132,252,.34), transparent 62%),
+        radial-gradient(620px 340px at 5% 100%, rgba(34,211,238,.20), transparent 62%),
+        radial-gradient(1.3px 1.3px at 12% 22%, #fff, transparent 70%),
+        radial-gradient(1px 1px at 28% 64%, rgba(255,255,255,.8), transparent 70%),
+        radial-gradient(1.5px 1.5px at 47% 14%, rgba(253,230,138,.95), transparent 70%),
+        radial-gradient(1px 1px at 63% 78%, rgba(255,255,255,.75), transparent 70%),
+        radial-gradient(1.3px 1.3px at 81% 36%, rgba(165,243,252,.95), transparent 70%),
+        radial-gradient(1px 1px at 92% 82%, #fff, transparent 70%),
+        linear-gradient(160deg, rgba(5,8,22,.55) 0%, rgba(26,18,79,.55) 55%, rgba(44,15,102,.55) 100%);
+    }
+  </style>
 </head>
 <body>
 
@@ -3036,8 +3056,15 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
      One animated sun ⇄ moon switch: Light ↔ the user's preferred dark style
      (Dim or Night, chosen in the app's Settings). */
   (function initLandingTheme() {
-    const DARK = ['dim', 'dark'];
-    function getTheme() { return document.documentElement.getAttribute('data-theme') || 'light'; }
+    const DARK = ['dim', 'dark', 'space'];
+    function getTheme() {
+      if (document.documentElement.getAttribute('data-skin') === 'space') return 'space';
+      return document.documentElement.getAttribute('data-theme') || 'light';
+    }
+    function setAttrs(t) {
+      if (t === 'space') { document.documentElement.setAttribute('data-theme', 'dark'); document.documentElement.setAttribute('data-skin', 'space'); }
+      else { document.documentElement.setAttribute('data-theme', t); document.documentElement.removeAttribute('data-skin'); }
+    }
     function preferredDark() {
       let t = null;
       try { t = localStorage.getItem('aero_theme_dark'); } catch (e) {}
@@ -3053,7 +3080,7 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
       btn.setAttribute('title', label);
     }
     function applyTheme(t) {
-      document.documentElement.setAttribute('data-theme', t);
+      setAttrs(t);
       try { localStorage.setItem('aero_theme', t); } catch (e) {}
       if (DARK.includes(t)) { try { localStorage.setItem('aero_theme_dark', t); } catch (e) {} }
       syncSwitch();
@@ -3062,10 +3089,10 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
 
     let saved = null;
     try { saved = localStorage.getItem('aero_theme'); } catch (e) {}
-    const valid = ['light', 'dim', 'dark'];
+    const valid = ['light', 'dim', 'dark', 'space'];
     const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     const initial = valid.includes(saved) ? saved : (prefersDark ? 'dark' : 'light');
-    document.documentElement.setAttribute('data-theme', initial);
+    setAttrs(initial);
 
     const wire = () => {
       syncSwitch();
