@@ -17113,11 +17113,19 @@ function renderMarkdown(text) {
 
   // ---- Step 1: Stash fenced code blocks ----
   const codeBlocks = [];
-  let html = String(text).replace(/```([\s\S]*?)```/g, (_, body) => {
+  /* ⭐ 2026-10-08: the language tag after ``` (```python) is no longer shown
+     as the first line of the code; an unfinished block (still streaming
+     or cut off) is shown as code too instead of leaking raw backticks. */
+  const stashCode = (body) => {
     const idx = codeBlocks.length;
-    codeBlocks.push('<pre><code>' + escapeHtml(body.replace(/^\n+/, '')) + '</code></pre>');
-    return '\u0001CB' + idx + '\u0001';
-  });
+    let lang = '';
+    const m = /^([A-Za-z][\w+#.-]{0,20})[ \t]*\n/.exec(body);
+    if (m) { lang = m[1]; body = body.slice(m[0].length); }
+    codeBlocks.push('<pre' + (lang ? ' data-lang="' + escapeHtml(lang.toLowerCase()) + '"' : '') + '><code>' + escapeHtml(body.replace(/^\n+/, '').replace(/\s+$/, '')) + '</code></pre>');
+    return '\n\n\u0001CB' + idx + '\u0001\n\n';
+  };
+  let html = String(text).replace(/```([\s\S]*?)```/g, (_, body) => stashCode(body));
+  html = html.replace(/```([\s\S]*)$/, (_, body) => stashCode(body));
 
   // ---- Step 2: Stash math (BEFORE escaping, so TeX survives) ----
   const mathBlocks = [];
@@ -17179,21 +17187,27 @@ function renderMarkdown(text) {
   html = html.replace(/^## (.+)$/gm,   '<h3>$1</h3>');
   html = html.replace(/^# (.+)$/gm,    '<h3>$1</h3>');
 
-  // ---- Step 6: Blockquotes ----
+  // ---- Step 6: Blockquotes + horizontal rules ----
   html = html.replace(/^&gt;[ \t]?(.+)$/gm, '<blockquote>$1</blockquote>');
+  html = html.replace(/^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm, '<hr>');
 
   // ---- Step 7: Lists ----
   // Unordered
-  html = html.replace(/(?:^[ \t]*[-*+] .+(?:\n|$))+/gm, (block) => {
-    const items = block.trimEnd().split('\n')
-      .map(l => `<li>${l.replace(/^[ \t]*[-*+]\s*/, '')}</li>`).join('');
-    return `<ul>${items}</ul>`;
+  html = html.replace(/(?:^[ \t]*[-*+•] .+(?:\n|$))+/gm, (block) => {
+    const lines = block.trimEnd().split('\n');
+    const indent = (lines[0].match(/^[ \t]*/) || [''])[0].replace(/\t/g, '  ').length;
+    const items = lines.map(l => {
+      const ind = (l.match(/^[ \t]*/) || [''])[0].replace(/\t/g, '  ').length;
+      return `<li${ind >= 2 && ind > indent ? ' class="md-sub-li"' : ''}>${l.replace(/^[ \t]*[-*+•]\s*/, '')}</li>`;
+    }).join('');
+    return `<ul${indent >= 2 ? ' class="md-sub"' : ''}>${items}</ul>\n`;
   });
-  // Ordered
-  html = html.replace(/(?:^[ \t]*\d+\. .+(?:\n|$))+/gm, (block) => {
-    const items = block.trimEnd().split('\n')
-      .map(l => `<li>${l.replace(/^[ \t]*\d+\.\s*/, '')}</li>`).join('');
-    return `<ol>${items}</ol>`;
+  // Ordered — keeps the real number, so "1. … (blank line) 2. …" no longer restarts at 1
+  html = html.replace(/(?:^[ \t]*\d+[.)] .+(?:\n|$))+/gm, (block) => {
+    const lines = block.trimEnd().split('\n');
+    const start = parseInt((lines[0].match(/\d+/) || ['1'])[0], 10) || 1;
+    const items = lines.map(l => `<li>${l.replace(/^[ \t]*\d+[.)]\s*/, '')}</li>`).join('');
+    return `<ol${start !== 1 ? ` start="${start}"` : ''}>${items}</ol>\n`;
   });
 
   // ---- Step 8: Inline formatting ----
@@ -17207,7 +17221,7 @@ function renderMarkdown(text) {
     const t = p.trim();
     if (!t) return '';
     // Block-level HTML must not be wrapped in <p>
-    if (/^<(h[1-6]|table|ul|ol|blockquote|div|pre|hr)\b/i.test(t)) return t;
+    if (/^<(h[1-6]|table|ul|ol|blockquote|div|pre|hr)\b/i.test(t) || /^\u0001CB\d+\u0001$/.test(t)) return t;
     return '<p>' + t.replace(/\n/g, '<br>') + '</p>';
   }).filter(Boolean).join('\n');
 
@@ -18686,6 +18700,9 @@ function _aiFilesHTML(files) {
 function renderAIHomeChat() {
   const messagesEl = document.getElementById('aiChatMessages');
   if (!messagesEl) return;
+  /* ⭐ slim header while a conversation is open → more room for answers */
+  const _aiView = document.getElementById('studentAIHomeView');
+  if (_aiView) _aiView.classList.toggle('ai-has-chat', _aiHomeChat.length > 0);
 
   if (_aiHomeChat.length === 0) {
     messagesEl.innerHTML = renderAIWelcomeState();
@@ -25789,4 +25806,45 @@ function admToggleAllSections() {
     try { admNavBuild(); _admNavRevealActive(true); } catch (e) { console.warn('[admin-nav]', e); }
   };
   try { admNavBuild(); } catch (e) { console.warn('[admin-nav]', e); }
+})();
+
+
+/* ============================================================
+   ⭐ LAYOUT METRICS (2026-10-08)
+   Publishes the real height of the sticky header and of the phone
+   bottom bar as CSS variables, so full-height screens (the AI
+   Solver) fit exactly between them on every device.
+   ============================================================ */
+(function publishLayoutMetrics() {
+  const root = document.documentElement;
+  let raf = 0;
+  function measure() {
+    raf = 0;
+    const h = document.getElementById('appHeader');
+    const hh = h && getComputedStyle(h).display !== 'none' ? Math.round(h.getBoundingClientRect().height) : 0;
+    root.style.setProperty('--aero-header-h', hh + 'px');
+    const nav = document.querySelector('.mobile-bottom-nav');
+    let nh = 0;
+    if (nav) {
+      const cs = getComputedStyle(nav);
+      if (cs.display !== 'none' && cs.visibility !== 'hidden' && cs.position === 'fixed') {
+        const r = nav.getBoundingClientRect();
+        if (r.height && r.top < window.innerHeight) nh = Math.round(window.innerHeight - r.top);
+      }
+    }
+    root.style.setProperty('--aero-bnav-h', Math.max(0, nh) + 'px');
+  }
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(measure); };
+  measure();
+  window.addEventListener('resize', schedule);
+  window.addEventListener('orientationchange', schedule);
+  window.addEventListener('hashchange', () => setTimeout(schedule, 60));
+  if ('ResizeObserver' in window) {
+    const ro = new ResizeObserver(schedule);
+    const h = document.getElementById('appHeader');
+    if (h) ro.observe(h);
+    const watchNav = () => { const n = document.querySelector('.mobile-bottom-nav'); if (n && !n.__aeroObserved) { n.__aeroObserved = true; ro.observe(n); } };
+    watchNav(); setTimeout(watchNav, 1500);
+  }
+  setTimeout(schedule, 400);
 })();

@@ -346,29 +346,79 @@ function createAiEngine(opts) {
     if (tail) yield { text: tail, finish: '' };
   }
 
+  /* How many tokens a model may write. Gemini 2.5+ counts its hidden
+     "thinking" inside maxOutputTokens, so 8192 cut long answers short;
+     these models allow 65k. Groq's free tier counts max tokens against a
+     per-minute budget, so it stays at 8192 (shrunk further if Groq asks). */
+  function tokensFor(e, req) {
+    if (e.provider === 'gemini') return req.geminiMaxTokens || Math.max(req.maxTokens || 0, 24576);
+    return Math.min(req.maxTokens || 8192, req.groqMaxTokens || 8192);
+  }
+  /* Model refused the size → a smaller budget it will accept (or 0) */
+  function shrinkTokens(err, cur) {
+    const msg = String((err && err.message) || '');
+    const st = Number(err && (err.status || err.statusCode)) || 0;
+    const m = /Limit\s*(\d+)\s*,\s*Requested\s*(\d+)/i.exec(msg);
+    if (m) {                                            // Groq TPM: "Limit 8000, Requested 9234"
+      const next = cur - (Number(m[2]) - Number(m[1])) - 256;
+      return next >= 1024 && next < cur ? next : 0;
+    }
+    if ((st === 400 || st === 413) && /max_?output_?tokens|maxOutputTokens|max_completion_tokens|max_tokens|output token/i.test(msg) && cur > 8192) return 8192;
+    return 0;
+  }
+
   /* Tries the chain in order. Calls onModel(entry, index) before each
-     attempt and onDelta(text) for every piece of the answer. */
+     attempt and onDelta(text) for every piece of the answer.
+     ⭐ If a model stops because it hit its length limit, it is asked to
+     continue (up to req.autoContinue times, default 2) and the extra
+     text streams on seamlessly — the student gets the whole answer. */
   async function run(req) {
     const attempts = [];
     let lastError = null;
+    const maxContinues = req.autoContinue == null ? 2 : req.autoContinue;
     for (let i = 0; i < req.chain.length; i++) {
       const e = req.chain[i];
       if (req.signal && req.signal.aborted) break;
       if (req.onModel) { try { req.onModel(e, i); } catch (_) {} }
-      let got = 0, finish = '';
+      let got = 0, finish = '', answer = '', continues = 0, shrunk = false;
+      let maxTokens = tokensFor(e, req);
+      let contents = req.contents;
       const t0 = clock();
       try {
-        const gen = e.provider === 'groq' ? streamGroq(e, req) : streamGemini(e, req);
-        for await (const ev of gen) {
-          if (req.signal && req.signal.aborted) break;
-          if (ev.text) { got += ev.text.length; req.onDelta(ev.text); }
-          if (ev.finish) finish = ev.finish;
+        for (;;) {
+          let partGot = 0;
+          finish = '';
+          try {
+            const sub = Object.assign({}, req, { contents, maxTokens });
+            const gen = e.provider === 'groq' ? streamGroq(e, sub) : streamGemini(e, sub);
+            for await (const ev of gen) {
+              if (req.signal && req.signal.aborted) break;
+              if (ev.text) { got += ev.text.length; partGot += ev.text.length; answer += ev.text; req.onDelta(ev.text); }
+              if (ev.finish) finish = ev.finish;
+            }
+          } catch (err) {
+            /* too big a token budget → retry this model once with a smaller one */
+            const smaller = !partGot && !shrunk && !(req.signal && req.signal.aborted) ? shrinkTokens(err, maxTokens) : 0;
+            if (smaller) { shrunk = true; maxTokens = smaller; log.warn(`[ai] ${e.id}: retrying with max ${smaller} tokens`); continue; }
+            throw err;
+          }
+          if (req.signal && req.signal.aborted) return { used: got ? e : null, partial: true, aborted: true, attempts, lastError };
+          if (finish === 'length' && partGot && continues < maxContinues) {
+            continues++;
+            contents = req.contents.concat([
+              { role: 'model', parts: [{ text: answer }] },
+              { role: 'user', parts: [{ text: 'Continue exactly from where you stopped. Do not repeat anything you already wrote and do not add an introduction — just continue the answer.' }] }
+            ]);
+            if (!/\s$/.test(answer)) { req.onDelta(' '); answer += ' '; }
+            log.log(`[ai] ${e.id}: answer hit the length limit — continuing (${continues}/${maxContinues})`);
+            continue;
+          }
+          break;
         }
-        if (req.signal && req.signal.aborted) return { used: got ? e : null, partial: true, aborted: true, attempts, lastError };
         if (got) {
           clearCool(e);
-          attempts.push({ id: e.id, ok: true, ms: clock() - t0 });
-          return { used: e, partial: finish === 'length', attempts, lastError };
+          attempts.push({ id: e.id, ok: true, ms: clock() - t0, continues });
+          return { used: e, partial: finish === 'length', attempts, lastError, continues };
         }
         lastError = { entry: e, kind: finish === 'SAFETY' ? 'safety' : 'empty', msg: finish === 'SAFETY' ? 'blocked by safety' : 'empty response' };
         attempts.push({ id: e.id, ok: false, kind: lastError.kind });
@@ -433,7 +483,7 @@ function createAiEngine(opts) {
       let text = '';
       try {
         const r = await run({ chain: [e], contents: [{ role: 'user', parts: [{ text: 'Reply with exactly one word: OK' }] }],
-          system: 'You are a health check. Reply with one word.', temperature: 0, maxTokens: 512, signal: ac.signal,
+          system: 'You are a health check. Reply with one word.', temperature: 0, maxTokens: 512, geminiMaxTokens: 2048, autoContinue: 0, signal: ac.signal,
           onDelta: (t) => { text += t; } });
         const ok = !!r.used;
         if (ok) clearCool(e);

@@ -16882,3 +16882,142 @@ html[data-skin="space"] .theme-switch .ts-knob::after {
   .adm-all-item .adm-txt small { display: none; }
   .adm-all-item .adm-txt b { font-size: 13px; }
 }
+
+/* ==========================================================================
+   ⭐ 2026-10-08 — AI SOLVER: FULL-HEIGHT CONSOLE + READABLE ANSWERS
+   • the page fits between the header and the screen bottom on every
+     device; only the conversation scrolls, the composer never leaves
+   • smaller banner, and a slim one-line banner once a chat is open
+   • calmer, larger answer typography; tables & code scroll inside
+   ========================================================================== */
+.main-content:has(> #studentAIHomeView.active) {
+  padding-top: 12px !important;
+  padding-bottom: 12px !important;
+}
+#studentAIHomeView.active {
+  display: flex; flex-direction: column; gap: 12px;
+  height: calc(100vh - var(--aero-header-h, 64px) - var(--aero-bnav-h, 0px) - 24px);
+  height: calc(100dvh - var(--aero-header-h, 64px) - var(--aero-bnav-h, 0px) - 24px);
+  min-height: 520px;
+}
+#studentAIHomeView .ai-home-hero { flex: 0 0 auto; margin: 0; padding: 18px 26px; border-radius: 20px; }
+#studentAIHomeView .ai-home-brand { gap: 16px; align-items: center; }
+#studentAIHomeView .ai-home-icon { width: 54px; height: 54px; font-size: 24px; border-radius: 16px; flex-shrink: 0; }
+#studentAIHomeView .ai-home-title-block h1 { font-size: clamp(20px, 2.1vw, 28px); line-height: 1.15; margin: 6px 0 4px; letter-spacing: -.5px; }
+#studentAIHomeView .ai-home-title-block p { font-size: 13.5px; line-height: 1.5; margin: 0; }
+#studentAIHomeView .ai-home-badge { font-size: 10.5px; padding: 3px 10px; }
+#studentAIHomeView .ai-prompt-chip { padding: 9px 12px; font-size: 12.5px; }
+#studentAIHomeView .ai-home-side-title { margin-bottom: 8px; }
+
+#studentAIHomeView .ai-chat-shell {
+  flex: 1 1 auto; min-height: 0; max-height: none; height: auto; border-radius: 20px;
+}
+#studentAIHomeView .ai-chat-messages { flex: 1 1 auto; min-height: 0; padding: 22px clamp(14px, 2.6vw, 34px) 18px; }
+#studentAIHomeView .ai-chat-composer { flex: 0 0 auto; padding: 12px clamp(12px, 2vw, 20px) 12px; }
+
+/* conversation open → the banner shrinks to one slim line */
+#studentAIHomeView.ai-has-chat .ai-home-hero {
+  display: flex !important; align-items: center; padding: 10px 18px; min-height: 0; border-radius: 16px;
+}
+#studentAIHomeView.ai-has-chat .ai-home-side,
+#studentAIHomeView.ai-has-chat .ai-home-title-block p,
+#studentAIHomeView.ai-has-chat .ai-home-badge,
+#studentAIHomeView.ai-has-chat .ai-home-orb-3 { display: none !important; }
+#studentAIHomeView.ai-has-chat .ai-home-icon { width: 36px; height: 36px; font-size: 16px; border-radius: 11px; }
+#studentAIHomeView.ai-has-chat .ai-home-icon .ai-home-pulse { width: 8px; height: 8px; }
+#studentAIHomeView.ai-has-chat .ai-home-brand { gap: 12px; }
+#studentAIHomeView.ai-has-chat .ai-home-title-block h1 { font-size: 17px; margin: 0; letter-spacing: -.2px; }
+
+/* answers: more width, calmer type, clear structure */
+#studentAIHomeView .ai-msg { gap: 12px; margin-bottom: 18px; }
+#studentAIHomeView .ai-msg-assistant .ai-msg-bubble { padding: 16px 20px; }
+#studentAIHomeView .ai-answer-body,
+#studentAIHomeView .ai-stream-body { font-size: 15px; line-height: 1.75; color: var(--text-primary); overflow-wrap: anywhere; }
+#studentAIHomeView .ai-answer-body > :first-child,
+#studentAIHomeView .ai-stream-body > :first-child { margin-top: 0; }
+#studentAIHomeView .ai-answer-body > :last-child,
+#studentAIHomeView .ai-stream-body > :last-child { margin-bottom: 0; }
+#studentAIHomeView .ai-answer-body p,
+#studentAIHomeView .ai-stream-body p { margin: 10px 0; }
+#studentAIHomeView .ai-answer-body h3, #studentAIHomeView .ai-stream-body h3 { font-size: 17px; margin: 20px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-subtle); }
+#studentAIHomeView .ai-answer-body h4, #studentAIHomeView .ai-stream-body h4 { font-size: 15.5px; margin: 16px 0 6px; }
+#studentAIHomeView .ai-answer-body h5, #studentAIHomeView .ai-stream-body h5 { font-size: 14.5px; margin: 14px 0 6px; font-weight: 700; }
+#studentAIHomeView .ai-answer-body ul, #studentAIHomeView .ai-answer-body ol,
+#studentAIHomeView .ai-stream-body ul, #studentAIHomeView .ai-stream-body ol { margin: 8px 0 10px; padding-left: 24px; }
+#studentAIHomeView .ai-answer-body li, #studentAIHomeView .ai-stream-body li { margin: 4px 0; padding-left: 2px; }
+#studentAIHomeView .ai-answer-body ul.md-sub, #studentAIHomeView .ai-stream-body ul.md-sub { margin: 2px 0 8px 22px; }
+#studentAIHomeView .ai-answer-body hr, #studentAIHomeView .ai-stream-body hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 16px 0; }
+#studentAIHomeView .ai-answer-body pre, #studentAIHomeView .ai-stream-body pre {
+  position: relative; max-width: 100%; overflow-x: auto; padding: 14px 16px; border-radius: 10px; font-size: 13px; line-height: 1.6;
+  border: 1px solid var(--border-subtle);
+}
+#studentAIHomeView .ai-answer-body pre[data-lang]::before, #studentAIHomeView .ai-stream-body pre[data-lang]::before {
+  content: attr(data-lang); position: sticky; left: 0; display: block; margin: -4px 0 6px; font-size: 10.5px; font-weight: 700;
+  letter-spacing: .6px; text-transform: uppercase; color: var(--text-tertiary); font-family: var(--font-sans);
+}
+#studentAIHomeView .ai-table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 12px 0; }
+#studentAIHomeView mjx-container[display="true"] { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+
+/* ---- tablets ---- */
+@media (max-width: 1024px) {
+  #studentAIHomeView .ai-home-hero { padding: 16px 20px; }
+}
+/* ---- phones ---- */
+@media (max-width: 640px) {
+  #studentAIHomeView.active { gap: 10px; min-height: 420px; }
+  .main-content:has(> #studentAIHomeView.active) { padding: 10px 10px !important; }
+  #studentAIHomeView .ai-home-hero { padding: 14px 16px; border-radius: 16px; }
+  #studentAIHomeView .ai-home-icon { width: 42px; height: 42px; font-size: 19px; border-radius: 13px; }
+  #studentAIHomeView .ai-home-title-block h1 { font-size: 19px; }
+  #studentAIHomeView .ai-home-title-block p { display: none; }
+  #studentAIHomeView .ai-home-badge { display: none; }
+  #studentAIHomeView.ai-has-chat .ai-home-hero { padding: 8px 12px; border-radius: 14px; }
+  #studentAIHomeView.ai-has-chat .ai-home-title-block h1 { font-size: 15.5px; }
+  #studentAIHomeView.ai-has-chat .ai-home-icon { width: 32px; height: 32px; font-size: 14px; border-radius: 10px; }
+  #studentAIHomeView .ai-chat-shell { border-radius: 16px; }
+  #studentAIHomeView .ai-chat-messages { padding: 14px 10px 10px; }
+  #studentAIHomeView .ai-msg { gap: 8px; margin-bottom: 14px; }
+  #studentAIHomeView .ai-msg-avatar { width: 28px; height: 28px; font-size: 12px; border-radius: 9px; }
+  #studentAIHomeView .ai-msg-assistant .ai-msg-bubble { padding: 12px 13px; }
+  #studentAIHomeView .ai-answer-body, #studentAIHomeView .ai-stream-body { font-size: 14.5px; line-height: 1.7; }
+  #studentAIHomeView .ai-chat-composer { padding: 10px; gap: 8px; }
+  /* tools + send on ONE row */
+  #studentAIHomeView .ai-composer-row { flex-wrap: nowrap; gap: 6px; margin-top: 0; }
+  #studentAIHomeView .ai-tools { flex-wrap: nowrap; gap: 5px; min-width: 0; overflow: hidden; }
+  #studentAIHomeView .ai-tool-btn { width: 38px; height: 38px; flex-shrink: 0; }
+  #studentAIHomeView .ai-tool-btn.ai-model-btn { width: auto; max-width: 112px; padding: 0 9px; }
+  #studentAIHomeView .ai-model-btn .ai-model-chev { display: none; }
+  #studentAIHomeView .ai-composer-btns { gap: 6px; flex-shrink: 0; }
+  #studentAIHomeView .ai-clear-btn { width: 38px; height: 38px; }
+  #studentAIHomeView .ai-send-btn { height: 40px; padding: 0 14px; border-radius: 12px; }
+  #studentAIHomeView .ai-char-count:empty { display: none; }
+  #studentAIHomeView .ai-msg-actions { gap: 4px; }
+  #studentAIHomeView .ai-followups { gap: 6px; }
+  #studentAIHomeView .ai-followup { font-size: 12px; padding: 6px 10px; }
+}
+@media (max-width: 380px) {
+  #studentAIHomeView .ai-send-btn span { display: none; }
+  #studentAIHomeView .ai-send-btn { width: 42px; padding: 0; justify-content: center; }
+  #studentAIHomeView .ai-tool-btn.ai-model-btn { max-width: 84px; }
+}
+/* very short screens (landscape phones) — let the page scroll instead of squashing */
+@media (max-height: 520px) {
+  #studentAIHomeView.active { height: auto; min-height: 0; }
+  #studentAIHomeView .ai-chat-shell { height: 78vh; }
+}
+
+/* composer: drop the keyboard hint on shorter screens to give answers the room */
+@media (max-height: 900px) { #studentAIHomeView .ai-composer-hint { display: none !important; } }
+#studentAIHomeView .ai-chat-composer { gap: 8px; }
+#studentAIHomeView.ai-has-chat .ai-home-title-block { min-width: 0; }
+#studentAIHomeView.ai-has-chat .ai-home-title-block h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ⭐ 2026-10-08 — course filter bar on phones: 2 readable columns + full-width Clear
+   (the 4 selects used to squeeze into one row and read "Al Al Al Al") */
+@media (max-width: 640px) {
+  .filter-bar { display: grid !important; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .filter-bar select { width: 100%; min-width: 0; max-width: none; font-size: 13.5px; padding-right: 28px; text-overflow: ellipsis; }
+  .filter-bar .btn { grid-column: 1 / -1; width: 100%; justify-content: center; }
+}
+
+.ai-answer-body li.md-sub-li, .ai-stream-body li.md-sub-li { margin-left: 20px; list-style-type: circle; }
