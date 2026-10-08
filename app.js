@@ -19814,6 +19814,11 @@ window.updateAdminTabUI = function () {
 
 const _origRenderAdminDashboard = window.renderAdminDashboard;
 window.renderAdminDashboard = function () {
+  /* ⭐ 2026-10-08: these three used to skip updateAdminTabUI(), so the previous
+     section stayed on screen and the new one was stacked under it. */
+  if (adminTab === 'plans' || adminTab === 'coupons' || adminTab === 'referrals') {
+    try { updateAdminTabUI(); } catch (e) {}
+  }
   if (adminTab === 'plans')      return renderAdminPlans();
   if (adminTab === 'coupons')    return renderAdminCoupons();
   if (adminTab === 'referrals')  return renderAdminReferrals();
@@ -25524,3 +25529,264 @@ async function adminRemoveProfessorCourse(profId, courseId, label) {
     renderAdminProfAccess();
   } catch (e) { showToast(e.message || 'Failed.', 'error'); }
 }
+
+/* ============================================================
+   ⭐ ADMIN SECTION NAVIGATOR (2026-10-08)
+   ------------------------------------------------------------
+   22 admin sections used to sit in one long strip. Now:
+   • the 5 most used sections come first (Main),
+   • the rest follow in named groups (Insights, People, Revenue,
+     Messages, Site & brand, System) in the same strip, reached by
+     scrolling sideways (mouse wheel, swipe or the ‹ › arrows),
+   • "All sections" opens a searchable, grouped panel.
+   Works on the existing .admin-tab buttons (including the ones other
+   blocks inject later), so every onclick / badge keeps working.
+   ============================================================ */
+const ADM_NAV_GROUPS = [
+  { id: 'main',     label: 'Main',          icon: 'fa-star',             tabs: ['overview', 'courses', 'students', 'profaccess', 'live'] },
+  { id: 'insights', label: 'Insights',      icon: 'fa-chart-line',       tabs: ['traffic'] },
+  { id: 'people',   label: 'People',        icon: 'fa-users',            tabs: ['professors', 'community', 'feedback', 'contributions'] },
+  { id: 'revenue',  label: 'Revenue',       icon: 'fa-indian-rupee-sign', tabs: ['subscriptions', 'plans', 'coupons', 'referrals'] },
+  { id: 'messages', label: 'Messages',      icon: 'fa-envelope',         tabs: ['replies', 'popup'] },
+  { id: 'site',     label: 'Site & brand',  icon: 'fa-swatchbook',       tabs: ['organization', 'branding', 'certificates', 'mobileapp'] },
+  { id: 'system',   label: 'System',        icon: 'fa-gear',             tabs: ['security', 'backup'] }
+];
+const ADM_NAV_DESC = {
+  overview: 'Stats & quick actions', courses: 'Add & edit courses', students: 'Accounts, access & progress',
+  profaccess: 'Approve professors & courses', live: 'Who is online now', traffic: 'Visitors & page views',
+  professors: 'Faculty profiles', community: 'Alumni & friends', feedback: 'Reviews to moderate',
+  contributions: 'Notes sent by students', subscriptions: 'Auto-pay & members', plans: 'Prices & durations',
+  coupons: 'Discount codes', referrals: 'Invite rewards', replies: 'Replies to your emails',
+  popup: 'Announcement pop-up', organization: 'Owner & team details', branding: 'Logo, favicon & icons',
+  certificates: 'Course certificates', mobileapp: 'Android app download', security: 'Password, 2FA & devices',
+  backup: 'Export & restore data'
+};
+let _admNavObserver = null;
+let _admNavBusy = false;
+
+function _admNavDecorate(btn) {
+  if (btn.dataset.admDecorated === '1') return;
+  const icon = btn.querySelector('i');
+  const iconCls = icon ? Array.from(icon.classList).filter(c => c !== 'fas' && c !== 'fa-solid').join(' ') : 'fa-circle';
+  const badge = btn.querySelector('.nav-count');
+  let label = '';
+  btn.childNodes.forEach(n => { if (n.nodeType === 3) label += n.textContent; });
+  label = label.replace(/\s+/g, ' ').trim() || btn.dataset.tab;
+  const id = btn.dataset.tab;
+  btn.innerHTML = `<span class="adm-ic"><i class="fas ${iconCls}"></i></span>
+    <span class="adm-txt"><b>${escapeHtml(label)}</b><small>${escapeHtml(ADM_NAV_DESC[id] || '')}</small></span>`;
+  if (badge) btn.querySelector('.adm-txt b').appendChild(badge);
+  btn.dataset.admDecorated = '1';
+  btn.dataset.admLabel = label;
+  btn.title = label + (ADM_NAV_DESC[id] ? ' — ' + ADM_NAV_DESC[id] : '');
+}
+
+function _admNavGroupLabel(g) {
+  let el = document.querySelector(`.adm-group-label[data-group="${g.id}"]`);
+  if (!el) {
+    el = document.createElement('span');
+    el.className = 'adm-group-label';
+    el.dataset.group = g.id;
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = `<i class="fas ${g.icon}"></i><span>${escapeHtml(g.label)}</span>`;
+  }
+  return el;
+}
+
+function admNavBuild() {
+  const track = document.querySelector('#adminView .admin-tabs');
+  if (!track || _admNavBusy) return;
+  _admNavBusy = true;
+  try {
+    /* 1. wrap once: ‹ [track] › [All sections] */
+    if (!track.closest('.adm-nav')) {
+      const wrap = document.createElement('div');
+      wrap.className = 'adm-nav';
+      track.parentNode.insertBefore(wrap, track);
+      wrap.innerHTML = `<button type="button" class="adm-nav-arrow is-left" aria-label="Scroll sections left" tabindex="-1"><i class="fas fa-chevron-left"></i></button>
+        <div class="adm-nav-viewport"></div>
+        <button type="button" class="adm-nav-arrow is-right" aria-label="Scroll sections right" tabindex="-1"><i class="fas fa-chevron-right"></i></button>
+        <button type="button" class="adm-nav-all" aria-haspopup="dialog" aria-expanded="false" title="All sections"><i class="fas fa-table-cells-large"></i><span>All sections</span><b class="adm-nav-all-count"></b></button>`;
+      wrap.querySelector('.adm-nav-viewport').appendChild(track);
+      track.setAttribute('role', 'tablist');
+      track.setAttribute('aria-label', 'Admin sections');
+      wrap.querySelector('.adm-nav-arrow.is-left').addEventListener('click', () => _admNavScrollBy(-1));
+      wrap.querySelector('.adm-nav-arrow.is-right').addEventListener('click', () => _admNavScrollBy(1));
+      wrap.querySelector('.adm-nav-all').addEventListener('click', admToggleAllSections);
+      track.addEventListener('scroll', _admNavEdges, { passive: true });
+      /* vertical mouse wheel scrolls the strip sideways while the pointer is on it */
+      track.addEventListener('wheel', (e) => {
+        if (Math.abs(e.deltaY) <= Math.abs(e.deltaX) || e.ctrlKey) return;
+        const max = track.scrollWidth - track.clientWidth;
+        if (max <= 0) return;
+        const next = Math.max(0, Math.min(max, track.scrollLeft + e.deltaY));
+        if (next === track.scrollLeft) return;            // at an end → let the page scroll
+        e.preventDefault();
+        track.scrollLeft = next;
+      }, { passive: false });
+      window.addEventListener('resize', _admNavEdges);
+    }
+
+    /* 2. decorate + order the buttons by group */
+    const btns = Array.from(track.querySelectorAll('.admin-tab'));
+    btns.forEach(_admNavDecorate);
+    const byId = new Map(btns.map(b => [b.dataset.tab, b]));
+    const want = [];
+    const used = new Set();
+    ADM_NAV_GROUPS.forEach(g => {
+      const items = g.tabs.map(id => byId.get(id)).filter(Boolean);
+      if (!items.length) return;
+      if (g.id !== 'main') want.push(_admNavGroupLabel(g));
+      items.forEach(b => { want.push(b); used.add(b.dataset.tab); b.dataset.admGroup = g.id; });
+    });
+    const extra = btns.filter(b => !used.has(b.dataset.tab));
+    if (extra.length) {
+      want.push(_admNavGroupLabel({ id: 'more', label: 'More', icon: 'fa-ellipsis' }));
+      extra.forEach(b => { want.push(b); b.dataset.admGroup = 'more'; });
+    }
+    const cur = Array.from(track.children);
+    if (cur.length !== want.length || cur.some((c, i) => c !== want[i])) {
+      want.forEach(el => track.appendChild(el));
+      cur.filter(c => !want.includes(c)).forEach(c => { if (c.classList.contains('adm-group-label')) c.remove(); });
+    }
+    const cnt = document.querySelector('.adm-nav-all-count');
+    if (cnt) cnt.textContent = btns.length;
+  } finally {
+    _admNavBusy = false;
+  }
+  _admNavEdges();
+  if (!_admNavObserver && 'MutationObserver' in window) {
+    _admNavObserver = new MutationObserver(() => { if (!_admNavBusy) requestAnimationFrame(admNavBuild); });
+    _admNavObserver.observe(track, { childList: true });
+  }
+}
+
+function _admNavEdges() {
+  const wrap = document.querySelector('.adm-nav');
+  const track = wrap && wrap.querySelector('.admin-tabs');
+  if (!track) return;
+  /* size the cards so exactly the 5 main sections fill the visible strip */
+  if (window.innerWidth > 640) {
+    const w = Math.max(168, Math.floor((track.clientWidth - 12 - 4 * 6) / 5));
+    if (track.style.getPropertyValue('--adm-tab-w') !== w + 'px') track.style.setProperty('--adm-tab-w', w + 'px');
+  } else if (track.style.getPropertyValue('--adm-tab-w')) {
+    track.style.removeProperty('--adm-tab-w');
+  }
+  const max = track.scrollWidth - track.clientWidth;
+  wrap.classList.toggle('can-left', track.scrollLeft > 4);
+  wrap.classList.toggle('can-right', track.scrollLeft < max - 4);
+}
+function _admNavScrollBy(dir) {
+  const track = document.querySelector('.adm-nav .admin-tabs');
+  if (!track) return;
+  track.scrollBy({ left: dir * Math.max(240, track.clientWidth * 0.8), behavior: 'smooth' });
+}
+/* keep the open section in view (e.g. after picking it from the panel or a #/admin/… link) */
+function _admNavRevealActive(smooth) {
+  const track = document.querySelector('.adm-nav .admin-tabs');
+  const act = track && track.querySelector('.admin-tab.active');
+  if (!track || !act) return;
+  const a = act.offsetLeft, b = a + act.offsetWidth;
+  const v0 = track.scrollLeft, v1 = v0 + track.clientWidth;
+  if (a >= v0 + 8 && b <= v1 - 8) return;
+  let target = Math.max(0, a - 120);
+  if (act.dataset.admGroup === 'main') target = 0;
+  else {
+    /* show the group's name too when it fits */
+    const lab = track.querySelector(`.adm-group-label[data-group="${act.dataset.admGroup}"]`);
+    if (lab && b - lab.offsetLeft + 16 <= track.clientWidth) target = Math.max(0, lab.offsetLeft - 8);
+  }
+  track.scrollTo({ left: target, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+/* ---------- "All sections" panel ---------- */
+function admCloseAllSections() {
+  ['admAllPanel', 'admAllOv'].forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
+  const b = document.querySelector('.adm-nav-all'); if (b) b.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('keydown', _admAllKeys, true);
+}
+function _admAllKeys(e) {
+  if (e.key === 'Escape') { e.preventDefault(); admCloseAllSections(); }
+}
+function admToggleAllSections() {
+  if (document.getElementById('admAllPanel')) return admCloseAllSections();
+  const btns = Array.from(document.querySelectorAll('.adm-nav .admin-tab'));
+  const groups = ADM_NAV_GROUPS.concat([{ id: 'more', label: 'More', icon: 'fa-ellipsis' }]).map(g => ({
+    g, items: btns.filter(b => b.dataset.admGroup === g.id)
+  })).filter(x => x.items.length);
+  const ov = document.createElement('div');
+  ov.id = 'admAllOv'; ov.className = 'adm-all-ov';
+  ov.addEventListener('click', admCloseAllSections);
+  const panel = document.createElement('div');
+  panel.id = 'admAllPanel'; panel.className = 'adm-all'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'All admin sections');
+  panel.innerHTML = `
+    <div class="adm-all-head">
+      <div class="adm-all-search"><i class="fas fa-magnifying-glass"></i><input type="search" id="admAllSearch" placeholder="Find a section…" autocomplete="off" aria-label="Find a section"></div>
+      <button type="button" class="adm-all-close" aria-label="Close"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="adm-all-body">
+      ${groups.map(({ g, items }) => `
+        <section class="adm-all-group" data-group="${g.id}">
+          <h4><i class="fas ${g.icon}"></i> ${escapeHtml(g.label)}</h4>
+          <div class="adm-all-grid">
+            ${items.map(b => {
+              const ic = (b.querySelector('.adm-ic i') || {}).className || 'fas fa-circle';
+              const badge = b.querySelector('.nav-count');
+              const n = badge && badge.style.display !== 'none' && badge.textContent.trim() !== '0' ? badge.textContent.trim() : '';
+              const label = b.dataset.admLabel || b.dataset.tab;
+              return `<button type="button" class="adm-all-item ${b.classList.contains('active') ? 'is-on' : ''}" data-adm-go="${escapeHtml(b.dataset.tab)}" data-q="${escapeHtml((label + ' ' + (ADM_NAV_DESC[b.dataset.tab] || '') + ' ' + g.label).toLowerCase())}">
+                <span class="adm-ic"><i class="${escapeHtml(ic)}"></i></span>
+                <span class="adm-txt"><b>${escapeHtml(label)}${n ? ` <span class="nav-count">${escapeHtml(n)}</span>` : ''}</b><small>${escapeHtml(ADM_NAV_DESC[b.dataset.tab] || '')}</small></span>
+              </button>`;
+            }).join('')}
+          </div>
+        </section>`).join('')}
+      <div class="adm-all-empty" hidden><i class="fas fa-magnifying-glass"></i> No section matches.</div>
+    </div>`;
+  panel.addEventListener('click', (e) => {
+    if (e.target.closest('.adm-all-close')) return admCloseAllSections();
+    const go = e.target.closest('[data-adm-go]');
+    if (go) { admCloseAllSections(); switchAdminTab(go.dataset.admGo); }
+  });
+  const search = panel.querySelector('#admAllSearch');
+  search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    let shown = 0;
+    panel.querySelectorAll('.adm-all-group').forEach(sec => {
+      let n = 0;
+      sec.querySelectorAll('.adm-all-item').forEach(it => { const hit = !q || it.dataset.q.includes(q); it.hidden = !hit; if (hit) n++; });
+      sec.hidden = n === 0; shown += n;
+    });
+    panel.querySelector('.adm-all-empty').hidden = shown > 0;
+  });
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { const first = panel.querySelector('.adm-all-item:not([hidden])'); if (first) first.click(); }
+  });
+  document.body.appendChild(ov);
+  document.body.appendChild(panel);
+  /* place under the button on wide screens; bottom sheet on phones */
+  const btn = document.querySelector('.adm-nav-all');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+  if (window.innerWidth > 640 && btn) {
+    const r = btn.getBoundingClientRect();
+    const w = Math.min(760, window.innerWidth - 24);
+    panel.style.width = w + 'px';
+    panel.style.left = Math.max(12, Math.min(r.right - w, window.innerWidth - w - 12)) + 'px';
+    panel.style.top = (r.bottom + 8) + 'px';
+    panel.style.maxHeight = Math.max(320, window.innerHeight - r.bottom - 24) + 'px';
+  } else {
+    panel.classList.add('is-sheet'); ov.classList.add('is-dim');
+  }
+  document.addEventListener('keydown', _admAllKeys, true);
+  if (!matchMedia('(pointer: coarse)').matches) setTimeout(() => search.focus(), 30);
+}
+
+/* hook into the tab renderer (after every other wrapper) */
+(function wireAdminNavigator() {
+  const prev = window.updateAdminTabUI;
+  window.updateAdminTabUI = function () {
+    if (typeof prev === 'function') prev.apply(this, arguments);
+    try { admNavBuild(); _admNavRevealActive(true); } catch (e) { console.warn('[admin-nav]', e); }
+  };
+  try { admNavBuild(); } catch (e) { console.warn('[admin-nav]', e); }
+})();
