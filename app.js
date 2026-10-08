@@ -3004,7 +3004,7 @@ function syncHashToState() {
   if (parts[0] === 'admin') {
     adminTab = parts[1] || 'overview';
   } else if (parts[0] === 'professor') {
-    professorNav = parts[1] === 'requests' ? 'requests' : 'courses';
+    professorNav = parts[1] === 'requests' ? 'requests' : parts[1] === 'profile' ? 'profile' : 'courses';
   } else if (parts[0] === 'courses') {
     studentNav = 'courses';
   } else if (parts[0] === 'saved') {
@@ -3614,11 +3614,73 @@ document.addEventListener('click', (e) => {
 /* ============================================================
    AUTH
    ============================================================ */
-function setLoginRole(role) {
-  loginRole = role;
-  document.querySelectorAll('.login-role-toggle button').forEach(b =>
-    b.classList.toggle('active', b.dataset.role === role));
+/* ⭐ 2026-10-08 — role-aware login copy. Professors and admins finish
+   signing in with a 6-digit email code (server enforces it). */
+const LOGIN_ROLE_COPY = {
+  student: {
+    h: 'Welcome back', sub: 'Sign in to continue to your courses.',
+    btn: '<i class="fas fa-sign-in-alt"></i> Sign In', otp: ''
+  },
+  professor: {
+    h: 'Professor sign-in', sub: 'Add and update content for the courses you teach.',
+    btn: '<i class="fas fa-arrow-right"></i> Continue',
+    otp: 'After your password we email a 6-digit code to your registered address — enter it to finish signing in.'
+  },
+  admin: {
+    h: 'Admin sign-in', sub: 'Manage courses, students, professors and settings.',
+    btn: '<i class="fas fa-arrow-right"></i> Continue',
+    otp: 'After your password we email a 6-digit code to the admin address. An admin account can stay signed in on up to 3 devices.'
+  }
+};
+function _loginSubmitLabel() {
+  return (LOGIN_ROLE_COPY[loginRole] || LOGIN_ROLE_COPY.student).btn;
 }
+function setLoginRole(role) {
+  if (!LOGIN_ROLE_COPY[role]) role = 'student';
+  loginRole = role;
+  document.querySelectorAll('.login-role-toggle button').forEach(b => {
+    const on = b.dataset.role === role;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  const tg = document.querySelector('.login-role-toggle');
+  if (tg) tg.style.setProperty('--lg-i', String(['student', 'professor', 'admin'].indexOf(role)));
+  const c = LOGIN_ROLE_COPY[role];
+  const h = document.getElementById('loginHeading'); if (h) h.textContent = c.h;
+  const sub = document.getElementById('loginSub'); if (sub) sub.textContent = c.sub;
+  const note = document.getElementById('loginOtpNote');
+  const noteText = document.getElementById('loginOtpNoteText');
+  if (note) note.hidden = !c.otp;
+  if (noteText && c.otp) noteText.textContent = c.otp;
+  const shell = document.querySelector('#loginView .lg-shell');
+  if (shell) shell.setAttribute('data-role', role);
+  const btn = document.querySelector('#loginForm button[type="submit"]');
+  if (btn && !btn.disabled) btn.innerHTML = c.btn;
+}
+function toggleLoginPasswordVisibility() {
+  const inp = document.getElementById('loginPassword');
+  const btn = document.getElementById('loginEyeBtn');
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  if (btn) {
+    btn.innerHTML = show ? '<i class="fas fa-eye-slash"></i>' : '<i class="fas fa-eye"></i>';
+    btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    btn.title = show ? 'Hide password' : 'Show password';
+  }
+  try { inp.focus({ preventScroll: true }); } catch (_) {}
+}
+(function wireLoginPasswordExtras() {
+  const inp = document.getElementById('loginPassword');
+  const hint = document.getElementById('loginCapsHint');
+  if (!inp || !hint) return;
+  const check = (e) => {
+    try { hint.hidden = !(e.getModifierState && e.getModifierState('CapsLock')); } catch (_) {}
+  };
+  inp.addEventListener('keydown', check);
+  inp.addEventListener('keyup', check);
+  inp.addEventListener('blur', () => { hint.hidden = true; });
+})();
 async function handleLogin(e) {
   e.preventDefault();
 
@@ -3687,11 +3749,12 @@ async function handleLogin(e) {
       // ─── 2FA path ───
       if (data.requires2FA && data.pendingToken) {
         _adminPendingToken = data.pendingToken;
+        const otpRole = data.otpRole === 'professor' ? 'professor' : 'admin';
         openOtpModal({
-          title: 'Admin 2FA Verification',
-          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your registered email'}. Enter it to finish logging in.`,
+          title: otpRole === 'professor' ? 'Professor verification' : 'Admin verification',
+          subtitle: `We've sent a 6-digit code to ${data.maskedEmail || 'your registered email'}. Enter it to finish signing in.`,
           type: 'admin-login',
-          data: { pendingToken: data.pendingToken }
+          data: { pendingToken: data.pendingToken, role: otpRole }
         });
         showToast('OTP sent — check your inbox (and spam).', 'info');
         resetBtn();
@@ -3911,18 +3974,101 @@ function openOtpModal({ title, subtitle, type, data }) {
   const btn     = $('otpModalSubmitBtn');
   const resendRow = document.getElementById('otpResendRow');
 
-  if (titleEl) titleEl.innerHTML = `<i class="fas fa-shield-halved"></i> ${escapeHtml(title)}`;
+  if (titleEl) titleEl.textContent = title;
   if (subEl)   subEl.textContent = subtitle || 'Enter the code we sent you.';
   if (input)   input.value = '';
   if (btn) {
     btn.disabled = false;
     btn.innerHTML = '<i class="fas fa-check"></i> Verify';
   }
-  // Resend link is only useful for admin-login
-  if (resendRow) resendRow.style.display = (type === 'admin-login') ? 'block' : 'none';
+  // Resend link is only useful for the staff sign-in step
+  if (resendRow) resendRow.style.display = (type === 'admin-login') ? 'flex' : 'none';
+  _otpLastAutoSubmit = '';
+  otpSyncBoxesFromInput();
+  _otpStartTimers(type === 'admin-login');
 
   openModal('otpVerificationModal');
   setTimeout(() => input && input.focus(), 120);
+}
+
+/* ---- ⭐ 6-box OTP display + countdowns (2026-10-08) ----
+   One real <input> (autofill / paste friendly) sits invisibly over
+   six boxes; the boxes only mirror its value. */
+let _otpLastAutoSubmit = '';
+let _otpExpiryTimer = null, _otpResendTimer = null;
+function otpSyncBoxesFromInput() {
+  const input = document.getElementById('otpModalInput');
+  const cells = document.querySelectorAll('#otpCells span');
+  if (!input || !cells.length) return;
+  const v = (input.value || '').replace(/\D/g, '').slice(0, 6);
+  const focused = document.activeElement === input;
+  cells.forEach((c, i) => {
+    c.textContent = v[i] || '';
+    c.classList.toggle('filled', !!v[i]);
+    c.classList.toggle('active', focused && i === Math.min(v.length, 5));
+  });
+  /* auto-verify once all six digits are in (only once per code) */
+  if (v.length === 6 && v !== _otpLastAutoSubmit && _otpContext) {
+    const btn = document.getElementById('otpModalSubmitBtn');
+    if (btn && !btn.disabled) { _otpLastAutoSubmit = v; setTimeout(() => submitOtpVerification(), 60); }
+  }
+}
+(function wireOtpBoxes() {
+  const input = document.getElementById('otpModalInput');
+  if (!input) return;
+  ['focus', 'blur', 'keyup', 'click', 'select'].forEach(ev => input.addEventListener(ev, () => {
+    const v = input.value.length;
+    try { input.setSelectionRange(v, v); } catch (_) {}
+    otpSyncBoxesFromInput();
+  }));
+})();
+function _otpStopTimers() {
+  if (_otpExpiryTimer) { clearInterval(_otpExpiryTimer); _otpExpiryTimer = null; }
+  if (_otpResendTimer) { clearInterval(_otpResendTimer); _otpResendTimer = null; }
+}
+function _otpStartResendCooldown(seconds) {
+  if (_otpResendTimer) { clearInterval(_otpResendTimer); _otpResendTimer = null; }
+  const btn = document.getElementById('otpResendBtn');
+  const wait = document.getElementById('otpResendWait');
+  let left = Math.max(0, seconds | 0);
+  const tick = () => {
+    if (left > 0) {
+      if (btn) btn.style.display = 'none';
+      if (wait) { wait.style.display = ''; wait.textContent = `Didn't get it? Resend in ${left}s`; }
+      left--;
+    } else {
+      if (btn) btn.style.display = '';
+      if (wait) { wait.style.display = ''; wait.textContent = "Didn't get it?"; }
+      clearInterval(_otpResendTimer); _otpResendTimer = null;
+    }
+  };
+  tick();
+  _otpResendTimer = setInterval(tick, 1000);
+}
+function _otpStartTimers(withCountdown) {
+  _otpStopTimers();
+  const el = document.getElementById('otpExpiryText');
+  if (!withCountdown) {
+    if (el) { el.classList.remove('expired'); el.innerHTML = '<i class="fas fa-clock"></i> Code expires in 10 minutes. Check spam if you can\'t find it.'; }
+    return;
+  }
+  const until = Date.now() + 10 * 60 * 1000;
+  const tick = () => {
+    const ms = until - Date.now();
+    if (!el) return;
+    if (ms <= 0) {
+      el.classList.add('expired');
+      el.innerHTML = '<i class="fas fa-circle-exclamation"></i> This code has expired — tap Resend OTP.';
+      clearInterval(_otpExpiryTimer); _otpExpiryTimer = null;
+      return;
+    }
+    const m = Math.floor(ms / 60000), sec = Math.floor((ms % 60000) / 1000);
+    el.classList.remove('expired');
+    el.innerHTML = `<i class="fas fa-clock"></i> Code expires in ${m}:${String(sec).padStart(2, '0')} · check spam too`;
+  };
+  tick();
+  _otpExpiryTimer = setInterval(tick, 1000);
+  _otpStartResendCooldown(30);
 }
 
 /* ---- Resend the OTP for the current context ---- */
@@ -3942,9 +4088,14 @@ async function resendOtpForCurrentContext() {
       if (res.success) {
         // IMPORTANT: Update the pendingToken with the new one returned by the server
         _otpContext.data.pendingToken = res.pendingToken;
+        _adminPendingToken = res.pendingToken;
         showToast('✓ New OTP sent.', 'success');
+        const inp = document.getElementById('otpModalInput');
+        if (inp) { inp.value = ''; _otpLastAutoSubmit = ''; otpSyncBoxesFromInput(); inp.focus(); }
+        _otpStartTimers(true);
       } else {
         showToast(res.message || 'Could not resend.', 'error');
+        if (res.retryAfter) setTimeout(() => _otpStartResendCooldown(res.retryAfter), 0);
       }
     } else {
       showToast('Resend is not available for this step.', 'info');
@@ -3958,6 +4109,7 @@ async function resendOtpForCurrentContext() {
 
 function cancelOtpVerification() {
   _otpContext = null;
+  _otpStopTimers();
   closeModal('otpVerificationModal');
 }
 
@@ -3997,7 +4149,9 @@ async function submitOtpVerification() {
       btn.disabled = false;
       btn.innerHTML = '<i class="fas fa-check"></i> Verify';
     }
-    if (input) { input.value = ''; input.focus(); }
+    if (input) { input.value = ''; _otpLastAutoSubmit = ''; otpSyncBoxesFromInput(); input.focus(); }
+    const cellsBox = document.getElementById('otpCells');
+    if (cellsBox) { cellsBox.classList.remove('aero-shake'); void cellsBox.offsetWidth; cellsBox.classList.add('aero-shake'); }
   }
 }
 
@@ -4041,16 +4195,40 @@ async function _handleAdminLoginOtp(otp) {
 
   if (!data.success) throw new Error(data.message || 'Invalid OTP.');
 
-  // ─── HARD-ENFORCE ADMIN ROLE ────────────────────────────────
-  // The user only reached this code path AFTER the server issued an admin
-  // 2FA challenge. Even if the server ever returned the wrong role, we
-  // force it here so the UI can never land on the student dashboard.
+  /* ⭐ 2026-10-08: this step now serves admins AND professors. Trust the
+     role the server signed into the token; never fall back to student. */
+  const _otpRole = String((data.user && data.user.role) || (_otpContext.data && _otpContext.data.role) || 'admin').trim().toLowerCase();
+  if (_otpRole === 'professor') {
+    currentUser = data.user;
+    saveSession(data.user, data.token);
+    _adminPendingToken = null;
+    _otpContext = null;
+    _otpStopTimers();
+    editingCourseId = null; currentCourseId = null; window.currentSelectedCourseId = null;
+    addingCourse = false; addingProfessor = false; addingMaterialCourseId = null; addingStudent = false;
+    quizEditingCourseId = null; quizEditingMaterialId = null;
+    professorNav = 'courses';
+    _profMe = null; _profMeAt = 0;
+    closeModal('otpVerificationModal');
+    try { history.replaceState(null, '', '#/professor'); } catch (e) { location.hash = '#/professor'; }
+    showToast('Signed in — welcome back!', 'success');
+    _sessionKilled = false;
+    startSessionHeartbeat();
+    renderApp();
+    Promise.allSettled([fetchCoursesFromDB(true), fetchProfessorsFromDB(true), fetchSubscriptionSettings(), fetchOwnerProfile(true)])
+      .then(() => { try { renderApp(); } catch (e) {} }).catch(() => {});
+    return;
+  }
   if (data.user) data.user.role = 'admin';
+  if (data.evictedDevices > 0) {
+    setTimeout(() => showToast(`Signed out your least-recently-used device — admin accounts can stay signed in on ${data.maxSessions || 3} devices.`, 'info'), 900);
+  }
 
   currentUser = data.user;
   saveSession(data.user, data.token);
   _adminPendingToken = null;
   _otpContext = null;
+  _otpStopTimers();
   try { ensureStudentAIHomeView(); } catch (e) {}   // ✅ ensure DOM
 
   // Reset ALL routing / editor state — nothing from a previous
@@ -4947,7 +5125,7 @@ function _enforceViewInvariant() {
     const submitBtn = document.querySelector('#loginForm button[type="submit"]');
     if (submitBtn && submitBtn.disabled) {
       submitBtn.disabled = false;
-      submitBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Sign In';
+      submitBtn.innerHTML = _loginSubmitLabel();
     }
   } else if (isGuestBrowsing()) {
     // ── ⭐ Visitor browsing the course catalog (no account yet) ──
@@ -5116,7 +5294,8 @@ function buildNav() {
     const onDash = !currentCourseId && !editingCourseId && !quizEditingCourseId;
     $('mainNav').innerHTML = `
       <a href="#" class="${onDash && professorNav === 'courses' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> My Courses</a>
-      <a href="#" class="${onDash && professorNav === 'requests' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request Course Access</a>`;
+      <a href="#" class="${onDash && professorNav === 'requests' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Course Requests</a>
+      <a href="#" class="${onDash && professorNav === 'profile' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('profile')"><i class="fas fa-id-badge"></i> My Profile</a>`;
     return;
   }
   const aiActive        = (studentNav === 'ai'        && !currentCourseId) ? 'active' : '';
@@ -5301,6 +5480,13 @@ function renderAdminSecurityTab() {
     </div>
 
     <div class="editor-section">
+      <h3 class="editor-section-title"><i class="fas fa-laptop-mobile"></i> Signed-in devices</h3>
+      <p class="editor-hint">Your admin account can stay signed in on up to <strong id="adminDevMax">3</strong> devices at once.
+        Signing in on one more device signs out the one you used least recently.</p>
+      <div id="adminDeviceList" class="adm-dev-list"><div class="adm-dev-loading"><i class="fas fa-spinner fa-spin"></i> Loading devices…</div></div>
+    </div>
+
+    <div class="editor-section">
       <h3 class="editor-section-title"><i class="fas fa-at"></i> Change Username</h3>
       <p class="editor-hint">Your current password is required to confirm this change.</p>
       <div class="editor-grid-2">
@@ -5363,6 +5549,56 @@ function renderAdminSecurityTab() {
       </p>
     </div>
   `;
+  loadAdminDevices();
+}
+
+/* ⭐ 2026-10-08 — admin: signed-in devices (max 3) */
+async function loadAdminDevices() {
+  const box = document.getElementById('adminDeviceList');
+  if (!box) return;
+  let d;
+  try { d = await fetchJSON(`${API_BASE}/admin/sessions?_t=${Date.now()}`, { cache: 'no-store' }); }
+  catch (e) { box.innerHTML = `<div class="adm-dev-empty">Could not load devices. <button class="btn btn-outline btn-sm" onclick="loadAdminDevices()">Retry</button></div>`; return; }
+  if (!d || !d.success) { box.innerHTML = `<div class="adm-dev-empty">${escapeHtml((d && d.message) || 'Could not load devices.')}</div>`; return; }
+  const maxEl = document.getElementById('adminDevMax'); if (maxEl) maxEl.textContent = d.max || 3;
+  const list = d.sessions || [];
+  const ago = (t) => {
+    if (!t) return '—';
+    const s = Math.max(0, (Date.now() - new Date(t).getTime()) / 1000);
+    if (s < 90) return 'just now';
+    if (s < 3600) return Math.round(s / 60) + ' min ago';
+    if (s < 86400) return Math.round(s / 3600) + ' h ago';
+    return new Date(t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  };
+  const icon = (dev) => /Android|iOS|app/i.test(dev) ? 'fa-mobile-screen-button' : 'fa-laptop';
+  const others = list.filter(x => !x.current).length;
+  box.innerHTML = `
+    <div class="adm-dev-meter"><span style="width:${Math.min(100, (list.length / (d.max || 3)) * 100)}%"></span></div>
+    <div class="adm-dev-count">${list.length} of ${d.max || 3} device slots in use</div>
+    ${list.map(x => `
+      <div class="adm-dev ${x.current ? 'current' : ''}">
+        <div class="adm-dev-ic"><i class="fas ${icon(x.device)}"></i></div>
+        <div class="adm-dev-info">
+          <strong>${escapeHtml(x.device)}${x.current ? ' <span class="prof-chip ok">This device</span>' : ''}</strong>
+          <span>Signed in ${escapeHtml(ago(x.loginAt))} · active ${escapeHtml(ago(x.lastSeenAt))}${x.ip ? ' · ' + escapeHtml(x.ip) : ''}</span>
+        </div>
+        ${x.current ? '' : `<button class="btn btn-outline btn-sm" onclick="revokeAdminDevice('${escapeHtml(x.id)}')"><i class="fas fa-right-from-bracket"></i> Sign out</button>`}
+      </div>`).join('')}
+    ${others ? `<div class="adm-dev-actions"><button class="btn btn-outline btn-sm" onclick="revokeAdminDevice('others')"><i class="fas fa-user-lock"></i> Sign out all other devices</button></div>` : ''}`;
+}
+async function revokeAdminDevice(id) {
+  const all = id === 'others';
+  const ok = await aeroConfirm(all ? 'Sign out other devices?' : 'Sign out this device?',
+    all ? 'Every other device signed in to this admin account will be signed out immediately.' : 'That device will be signed out immediately.',
+    'Sign out', true);
+  if (!ok) return;
+  try {
+    const url = all ? `${API_BASE}/admin/sessions/revoke-others` : `${API_BASE}/admin/sessions/${encodeURIComponent(id)}/revoke`;
+    const d = await fetchJSON(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!d.success) throw new Error(d.message || 'Could not sign out.');
+    showToast(all ? 'Other devices signed out.' : 'Device signed out.', 'success');
+  } catch (e) { showToast(e.message || 'Could not sign out.', 'error'); }
+  loadAdminDevices();
 }
 
 async function updateAdminUsername() {
@@ -15675,7 +15911,7 @@ async function aeroGuestSignIn(username, password) {
     currentCourseId = null; window.currentSelectedCourseId = null;
     try { history.replaceState(null, '', '#/home'); } catch (e) {}
     renderApp();
-    showToast('Admin accounts sign in here, with the code sent to your email.', 'info');
+    showToast('Admin and professor accounts sign in here, with the code sent to your email.', 'info');
     return false;
   }
   if (!data || !data.success || !data.user) {
@@ -24480,10 +24716,10 @@ function profCanEdit(courseId) {
   return mine.includes(String(courseId));
 }
 function navigateProfessor(tab) {
-  professorNav = tab === 'requests' ? 'requests' : 'courses';
+  professorNav = (tab === 'requests' || tab === 'profile') ? tab : 'courses';
   editingCourseId = null; currentCourseId = null; window.currentSelectedCourseId = null;
   quizEditingCourseId = null; quizEditingMaterialId = null; addingMaterialCourseId = null;
-  pushHash(professorNav === 'requests' ? '#/professor/requests' : '#/professor');
+  pushHash(professorNav === 'courses' ? '#/professor' : '#/professor/' + professorNav);
   renderApp();
 }
 
@@ -24633,80 +24869,187 @@ function renderProfessorDashboard() {
   /* refresh quietly in the background (≤ once per 15 s) */
   if (Date.now() - _profMeAt > 15000) loadProfessorMe(true).then(() => renderProfessorDashboard()).catch(() => {});
 
+  /* ⭐ 2026-10-08 — redesigned professor workspace */
   const p = me.professor || {};
   const name = (currentUser && (currentUser.fullName || currentUser.username)) || 'Professor';
-  const myCourses = (liveCourses || []).filter(c => (p.courses || []).map(String).includes(String(c.id)));
-  const pendingReqs = (p.requests || []).filter(r => r.status === 'pending').length;
+  const myIds = (p.courses || []).map(String);
+  const myCourses = (liveCourses || []).filter(c => myIds.includes(String(c.id)));
+  const reqs = p.requests || [];
+  const pendingReqs = reqs.filter(r => r.status === 'pending').length;
+  const count = (c, fn) => (c.materials || []).filter(fn).length;
+  const totals = myCourses.reduce((t, c) => {
+    t.materials += (c.materials || []).length;
+    t.videos += count(c, m => m.type === 'video');
+    t.quizzes += count(c, m => (m.quizCount || 0) > 0);
+    t.ann += (c.announcements || []).length;
+    return t;
+  }, { materials: 0, videos: 0, quizzes: 0, ann: 0 });
+  const hr = new Date().getHours();
+  const greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+  const initials = escapeHtml(name.split(' ').map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase());
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const fmtDate = (d, withYear) => d ? new Date(d).toLocaleDateString('en-IN', withYear === false ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' }) : '';
 
   let html = `
-    <div class="prof-hero">
-      <div class="prof-hero-avatar">${escapeHtml(name.split(' ').map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase())}</div>
-      <div class="prof-hero-text">
-        <span class="prof-chip ok"><i class="fas fa-circle-check"></i> Approved professor</span>
-        <h2>Welcome, ${escapeHtml(name)}</h2>
-        <p>${escapeHtml([p.designation, p.department, p.institution].filter(Boolean).join(' · '))}</p>
+    <section class="pw-hero">
+      <div class="pw-hero-main">
+        <div class="pw-avatar">${initials}</div>
+        <div class="pw-hero-text">
+          <div class="pw-hero-chips">
+            <span class="pw-chip"><i class="fas fa-circle-check"></i> Approved professor</span>
+            <span class="pw-chip ghost"><i class="fas fa-envelope-circle-check"></i> Email-verified sign-in</span>
+          </div>
+          <h2>${greet}, ${escapeHtml(name)}</h2>
+          <p>${escapeHtml([p.designation, p.department, p.institution].filter(Boolean).join(' · ')) || 'Professor workspace'}</p>
+        </div>
       </div>
-      <div class="prof-hero-stats">
-        <div><strong>${myCourses.length}</strong><span>course${myCourses.length === 1 ? '' : 's'}</span></div>
-        <div><strong>${pendingReqs}</strong><span>pending request${pendingReqs === 1 ? '' : 's'}</span></div>
+      <div class="pw-hero-actions">
+        <button class="btn pw-btn-light" onclick="navigateProfessor('requests')"><i class="fas fa-plus"></i> Request a course</button>
       </div>
+    </section>
+
+    <div class="pw-stats">
+      <div class="pw-stat"><span class="pw-stat-ic c1"><i class="fas fa-chalkboard"></i></span><div><strong>${myCourses.length}</strong><span>${myCourses.length === 1 ? 'Course' : 'Courses'}</span></div></div>
+      <div class="pw-stat"><span class="pw-stat-ic c2"><i class="fas fa-layer-group"></i></span><div><strong>${totals.materials}</strong><span>Materials</span></div></div>
+      <div class="pw-stat"><span class="pw-stat-ic c3"><i class="fas fa-bullhorn"></i></span><div><strong>${totals.ann}</strong><span>Announcements</span></div></div>
+      <div class="pw-stat"><span class="pw-stat-ic c4"><i class="fas fa-hourglass-half"></i></span><div><strong>${pendingReqs}</strong><span>Pending ${pendingReqs === 1 ? 'request' : 'requests'}</span></div></div>
     </div>
-    <div class="prof-tabs" role="tablist">
-      <button class="${professorNav === 'courses' ? 'active' : ''}" onclick="navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> My Courses</button>
-      <button class="${professorNav === 'requests' ? 'active' : ''}" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request Course Access${pendingReqs ? ` <span class="nav-count">${pendingReqs}</span>` : ''}</button>
+
+    <div class="pw-tabs" role="tablist">
+      <button role="tab" aria-selected="${professorNav === 'courses'}" class="${professorNav === 'courses' ? 'active' : ''}" onclick="navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> My Courses</button>
+      <button role="tab" aria-selected="${professorNav === 'requests'}" class="${professorNav === 'requests' ? 'active' : ''}" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Course Requests${pendingReqs ? ` <span class="nav-count">${pendingReqs}</span>` : ''}</button>
+      <button role="tab" aria-selected="${professorNav === 'profile'}" class="${professorNav === 'profile' ? 'active' : ''}" onclick="navigateProfessor('profile')"><i class="fas fa-id-badge"></i> Profile</button>
     </div>`;
 
   if (professorNav === 'requests') {
     html += `
-      <div class="prof-grid-2">
-        <div class="section-card prof-request-card">
-          <h3><i class="fas fa-paper-plane"></i> Request access to a course</h3>
-          <p class="editor-hint">Type the course exactly as it appears in your timetable. The admin checks it and grants access — the course appears under <strong>My Courses</strong> once approved.</p>
-          <form onsubmit="submitProfessorCourseRequest(event)">
-            <div class="form-group"><label>Course name *</label><input type="text" id="profReqName" maxlength="160" required placeholder="e.g. Aerodynamics I"></div>
-            <div class="form-group"><label>Course code *</label><input type="text" id="profReqCode" maxlength="40" required placeholder="e.g. AE21001" style="text-transform:uppercase;"></div>
-            <div class="form-group"><label>Message to the admin</label><textarea id="profReqMsg" rows="3" maxlength="600" placeholder="e.g. I teach this course in the autumn semester."></textarea></div>
+      <div class="pw-grid-2">
+        <div class="pw-card">
+          <div class="pw-card-head"><span class="pw-card-ic"><i class="fas fa-paper-plane"></i></span>
+            <div><h3>Request access to a course</h3><p>Type the course exactly as in your timetable. Once the admin approves, it appears under <strong>My Courses</strong>.</p></div></div>
+          <form onsubmit="submitProfessorCourseRequest(event)" class="pw-form">
+            <div class="pw-form-row">
+              <div class="form-group"><label for="profReqCode">Course code *</label><input type="text" id="profReqCode" maxlength="40" required placeholder="e.g. AE21001" style="text-transform:uppercase;"></div>
+              <div class="form-group"><label for="profReqName">Course name *</label><input type="text" id="profReqName" maxlength="160" required placeholder="e.g. Aerodynamics I"></div>
+            </div>
+            <div class="form-group"><label for="profReqMsg">Message to the admin <span class="pw-optional">optional</span></label><textarea id="profReqMsg" rows="3" maxlength="600" placeholder="e.g. I teach this course in the autumn semester."></textarea></div>
             <button type="submit" class="btn btn-primary btn-block"><i class="fas fa-paper-plane"></i> Send request</button>
           </form>
         </div>
-        <div class="section-card">
-          <h3><i class="fas fa-list-check"></i> My requests</h3>
-          ${(p.requests || []).length ? `<div class="prof-req-list">${(p.requests || []).slice().reverse().map(r => {
+        <div class="pw-card">
+          <div class="pw-card-head"><span class="pw-card-ic alt"><i class="fas fa-list-check"></i></span>
+            <div><h3>My requests</h3><p>${reqs.length ? `${plural(reqs.length, 'request')} · ${pendingReqs} waiting for the admin` : 'Requests you send show up here with their status.'}</p></div></div>
+          ${reqs.length ? `<div class="pw-req-list">${reqs.slice().reverse().map(r => {
             const granted = r.courseId ? (me.courses || []).find(c => c.id === r.courseId) : null;
-            return `<div class="prof-req ${r.status}">
-              <div class="prof-req-top"><strong>${escapeHtml(r.courseCode)}</strong> · ${escapeHtml(r.courseName)}
-                <span class="prof-chip ${r.status === 'approved' ? 'ok' : r.status === 'rejected' ? 'bad' : 'wait'}">${r.status === 'approved' ? '<i class="fas fa-check"></i> Approved' : r.status === 'rejected' ? '<i class="fas fa-xmark"></i> Declined' : '<i class="fas fa-hourglass-half"></i> Pending'}</span></div>
-              <div class="prof-req-meta">Sent ${new Date(r.requestedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}${r.reviewedAt ? ' · reviewed ' + new Date(r.reviewedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''}</div>
-              ${granted ? `<div class="prof-req-note ok"><i class="fas fa-unlock"></i> Access granted to ${escapeHtml((granted.code ? granted.code + ' — ' : '') + granted.name)}</div>` : ''}
-              ${r.status === 'rejected' && r.reviewNote ? `<div class="prof-req-note bad"><i class="fas fa-comment"></i> ${escapeHtml(r.reviewNote)}</div>` : ''}
-            </div>`; }).join('')}</div>` : `<div class="empty-state"><i class="fas fa-inbox"></i><p>No requests yet.</p></div>`}
+            const st = r.status === 'approved' ? 'ok' : r.status === 'rejected' ? 'bad' : 'wait';
+            return `<div class="pw-req ${st}">
+              <span class="pw-req-dot"></span>
+              <div class="pw-req-body">
+                <div class="pw-req-top"><strong>${escapeHtml(r.courseCode)}</strong><span class="pw-req-name">${escapeHtml(r.courseName)}</span>
+                  <span class="prof-chip ${st}">${st === 'ok' ? '<i class="fas fa-check"></i> Approved' : st === 'bad' ? '<i class="fas fa-xmark"></i> Declined' : '<i class="fas fa-hourglass-half"></i> Pending'}</span></div>
+                <div class="pw-req-meta">Sent ${fmtDate(r.requestedAt)}${r.reviewedAt ? ' · reviewed ' + fmtDate(r.reviewedAt, false) : ''}</div>
+                ${r.message ? `<div class="pw-req-msg">“${escapeHtml(r.message)}”</div>` : ''}
+                ${granted ? `<div class="prof-req-note ok"><i class="fas fa-unlock"></i> Access granted to ${escapeHtml((granted.code ? granted.code + ' — ' : '') + granted.name)}</div>` : ''}
+                ${st === 'bad' && r.reviewNote ? `<div class="prof-req-note bad"><i class="fas fa-comment"></i> ${escapeHtml(r.reviewNote)}</div>` : ''}
+              </div>
+            </div>`; }).join('')}</div>`
+          : `<div class="pw-empty-mini"><i class="fas fa-inbox"></i><span>No requests yet.</span></div>`}
+        </div>
+      </div>`;
+  } else if (professorNav === 'profile') {
+    const row = (label, val, icon) => val ? `<div class="pw-field"><span><i class="fas ${icon}"></i> ${label}</span><strong>${val}</strong></div>` : '';
+    html += `
+      <div class="pw-grid-2">
+        <div class="pw-card">
+          <div class="pw-card-head"><span class="pw-card-ic"><i class="fas fa-id-badge"></i></span>
+            <div><h3>Your details</h3><p>Shown to the admin when reviewing your requests. To change them, contact the admin.</p></div></div>
+          <div class="pw-fields">
+            ${row('Full name', escapeHtml(name), 'fa-user')}
+            ${row('Username', escapeHtml((currentUser && currentUser.username) || ''), 'fa-at')}
+            ${row('Email', escapeHtml((currentUser && currentUser.email) || ''), 'fa-envelope')}
+            ${row('Designation', escapeHtml(p.designation), 'fa-briefcase')}
+            ${row('Department', escapeHtml(p.department), 'fa-building-columns')}
+            ${row('Institution', escapeHtml(p.institution), 'fa-school')}
+            ${row('Qualification', escapeHtml(p.qualification), 'fa-graduation-cap')}
+            ${row('Specialisation', escapeHtml(p.specialization), 'fa-atom')}
+            ${row('Experience', p.experienceYears ? plural(p.experienceYears, 'year') : '', 'fa-clock-rotate-left')}
+            ${row('Employee ID', escapeHtml(p.employeeId), 'fa-hashtag')}
+            ${p.profileUrl && /^https?:\/\//i.test(p.profileUrl) ? row('Profile page', `<a href="${escapeHtml(p.profileUrl)}" target="_blank" rel="noopener">${escapeHtml(p.profileUrl.replace(/^https?:\/\//i, '').slice(0, 48))}</a>`, 'fa-link') : ''}
+            ${row('Approved on', fmtDate(p.reviewedAt), 'fa-calendar-check')}
+          </div>
+          ${p.bio ? `<div class="pw-bio"><span>About</span><p>${escapeHtml(p.bio)}</p></div>` : ''}
+        </div>
+        <div class="pw-card">
+          <div class="pw-card-head"><span class="pw-card-ic alt"><i class="fas fa-shield-halved"></i></span>
+            <div><h3>Account security</h3><p>How your professor account is protected.</p></div></div>
+          <ul class="pw-checks">
+            <li class="ok"><i class="fas fa-envelope-circle-check"></i><span><strong>Email code at every sign-in.</strong> After your password we send a 6-digit code to ${escapeHtml(((currentUser && currentUser.email) || 'your email').replace(/^(.{2}).*(@.*)$/, '$1•••$2'))}.</span></li>
+            <li class="ok"><i class="fas fa-mobile-screen-button"></i><span><strong>One device at a time.</strong> Signing in somewhere else signs this device out.</span></li>
+            <li class="ok"><i class="fas fa-key"></i><span><strong>Forgot your password?</strong> Use “Forgot password?” on the sign-in page.</span></li>
+          </ul>
         </div>
       </div>`;
   } else {
-    html += myCourses.length ? `<div class="prof-course-grid">${myCourses.map(c => `
-        <div class="prof-course-card">
-          <div class="prof-course-top" style="${typeof accentStyle === 'function' ? accentStyle(c.code || c.name) : ''}">
-            <span class="course-code">${escapeHtml(c.code || '')}</span>
-            <h3>${escapeHtml(c.name)}</h3>
-          </div>
-          <div class="prof-course-body">
-            <div class="prof-course-meta"><span><i class="fas fa-layer-group"></i> ${(c.materials || []).length} materials</span>
-              <span><i class="fas fa-bullhorn"></i> ${(c.announcements || []).length} announcements</span></div>
-            <div class="prof-course-actions">
-              <button class="btn btn-primary btn-sm" onclick="openCourseEditor('${c.id}')"><i class="fas fa-pen-to-square"></i> Add & edit content</button>
-              <button class="btn btn-outline btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View as student</button>
+    if (myCourses.length) {
+      html += `
+        <div class="pw-toolbar">
+          <h3 class="pw-section-title">My courses <span>${myCourses.length}</span></h3>
+          ${myCourses.length > 3 ? `<div class="pw-search"><i class="fas fa-magnifying-glass"></i><input type="search" id="profCourseSearch" placeholder="Search by name or code" oninput="filterProfessorCourses(this.value)" aria-label="Search courses"></div>` : ''}
+        </div>
+        <div class="pw-course-grid" id="profCourseGrid">${myCourses.map(c => {
+          const mats = (c.materials || []).length, vids = count(c, m => m.type === 'video'), qz = count(c, m => (m.quizCount || 0) > 0);
+          const ann = (c.announcements || []).length;
+          return `
+          <article class="pw-course" data-q="${escapeHtml(((c.code || '') + ' ' + (c.name || '')).toLowerCase())}">
+            <div class="pw-course-top" style="${typeof accentStyle === 'function' ? accentStyle(c.code || c.name) : ''}">
+              <span class="pw-course-code">${escapeHtml(c.code || 'COURSE')}</span>
+              <h3>${escapeHtml(c.name)}</h3>
+              ${c.semester ? `<span class="pw-course-sem"><i class="fas fa-calendar"></i> ${escapeHtml(String(c.semester))}</span>` : ''}
             </div>
-          </div>
-        </div>`).join('')}</div>`
-      : `<div class="empty-state prof-empty"><i class="fas fa-chalkboard"></i>
-           <p><strong>No courses yet.</strong></p>
-           <p>Ask the admin for access to the courses you teach — they appear here once approved.</p>
-           <button class="btn btn-primary" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request course access</button></div>`;
-    html += `<div class="prof-rules"><i class="fas fa-shield-halved"></i>
-      <div><strong>What you can do:</strong> open your approved courses, add new materials, question papers, playlists and announcements, and edit existing content.
-      Removing anything is reserved for the admin — ask the admin if something needs to be deleted.</div></div>`;
+            <div class="pw-course-body">
+              <div class="pw-course-stats">
+                <div><strong>${mats}</strong><span>materials</span></div>
+                <div><strong>${vids}</strong><span>videos</span></div>
+                <div><strong>${qz}</strong><span>quizzes</span></div>
+                <div><strong>${ann}</strong><span>notices</span></div>
+              </div>
+              ${c.updatedAt ? `<div class="pw-course-upd"><i class="fas fa-clock-rotate-left"></i> Updated ${fmtDate(c.updatedAt)}</div>` : ''}
+              <div class="pw-course-actions">
+                <button class="btn btn-primary btn-sm" onclick="openCourseEditor('${c.id}')"><i class="fas fa-pen-to-square"></i> Add &amp; edit content</button>
+                <button class="btn btn-outline btn-sm" onclick="viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> Student view</button>
+              </div>
+            </div>
+          </article>`; }).join('')}</div>
+        <div class="pw-empty-mini" id="profCourseNoMatch" hidden><i class="fas fa-magnifying-glass"></i><span>No course matches your search.</span></div>`;
+    } else {
+      html += `
+        <div class="pw-empty">
+          <div class="pw-empty-ic"><i class="fas fa-chalkboard"></i></div>
+          <h3>No courses assigned yet</h3>
+          <p>Ask the admin for access to the courses you teach — they appear here as soon as they are approved.</p>
+          ${pendingReqs ? `<p class="pw-empty-note"><i class="fas fa-hourglass-half"></i> ${plural(pendingReqs, 'request')} waiting for the admin.</p>` : ''}
+          <button class="btn btn-primary" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request course access</button>
+        </div>`;
+    }
+    html += `
+      <div class="pw-rules">
+        <div class="pw-rule ok"><i class="fas fa-circle-check"></i><div><strong>You can</strong><span>Add materials, question papers, playlists and announcements, and edit existing content in your courses.</span></div></div>
+        <div class="pw-rule lock"><i class="fas fa-lock"></i><div><strong>Admin only</strong><span>Deleting content, prices and course settings — ask the admin if something needs to be removed.</span></div></div>
+      </div>`;
   }
   root.innerHTML = html;
+}
+
+function filterProfessorCourses(q) {
+  q = String(q || '').trim().toLowerCase();
+  let shown = 0;
+  document.querySelectorAll('#profCourseGrid .pw-course').forEach(el => {
+    const hit = !q || (el.getAttribute('data-q') || '').includes(q);
+    el.hidden = !hit;
+    if (hit) shown++;
+  });
+  const none = document.getElementById('profCourseNoMatch');
+  if (none) none.hidden = shown > 0;
 }
 
 async function submitProfessorCourseRequest(e) {

@@ -16,15 +16,15 @@
       } catch (e) {}
     })();
   </script>
-<link rel="manifest" href="manifest.json?v=138">
+<link rel="manifest" href="manifest.json?v=139">
   <!-- Logo / Favicon -->
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=138">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=138">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=138">
-  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=138">
-  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=138">
-  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=138">
-  <link rel="shortcut icon" href="/favicon-32.png?v=138">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=139">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=139">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png?v=139">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png?v=139">
+  <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96.png?v=139">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=139">
+  <link rel="shortcut icon" href="/favicon-32.png?v=139">
   <title>AeroGyan Education – Course Portal</title>
 
   <!-- Critical preconnects (only 3 — extra ones waste time) -->
@@ -56,7 +56,7 @@
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
   <!-- App stylesheet — blocking (must be, small) -->
-  <link rel="stylesheet" href="styles.css?v=138">
+  <link rel="stylesheet" href="styles.css?v=139">
 
 
   <!-- Inline critical fallback so icons don't flash before FA loads -->
@@ -230,59 +230,109 @@
 
     <main class="main-content">
 
-      <!-- LOGIN -->
+      <!-- LOGIN — ⭐ redesigned 2026-10-08 (split layout, OTP for staff) -->
       <section id="loginView" class="view active">
-        <div class="login-card">
-          <div class="login-icon"><i class="fas fa-graduation-cap"></i></div>
-          <h2>AeroGyan Education</h2>
-          <p class="sub">Sign in to access course materials</p>
-          <div class="login-role-toggle">
-            <button class="active" data-role="student" onclick="setLoginRole('student')">
-              <i class="fas fa-user-graduate"></i> Student
-            </button>
-            <button data-role="professor" onclick="setLoginRole('professor')">
-              <i class="fas fa-chalkboard-user"></i> Professor
-            </button>
-            <button data-role="admin" onclick="setLoginRole('admin')">
-              <i class="fas fa-user-cog"></i> Admin
-            </button>
-          </div>
-          <form id="loginForm" onsubmit="handleLogin(event)">
-            <div class="form-group">
-              <label>Username</label>
-              <div class="input-wrap"><i class="fas fa-user"></i>
-                <input type="text" id="loginUsername" placeholder="Enter your username" required>
+        <div class="login-card lg-shell">
+          <!-- brand panel (left on desktop, compact strip on phones) -->
+          <aside class="lg-brand" aria-hidden="true">
+            <svg class="lg-orbit" viewBox="0 0 400 400" focusable="false">
+              <circle cx="200" cy="200" r="120" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 7"/>
+              <circle cx="200" cy="200" r="175" fill="none" stroke="currentColor" stroke-width="1" opacity=".55"/>
+              <ellipse cx="200" cy="200" rx="190" ry="70" fill="none" stroke="currentColor" stroke-width="1" opacity=".35" transform="rotate(-24 200 200)"/>
+              <circle class="lg-sat" cx="375" cy="200" r="5" fill="currentColor"/>
+            </svg>
+            <div class="lg-brand-top">
+              <div class="login-icon lg-mark"><i class="fas fa-plane-departure"></i></div>
+              <div>
+                <strong class="lg-brand-name">AeroGyan Education</strong>
+                <span class="lg-brand-tag">Aerospace learning portal</span>
               </div>
             </div>
-            <div class="form-group">
-              <label>Password</label>
-              <div class="input-wrap"><i class="fas fa-lock"></i>
-                <input type="password" id="loginPassword" placeholder="Enter your password" required>
+            <div class="lg-brand-body">
+              <h3>Lectures, notes and exams for every aerospace course — in one place.</h3>
+              <ul class="lg-points">
+                <li><i class="fas fa-layer-group"></i><span><strong>Course materials</strong> — slides, notes, papers and video playlists.</span></li>
+                <li><i class="fas fa-stopwatch"></i><span><strong>Timed quizzes</strong> with instant scores and progress tracking.</span></li>
+                <li><i class="fas fa-chalkboard-user"></i><span><strong>Professors publish directly</strong> to the courses they teach.</span></li>
+              </ul>
+            </div>
+            <div class="lg-brand-foot"><i class="fas fa-shield-halved"></i> Staff sign-ins are protected by a one-time email code.</div>
+          </aside>
+
+          <!-- form panel -->
+          <div class="lg-panel">
+            <div class="lg-head">
+              <h2 id="loginHeading">Welcome back</h2>
+              <p class="sub" id="loginSub">Sign in to continue to your courses.</p>
+            </div>
+
+            <div class="login-role-toggle" role="tablist" aria-label="Sign in as">
+              <span class="lg-role-pill" aria-hidden="true"></span>
+              <button type="button" class="active" data-role="student" role="tab" aria-selected="true" onclick="setLoginRole('student')">
+                <i class="fas fa-user-graduate"></i> <span>Student</span>
+              </button>
+              <button type="button" data-role="professor" role="tab" aria-selected="false" onclick="setLoginRole('professor')">
+                <i class="fas fa-chalkboard-user"></i> <span>Professor</span>
+              </button>
+              <button type="button" data-role="admin" role="tab" aria-selected="false" onclick="setLoginRole('admin')">
+                <i class="fas fa-user-gear"></i> <span>Admin</span>
+              </button>
+            </div>
+
+            <form id="loginForm" onsubmit="handleLogin(event)" autocomplete="on">
+              <div class="form-group">
+                <label for="loginUsername">Username</label>
+                <div class="input-wrap"><i class="fas fa-user"></i>
+                  <input type="text" id="loginUsername" placeholder="Enter your username" autocomplete="username"
+                         autocapitalize="none" spellcheck="false" required>
+                </div>
+              </div>
+              <div class="form-group">
+                <div class="lg-label-row">
+                  <label for="loginPassword">Password</label>
+                  <a href="#" class="lg-mini-link" onclick="showForgotPasswordModal();return false;">Forgot password?</a>
+                </div>
+                <div class="input-wrap lg-pass-wrap"><i class="fas fa-lock"></i>
+                  <input type="password" id="loginPassword" placeholder="Enter your password" autocomplete="current-password" required>
+                  <button type="button" class="lg-eye" id="loginEyeBtn" aria-label="Show password" title="Show password" onclick="toggleLoginPasswordVisibility()">
+                    <i class="fas fa-eye"></i>
+                  </button>
+                </div>
+                <span class="lg-caps" id="loginCapsHint" hidden><i class="fas fa-triangle-exclamation"></i> Caps Lock is on</span>
+              </div>
+
+              <div class="lg-otp-note" id="loginOtpNote" hidden>
+                <i class="fas fa-envelope-circle-check"></i>
+                <span id="loginOtpNoteText">After your password, we'll email a 6-digit code to your registered address.</span>
+              </div>
+
+              <button type="submit" class="btn btn-primary btn-block btn-lg lg-submit">
+                <i class="fas fa-sign-in-alt"></i> Sign In
+              </button>
+              <div class="lg-forgot-row">
+                <a href="#" class="lg-mini-link" onclick="showForgotUsernameModal();return false;"><i class="fas fa-user-question"></i> Forgot username?</a>
+              </div>
+            </form>
+
+            <div class="login-footer lg-footer">
+              <div class="lg-divider"><span>New to AeroGyan?</span></div>
+              <div class="lg-cta-row">
+                <button type="button" class="btn btn-outline lg-cta" onclick="showRegisterModal()">
+                  <i class="fas fa-user-plus"></i> Student sign-up
+                </button>
+                <button type="button" class="btn btn-outline lg-cta" onclick="showProfessorRegisterModal()">
+                  <i class="fas fa-chalkboard-user"></i> Apply as professor
+                </button>
+              </div>
+              <div class="lg-links">
+                <a href="#/courses" onclick="aeroStartGuestBrowse();return false;" class="link-inline">
+                  <i class="fas fa-compass"></i> Explore courses first
+                </a>
+                <a href="#" onclick="openAlumniSubmitModal();return false;" class="link-inline lg-alumni">
+                  <i class="fas fa-graduation-cap"></i> Alumni? Share your journey
+                </a>
               </div>
             </div>
-            <button type="submit" class="btn btn-primary btn-block btn-lg">
-              <i class="fas fa-sign-in-alt"></i> Sign In
-            </button>
-          </form>
-          <div class="login-footer" style="display:flex;flex-direction:column;gap:10px;align-items:center;">
-            <a href="#" onclick="showRegisterModal();return false;" class="link-inline">
-              <i class="fas fa-user-plus"></i> Register as Student
-            </a>
-            <a href="#" onclick="showProfessorRegisterModal();return false;" class="link-inline">
-              <i class="fas fa-chalkboard-user"></i> Register as a Professor
-            </a>
-            <a href="#/courses" onclick="aeroStartGuestBrowse();return false;" class="link-inline">
-              <i class="fas fa-compass"></i> Explore courses first
-            </a>
-            <a href="#" onclick="showForgotUsernameModal();return false;" class="link-inline">
-              <i class="fas fa-user-question"></i> Forgot Username?
-            </a>
-            <a href="#" onclick="showForgotPasswordModal();return false;" class="link-inline">
-              <i class="fas fa-key"></i> Forgot Password?
-            </a>
-                        <a href="#" onclick="openAlumniSubmitModal();return false;" class="link-inline" style="color:var(--gold-600);">
-              <i class="fas fa-graduation-cap"></i> Are you an alumni? Share your journey
-            </a>
           </div>
         </div>
       </section>
@@ -989,34 +1039,31 @@
     </div>
   </div>
 
-  <!-- ============ SHARED OTP MODAL ============ -->
+  <!-- ============ SHARED OTP MODAL — ⭐ 6-box code entry (2026-10-08) ============ -->
   <div class="modal-overlay" id="otpVerificationModal">
-    <div class="modal-box" style="max-width:460px;">
-      <div style="text-align:center; margin-bottom:14px;">
-        <div style="display:inline-flex;align-items:center;justify-content:center;
-                    width:64px;height:64px;border-radius:50%;
-                    background:linear-gradient(135deg,var(--brand-600),var(--accent-500));
-                    color:#fff;font-size:26px;
-                    box-shadow:0 10px 26px rgba(99,102,241,.35);">
-          <i class="fas fa-shield-halved"></i>
-        </div>
-      </div>
+    <div class="modal-box otp-box" style="max-width:440px;">
+      <div class="otp-badge"><i class="fas fa-shield-halved"></i></div>
       <h3 id="otpModalTitle" style="text-align:center;justify-content:center;">Verify OTP</h3>
       <p class="modal-sub" id="otpModalSub" style="text-align:center;">Enter the code we sent you.</p>
 
-      <div class="form-group">
-        <label style="text-align:center;display:block;">6-Digit OTP</label>
-        <input type="text" id="otpModalInput" placeholder="• • • • • •"
+      <div class="form-group otp-group">
+        <label class="otp-label" for="otpModalInput">6-digit code</label>
+        <!-- the real input (kept for every OTP flow) sits invisibly on top of the boxes -->
+        <div class="otp-field">
+        <input type="text" id="otpModalInput" class="otp-real-input" placeholder="• • • • • •"
                inputmode="numeric" autocomplete="one-time-code" maxlength="6"
-               oninput="this.value = this.value.replace(/[^0-9]/g, '')"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();submitOtpVerification();}"
-               style="text-align:center;font-size:24px;letter-spacing:10px;font-weight:800;
-                      padding:16px;font-family:'Courier New',monospace;border-radius:12px;">
-        <span class="hint" style="text-align:center;display:block;margin-top:8px;">
+               oninput="this.value = this.value.replace(/[^0-9]/g, '').slice(0, 6); otpSyncBoxesFromInput();"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();submitOtpVerification();}">
+        <div class="otp-cells" id="otpCells" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+        </div>
+        <span class="hint otp-expiry" id="otpExpiryText">
           <i class="fas fa-clock"></i> Code expires in 10 minutes.
         </span>
-        <div id="otpResendRow" style="display:none;text-align:center;margin-top:10px;">
-          <button type="button" class="link-inline" onclick="resendOtpForCurrentContext()" id="otpResendBtn" style="background:none;border:none;cursor:pointer;">
+        <div id="otpResendRow" class="otp-resend-row" style="display:none;">
+          <span class="otp-resend-wait" id="otpResendWait"></span>
+          <button type="button" class="link-inline" onclick="resendOtpForCurrentContext()" id="otpResendBtn">
             <i class="fas fa-rotate-right"></i> Resend OTP
           </button>
         </div>
@@ -1911,11 +1958,11 @@
   <!-- Core app scripts — always loaded, deferred -->
   <!-- ⚡ Version query busts HTTP cache on every deploy.
        Just bump the number (v=29, v=30...) to force fresh files. -->
- 	<script src="media-viewer.js?v=138" defer></script>
-  <script src="content-shield.js?v=138" defer></script>
+ 	<script src="media-viewer.js?v=139" defer></script>
+  <script src="content-shield.js?v=139" defer></script>
   <script src="login-popup.js?v=1" defer></script>
-  <script src="document-viewer.js?v=138" defer></script>
-  <script src="app.js?v=138" defer></script>
+  <script src="document-viewer.js?v=139" defer></script>
+  <script src="app.js?v=139" defer></script>
   <!-- Service worker registration -->
 <script>
   if ('serviceWorker' in navigator) {
@@ -1923,7 +1970,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=138', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=139', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 

@@ -2701,7 +2701,96 @@ function _clearAuthUserCache() { _authUserCache.clear(); }
    Results are cached per token for 30 s; logout / suspend /
    force-logout / purchases call _clearAuthUserCache().
    ============================================================ */
-const AUTH_USER_FIELDS = 'role username fullName email purchases subscription activeSession suspended professor.status professor.courses';
+const AUTH_USER_FIELDS = 'role username fullName email purchases subscription activeSession sessions suspended professor.status professor.courses';
+
+/* ============================================================
+   ⭐ ADMIN MULTI-DEVICE SESSIONS (2026-10-08)
+   ------------------------------------------------------------
+   • Admin: up to ADMIN_MAX_SESSIONS (default 3) devices at once.
+     Session ids live in user.sessions[]; activeSession mirrors the
+     newest one (and a pre-upgrade admin token stored only there
+     keeps working until it expires).
+   • Student / professor: unchanged — single device, activeSession.
+   ============================================================ */
+const ADMIN_MAX_SESSIONS = Math.max(1, Math.min(10, parseInt((typeof process !== 'undefined' && process.env.ADMIN_MAX_SESSIONS) || '3', 10) || 3));
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;   // = JWT expiresIn '1d'
+
+function _isAdminRole(u) {
+  return !!u && String(u.role || '').trim().toLowerCase() === 'admin';
+}
+/* Every session id this account currently accepts. */
+function _validSessionIds(u) {
+  const ids = [];
+  if (u && u.activeSession && u.activeSession.sessionId) ids.push(String(u.activeSession.sessionId));
+  if (_isAdminRole(u) && Array.isArray(u.sessions)) {
+    for (const s of u.sessions) if (s && s.sessionId) ids.push(String(s.sessionId));
+  }
+  return ids;
+}
+/* Verdict for a token's sessionId → null when valid, else { code, message } */
+function _sessionVerdict(u, tokenSessionId) {
+  const ids = _validSessionIds(u);
+  if (!ids.length) {
+    return { code: 'SESSION_ENDED', message: 'You have been signed out. Please log in again.' };
+  }
+  if (!tokenSessionId || !ids.includes(String(tokenSessionId))) {
+    return _isAdminRole(u)
+      ? { code: 'SESSION_REPLACED', message: `This device was signed out — it was removed from the admin's signed-in devices, or the account was signed in on more than ${ADMIN_MAX_SESSIONS} devices.` }
+      : { code: 'SESSION_REPLACED', message: 'You were signed out because this account was signed in on another device.' };
+  }
+  return null;
+}
+function _shortDevice(ua) {
+  ua = String(ua || '');
+  let os = /Android/i.test(ua) ? 'Android' : /iPhone|iPad|iPod/i.test(ua) ? 'iOS' : /Windows/i.test(ua) ? 'Windows'
+         : /Mac OS X|Macintosh/i.test(ua) ? 'macOS' : /Linux/i.test(ua) ? 'Linux' : 'Unknown OS';
+  let br = /AeroGyan|; wv\)/i.test(ua) ? 'AeroGyan app' : /Edg\//i.test(ua) ? 'Edge' : /OPR\//i.test(ua) ? 'Opera'
+         : /Firefox\//i.test(ua) ? 'Firefox' : /Chrome\//i.test(ua) ? 'Chrome' : /Safari\//i.test(ua) ? 'Safari' : 'Browser';
+  return br + ' on ' + os;
+}
+
+/* Creates a new session for `user` after a successful login and returns
+   { sessionId, evicted }. Admin → added to the device list (oldest is
+   signed out beyond the limit). Everyone else → replaces activeSession. */
+async function _createLoginSession(user, req, extraSet) {
+  const sessionId  = crypto.randomBytes(24).toString('hex');
+  const deviceInfo = String((req && req.headers && req.headers['user-agent']) || 'Unknown device').slice(0, 200);
+  const ip         = String((req && (req.ip || req.headers['x-forwarded-for'])) || '').slice(0, 64);
+  const now        = new Date();
+  const set        = Object.assign({}, extraSet || {});
+  let evicted      = 0;
+
+  set.activeSession = { sessionId, deviceInfo, loginAt: now, lastSeenAt: now };
+
+  if (_isAdminRole(user)) {
+    const fresh = await User.findById(user._id).select('sessions activeSession').lean();
+    const cutoff = now.getTime() - SESSION_TTL_MS;
+    let list = ((fresh && fresh.sessions) || [])
+      .filter(s => s && s.sessionId && new Date(s.loginAt || 0).getTime() > cutoff);
+    /* carry over a pre-upgrade single session so it counts toward the limit */
+    const legacy = fresh && fresh.activeSession;
+    if (legacy && legacy.sessionId && new Date(legacy.loginAt || 0).getTime() > cutoff &&
+        !list.some(s => s.sessionId === legacy.sessionId)) {
+      list.push({ sessionId: legacy.sessionId, deviceInfo: legacy.deviceInfo || '', ip: '',
+                  loginAt: legacy.loginAt, lastSeenAt: legacy.lastSeenAt || legacy.loginAt });
+    }
+    list.push({ sessionId, deviceInfo, ip, loginAt: now, lastSeenAt: now });
+    if (list.length > ADMIN_MAX_SESSIONS) {
+      /* keep the most recently used devices — the new one is always kept */
+      list.sort((a, b) => new Date(b.lastSeenAt || b.loginAt || 0) - new Date(a.lastSeenAt || a.loginAt || 0));
+      const keep = list.filter(s => s.sessionId === sessionId)
+        .concat(list.filter(s => s.sessionId !== sessionId).slice(0, ADMIN_MAX_SESSIONS - 1));
+      evicted = list.length - keep.length;
+      list = keep;
+    }
+    set.sessions = list;
+  }
+
+  const upd = await User.updateOne({ _id: user._id }, { $set: set });
+  if (!upd || !(upd.matchedCount > 0)) throw new Error('session write did not match the account');
+  _clearAuthUserCache();
+  return { sessionId, evicted };
+}
 
 function _extractToken(req, allowLegacyQueryParam) {
   const auth = req.headers.authorization || '';
@@ -2743,14 +2832,8 @@ async function resolveSessionUser(token) {
   } else if (String(u.role || '').toLowerCase() === 'professor' && !(u.professor && u.professor.status === 'approved')) {
     result = { user: null, code: 'PROFESSOR_NOT_APPROVED', message: 'Your professor account is not active. Please contact the admin.' };
   } else {
-    const current = u.activeSession && u.activeSession.sessionId;
-    if (!current) {
-      result = { user: null, code: 'SESSION_ENDED', message: 'You have been signed out. Please log in again.' };
-    } else if (current !== decoded.sessionId) {
-      result = { user: null, code: 'SESSION_REPLACED', message: 'You were signed out because this account was signed in on another device.' };
-    } else {
-      result = { user: u, code: 'OK' };
-    }
+    const bad = _sessionVerdict(u, decoded.sessionId);
+    result = bad ? { user: null, code: bad.code, message: bad.message } : { user: u, code: 'OK' };
   }
   _setCachedAuthUser(token, result);
   return result;
@@ -4481,7 +4564,26 @@ async function linearizePdf(diskPath) {
 /* ============================================================
    ADMIN 2FA — pending login store
    ============================================================ */
-const adminLoginStore = new Map(); // pendingId → { userId, otp, expiresAt, attempts }
+const adminLoginStore = new Map(); // pendingId → { userId, role, otp, expiresAt, attempts }
+
+/* Login-OTP email for admin + professor accounts (2026-10-08) */
+function _loginOtpMail(user, role, otp, to, resent) {
+  const who   = (user && (user.fullName || user.username)) || 'there';
+  const label = role === 'professor' ? 'Professor' : 'Admin';
+  const esc   = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return {
+    to,
+    subject: `AeroGyan — ${label} login code${resent ? ' (resent)' : ''}: ${otp}`,
+    text: `Hi ${who},\n\nYour ${label.toLowerCase()} login code is: ${otp}\n\nIt is valid for 10 minutes. Do not share it with anyone.\n\nIf you did not try to sign in, change your password right away.\n\n— AeroGyan`,
+    html: `<div style="font-family:Inter,-apple-system,'Segoe UI',Roboto,Arial,sans-serif;max-width:520px;margin:0 auto;padding:28px 22px;color:#14161c;line-height:1.6;background:#ffffff;">
+      <div style="font-size:13px;font-weight:700;letter-spacing:.6px;color:#6366f1;text-transform:uppercase;">AeroGyan · ${label} sign-in</div>
+      <h2 style="font-size:20px;margin:10px 0 6px;">Hi ${esc(who)},</h2>
+      <p style="margin:0 0 18px;color:#4b5060;">Use this code to finish signing in. It expires in <strong>10 minutes</strong>.</p>
+      <div style="font-size:32px;font-weight:800;letter-spacing:10px;text-align:center;padding:16px;border-radius:12px;background:#f3f4ff;border:1px solid #dfe1ff;color:#1e1b4b;">${esc(otp)}</div>
+      <p style="margin:18px 0 0;font-size:13px;color:#8b8d98;">Never share this code. If you did not try to sign in, change your password right away.</p>
+    </div>`
+  };
+}
 
 /* ============================================================
    ADMIN SECURITY ALERT — emailed on any credential change
@@ -4738,17 +4840,23 @@ app.post('/api/login', async (req, res) => {
       );
     }
 
-    // ---------- Admin 2FA path ----------
-    if (String(user.role || '').trim().toLowerCase() === 'admin') {
-      const otpDestination = (user.email || process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+    // ---------- Email-OTP 2FA path: admin + professor (2026-10-08) ----------
+    const _otpRole = String(user.role || '').trim().toLowerCase();
+    if (_otpRole === 'admin' || _otpRole === 'professor') {
+      const isProfLogin = _otpRole === 'professor';
+      const otpDestination = (isProfLogin
+        ? (user.email || '')
+        : (user.email || process.env.ADMIN_EMAIL || '')).trim().toLowerCase();
       if (!otpDestination) {
         return res.status(400).json({
           success: false,
-          message: 'Admin has no email configured. Contact support.'
+          message: isProfLogin
+            ? 'No email address is registered for this professor account. Please contact the admin.'
+            : 'Admin has no email configured. Contact support.'
         });
       }
 
-      if (!user.email && process.env.ADMIN_EMAIL) {
+      if (!isProfLogin && !user.email && process.env.ADMIN_EMAIL) {
         try {
           user.email = otpDestination;
           await user.save();
@@ -4764,9 +4872,12 @@ app.post('/api/login', async (req, res) => {
       const pendingId = crypto.randomBytes(24).toString('hex');
       adminLoginStore.set(pendingId, {
         userId: user._id.toString(),
+        role: _otpRole,
         otp,
         expiresAt: Date.now() + 10 * 60 * 1000,
-        attempts: 0
+        attempts: 0,
+        resends: 0,
+        sentAt: Date.now()
       });
       setTimeout(() => adminLoginStore.delete(pendingId), 10 * 60 * 1000);
 
@@ -4774,13 +4885,9 @@ app.post('/api/login', async (req, res) => {
 
       try {
         await withTimeout(
-          transporter.sendMail({
-            to: otpDestination,
-            subject: 'Aerospace Portal — Admin Login OTP',
-            text: `Hi ${user.fullName || user.username},\n\nYour admin login OTP is: ${otp}\n\nValid for 10 minutes. Do not share.\n\nIf this wasn't you, ignore this email.`
-          }),
+          transporter.sendMail(_loginOtpMail(user, _otpRole, otp, otpDestination, false)),
           30000,
-          'Admin 2FA OTP send'
+          (isProfLogin ? 'Professor' : 'Admin') + ' 2FA OTP send'
         );
       } catch (emailErr) {
         console.error('[login-2fa] ❌ OTP send failed for', otpDestination, '·', emailErr.message);
@@ -4799,10 +4906,11 @@ app.post('/api/login', async (req, res) => {
         });
       }
 
-      console.log('[login-2fa] OTP sent to', otpDestination);
+      console.log(`[login-2fa] OTP sent to ${otpDestination} (${_otpRole})`);
       return res.json({
         success: true,
         requires2FA: true,
+        otpRole: _otpRole,
         pendingToken,
         maskedEmail: maskEmail(otpDestination),
         message: 'Password verified. Enter the OTP sent to your email.'
@@ -4975,44 +5083,30 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
     adminLoginStore.delete(decoded.pendingId);
 
     const user = await User.findById(record.userId);
-    if (!user || String(user.role || '').trim().toLowerCase() !== 'admin') {
-      return res.status(401).json({ success: false, message: 'Admin account not found.' });
+    const role = String((user && user.role) || '').trim().toLowerCase();
+    if (!user || (role !== 'admin' && role !== 'professor') || (record.role && record.role !== role)) {
+      return res.status(401).json({ success: false, message: 'Account not found. Please log in again.' });
+    }
+    /* the account may have changed during the 10 minutes the code was valid */
+    if (user.suspended && user.suspended.active) {
+      return res.status(403).json({ success: false, code: 'SUSPENDED', message: 'This account has been suspended. Please contact the admin.' });
+    }
+    if (role === 'professor' && !(user.professor && user.professor.status === 'approved')) {
+      return res.status(403).json({ success: false, code: 'PROFESSOR_NOT_APPROVED', message: 'Your professor account is not active. Please contact the admin.' });
     }
 
-    // Single-device session — atomic write (see /api/login for rationale)
-    const sessionId  = crypto.randomBytes(24).toString('hex');
-    const deviceInfo = String(req.headers['user-agent'] || 'Unknown device').slice(0, 200);
-    const now        = new Date();
-
-    let sessionOk = false;
+    /* Admin → joins the device list (max ADMIN_MAX_SESSIONS);
+       professor → single device, like students. */
+    let sessionId, evicted = 0;
     try {
-      const upd = await User.updateOne(
-        { _id: user._id },
-        {
-          $set: {
-            activeSession: { sessionId, deviceInfo, loginAt: now, lastSeenAt: now }
-          }
-        }
-      );
-      sessionOk = !!(upd && (upd.matchedCount || 0) > 0);
-
-      if (sessionOk) {
-        const verify = await User.findById(user._id).select('activeSession').lean();
-        sessionOk = !!(verify &&
-                       verify.activeSession &&
-                       verify.activeSession.sessionId === sessionId);
-      }
+      ({ sessionId, evicted } = await _createLoginSession(user, req));
     } catch (sessErr) {
-      console.error('[login-2fa/verify] ❌ could not persist activeSession:', sessErr);
+      console.error('[login-2fa/verify] ❌ could not persist session:', sessErr);
       return res.status(500).json({ success: false, message: 'Could not establish session.' });
     }
 
-    if (!sessionOk) {
-      return res.status(500).json({ success: false, message: 'Could not establish session.' });
-    }
-
-    console.log(`[login-2fa] 🔐 session issued · user=${user.username} · sid=${sessionId.slice(0,8)}…`);
-    _clearAuthUserCache();
+    console.log(`[login-2fa] 🔐 session issued · ${role}=${user.username} · sid=${sessionId.slice(0,8)}…` +
+                (evicted ? ` · signed out ${evicted} older device(s)` : ''));
 
     const token = jwt.sign(
       { id: user._id, role: user.role, sessionId },
@@ -5020,12 +5114,14 @@ app.post('/api/admin/login/verify-otp', async (req, res) => {
       { expiresIn: '1d' }
     );
 
-    console.log('[login-2fa] ✅ Admin login success:', user.username);
+    console.log(`[login-2fa] ✅ ${role} login success:`, user.username);
     return res.json({
       success: true,
       message: 'Login successful!',
       token,
-      user: serializeUser(user)
+      user: serializeUser(user),
+      maxSessions: role === 'admin' ? ADMIN_MAX_SESSIONS : 1,
+      evictedDevices: evicted
     });
 
   } catch (e) {
@@ -5071,7 +5167,7 @@ app.get('/api/auth/session-check', async (req, res) => {
     }
 
     const user = await User.findById(decoded.id)
-      .select('activeSession role username suspended')
+      .select('activeSession sessions role username suspended')
       .lean();
 
     if (!user) {
@@ -5090,41 +5186,33 @@ app.get('/api/auth/session-check', async (req, res) => {
       });
     }
 
-    const currentSessionId = user.activeSession && user.activeSession.sessionId;
-
-    /* ⭐ 2026-10-04: an empty activeSession means the user logged out (or an
-       admin forced a sign-out). That token must not be accepted any more. */
-    if (!currentSessionId) {
-      return res.status(401).json({
-        success: false,
-        code: 'SESSION_ENDED',
-        message: 'You have been signed out. Please log in again.'
-      });
-    }
-
-    if (currentSessionId !== decoded.sessionId) {
-      console.log(
-        `[session-check] ⚠️  session replaced · user=${user.username}` +
-        ` · token=${String(decoded.sessionId).slice(0,8)}…` +
-        ` · current=${String(currentSessionId).slice(0,8)}…`
-      );
-      return res.status(401).json({
-        success: false,
-        code: 'SESSION_REPLACED',
-        message: 'You were signed out because this account was just signed in on another device.'
-      });
+    /* ⭐ 2026-10-08: one verdict for every role (admin = up to
+       ADMIN_MAX_SESSIONS devices, everyone else = one device). */
+    const bad = _sessionVerdict(user, decoded.sessionId);
+    if (bad) {
+      if (bad.code === 'SESSION_REPLACED') {
+        console.log(`[session-check] ⚠️  session replaced · user=${user.username} · token=${String(decoded.sessionId).slice(0,8)}…`);
+      }
+      return res.status(401).json({ success: false, code: bad.code, message: bad.message });
     }
 
     // Fire-and-forget lastSeen update (throttled to at most 1 write / 5 min)
     const now = Date.now();
-    const lastSeen = user.activeSession.lastSeenAt
-      ? new Date(user.activeSession.lastSeenAt).getTime()
-      : 0;
-    if (now - lastSeen > 5 * 60 * 1000) {
-      User.updateOne(
-        { _id: user._id },
-        { $set: { 'activeSession.lastSeenAt': new Date() } }
-      ).catch(() => {});
+    const THROTTLE = 5 * 60 * 1000;
+    const act = user.activeSession || {};
+    if (act.sessionId === decoded.sessionId) {
+      const lastSeen = act.lastSeenAt ? new Date(act.lastSeenAt).getTime() : 0;
+      if (now - lastSeen > THROTTLE) {
+        User.updateOne({ _id: user._id }, { $set: { 'activeSession.lastSeenAt': new Date() } }).catch(() => {});
+      }
+    }
+    if (_isAdminRole(user) && Array.isArray(user.sessions)) {
+      const mine = user.sessions.find(s => s && s.sessionId === decoded.sessionId);
+      const lastSeen = mine && mine.lastSeenAt ? new Date(mine.lastSeenAt).getTime() : 0;
+      if (mine && now - lastSeen > THROTTLE) {
+        User.updateOne({ _id: user._id, 'sessions.sessionId': decoded.sessionId },
+                       { $set: { 'sessions.$.lastSeenAt': new Date() } }).catch(() => {});
+      }
     }
 
     res.json({ success: true, valid: true });
@@ -5153,13 +5241,25 @@ app.post('/api/auth/logout', async (req, res) => {
       return res.json({ success: true, message: 'Session already expired.' });
     }
 
-    const user = await User.findById(decoded.id).select('activeSession');
-    if (user && user.activeSession && user.activeSession.sessionId === decoded.sessionId) {
-      user.activeSession.sessionId = null;
-      user.activeSession.loginAt = null;
-      user.activeSession.lastSeenAt = null;
-      await user.save();
-      _clearAuthUserCache();
+    const user = await User.findById(decoded.id).select('activeSession sessions role').lean();
+    if (user && decoded.sessionId) {
+      const sid = String(decoded.sessionId);
+      const remaining = (_isAdminRole(user) && Array.isArray(user.sessions))
+        ? user.sessions.filter(s => s && s.sessionId && s.sessionId !== sid)
+        : [];
+      const set = {};
+      if (_isAdminRole(user) && remaining.length !== (user.sessions || []).length) set.sessions = remaining;
+      if (user.activeSession && user.activeSession.sessionId === sid) {
+        /* admin: the newest remaining device becomes the mirrored one */
+        const next = remaining.slice().sort((a, b) => new Date(b.loginAt || 0) - new Date(a.loginAt || 0))[0];
+        set.activeSession = next
+          ? { sessionId: next.sessionId, deviceInfo: next.deviceInfo || '', loginAt: next.loginAt, lastSeenAt: next.lastSeenAt }
+          : { sessionId: null, deviceInfo: (user.activeSession.deviceInfo || ''), loginAt: null, lastSeenAt: null };
+      }
+      if (Object.keys(set).length) {
+        await User.updateOne({ _id: user._id }, { $set: set });
+        _clearAuthUserCache();
+      }
     }
 
     res.json({ success: true, message: 'Logged out.' });
@@ -5167,6 +5267,82 @@ app.post('/api/auth/logout', async (req, res) => {
     console.error('[auth/logout]', e);
     res.status(500).json({ success: false, message: 'Server error.' });
   }
+});
+
+/* ============================================================
+   ⭐ ADMIN — signed-in devices (2026-10-08)
+   GET  /api/admin/sessions              list (max ADMIN_MAX_SESSIONS)
+   POST /api/admin/sessions/:sid/revoke  sign one device out
+   POST /api/admin/sessions/revoke-others  keep only this device
+   ============================================================ */
+function _tokenSessionId(req) {
+  try {
+    const t = _extractToken(req, false);
+    const d = t ? jwt.verify(t, JWT_SECRET, JWT_VERIFY_OPTS) : null;
+    return d && d.sessionId ? String(d.sessionId) : null;
+  } catch (_) { return null; }
+}
+async function _adminSessionList(userId) {
+  const u = await User.findById(userId).select('sessions activeSession role').lean();
+  if (!u) return [];
+  const cutoff = Date.now() - SESSION_TTL_MS;
+  const list = (u.sessions || []).filter(s => s && s.sessionId && new Date(s.loginAt || 0).getTime() > cutoff);
+  const a = u.activeSession;
+  if (a && a.sessionId && !list.some(s => s.sessionId === a.sessionId)) {
+    list.push({ sessionId: a.sessionId, deviceInfo: a.deviceInfo || '', ip: '', loginAt: a.loginAt, lastSeenAt: a.lastSeenAt });
+  }
+  return list;
+}
+app.get('/api/admin/sessions', requireAdminAuth, async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const mine = _tokenSessionId(req);
+    const list = await _adminSessionList(req.adminUser._id);
+    list.sort((a, b) => new Date(b.lastSeenAt || b.loginAt || 0) - new Date(a.lastSeenAt || a.loginAt || 0));
+    res.json({
+      success: true,
+      max: ADMIN_MAX_SESSIONS,
+      sessions: list.map(s => ({
+        id: crypto.createHash('sha256').update(String(s.sessionId)).digest('hex').slice(0, 16),
+        device: _shortDevice(s.deviceInfo),
+        ip: s.ip || '',
+        loginAt: s.loginAt || null,
+        lastSeenAt: s.lastSeenAt || s.loginAt || null,
+        current: s.sessionId === mine
+      }))
+    });
+  } catch (e) {
+    console.error('[admin/sessions]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+});
+async function _adminRevokeSessions(req, res, keepFn) {
+  try {
+    const mine = _tokenSessionId(req);
+    const list = await _adminSessionList(req.adminUser._id);
+    const keep = list.filter(s => keepFn(s, mine));
+    if (keep.length === list.length) return res.status(404).json({ success: false, message: 'Device not found — it may already be signed out.' });
+    const current = keep.find(s => s.sessionId === mine) || keep[0] || null;
+    await User.updateOne({ _id: req.adminUser._id }, { $set: {
+      sessions: keep,
+      activeSession: current
+        ? { sessionId: current.sessionId, deviceInfo: current.deviceInfo || '', loginAt: current.loginAt, lastSeenAt: current.lastSeenAt }
+        : { sessionId: null, deviceInfo: '', loginAt: null, lastSeenAt: null }
+    } });
+    _clearAuthUserCache();
+    console.log(`[admin/sessions] 🔌 ${req.adminUser.username} signed out ${list.length - keep.length} device(s)`);
+    res.json({ success: true, removed: list.length - keep.length });
+  } catch (e) {
+    console.error('[admin/sessions/revoke]', e);
+    res.status(500).json({ success: false, message: 'Server error.' });
+  }
+}
+const _sidHash = (sid) => crypto.createHash('sha256').update(String(sid)).digest('hex').slice(0, 16);
+app.post('/api/admin/sessions/revoke-others', requireAdminAuth, (req, res) =>
+  _adminRevokeSessions(req, res, (s, mine) => s.sessionId === mine));
+app.post('/api/admin/sessions/:id/revoke', requireAdminAuth, (req, res) => {
+  const target = String(req.params.id || '');
+  return _adminRevokeSessions(req, res, (s, mine) => s.sessionId === mine || _sidHash(s.sessionId) !== target);
 });
 
 /* ============================================================
@@ -5189,31 +5365,42 @@ app.post('/api/admin/login/resend-otp', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Session expired. Please log in again.' });
     }
 
+    /* ⭐ 2026-10-08: at most 5 resends per sign-in, 30 s apart — otherwise
+       "resend" would hand out unlimited fresh guessing attempts. */
+    if ((oldRecord.resends || 0) >= 5) {
+      return res.status(429).json({ success: false, message: 'Too many codes requested. Please sign in again.' });
+    }
+    const _waitMs = 30000 - (Date.now() - (oldRecord.sentAt || 0));
+    if (_waitMs > 0) {
+      return res.status(429).json({ success: false, retryAfter: Math.ceil(_waitMs / 1000), message: `Please wait ${Math.ceil(_waitMs / 1000)} s before asking for a new code.` });
+    }
+
     const user = await User.findById(oldRecord.userId);
-    if (!user) return res.status(404).json({ success: false, message: 'Admin account not found.' });
+    if (!user) return res.status(404).json({ success: false, message: 'Account not found.' });
 
     // Generate new OTP + new pendingId (single-use)
     const newOtp = crypto.randomInt(100000, 1000000).toString();
     const newPendingId = crypto.randomBytes(24).toString('hex');
     adminLoginStore.set(newPendingId, {
       userId: user._id.toString(),
+      role: oldRecord.role || String(user.role || '').trim().toLowerCase(),
       otp: newOtp,
       expiresAt: Date.now() + 10 * 60 * 1000,
-      attempts: 0
+      attempts: 0,
+      resends: (oldRecord.resends || 0) + 1,
+      sentAt: Date.now()
     });
     adminLoginStore.delete(decoded.pendingId);  // invalidate the old one
     setTimeout(() => adminLoginStore.delete(newPendingId), 10 * 60 * 1000);
 
     const newPendingToken = jwt.sign({ pendingId: newPendingId }, JWT_SECRET, { expiresIn: '10m' });
 
+    const _resendRole = oldRecord.role || String(user.role || '').trim().toLowerCase();
+    const _resendTo = _resendRole === 'professor' ? user.email : (user.email || process.env.ADMIN_EMAIL);
     await withTimeout(
-      transporter.sendMail({
-        to: user.email || process.env.ADMIN_EMAIL,
-        subject: 'Aerospace Portal — Admin Login OTP (resent)',
-        text: `Hi ${user.fullName || user.username},\n\nYour new admin login OTP is: ${newOtp}\n\nValid for 10 minutes. Do not share.`
-      }),
+      transporter.sendMail(_loginOtpMail(user, _resendRole, newOtp, _resendTo, true)),
       30000,
-      'Admin 2FA resend'
+      'Login 2FA resend'
     );
 
     res.json({ success: true, message: 'New OTP sent to your email.', pendingToken: newPendingToken });
@@ -5754,7 +5941,9 @@ app.post('/api/forgot-password/reset', async (req, res) => {
     user.password = await bcrypt.hash(newPassword, 10);
     /* ⭐ A password reset ends every existing session (stolen tokens die too). */
     if (user.activeSession) user.activeSession.sessionId = null;
+    user.sessions = [];   // ⭐ admin: every device is signed out
     await user.save();
+    _clearAuthUserCache();
 
     // Notify admins that their password was reset via recovery
     if (user.role === 'admin') {
@@ -5834,6 +6023,7 @@ app.post('/api/admin/reset-password/:userId', requireAdminAuth, async (req, res)
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
     user.password = await bcrypt.hash(String(newPassword), 10);
     if (user.activeSession) user.activeSession.sessionId = null;   // ⭐ old sessions end
+    user.sessions = [];
     await user.save();
     _clearAuthUserCache();
     res.json({ success: true, message: 'Password reset successfully.', password: newPassword });
@@ -11565,7 +11755,7 @@ async function _setProfessorStatus(req, res, status, verb) {
       'professor.reviewedBy': String(req.authUser.username || ''), 'professor.reviewNote': note
     };
     /* revoking also ends the professor's current session everywhere */
-    if (status === 'revoked') set['activeSession.sessionId'] = null;
+    if (status === 'revoked') { set['activeSession.sessionId'] = null; set.sessions = []; }
     const u = await User.findOneAndUpdate({ _id: req.params.id, role: 'professor' }, { $set: set }, { new: true })
       .select('username fullName email professor');
     if (!u) return res.status(404).json({ success: false, message: 'Professor not found.' });

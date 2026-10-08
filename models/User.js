@@ -225,7 +225,23 @@ const userSchema = new mongoose.Schema({
     deviceInfo: { type: String, default: '' },
     loginAt:    { type: Date,   default: null },
     lastSeenAt: { type: Date,   default: null }
-  }
+  },
+
+  /* ============================================================
+     ⭐ ADMIN MULTI-DEVICE SESSIONS (2026-10-08)
+     Admin accounts may stay signed in on up to ADMIN_MAX_SESSIONS
+     (default 3) devices at once. Signing in on one more device signs
+     out the least-recently-used one. Students and professors keep
+     the single-device `activeSession` above — this list stays empty.
+     ============================================================ */
+  sessions: [{
+    _id:        false,
+    sessionId:  { type: String, required: true },
+    deviceInfo: { type: String, default: '' },
+    ip:         { type: String, default: '' },
+    loginAt:    { type: Date,   default: Date.now },
+    lastSeenAt: { type: Date,   default: Date.now }
+  }]
 }, { timestamps: true });
 
 userSchema.index({ email: 1 });
