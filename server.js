@@ -13928,6 +13928,41 @@ function getGeminiClient() {
   return _geminiClient;
 }
 
+/* ⭐ AI engine v3 (2026-10-08) — Gemini + Groq, model picker, fallbacks.
+   See ai-engine.js. GROQ_API_KEY is optional; GEMINI_API_KEY is optional;
+   at least one is needed. AI_MODELS (comma list) pins the models. */
+const { createAiEngine } = require('./ai-engine');
+const aiEngine = createAiEngine({ getGeminiClient, logger: console });
+const AI_MODEL_ID_RE = /^(auto|(gemini|groq):[A-Za-z0-9._\/-]{2,80})$/;
+function _aiPickedModel(v) {
+  const s = String(v || '').trim();
+  return AI_MODEL_ID_RE.test(s) ? s : 'auto';
+}
+
+/* GET /api/ai/models — what the model picker shows */
+app.get('/api/ai/models', requireUser, async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store, private');
+    const out = await aiEngine.publicList();
+    res.json(Object.assign({ success: true }, out));
+  } catch (e) {
+    console.error('[ai/models]', e);
+    res.status(500).json({ success: false, message: 'Could not load the AI models.' });
+  }
+});
+
+/* POST /api/admin/ai/test — admin health check of every model */
+app.post('/api/admin/ai/test', requireAdminAuth, async (req, res) => {
+  try {
+    if (!aiEngine.configured()) return res.json({ success: true, results: [], providers: { gemini: false, groq: false } });
+    const results = await aiEngine.testAll();
+    res.json({ success: true, results, providers: { gemini: aiEngine.hasGemini(), groq: aiEngine.hasGroq() }, listErrors: aiEngine.catalogErrors() });
+  } catch (e) {
+    console.error('[admin/ai/test]', e);
+    res.status(500).json({ success: false, message: 'Test failed: ' + e.message });
+  }
+});
+
 /* ============================================================
    POST /api/ai/solve-doubt
    Body:    { question: string, courseId?: string }
@@ -13944,11 +13979,11 @@ app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) =>
     if (String(question).length > 8000) {
       return res.status(400).json({ success: false, message: 'Question too long (max 8000 chars).' });
     }
-    if (!process.env.GEMINI_API_KEY) {
-      console.error('[ai] ❌ GEMINI_API_KEY is not set');
+    if (!aiEngine.configured()) {
+      console.error('[ai] ❌ neither GEMINI_API_KEY nor GROQ_API_KEY is set');
       return res.status(500).json({
         success: false,
-        message: 'AI is not configured. Please ask the admin to set GEMINI_API_KEY.'
+        message: 'AI is not configured. Please ask the admin to set GEMINI_API_KEY or GROQ_API_KEY.'
       });
     }
 
@@ -13990,91 +14025,26 @@ app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) =>
       ? `${contextBlock}\nStudent's doubt: ${question}`
       : `Student's doubt: ${question}`;
 
-    /* ---------- 5. Model fallback chain (auto-discovered) ---------- */
-    // Ask Google what models your key can actually use.
-    // Cache the result for 10 minutes so we don't hit the API every request.
-    /* Shared with /api/ai/chat — filtered, ranked, cached 10 min. */
-    const MODELS = await aiModelChain();
-
-    if (MODELS.length === 0) {
-      return res.status(503).json({
-        success: false,
-        message: 'AI is not configured — no usable Gemini models were found for this API key.'
-      });
+    /* ---------- 5. ⭐ v3 engine: picked model → fallbacks (Gemini + Groq) ---------- */
+    const catalog = await aiEngine.getCatalog();
+    const plan = aiEngine.buildChain(catalog, _aiPickedModel((req.body || {}).model), {});
+    if (!plan.chain.length) {
+      return res.status(503).json({ success: false, message: 'AI is not configured — no usable AI models were found.' });
     }
-
-    let answer = null;
-    let usedModel = null;
-    let lastError = null;
-
-    const ai = getGeminiClient();
-
-    for (const model of MODELS) {
-      try {
-        console.log(`[ai] Trying model: ${model}`);
-        const t0 = Date.now();
-
-        const response = await ai.models.generateContent({
-          model,
-          contents: userPrompt,
-          config: {
-            systemInstruction,
-            temperature: 0.5,
-            maxOutputTokens: 8192        // 2.5 models count "thinking" here — 2048 cut answers short
-          }
-        });
-
-        // @google/genai v2.x — `response.text` is a getter, not a function.
-        const text = typeof response.text === 'function'
-          ? response.text()
-          : response.text;
-
-        if (text && String(text).trim()) {
-          answer = String(text).trim();
-          usedModel = model;
-          console.log(`[ai] ✅ ${model} succeeded (${answer.length} chars in ${Date.now() - t0}ms)`);
-          break;
-        }
-
-        console.warn(`[ai] Model "${model}" returned empty text`);
-        lastError = { model, message: 'Empty response' };
-      } catch (err) {
-        const msg = err && err.message ? err.message : String(err);
-        const status = err && (err.status || err.statusCode || (err.error && err.error.code));
-        console.error(`[ai] ❌ Model "${model}" failed:`, msg);
-        lastError = { model, message: msg, status };
-      }
-    }
-
-    /* ---------- 6. Friendly failure ---------- */
-    if (!answer) {
-      let friendly = 'AI is temporarily unavailable. Please try again in a moment.';
-      if (lastError) {
-        const status = lastError.status;
-        const msg = String(lastError.message || '');
-        if (status === 401 || status === 403) {
-          friendly = 'AI authentication failed. Please ask the admin to verify GEMINI_API_KEY.';
-        } else if (status === 429) {
-          friendly = 'AI rate limit reached. Please wait a minute and try again.';
-        } else if (status === 400) {
-          friendly = 'AI could not process that request. Try rephrasing your question.';
-        } else if (status === 404) {
-          friendly = 'AI model unavailable. Please contact admin to update the model name.';
-        } else if (/network|fetch|ENOTFOUND|ETIMEDOUT|ECONNREFUSED/i.test(msg)) {
-          friendly = 'Network error reaching the AI service. Check the server internet connection.';
-        } else if (/api key|API_KEY_INVALID|invalid.*key/i.test(msg)) {
-          friendly = 'AI API key is invalid. Please ask the admin to check GEMINI_API_KEY.';
-        }
-      }
-      return res.status(503).json({ success: false, message: friendly });
-    }
-
-    /* ---------- 7. Success ---------- */
-    return res.json({
-      success: true,
-      answer,
-      model: usedModel
+    let answer = '';
+    const t0 = Date.now();
+    const result = await aiEngine.run({
+      chain: plan.chain,
+      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+      system: systemInstruction, temperature: 0.5, maxTokens: 8192,
+      onDelta: (t) => { answer += t; }
     });
+    if (!result.used || !answer.trim()) {
+      const f = aiEngine.failureMessage(result, plan.chain);
+      return res.status(503).json({ success: false, message: f.message, retryAfter: f.retryAfter });
+    }
+    console.log(`[ai/solve-doubt] ✅ ${result.used.id} · ${answer.length} chars · ${Date.now() - t0} ms`);
+    return res.json({ success: true, answer: answer.trim(), model: result.used.label, modelId: result.used.id, partial: !!result.partial });
 
   } catch (e) {
     console.error('[ai/solve-doubt] Fatal:', e);
@@ -14126,42 +14096,7 @@ const aiUpload = multer({
   limits: { fileSize: AI_LIMITS.fileBytes, files: AI_LIMITS.files, fields: 12, fieldSize: 256 * 1024, parts: 24 }
 });
 
-/* ---- Which Gemini models to try, best first (cached 10 min) ----
-   AI_MODELS in .env (comma separated) overrides the automatic order. */
-const AI_SKIP_MODEL_RE = /(tts|image|embedding|live|audio|veo|imagen|aqa|robotics|computer-use|learnlm|gemma|nano)/i;
-async function aiModelChain() {
-  const forced = String(process.env.AI_MODELS || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (forced.length) return forced;
-  const now = Date.now();
-  if (!global.__aeroAiModelCache || (now - global.__aeroAiModelCache.at) > 10 * 60 * 1000) {
-    try {
-      const listResp = await getGeminiClient().models.list();
-      const discovered = [];
-      for await (const m of listResp) {
-        const id = String(m.name || '').replace(/^models\//, '');
-        if (!id || !/^gemini/i.test(id) || AI_SKIP_MODEL_RE.test(id)) continue;
-        const methods = m.supportedActions || m.supportedGenerationMethods || [];
-        const canGenerate = Array.isArray(methods) ? methods.some(x => /generateContent/i.test(x)) : true;
-        if (canGenerate) discovered.push(id);
-      }
-      const rank = (s) => {
-        let r = /pro/.test(s) ? 30 : /flash-lite|lite/.test(s) ? 10 : /flash/.test(s) ? 20 : 0;
-        const v = (s.match(/(\d+(?:\.\d+)?)/) || [])[1];
-        r += v ? Math.min(9, parseFloat(v)) : 0;             // newer generation first
-        if (/latest/.test(s)) r += 0.5;
-        if (/preview|exp/.test(s)) r -= 3;                    // stable before preview
-        return r;
-      };
-      discovered.sort((a, b) => rank(b) - rank(a) || a.length - b.length);
-      global.__aeroAiModelCache = { at: now, models: discovered };
-      console.log('[ai] Discovered models:', discovered.join(', '));
-    } catch (e) {
-      console.warn('[ai] Model discovery failed, using static fallback:', e.message);
-      global.__aeroAiModelCache = { at: now - 9 * 60 * 1000, models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'] };
-    }
-  }
-  return (global.__aeroAiModelCache.models || []).slice(0, 4);
-}
+/* (v2 aiModelChain removed 2026-10-08 — model choice now lives in ai-engine.js) */
 
 function aiFriendlyError(lastError) {
   let friendly = 'AI is temporarily unavailable. Please try again in a moment.';
@@ -14377,8 +14312,8 @@ async function _aiChatHandler(req, res) {
   if (question.length > AI_LIMITS.questionChars) {
     return res.status(400).json({ success: false, message: `Message too long (max ${AI_LIMITS.questionChars} characters). Attach long text as a .txt file instead.` });
   }
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(503).json({ success: false, message: 'AI is not configured. Please ask the admin to set GEMINI_API_KEY.' });
+  if (!aiEngine.configured()) {
+    return res.status(503).json({ success: false, message: 'AI is not configured. Please ask the admin to set GEMINI_API_KEY or GROQ_API_KEY.' });
   }
   const convId = /^[A-Za-z0-9_-]{8,64}$/.test(String(body.convId || '')) ? String(body.convId) : '';
   const convKey = convId ? req.authUserId + ':' + convId : '';
@@ -14433,10 +14368,19 @@ async function _aiChatHandler(req, res) {
   userParts.push({ text: contextText + (question || 'Please read the attached file(s) and solve / explain the question(s) in them step by step.') });
   contents.push({ role: 'user', parts: userParts });
 
-  /* 5. Stream the answer */
-  const chain = await aiModelChain();
-  if (!chain.length) {
-    return res.status(503).json({ success: false, message: 'AI is not configured — no usable Gemini models were found for this API key.' });
+  /* 5. ⭐ v3: pick the model chain (what the attachments need decides
+        which models can answer), then stream from the first that works */
+  const allParts = contents.reduce((a, c) => a.concat(c.parts || []), []);
+  const needs = {
+    pdf: allParts.some(p => p.inlineData && /pdf/i.test(p.inlineData.mimeType || '')),
+    images: allParts.some(p => p.inlineData && /^image\//i.test(p.inlineData.mimeType || ''))
+  };
+  const catalog = await aiEngine.getCatalog();
+  const plan = aiEngine.buildChain(catalog, _aiPickedModel(body.model), needs);
+  if (!plan.chain.length) {
+    return res.status(503).json({ success: false, message: catalog.length
+      ? 'None of the available AI models can read this kind of attachment. Please attach the question as text, or ask the admin to add a Gemini key.'
+      : 'AI is not configured — no usable AI models were found for the server\'s API keys.' });
   }
 
   res.status(200);
@@ -14454,58 +14398,31 @@ async function _aiChatHandler(req, res) {
   res.on('close', () => { if (!res.writableEnded) { clientGone = true; ac.abort(); } });
   const ping = setInterval(() => send({ t: 'ping' }), 8000);
 
-  send({ t: 'meta', files: prepared.accepted, earlierFiles: earlierParts.length ? earlierParts.length - 1 : 0 });
+  send({ t: 'meta', files: prepared.accepted, earlierFiles: earlierParts.length ? earlierParts.length - 1 : 0,
+         requested: plan.requested ? plan.requested.label : null, switched: plan.switched });
 
-  const ai = getGeminiClient();
-  let usedModel = null;
-  let lastError = null;
-  let partial = false;
   let total = 0;
   const t0 = Date.now();
+  let result;
   try {
-    for (const model of chain) {
-      if (clientGone) break;
-      let got = 0;
-      try {
-        const stream = await ai.models.generateContentStream({
-          model, contents,
-          config: { systemInstruction: AI_SYSTEM_V2, temperature: 0.4, maxOutputTokens: 8192, abortSignal: ac.signal }
-        });
-        let finish = '';
-        for await (const chunk of stream) {
-          if (clientGone) break;
-          let t = '';
-          try { t = chunk && chunk.text; } catch (_) { t = ''; }
-          if (t) { got += t.length; send({ t: 'delta', text: t }); }
-          const c0 = chunk && chunk.candidates && chunk.candidates[0];
-          if (c0 && c0.finishReason) finish = String(c0.finishReason);
-          if (!t && chunk && chunk.promptFeedback && chunk.promptFeedback.blockReason) finish = 'SAFETY';
-        }
-        if (got) {
-          usedModel = model; total = got;
-          if (finish === 'MAX_TOKENS') partial = true;
-          break;
-        }
-        lastError = { model, message: finish === 'SAFETY' ? 'blocked by safety' : 'Empty response' };
-        if (finish === 'SAFETY') break;                    // another model would refuse too
-      } catch (err) {
-        if (clientGone) break;
-        const msg = err && err.message ? err.message : String(err);
-        const status = err && (err.status || err.statusCode || (err.error && err.error.code));
-        console.error(`[ai/chat] ❌ ${model}:`, msg.slice(0, 300));
-        lastError = { model, message: msg, status };
-        if (got) { usedModel = model; total = got; partial = true; break; }   // keep what was written
-      }
-    }
+    result = await aiEngine.run({
+      chain: plan.chain, contents, system: AI_SYSTEM_V2, temperature: 0.4, maxTokens: 8192, signal: ac.signal,
+      onModel: (e, i) => send({ t: 'model', id: e.id, label: e.label, attempt: i + 1 }),
+      onDelta: (t) => { total += t.length; send({ t: 'delta', text: t }); }
+    });
   } finally {
     clearInterval(ping);
   }
   if (clientGone) { console.log('[ai/chat] client stopped the answer'); return; }
-  if (usedModel) {
-    console.log(`[ai/chat] ✅ ${usedModel} · ${total} chars · ${prepared.accepted.length} file(s) · ${Date.now() - t0} ms`);
-    send({ t: 'done', model: usedModel, partial, filesExpired });
+  if (result.used) {
+    const fellBack = plan.requested && result.used.id !== plan.requested.id;
+    console.log(`[ai/chat] ✅ ${result.used.id} · ${total} chars · ${prepared.accepted.length} file(s) · ${Date.now() - t0} ms` +
+                (result.attempts.length > 1 ? ` · after ${result.attempts.length - 1} fallback(s)` : ''));
+    send({ t: 'done', model: result.used.label, modelId: result.used.id, partial: !!result.partial, filesExpired,
+           requested: plan.requested ? plan.requested.label : null, fallback: !!fellBack, switched: plan.switched });
   } else {
-    send({ t: 'error', message: aiFriendlyError(lastError) });
+    const f = aiEngine.failureMessage(result, plan.chain);
+    send({ t: 'error', message: f.message, retryAfter: f.retryAfter || null });
   }
   res.end();
 }

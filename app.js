@@ -17000,6 +17000,7 @@ async function askAIDoubt(courseId, postPublicly = false) {
       body: JSON.stringify({
         question,
         courseId,
+        model: (typeof _aiSelectedModel === 'string' && _aiSelectedModel) || 'auto',
         userId: currentUser ? currentUser._id : null
       })
     });
@@ -17018,7 +17019,7 @@ async function askAIDoubt(courseId, postPublicly = false) {
     answerBox.innerHTML = `
       <div class="ai-answer-header">
         <i class="fas fa-robot"></i> <strong>AI Assistant</strong>
-        <span class="ai-badge">Beta</span>
+        <span class="ai-badge">${escapeHtml(data.model || 'Beta')}</span>
       </div>
       <div class="ai-answer-body" id="aiAnswerBody-${courseId}">${renderMarkdown(data.answer)}</div>
       <div class="ai-answer-footer">
@@ -17989,6 +17990,218 @@ function ensureStudentAIHomeView() {
 
 /* The composer is built here (one source of truth). Any older
    markup from a cached index.html is replaced on first render. */
+/* ============================================================
+   ⭐ AI MODEL PICKER (2026-10-08)
+   ------------------------------------------------------------
+   The server lists the models it can use (Gemini + Groq). "Auto"
+   lets the server pick the best one that is free right now; a
+   picked model that is busy or can't read the attachment is
+   swapped automatically and the answer says which model replied.
+   The choice is remembered on this device.
+   ============================================================ */
+const AI_MODEL_KEY = 'aero_ai_model';
+let _aiModels = null;            // { models:[…], providers:{…} }
+let _aiModelsAt = 0;
+let _aiModelsLoading = null;
+let _aiSelectedModel = (function () { try { return localStorage.getItem(AI_MODEL_KEY) || 'auto'; } catch (_) { return 'auto'; } })();
+
+function _aiModelById(id) { return ((_aiModels && _aiModels.models) || []).find(m => m.id === id) || null; }
+function _aiModelShortLabel(full) {
+  if (!_aiSelectedModel || _aiSelectedModel === 'auto') return full ? '' : 'Auto';
+  const m = _aiModelById(_aiSelectedModel);
+  if (m) return m.label;
+  /* list not loaded yet — derive a readable name from the id */
+  const raw = String(_aiSelectedModel).split(':').slice(1).join(':').split('/').pop() || 'Model';
+  return raw.replace(/^gemini-/, 'Gemini ').replace(/-/g, ' ').replace(/\b(\w)/g, c => c.toUpperCase());
+}
+function _aiUpdateModelBtn() {
+  const l = document.getElementById('aiModelBtnLabel');
+  if (l) l.textContent = _aiModelShortLabel();
+  const b = document.getElementById('aiModelBtn');
+  if (b) {
+    b.classList.toggle('is-custom', !!_aiSelectedModel && _aiSelectedModel !== 'auto');
+    b.title = 'AI model: ' + (_aiSelectedModel === 'auto' ? 'Auto (best available)' : _aiModelShortLabel());
+  }
+}
+async function loadAIModels(force) {
+  if (!force && _aiModels && Date.now() - _aiModelsAt < 60000) return _aiModels;
+  if (_aiModelsLoading) return _aiModelsLoading;
+  _aiModelsLoading = (async () => {
+    try {
+      const d = await fetchJSON(`${API_BASE}/ai/models?_t=${Date.now()}`, { cache: 'no-store' });
+      if (d && d.success) {
+        _aiModels = { models: d.models || [], providers: d.providers || {} };
+        _aiModelsAt = Date.now();
+        /* a remembered model that the server no longer offers → back to Auto */
+        if (_aiSelectedModel !== 'auto' && !_aiModelById(_aiSelectedModel)) aiSelectModel('auto', true);
+      }
+    } catch (e) { console.warn('[ai/models]', e && e.message); }
+    finally { _aiModelsLoading = null; _aiUpdateModelBtn(); }
+    return _aiModels;
+  })();
+  return _aiModelsLoading;
+}
+function aiSelectModel(id, silent) {
+  _aiSelectedModel = id || 'auto';
+  try { localStorage.setItem(AI_MODEL_KEY, _aiSelectedModel); } catch (_) {}
+  _aiUpdateModelBtn();
+  if (!silent) {
+    const m = _aiModelById(_aiSelectedModel);
+    showToast(_aiSelectedModel === 'auto' ? 'Auto: the best available model answers.' : `${m ? m.label : 'Model'} will answer your questions.`, 'success');
+  }
+  const pop = document.getElementById('aiModelMenu');
+  if (pop) _aiRenderModelMenu(pop);
+}
+function _aiBusyText(sec) {
+  if (!sec) return '';
+  return sec >= 90 ? `busy · ~${Math.ceil(sec / 60)} min` : `busy · ${sec}s`;
+}
+function _aiTagHTML(t) {
+  const map = { fast: ['fa-bolt', 'Fast'], reasoning: ['fa-brain', 'Deep reasoning'], files: ['fa-file-image', 'Images & PDFs'], images: ['fa-image', 'Images'] };
+  const x = map[t]; if (!x) return '';
+  return `<span class="ai-mm-tag ai-mm-tag-${t}"><i class="fas ${x[0]}"></i>${x[1]}</span>`;
+}
+function _aiRenderModelMenu(pop) {
+  const list = (_aiModels && _aiModels.models) || [];
+  const sel = _aiSelectedModel || 'auto';
+  const groups = [];
+  list.forEach(m => { let g = groups.find(x => x.name === m.group); if (!g) groups.push(g = { name: m.group, items: [] }); g.items.push(m); });
+  const item = (m) => `
+    <button type="button" class="ai-mm-item ${m.id === sel ? 'is-on' : ''} ${m.busy ? 'is-busy' : ''}" role="option" aria-selected="${m.id === sel}" data-ai-model="${escapeHtml(m.id)}">
+      <span class="ai-mm-radio" aria-hidden="true"></span>
+      <span class="ai-mm-text">
+        <span class="ai-mm-name">${escapeHtml(m.label)}${m.busy ? `<span class="ai-mm-busy"><i class="fas fa-hourglass-half"></i> ${_aiBusyText(m.busy)}</span>` : ''}</span>
+        <span class="ai-mm-desc">${escapeHtml(m.desc || '')}</span>
+        <span class="ai-mm-tags">${(m.tags || []).map(_aiTagHTML).join('')}</span>
+      </span>
+    </button>`;
+  const anyBusy = list.filter(m => m.busy).length;
+  pop.innerHTML = `
+    <div class="ai-mm-head">
+      <div><strong>Choose AI model</strong><span>${list.length ? `${list.length} models available${anyBusy ? ` · ${anyBusy} busy` : ''}` : (_aiModels ? 'No AI models are configured on the server.' : 'Loading models…')}</span></div>
+      <button type="button" class="ai-mm-close" data-ai-mm-close aria-label="Close"><i class="fas fa-xmark"></i></button>
+    </div>
+    <div class="ai-mm-body" role="listbox" aria-label="AI model">
+      <button type="button" class="ai-mm-item ai-mm-auto ${sel === 'auto' ? 'is-on' : ''}" role="option" aria-selected="${sel === 'auto'}" data-ai-model="auto">
+        <span class="ai-mm-radio" aria-hidden="true"></span>
+        <span class="ai-mm-text">
+          <span class="ai-mm-name"><i class="fas fa-wand-magic-sparkles"></i> Auto <span class="ai-mm-rec">Recommended</span></span>
+          <span class="ai-mm-desc">Uses the best model that is free right now and switches instantly if one is busy.</span>
+        </span>
+      </button>
+      ${groups.map(g => `<div class="ai-mm-group">${escapeHtml(g.name)}</div>${g.items.map(item).join('')}`).join('')}
+      ${!list.length && !_aiModels ? '<div class="ai-mm-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>' : ''}
+    </div>
+    <div class="ai-mm-foot">
+      <span><i class="fas fa-circle-info"></i> If your pick is busy or can't read your file, another model answers and we tell you which.</span>
+      ${typeof isAdmin === 'function' && isAdmin(currentUser) ? '<button type="button" class="ai-mm-test" data-ai-mm-test><i class="fas fa-stethoscope"></i> Test all models</button>' : ''}
+    </div>`;
+}
+function _aiPlaceModelMenu(pop) {
+  const btn = document.getElementById('aiModelBtn');
+  if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const ov = document.getElementById('aiModelMenuOv');
+  if (ov) ov.classList.toggle('is-dim', vw <= 600);
+  if (vw <= 600) { pop.classList.add('is-sheet'); pop.style.left = pop.style.top = pop.style.bottom = ''; return; }
+  pop.classList.remove('is-sheet');
+  const w = Math.min(420, vw - 24);
+  pop.style.width = w + 'px';
+  pop.style.left = Math.max(12, Math.min(r.left, vw - w - 12)) + 'px';
+  const spaceAbove = r.top - 12, spaceBelow = vh - r.bottom - 12;
+  if (spaceAbove >= 320 || spaceAbove > spaceBelow) {
+    pop.style.top = ''; pop.style.bottom = (vh - r.top + 8) + 'px';
+    pop.style.maxHeight = Math.max(240, spaceAbove - 8) + 'px';
+  } else {
+    pop.style.bottom = ''; pop.style.top = (r.bottom + 8) + 'px';
+    pop.style.maxHeight = Math.max(240, spaceBelow - 8) + 'px';
+  }
+}
+function aiCloseModelMenu() {
+  const pop = document.getElementById('aiModelMenu');
+  const ov = document.getElementById('aiModelMenuOv');
+  if (pop) pop.remove();
+  if (ov) ov.remove();
+  const b = document.getElementById('aiModelBtn');
+  if (b) b.setAttribute('aria-expanded', 'false');
+  document.removeEventListener('keydown', _aiModelMenuKeys, true);
+  window.removeEventListener('resize', _aiModelMenuReplace);
+}
+function _aiModelMenuReplace() { const pop = document.getElementById('aiModelMenu'); if (pop) _aiPlaceModelMenu(pop); }
+function _aiModelMenuKeys(e) {
+  if (e.key === 'Escape') { e.preventDefault(); aiCloseModelMenu(); const b = document.getElementById('aiModelBtn'); if (b) b.focus(); return; }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  const items = Array.from(document.querySelectorAll('#aiModelMenu .ai-mm-item'));
+  if (!items.length) return;
+  e.preventDefault();
+  let i = items.indexOf(document.activeElement);
+  i = e.key === 'ArrowDown' ? (i + 1) % items.length : (i <= 0 ? items.length - 1 : i - 1);
+  items[i].focus();
+}
+function aiOpenModelMenu() {
+  if (document.getElementById('aiModelMenu')) return;
+  const ov = document.createElement('div');
+  ov.id = 'aiModelMenuOv'; ov.className = 'ai-mm-ov';
+  ov.addEventListener('click', aiCloseModelMenu);
+  const pop = document.createElement('div');
+  pop.id = 'aiModelMenu'; pop.className = 'ai-mm'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Choose AI model');
+  pop.addEventListener('click', (e) => {
+    if (e.target.closest('[data-ai-mm-close]')) return aiCloseModelMenu();
+    if (e.target.closest('[data-ai-mm-test]')) return aiTestAllModels();
+    const it = e.target.closest('[data-ai-model]');
+    if (it) { aiSelectModel(it.dataset.aiModel); setTimeout(aiCloseModelMenu, 120); }
+  });
+  _aiRenderModelMenu(pop);
+  document.body.appendChild(ov);
+  document.body.appendChild(pop);
+  _aiPlaceModelMenu(pop);
+  const b = document.getElementById('aiModelBtn');
+  if (b) b.setAttribute('aria-expanded', 'true');
+  document.addEventListener('keydown', _aiModelMenuKeys, true);
+  window.addEventListener('resize', _aiModelMenuReplace);
+  setTimeout(() => { const on = pop.querySelector('.ai-mm-item.is-on') || pop.querySelector('.ai-mm-item'); if (on) on.focus({ preventScroll: true }); }, 30);
+  loadAIModels(true).then(() => {
+    const p = document.getElementById('aiModelMenu');
+    if (p) { _aiRenderModelMenu(p); _aiPlaceModelMenu(p); }
+  });
+}
+function aiToggleModelMenu() {
+  if (document.getElementById('aiModelMenu')) aiCloseModelMenu(); else aiOpenModelMenu();
+}
+function aiRetryWithAuto() {
+  aiSelectModel('auto', true);
+  retryAILastMessage();
+}
+async function aiTestAllModels() {
+  const btn = document.querySelector('[data-ai-mm-test]');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing… (up to 30 s)'; }
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/ai/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!d || !d.success) throw new Error((d && d.message) || 'Test failed.');
+    aiCloseModelMenu();
+    const rows = (d.results || []).map(r => `<div class="ai-test-row ${r.ok ? 'ok' : 'bad'}"><i class="fas ${r.ok ? 'fa-circle-check' : 'fa-circle-xmark'}"></i>
+        <div><strong>${escapeHtml(r.label)}</strong><span>${r.ok ? `answered in ${(r.ms / 1000).toFixed(1)} s` : escapeHtml(r.error || 'failed')}</span></div></div>`).join('');
+    const prov = d.providers || {};
+    const ok = (d.results || []).filter(r => r.ok).length;
+    aeroInfoDialog(`AI models: ${ok} of ${(d.results || []).length} working`,
+      `<span class="ai-test-keys">Gemini key: <strong>${prov.gemini ? 'set' : 'missing'}</strong> · Groq key: <strong>${prov.groq ? 'set' : 'missing'}</strong></span>` +
+      (rows ? `<span class="ai-test-list">${rows}</span>` : '<br>No models are configured. Add GEMINI_API_KEY and/or GROQ_API_KEY to the server .env and restart.') +
+      (d.listErrors && Object.keys(d.listErrors).length ? `<span class="ai-test-note">Model list problem: ${escapeHtml(Object.entries(d.listErrors).map(([k, v]) => k + ' — ' + v).join('; '))}</span>` : ''),
+      ok ? 'fa-stethoscope' : 'fa-triangle-exclamation');
+    _aiModelsAt = 0;
+  } catch (e) {
+    showToast(e.message || 'Test failed.', 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-stethoscope"></i> Test all models'; }
+  }
+}
+/* Repaint only the "Thinking · model" line while waiting for the first words */
+function _aiRepaintTyping(msg) {
+  const el = document.getElementById('aiTypingLabel');
+  if (!el) return;
+  el.textContent = msg.trying || (('Thinking') + (msg.modelLabel ? ' · ' + msg.modelLabel : '') + '…');
+}
+
 function _aiComposerHTML() {
   const mathKeys = AI_MATH_KEYS.map(([label, tex]) =>
     `<button type="button" class="ai-math-key" data-tex="${escapeHtml(tex)}" title="${escapeHtml(tex)}">${escapeHtml(label)}</button>`).join('');
@@ -18007,6 +18220,9 @@ function _aiComposerHTML() {
     <div class="ai-math-preview" id="aiMathPreview" hidden aria-live="polite"></div>
     <div class="ai-composer-row">
       <div class="ai-tools">
+        <button type="button" class="ai-tool-btn ai-model-btn" id="aiModelBtn" data-ai-act="model" aria-haspopup="dialog" aria-expanded="false" title="Choose the AI model">
+          <i class="fas fa-wand-magic-sparkles"></i><span class="ai-model-btn-label" id="aiModelBtnLabel">${escapeHtml(_aiModelShortLabel())}</span><i class="fas fa-chevron-up ai-model-chev"></i>
+        </button>
         <button type="button" class="ai-tool-btn" data-ai-act="attach" title="Attach images, PDFs or documents">
           <i class="fas fa-paperclip"></i><span>Attach</span>
         </button>
@@ -18077,6 +18293,7 @@ function _aiWireComposer(comp) {
       else if (act === 'math') _aiToggleMath();
       else if (act === 'voice') _aiToggleVoice();
       else if (act === 'clear') resetAIHomeChat();
+      else if (act === 'model') aiToggleModelMenu();
       else if (act === 'send') { if (_aiHomeBusy) stopAIAnswer(); else askAIDoubtHome(); }
       return;
     }
@@ -18420,6 +18637,7 @@ function renderStudentAIHome() {
   const messagesEl = document.getElementById('aiChatMessages');
   if (!messagesEl) return;
   _aiEnsureComposer();
+  loadAIModels(false).catch(() => {});
   _aiLoad();
   if (!_aiHomeRendered) {
     _aiHomeRendered = true;
@@ -18468,16 +18686,18 @@ function renderAIHomeChat() {
           <div class="ai-msg-bubble">
             <div class="ai-msg-error-title">Couldn't get an answer</div>
             <div class="ai-msg-error-body">${escapeHtml(m.text)}</div>
-            ${i === _aiHomeChat.length - 1 ? `<button class="ai-retry-btn" onclick="retryAILastMessage()"><i class="fas fa-rotate-right"></i> Try again</button>` : ''}
+            ${i === _aiHomeChat.length - 1 ? `<div class="ai-error-actions"><button class="ai-retry-btn" onclick="retryAILastMessage()"><i class="fas fa-rotate-right"></i> Try again</button>${_aiSelectedModel && _aiSelectedModel !== 'auto' ? `<button class="ai-retry-btn ai-retry-auto" onclick="aiRetryWithAuto()"><i class="fas fa-wand-magic-sparkles"></i> Try with Auto</button>` : ''}<button class="ai-retry-btn ai-retry-pick" onclick="aiOpenModelMenu()"><i class="fas fa-sliders"></i> Pick another model</button></div>` : ''}
           </div>
         </div>`;
     } else if (m.streaming) {
-      const reading = (_aiHomeChat[i - 1] && _aiHomeChat[i - 1].files && _aiHomeChat[i - 1].files.length) ? 'Reading your files…' : 'Thinking…';
+      const reading = m.trying ? m.trying
+        : ((_aiHomeChat[i - 1] && _aiHomeChat[i - 1].files && _aiHomeChat[i - 1].files.length) ? 'Reading your files' : 'Thinking')
+          + (m.modelLabel ? ' · ' + m.modelLabel : '') + '…';
       html += `
         <div class="ai-msg ai-msg-assistant">
           <div class="ai-msg-avatar"><i class="fas fa-robot"></i></div>
           <div class="ai-msg-bubble allow-select">
-            <div class="ai-stream-body" id="aiStreamBody">${m.text ? renderMarkdown(m.text) : `<span class="ai-typing-inline"><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-label">${reading}</span></span>`}</div>
+            <div class="ai-stream-body" id="aiStreamBody">${m.text ? renderMarkdown(m.text) : `<span class="ai-typing-inline"><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-label" id="aiTypingLabel">${escapeHtml(reading)}</span></span>`}</div>
           </div>
         </div>`;
     } else {
@@ -18489,6 +18709,7 @@ function renderAIHomeChat() {
             <div class="ai-answer-body" id="aiHomeMsg-${i}">${renderMarkdown(m.text)}</div>
             ${m.stopped ? '<div class="ai-msg-note"><i class="fas fa-circle-stop"></i> You stopped this answer.</div>' : ''}
             ${m.partial && !m.stopped ? '<div class="ai-msg-note"><i class="fas fa-scissors"></i> The answer was cut short.</div>' : ''}
+            ${m.note ? `<div class="ai-msg-note ai-msg-note-model"><i class="fas fa-shuffle"></i> ${escapeHtml(m.note)}</div>` : ''}
             <div class="ai-msg-actions">
               <button type="button" class="ai-msg-action" data-ai-copy="${i}" title="Copy"><i class="fas fa-copy"></i> Copy</button>
               ${isLast && !_aiHomeBusy ? `<button type="button" class="ai-msg-action" data-ai-regen="${i}" title="Get a new answer"><i class="fas fa-rotate"></i> Regenerate</button>` : ''}
@@ -18635,7 +18856,7 @@ async function askAIDoubtHome(opts) {
     files: files.map(f => ({ name: f.name, kind: f.kind, size: f.size, thumb: f.thumb || '', url: f.url || '' }))
   };
   _aiHomeChat.push(userMsg);
-  const msg = { role: 'assistant', text: '', streaming: true, ts: Date.now() };
+  const msg = { role: 'assistant', text: '', streaming: true, ts: Date.now(), modelLabel: _aiModelShortLabel(true) };
   _aiHomeChat.push(msg);
   _aiLastSent = { text, files: files.slice() };
 
@@ -18652,6 +18873,7 @@ async function askAIDoubtHome(opts) {
   fd.append('question', text);
   fd.append('history', JSON.stringify(history));
   fd.append('convId', _aiConvId);
+  fd.append('model', _aiSelectedModel || 'auto');
   if (_aiHadFiles && !files.length) fd.append('hadFiles', '1');
   files.forEach(f => fd.append('files', f.blob, f.name));
   if (files.length) _aiHadFiles = true;
@@ -18731,15 +18953,29 @@ function _aiHandleEvent(ev, msg) {
   if (ev.t === 'delta' && typeof ev.text === 'string') {
     msg.text += ev.text;
     _aiPaintStream(msg);
+  } else if (ev.t === 'model') {
+    /* ⭐ which model is answering (a busy one is skipped automatically) */
+    const prev = msg.modelLabel;
+    msg.modelLabel = ev.label || '';
+    if (ev.attempt > 1 && !msg.text) msg.trying = `${prev || 'The first model'} is busy — trying ${ev.label}…`;
+    if (!msg.text) _aiRepaintTyping(msg);
   } else if (ev.t === 'done') {
     msg._ended = true;
     msg.model = ev.model || '';
+    msg.modelId = ev.modelId || '';
     msg.partial = !!ev.partial;
+    if (ev.switched === 'pdf' || ev.switched === 'images') {
+      msg.note = `${ev.requested || 'The chosen model'} can't read ${ev.switched === 'pdf' ? 'PDFs / documents' : 'images'}, so ${ev.model} answered.`;
+    } else if (ev.fallback) {
+      msg.note = `${ev.requested || 'The chosen model'} was busy, so ${ev.model} answered.`;
+    }
     if (ev.filesExpired) showToast('Files from earlier in this chat have expired — attach them again if the AI needs them.', 'info');
+    _aiModelsAt = 0;                       // refresh busy markers next time the menu opens
   } else if (ev.t === 'error') {
     msg._ended = true;
     if (msg.text) { msg.partial = true; showToast(ev.message || 'The answer stopped early.', 'error'); }
     else { msg.error = true; msg.text = ev.message || 'The AI could not answer.'; }
+    _aiModelsAt = 0;
   } else if (ev.t === 'meta' && Array.isArray(ev.files)) {
     const conv = ev.files.filter(f => f.converted).length;
     const cut = ev.files.filter(f => f.truncated).map(f => f.name);
