@@ -1,0 +1,70 @@
+{
+  "name": "aerogyan-desktop",
+  "productName": "AeroGyan",
+  "version": "1.0.0",
+  "description": "AeroGyan Education — desktop app",
+  "author": "AeroGyan Education",
+  "homepage": "https://aerogyan.tech",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "selftest": "electron . --aero-selftest=./selftest-out",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac dmg --universal --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "41.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "tech.aerogyan.app",
+    "productName": "AeroGyan",
+    "copyright": "© AeroGyan Education",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "compression": "maximum",
+    "electronLanguages": ["en-US", "en-GB", "hi"],
+    "protocols": [
+      { "name": "AeroGyan", "schemes": ["aerogyan"] }
+    ],
+    "publish": [
+      { "provider": "generic", "url": "https://aerogyan.tech/download/windows/" }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.ico",
+      "artifactName": "AeroGyan-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AeroGyan",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "uninstallDisplayName": "AeroGyan",
+      "artifactName": "AeroGyan-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.education",
+      "icon": "build/icon.png",
+      "target": ["dmg"],
+      "artifactName": "AeroGyan-${version}-mac.${ext}"
+    }
+  }
+}

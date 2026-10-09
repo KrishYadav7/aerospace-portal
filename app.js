@@ -5517,7 +5517,7 @@ function updateAdminTabUI() {
     branding:      { icon: 'fa-palette',             text: 'Branding — Favicon & App Icons' },
     certificates:  { icon: 'fa-certificate',         text: 'Certificate Management' },
     popup:         { icon: 'fa-bullhorn',            text: 'Login Pop-up — Greetings & Announcements' },
-    mobileapp:     { icon: 'fa-mobile-screen',       text: 'Mobile App — Android' }
+    mobileapp:     { icon: 'fa-mobile-screen',       text: 'Apps — Android & Windows' }
   };
   const actionsMap = {
     overview: `<button class="btn btn-outline" onclick="switchAdminTab('courses')"><i class="fas fa-arrow-right"></i> Go to Courses</button>`,
@@ -24902,9 +24902,11 @@ async function renderAdminMobileApp() {
   if (!el) return;
   el.innerHTML = '<div class="empty-state" style="padding:40px"><i class="fas fa-spinner fa-spin"></i><p>Loading…</p></div>';
   let a = { available: false };
+  let win = { available: false };
+  let winJob = null;
   try {
     const res = await fetchJSON(`${API_BASE}/admin/app-release?_t=${Date.now()}`);
-    if (res && res.success) a = res.android || a;
+    if (res && res.success) { a = res.android || a; win = res.windows || win; winJob = res.windowsJob || null; }
   } catch (e) {
     el.innerHTML = `<div class="empty-state" style="padding:40px"><p>${escapeHtml(e.message)}</p></div>`;
     return;
@@ -24961,7 +24963,14 @@ async function renderAdminMobileApp() {
         </ol>
         <p class="ma-muted">The app opens your website full-screen with its own icon — no browser bar or badge — and Android blocks screenshots and screen recording inside it. Installed apps offer the new version automatically within a few hours.</p>
       </div>
-    </div>`;
+    </div>
+    ${_mwHtml(win)}`;
+  if (winJob && winJob.state === 'running') { _mwShowJob(winJob); _mwPoll(); }
+  const wfile = document.getElementById('mwFile');
+  if (wfile) wfile.addEventListener('change', () => {
+    const f = wfile.files && wfile.files[0];
+    document.getElementById('mwFileLabel').innerHTML = f ? `<b>${escapeHtml(f.name)}</b> · ${mb(f.size)}` : 'Choose the .exe file';
+  });
 
   const file = document.getElementById('maFile');
   file.addEventListener('change', () => {
@@ -25006,6 +25015,156 @@ function maUpload(e, force) {
   };
   xhr.onerror = () => { btn.disabled = false; bar.hidden = true; showToast('Network error during upload.', 'error'); };
   xhr.send(fd);
+}
+
+/* ---------- Windows app (2026-10-10) ---------- */
+function _mwHtml(w) {
+  const mb = (n) => (Number(n || 0) / 1048576).toFixed(1) + ' MB';
+  const when = (d) => d ? new Date(d).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+  const link = location.origin + '/download/windows';
+  const t = w && w.test;
+  const testHtml = !t ? '' : (t.fails === 0
+    ? `<div class="ma-test ma-test-ok"><i class="fas fa-circle-check"></i> Tested on a real Windows PC by GitHub — all ${Number(t.passes)} checks passed. <a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">Report</a></div>`
+    : `<div class="ma-test ma-test-warn"><i class="fas fa-triangle-exclamation"></i> ${Number(t.fails)} of ${Number(t.passes) + Number(t.fails)} checks failed in GitHub's Windows test. <a href="${escapeHtml(t.url)}" target="_blank" rel="noopener">Report</a>
+         <ul>${(t.failed || []).map((x) => `<li>${escapeHtml(String(x).replace(/^FAIL\s+/, ''))}</li>`).join('')}</ul></div>`);
+  return `
+    <div class="ma-grid ma-grid-win">
+      <div class="section-card ma-current ma-win">
+        <h2><i class="fab fa-windows"></i> Windows app</h2>
+        ${w && w.available ? `
+          <div class="ma-status ma-live"><span class="lp-dot lp-dot-live"></span> Live — Windows visitors get it from <b>Get App</b>; installed apps update themselves</div>
+          <div class="ma-facts">
+            <div><span>Version</span><strong>${escapeHtml(w.version)}</strong></div>
+            <div><span>Size</span><strong>${mb(w.size)}</strong></div>
+            <div><span>Published</span><strong>${escapeHtml(when(w.updatedAt))}</strong></div>
+            <div><span>New installs</span><strong>${Number(w.downloads || 0).toLocaleString('en-IN')}</strong></div>
+            <div><span>Auto-updates</span><strong>${Number(w.updates || 0).toLocaleString('en-IN')}</strong></div>
+          </div>
+          ${testHtml}
+          <div class="ma-link"><code>${escapeHtml(link)}</code>
+            <button class="btn btn-outline btn-sm" type="button" onclick="copyToClipboard(${jsStr(link)}).then(ok=>showToast(ok?'Link copied.':'Copy failed.', ok?'success':'error'))"><i class="fas fa-copy"></i> Copy link</button>
+          </div>
+          ${w.previous ? `<p class="ma-muted">Previous version kept for rollback: ${escapeHtml(w.previous.version)}</p>` : ''}
+          <button class="btn btn-outline btn-sm ma-remove" type="button" onclick="mwRemoveRelease()"><i class="fas fa-eye-slash"></i> Stop offering the Windows app</button>
+        ` : `
+          <div class="ma-status"><span class="lp-dot"></span> Not published yet — Windows visitors still get the browser install.</div>
+        `}
+      </div>
+
+      <div class="section-card ma-upload">
+        <h3><i class="fab fa-github"></i> Publish a new version</h3>
+        <p class="ma-muted" style="margin:0 0 12px">Takes the newest <b>windows-v1.0.N</b> build from GitHub — built and tested there, nothing to download on your computer.</p>
+        <div class="ma-progress" id="mwProgress" hidden><i></i></div>
+        <p class="ma-muted" id="mwStep" style="margin:0 0 10px"></p>
+        <button class="btn btn-primary" type="button" id="mwGithubBtn" onclick="mwFromGithub()"><i class="fab fa-github"></i> Publish latest from GitHub</button>
+        <details class="ma-alt">
+          <summary>Or upload the .exe yourself</summary>
+          <form id="mwForm" onsubmit="mwUpload(event)">
+            <label class="ma-drop">
+              <input type="file" id="mwFile" accept=".exe,application/vnd.microsoft.portable-executable">
+              <i class="fas fa-file-arrow-up"></i>
+              <span id="mwFileLabel">Choose <b>AeroGyan-Setup-1.0.N.exe</b></span>
+            </label>
+            <label class="lp-field"><span>What's new <small>(optional)</small></span><input type="text" id="mwNotes" maxlength="500" placeholder="e.g. Faster notes"></label>
+            <div class="ma-progress" id="mwUpProgress" hidden><i></i></div>
+            <button class="btn btn-outline" type="submit" id="mwSubmit"><i class="fas fa-upload"></i> Upload &amp; publish</button>
+          </form>
+        </details>
+      </div>
+
+      <div class="section-card ma-help">
+        <h3><i class="fas fa-circle-info"></i> How to make a new version</h3>
+        <ol>
+          <li>Push your code to GitHub (or open <b>GitHub → Actions → "Windows app (installer)" → Run workflow</b>).</li>
+          <li>About 10 minutes later GitHub has built it, installed it on a Windows PC and tested it (release <b>windows-v1.0.N</b>).</li>
+          <li>Click <b>Publish latest from GitHub</b> above.</li>
+        </ol>
+        <p class="ma-muted">Students install it in one click — no admin password. Screenshots and screen recording show a black window. Until the app is code-signed (or in the Microsoft Store), Windows shows "Windows protected your PC" the first time: <b>More info → Run anyway</b>. The install guide on the website explains this.</p>
+      </div>
+    </div>`;
+}
+
+let _mwPollTimer = null;
+function _mwShowJob(job) {
+  const bar = document.getElementById('mwProgress');
+  const step = document.getElementById('mwStep');
+  const btn = document.getElementById('mwGithubBtn');
+  if (!bar || !step) return;
+  const running = job && job.state === 'running';
+  if (btn) btn.disabled = running;
+  bar.hidden = !running;
+  const pct = job && job.total ? Math.round((job.received || 0) / job.total * 100) : 3;
+  bar.firstElementChild.style.width = Math.max(3, Math.min(100, pct)) + '%';
+  step.textContent = running ? (job.step || 'Working…') + (job.total ? ` ${pct}%` : '') : '';
+}
+function _mwPoll() {
+  clearTimeout(_mwPollTimer);
+  _mwPollTimer = setTimeout(async () => {
+    if (!document.getElementById('mwStep')) return;                  // admin left this tab
+    let res = null;
+    try { res = await fetchJSON(`${API_BASE}/admin/app-release?_t=${Date.now()}`); } catch (_) { return _mwPoll(); }
+    const job = res && res.windowsJob;
+    if (job && job.state === 'running') { _mwShowJob(job); return _mwPoll(); }
+    if (job && job.state === 'done') showToast((job.code === 'PUBLISHED' ? '🪟 ' : '') + job.message, job.code === 'PUBLISHED' ? 'success' : 'info');
+    else if (job && job.state === 'error') showToast(job.message || 'Could not publish from GitHub.', 'error');
+    renderAdminMobileApp();
+  }, 1500);
+}
+async function mwFromGithub() {
+  const btn = document.getElementById('mwGithubBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetchJSON(`${API_BASE}/admin/app-release/windows/from-github`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+    });
+    if (!res.success && !res.windowsJob) throw new Error(res.message || 'Failed.');
+    _mwShowJob(res.windowsJob || { state: 'running', step: 'Starting…' });
+    _mwPoll();
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    showToast(e.message, 'error');
+  }
+}
+function mwUpload(e, force) {
+  if (e) e.preventDefault();
+  const f = document.getElementById('mwFile').files[0];
+  if (!f) return showToast('Choose the .exe file first.', 'error');
+  if (!/\.exe$/i.test(f.name)) return showToast('Please choose the AeroGyan-Setup-….exe file.', 'error');
+  const fd = new FormData();
+  fd.append('file', f, f.name);
+  fd.append('notes', document.getElementById('mwNotes').value.trim());
+  if (force) fd.append('force', '1');
+  const btn = document.getElementById('mwSubmit');
+  const bar = document.getElementById('mwUpProgress');
+  btn.disabled = true; bar.hidden = false; bar.firstElementChild.style.width = '0%';
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `${API_BASE}/admin/app-release/windows`);
+  try { const t = sessionStorage.getItem('aero_token'); if (t) xhr.setRequestHeader('Authorization', 'Bearer ' + t); } catch (_) {}
+  xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) bar.firstElementChild.style.width = Math.round(ev.loaded / ev.total * 100) + '%'; };
+  xhr.onload = () => {
+    btn.disabled = false; bar.hidden = true;
+    let data = null;
+    try { data = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status === 409 && data && data.code === 'OLDER_VERSION') {
+      if (confirm(data.message + '\n\nPublish it anyway (e.g. to roll back)? Computers that already have a newer version keep it.')) return mwUpload(null, true);
+      return;
+    }
+    if (xhr.status === 413 && !data) return showToast('The server refused a file this large. Use "Publish latest from GitHub" instead.', 'error');
+    if (!data || !data.success) return showToast((data && data.message) || `Upload failed (HTTP ${xhr.status}).`, 'error');
+    showToast(`🪟 Windows ${data.windows.version} is live — students can download it now.`, 'success');
+    renderAdminMobileApp();
+  };
+  xhr.onerror = () => { btn.disabled = false; bar.hidden = true; showToast('Network error during upload.', 'error'); };
+  xhr.send(fd);
+}
+async function mwRemoveRelease() {
+  if (!confirm('Stop offering the Windows app? The Get App button will go back to the browser install. (Installed apps keep working.)')) return;
+  try {
+    const res = await fetchJSON(`${API_BASE}/admin/app-release/windows`, { method: 'DELETE' });
+    if (!res.success) throw new Error(res.message || 'Failed.');
+    showToast('The Windows app is no longer offered.', 'info');
+    renderAdminMobileApp();
+  } catch (e) { showToast(e.message, 'error'); }
 }
 
 async function maRemoveRelease() {
@@ -25096,6 +25255,7 @@ async function maRemoveRelease() {
   } catch (_) {}
 
   let apkInfo = window.__aeroApk || null;
+  let winInfo = window.__aeroWin || null;     // the real Windows app, once the admin publishes it
   const fmtMB = (n) => (Number(n || 0) / 1048576).toFixed(1) + ' MB';
 
   function detectPlatform() {
@@ -25130,15 +25290,34 @@ async function maRemoveRelease() {
     b.setAttribute('aria-label', 'AeroGyan is installed');
   }
 
-  /* ---- Published Android app? ---- */
+  /* the browser-installed web app ("Installed") can still upgrade to the real Windows app */
+  function setGetApp() {
+    const b = btn(); if (!b) return;
+    b.classList.remove('is-installed');
+    const label = b.querySelector('.landing-install-pill-text');
+    if (label) label.textContent = 'Get App';
+    const icon = b.querySelector('i');
+    if (icon) { icon.classList.remove('fa-check'); icon.classList.add('fa-download'); }
+    b.title = 'Get the AeroGyan app for Windows';
+    b.setAttribute('aria-label', 'Get the AeroGyan app for Windows');
+  }
+
+  /* ---- Published Android / Windows app? ---- */
   fetch('/api/app-release', { cache: 'no-cache' })
     .then(r => r.ok ? r.json() : null)
     .then(d => {
       const a = d && d.android;
-      if (!a || !a.available) return;
-      apkInfo = a;
-      window.__aeroApk = a;
-      if (detectPlatform() === 'android') setReady(true);
+      if (a && a.available) {
+        apkInfo = a;
+        window.__aeroApk = a;
+        if (detectPlatform() === 'android') setReady(true);
+      }
+      const w = d && d.windows;
+      if (w && w.available) {
+        winInfo = w;
+        window.__aeroWin = w;
+        if (detectPlatform() === 'windows') { setGetApp(); setReady(true); }
+      }
     })
     .catch(() => {});
 
@@ -25249,9 +25428,24 @@ async function maRemoveRelease() {
     ]);
   }
 
+  function downloadWindows() {
+    const a = document.createElement('a');
+    a.href = (winInfo && winInfo.url) || '/download/windows'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+    showInstallGuide('Install AeroGyan for Windows', [
+      'Your download has started' + (winInfo ? ' — <strong>AeroGyan-Setup-' + escapeHtml(String(winInfo.version)) + '.exe</strong> (' + fmtMB(winInfo.size) + ')' : '') + '.',
+      'Open it from your browser\'s <strong>Downloads</strong> (<strong>Ctrl + J</strong>). If the browser says it “isn\'t commonly downloaded”, choose <strong>⋯ → Keep</strong> (Edge: <strong>Keep anyway</strong>).',
+      'If Windows shows <strong>“Windows protected your PC”</strong>, click <strong>More info → Run anyway</strong>. <em>(Only the first time — the app is new, so Windows doesn\'t know it yet.)</em>',
+      'AeroGyan installs in a few seconds — no admin password — and opens by itself. It is on your <strong>Desktop</strong> and in the <strong>Start menu</strong>.',
+      'Updates install automatically. Installed the website from your browser before? You can remove that old version.'
+    ]);
+  }
+
   window.appInstallClick = function (event) {
     if (event) event.preventDefault();
     const b = btn();
+    // Windows PC and the real app is published → download the installer
+    if (winInfo && detectPlatform() === 'windows') return downloadWindows();
     if (b && b.classList.contains('is-installed')) {
       if (typeof window.showToast === 'function') window.showToast('App is already installed on this device. 🎉', 'success');
       return;
@@ -25882,7 +26076,7 @@ const ADM_NAV_DESC = {
   contributions: 'Notes sent by students', subscriptions: 'Auto-pay & members', plans: 'Prices & durations',
   coupons: 'Discount codes', referrals: 'Invite rewards', replies: 'Replies to your emails',
   popup: 'Announcement pop-up', organization: 'Owner & team details', branding: 'Logo, favicon & icons',
-  certificates: 'Course certificates', mobileapp: 'Android app download', security: 'Password, 2FA & devices',
+  certificates: 'Course certificates', mobileapp: 'Android & Windows app downloads', security: 'Password, 2FA & devices',
   backup: 'Export & restore data'
 };
 let _admNavObserver = null;

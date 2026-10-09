@@ -15349,6 +15349,20 @@ body.aero-logged-out #appHeader .user-info {
 .ma-progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--brand-500), #06b6d4); transition: width .2s; }
 .ma-help ol { margin: 0 0 8px; padding-left: 1.2em; color: var(--text-secondary); font-size: 13.5px; line-height: 1.6; }
 .ma-help li { margin-bottom: 6px; }
+/* Windows app section (2026-10-10) */
+.ma-grid + .ma-grid { margin-top: 22px; }
+.ma-win h2 i { color: #0078d4; }
+.ma-test { display: block; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
+.ma-test i { margin-right: 6px; }
+.ma-test a { font-weight: 700; margin-left: 4px; }
+.ma-test ul { margin: 6px 0 0; padding-left: 1.3em; }
+.ma-test-ok { background: rgba(16,185,129,.09); border: 1px solid rgba(16,185,129,.28); color: var(--text-secondary); }
+.ma-test-ok i { color: #10b981; }
+.ma-test-warn { background: rgba(245,158,11,.09); border: 1px solid rgba(245,158,11,.32); color: var(--text-secondary); }
+.ma-test-warn i { color: #f59e0b; }
+.ma-alt { margin-top: 16px; border-top: 1px dashed var(--border-subtle); padding-top: 12px; }
+.ma-alt summary { cursor: pointer; color: var(--text-secondary); font-size: 13.5px; font-weight: 600; margin-bottom: 10px; }
+.ma-alt[open] summary { margin-bottom: 12px; }
 
 /* ============================================================
    ⭐ STUDENT LEARNING PROFILE (2026-10-05)

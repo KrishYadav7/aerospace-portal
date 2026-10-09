@@ -2877,7 +2877,7 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
 
     <p class="lp-apps-footnote reveal reveal-d4">
       <i class="fas fa-shield-halved"></i>
-      Verified &amp; signed builds · No ads · No trackers · Updates install automatically.
+      Official AeroGyan apps · No ads · No trackers · Updates install automatically.
     </p>
   </div>
 </section>
@@ -3896,15 +3896,20 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
   let deferredPrompt = null;   // captured beforeinstallprompt event
   let installedAlready = false;
   let apkInfo = null;          // { version, size } when the real Android app is published
+  let winInfo = null;          // { version, size } when the real Windows app is published
 
   /* Inside the AeroGyan Android app itself → no install buttons at all */
   const IN_NATIVE_APP = /AeroGyanApp\//.test(navigator.userAgent || '');
   if (IN_NATIVE_APP) document.documentElement.classList.add('aero-in-app');
 
   /* ---------- 2b. Real Android app (APK) published by the admin? ---------- */
+  let _relP = null;            // one request for both the Android and the Windows card
+  function appReleaseOnce() {
+    if (!_relP) _relP = fetch('/api/app-release', { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).catch(() => null);
+    return _relP;
+  }
   function fmtMB(n) { return (Number(n || 0) / 1048576).toFixed(1) + ' MB'; }
-  fetch('/api/app-release', { cache: 'no-cache' })
-    .then(r => r.ok ? r.json() : null)
+  appReleaseOnce()
     .then(d => {
       const a = d && d.android;
       if (!a || !a.available) return;
@@ -3923,6 +3928,40 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
       window.dispatchEvent(new Event('aerogyan:apk-ready'));
     })
     .catch(() => {});
+
+  /* ---------- 2c. Real Windows app published by the admin? ---------- */
+  appReleaseOnce()
+    .then(d => {
+      const w = d && d.windows;
+      if (!w || !w.available) return;
+      winInfo = w;
+      APP_DOWNLOADS.windows.exeUrl = w.url || '/download/windows';
+      window.__aeroWin = w;
+      const card = document.querySelector('.lp-app-card[data-platform="windows"]');
+      if (card) {
+        const desc = card.querySelector('.lp-app-desc');
+        const lbl  = card.querySelector('.lp-app-btn-label');
+        const hint = card.querySelector('.lp-app-hint');
+        const btn  = card.querySelector('.lp-app-btn');
+        card.classList.remove('lp-app-installed');
+        if (btn)  btn.disabled = false;
+        if (desc) desc.textContent = 'The real AeroGyan app for your PC — Start menu & desktop icon, its own window, updates itself.';
+        if (lbl)  lbl.textContent  = 'Download for Windows';
+        if (hint) { hint.textContent = 'Version ' + w.version + ' · ' + fmtMB(w.size) + ' · Windows 10 & 11'; hint.classList.remove('is-error'); }
+      }
+      window.dispatchEvent(new Event('aerogyan:win-ready'));
+    })
+    .catch(() => {});
+
+  function windowsSteps() {
+    return [
+      'Your download has started' + (winInfo ? ' — <strong>AeroGyan-Setup-' + String(winInfo.version).replace(/[^0-9.]/g, '') + '.exe</strong> (' + fmtMB(winInfo.size) + ')' : '') + '.',
+      'Open it from your browser\'s <strong>Downloads</strong> (<strong>Ctrl + J</strong>). If the browser says it “isn\'t commonly downloaded”, choose <strong>⋯ → Keep</strong> (Edge: <strong>Keep anyway</strong>).',
+      'If Windows shows <strong>“Windows protected your PC”</strong>, click <strong>More info → Run anyway</strong>. <em>(Only the first time — the app is new, so Windows doesn\'t know it yet.)</em>',
+      'AeroGyan installs in a few seconds — no admin password — and opens by itself. It is on your <strong>Desktop</strong> and in the <strong>Start menu</strong>.',
+      'Updates install automatically. Installed the website from your browser before? You can remove that old version.'
+    ];
+  }
 
   const IS_STANDALONE = window.matchMedia('(display-mode: standalone)').matches ||
                         window.navigator.standalone === true;
@@ -4006,8 +4045,8 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
     const lbl  = card ? card.querySelector('.lp-app-btn-label') : null;
     const originalLabel = lbl ? lbl.textContent : '';
 
-    /* ---- A. Already installed? ---- */
-    if (installedAlready || IS_STANDALONE) {
+    /* ---- A. Already installed? (a browser-installed copy can still get the real Windows app) ---- */
+    if ((installedAlready || IS_STANDALONE) && !(platform === 'windows' && winInfo)) {
       if (hint) {
         hint.textContent = 'App is already installed on this device.';
         hint.classList.remove('is-error');
@@ -4042,6 +4081,25 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
         'Tap <strong>Install</strong>, then <strong>Open</strong>. AeroGyan is now a normal app in your app drawer — no browser, no badge.',
         'Had added the website to your home screen before? You can remove that old shortcut.'
       ]);
+      return;
+    }
+
+    if (directUrl && platform === 'windows') {
+      if (detectPlatform() !== 'windows') {
+        showInstallGuide(card, hint, 'Get the Windows app', [
+          'Open <strong>' + location.host + '</strong> on your <strong>Windows PC or laptop</strong> and click <strong>Get App</strong>.',
+          'Or download it here and copy it to your PC: <a href="' + directUrl + '" style="font-weight:700;">AeroGyan-Setup.exe</a>' + (winInfo ? ' (' + fmtMB(winInfo.size) + ')' : '') + ' — for Windows 10 &amp; 11 (64-bit).'
+        ]);
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = directUrl;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      if (hint) { hint.textContent = 'Downloading… then open the file to install.'; hint.classList.remove('is-error'); hint.classList.add('is-ok'); }
+      showInstallGuide(card, hint, 'Install AeroGyan for Windows', windowsSteps());
       return;
     }
 
@@ -4361,8 +4419,28 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
   if (document.documentElement.dataset.aeroAppInstalled === '1') setInstalled();
 
   /* ---------- Click handler ---------- */
+  /* the real Windows app is published → this pill downloads it (even over a browser-installed copy) */
+  const IS_WIN_PC = /windows/i.test(navigator.userAgent || '') && !/android|iphone|ipad/i.test(navigator.userAgent || '');
+  window.addEventListener('aerogyan:win-ready', () => {
+    if (!IS_WIN_PC) return;
+    btn.classList.remove('is-installed');
+    const label = btn.querySelector('.landing-install-pill-text');
+    if (label) label.textContent = 'Get App';
+    const icon = btn.querySelector('i');
+    if (icon) { icon.classList.remove('fa-check'); icon.classList.add('fa-download'); }
+    btn.title = 'Get the AeroGyan app for Windows';
+    setReady(true);
+  });
+  if (window.__aeroWin && IS_WIN_PC) setReady(true);
+
   window.landingInstallClick = function (event) {
     if (event) event.preventDefault();
+
+    // Windows PC and the real app is published → download the installer
+    if (window.__aeroWin && IS_WIN_PC && typeof window.installApp === 'function') {
+      window.installApp('windows');
+      return;
+    }
 
     // Already installed → gentle nudge
     if (btn.classList.contains('is-installed')) {

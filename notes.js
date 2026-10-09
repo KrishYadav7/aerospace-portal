@@ -454,7 +454,7 @@
     document.documentElement.classList.toggle('aero-nt-full', !!on);
   }
   const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
-  const fsSupported = () => !/AeroGyanApp\//.test(navigator.userAgent || '') && !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);   // the Android app is already full screen
+  const fsSupported = () => !(/AeroGyanApp\//.test(navigator.userAgent || '') && /Android/i.test(navigator.userAgent || '')) && !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);   // the Android app is already full screen
   function enterFullscreen() {
     const el = document.documentElement, fn = el.requestFullscreen || el.webkitRequestFullscreen;
     if (!fn) return;

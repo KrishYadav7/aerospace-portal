@@ -1,0 +1,151 @@
+# ============================================================
+#  Build + test the AeroGyan Windows app in the cloud.
+#  Runs when desktop-app/ changes on main, or by hand:
+#  GitHub → Actions → "Windows app (installer)" → Run workflow.
+#
+#  Result: a GitHub Release "windows-v1.0.<N>" with
+#    • AeroGyan-Setup-1.0.<N>.exe   ← publish it in Admin → Apps
+#    • windows-test-report.txt + screenshots (the app tested
+#      itself on a real Windows machine: install, open the site,
+#      downloads, pop-ups, outside links, offline screen…)
+#  No secrets needed.
+# ============================================================
+name: Windows app (installer)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop-app/**'
+      - '.github/workflows/windows-app.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      VERSION: 1.0.${{ github.run_number }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install tools
+        working-directory: desktop-app
+        shell: bash
+        run: npm install --no-audit --no-fund
+
+      - name: Set the version (1.0.${{ github.run_number }})
+        working-directory: desktop-app
+        shell: bash
+        run: npm pkg set version="$VERSION"
+
+      - name: Build the installer
+        working-directory: desktop-app
+        shell: bash
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Show what was built
+        shell: bash
+        run: |
+          ls -la desktop-app/dist
+          sha256sum desktop-app/dist/AeroGyan-Setup-*.exe
+
+      # ---------- test 1: the app as built ----------
+      - name: Self-test (built app)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'selftest\built'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $p = Start-Process -FilePath 'desktop-app\dist\win-unpacked\AeroGyan.exe' -ArgumentList "--aero-selftest=$out" -PassThru
+          if (-not $p.WaitForExit(240000)) { Stop-Process -Id $p.Id -Force; Add-Content "$out\report.txt" 'FAIL  app finished in time — killed after 240 s' }
+          if (Test-Path "$out\report.txt") { Get-Content "$out\report.txt" } else { Set-Content "$out\report.txt" 'FAIL  no report written (app did not start?)' }
+
+      # ---------- test 2: install like a student would ----------
+      - name: Install silently + self-test the installed app
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD 'selftest\installed'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $r = New-Object System.Collections.Generic.List[string]
+          $setup = Get-ChildItem 'desktop-app\dist\AeroGyan-Setup-*.exe' | Select-Object -First 1
+          $r.Add("info  installer $($setup.Name) — $([math]::Round($setup.Length / 1MB, 1)) MB")
+          $t = [Diagnostics.Stopwatch]::StartNew()
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList '/S' -PassThru
+          if ($p.WaitForExit(240000)) { $r.Add("PASS  installer finishes without admin rights — $([math]::Round($t.Elapsed.TotalSeconds,1)) s, exit $($p.ExitCode)") }
+          else { $r.Add('FAIL  installer finishes without admin rights — timed out') }
+          Start-Sleep -Seconds 3
+          Get-Process -Name AeroGyan -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'AeroGyan.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) { $r.Add("PASS  installed to $($exe.FullName)") } else { $r.Add('FAIL  installed app not found under %LOCALAPPDATA%\Programs') }
+          $desk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'AeroGyan.lnk'
+          if (Test-Path $desk) { $r.Add('PASS  desktop icon created') } else { $r.Add("FAIL  desktop icon created — missing $desk") }
+          $start = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter 'AeroGyan.lnk' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($start) { $r.Add("PASS  Start-menu entry created") } else { $r.Add('FAIL  Start-menu entry created') }
+          $un = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'AeroGyan*' } | Select-Object -First 1
+          if ($un) { $r.Add("PASS  listed in Settings › Apps as '$($un.DisplayName)' $($un.DisplayVersion) by $($un.Publisher)") } else { $r.Add('FAIL  listed in Settings › Apps') }
+          if (Test-Path 'HKCU:\Software\Classes\aerogyan') { $r.Add('PASS  aerogyan:// links registered') } else { $r.Add('info  aerogyan:// links not registered yet (registered on first start)') }
+          if ($exe) {
+            $p2 = Start-Process -FilePath $exe.FullName -ArgumentList "--aero-selftest=$out" -PassThru
+            if (-not $p2.WaitForExit(240000)) { Stop-Process -Id $p2.Id -Force; $r.Add('FAIL  installed app self-test finished in time') }
+          }
+          $r | Set-Content "$out\install-report.txt"
+          Get-Content "$out\install-report.txt"
+          if (Test-Path "$out\report.txt") { Get-Content "$out\report.txt" }
+
+      - name: Collect the report
+        id: report
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p publish
+          R=publish/windows-test-report-${VERSION}.txt
+          {
+            echo "AeroGyan Windows app ${VERSION} — test report"
+            echo "Built: $(date -u '+%Y-%m-%d %H:%M UTC') · commit ${GITHUB_SHA:0:7}"
+            echo
+            echo "=== 1. Built app (dist/win-unpacked) ==="
+            cat selftest/built/report.txt 2>/dev/null || echo "FAIL  no report"
+            echo
+            echo "=== 2. Installed with the setup file ==="
+            cat selftest/installed/install-report.txt 2>/dev/null || echo "FAIL  no install report"
+            cat selftest/installed/report.txt 2>/dev/null || echo "FAIL  no report from the installed app"
+          } | tr -d '\r' > "$R"
+          for d in built installed; do
+            for f in selftest/$d/*.png; do [ -f "$f" ] && cp "$f" "publish/windows-test-$d-$(basename "$f")"; done
+          done
+          cp desktop-app/dist/AeroGyan-Setup-*.exe publish/ 2>/dev/null || true
+          ls -la publish
+          FAILS=$(grep -c '^FAIL' "$R" || true)
+          echo "fails=$FAILS" >> "$GITHUB_OUTPUT"
+          grep '^FAIL' "$R" | head -10 | while read -r l; do echo "::warning title=Windows self-test::$l"; done
+          grep '^RESULT' "$R" | while read -r l; do echo "::notice title=Windows self-test::$l"; done
+          echo "::notice title=Windows app::AeroGyan-Setup-${VERSION}.exe built · ${FAILS} failed check(s)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AeroGyan-Windows-${{ env.VERSION }}
+          path: publish/
+          retention-days: 90
+
+      - name: Publish as a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-v${{ env.VERSION }}
+          name: AeroGyan Windows ${{ env.VERSION }}
+          body: |
+            Windows app (64-bit, Windows 10/11). Publish it on the website:
+            Admin → Apps → Windows → "Publish latest from GitHub" (or upload the .exe).
+            The test report and screenshots from a real Windows machine are attached.
+            Failed checks in this build: ${{ steps.report.outputs.fails }}
+          files: publish/*

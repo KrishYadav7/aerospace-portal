@@ -14759,7 +14759,8 @@ function readAppRelease() {
   if (_appRelease) return _appRelease;
   try {
     const r = JSON.parse(fs.readFileSync(APP_RELEASE_JSON, 'utf8'));
-    _appRelease = r && r.android ? r : { android: null };
+    /* keep every platform (android, windows…) — a missing one is just null */
+    _appRelease = r && typeof r === 'object' ? Object.assign({ android: null }, r) : { android: null };
   } catch (_) { _appRelease = { android: null }; }
   return _appRelease;
 }
@@ -14783,7 +14784,7 @@ function _publicAndroid(a) {
 
 app.get('/api/app-release', (req, res) => {
   res.setHeader('Cache-Control', 'public, max-age=60');
-  res.json({ success: true, android: _publicAndroid(_androidReleaseLive()) });
+  res.json({ success: true, android: _publicAndroid(_androidReleaseLive()), windows: _publicWindows(_windowsReleaseLive()) });
 });
 
 let _apkCountTimer = null;
@@ -14808,7 +14809,7 @@ app.get('/api/admin/app-release', requireAdminAuth, (req, res) => {
   res.json({ success: true, android: a ? Object.assign(_publicAndroid(a), {
     file: path.basename(a.file), sha256: a.sha256, uploadedBy: a.uploadedBy, downloads: a.downloads || 0,
     previous: readAppRelease().previous || null
-  }) : { available: false } });
+  }) : { available: false }, windows: _adminWindows(), windowsJob: _winJob });
 });
 
 const apkUpload = multer({
@@ -14881,7 +14882,7 @@ app.post('/api/admin/app-release/android', requireAdminAuth, (req, res) => {
       for (const f of await fs.promises.readdir(APP_RELEASE_DIR)) {
         if (f.endsWith('.apk') && !keep.has(f)) fs.promises.rm(path.join(APP_RELEASE_DIR, f), { force: true }).catch(() => {});
       }
-      await writeAppRelease({ android, previous: prev ? { version: prev.version, versionCode: prev.versionCode, file: prev.file, uploadedAt: prev.uploadedAt } : null });
+      await writeAppRelease(Object.assign({}, readAppRelease(), { android, previous: prev ? { version: prev.version, versionCode: prev.versionCode, file: prev.file, uploadedAt: prev.uploadedAt } : null }));
       console.log(`[app-release] 📱 Android ${version} (${versionCode}) uploaded · ${(buf.length / 1048576).toFixed(1)} MB`);
       res.json({ success: true, android: _publicAndroid(android) });
     } catch (e) {
@@ -14895,7 +14896,292 @@ app.post('/api/admin/app-release/android', requireAdminAuth, (req, res) => {
 app.delete('/api/admin/app-release/android', requireAdminAuth, async (req, res) => {
   try {
     const rel = readAppRelease();
-    await writeAppRelease({ android: null, previous: rel.android ? { version: rel.android.version, versionCode: rel.android.versionCode, file: rel.android.file, uploadedAt: rel.android.uploadedAt } : null });
+    await writeAppRelease(Object.assign({}, rel, { android: null, previous: rel.android ? { version: rel.android.version, versionCode: rel.android.versionCode, file: rel.android.file, uploadedAt: rel.android.uploadedAt } : null }));
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+});
+/* ============================================================
+   ⭐ WINDOWS APP — installer + automatic updates (2026-10-10)
+   ------------------------------------------------------------
+   The Windows app (desktop-app/, built and tested by GitHub
+   Actions) is published by the admin — straight from the newest
+   GitHub Release, or by uploading the .exe. Students download it
+   from "Get App"; installed apps read latest.yml every few hours
+   and update themselves.
+
+   Public:  GET  /download/windows             → AeroGyan-Setup-x.y.z.exe
+            GET  /download/windows/latest.yml  → update feed (electron-updater)
+            GET  /download/windows/<setup>.exe → the same file under its versioned name
+   Admin:   POST /api/admin/app-release/windows               multipart: file (.exe), notes?, force?
+            POST /api/admin/app-release/windows/from-github   { force? } → runs in the background,
+                 progress in GET /api/admin/app-release → windowsJob
+            DELETE /api/admin/app-release/windows
+   ============================================================ */
+const APP_GITHUB_REPO = process.env.APP_GITHUB_REPO || 'KrishYadav7/aerospace-portal';
+const WIN_MAX_BYTES = 300 * 1024 * 1024;
+
+function _windowsReleaseLive() {
+  const w = readAppRelease().windows;
+  if (!w || !w.file) return null;
+  const fp = path.join(APP_RELEASE_DIR, path.basename(w.file));
+  return fs.existsSync(fp) ? Object.assign({}, w, { fp }) : null;
+}
+function _publicWindows(w) {
+  return w ? { available: true, version: w.version, size: w.size, url: '/download/windows',
+               updatedAt: w.uploadedAt, notes: w.notes || '' }
+           : { available: false };
+}
+function _adminWindows() {
+  const w = _windowsReleaseLive();
+  if (!w) return { available: false, previous: readAppRelease().windowsPrevious || null };
+  return Object.assign(_publicWindows(w), {
+    file: path.basename(w.file), sha256: w.sha256, uploadedBy: w.uploadedBy, source: w.source || 'upload',
+    downloads: w.downloads || 0, updates: w.updates || 0, test: w.test || null,
+    previous: readAppRelease().windowsPrevious || null
+  });
+}
+const _winSetupName = (v) => `AeroGyan-Setup-${String(v).replace(/[^0-9A-Za-z._-]/g, '')}.exe`;
+function _cmpVer(a, b) {
+  const pa = String(a || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/* count downloads without writing the file on every request */
+let _winCountTimer = null;
+function _countWindows(field) {
+  const rel = readAppRelease();
+  if (!rel.windows) return;
+  rel.windows[field] = (rel.windows[field] || 0) + 1;
+  clearTimeout(_winCountTimer);
+  _winCountTimer = setTimeout(() => { writeAppRelease(rel).catch(() => {}); }, 5000);
+}
+function _sendWindowsExe(req, res, w) {
+  const type = 'application/vnd.microsoft.portable-executable';
+  res.setHeader('Content-Type', type);
+  res.setHeader('Content-Disposition', `attachment; filename="${_winSetupName(w.version)}"`);
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.sendFile(w.fp, { headers: { 'Content-Type': type } });
+}
+
+app.get('/download/windows', (req, res) => {
+  const w = _windowsReleaseLive();
+  if (!w) return res.redirect(302, '/#apps');            // nothing published yet → the install section
+  if (req.method === 'GET' && !req.headers.range) _countWindows('downloads');
+  _sendWindowsExe(req, res, w);
+});
+
+/* the feed electron-updater reads (same format electron-builder writes) */
+app.get('/download/windows/latest.yml', (req, res) => {
+  const w = _windowsReleaseLive();
+  res.setHeader('Cache-Control', 'no-cache');
+  if (!w || !w.sha512) return res.status(404).type('text/plain').send('No Windows release published.');
+  const name = _winSetupName(w.version);
+  res.type('text/yaml').send(
+    `version: ${w.version}\n` +
+    `files:\n  - url: ${name}\n    sha512: ${w.sha512}\n    size: ${w.size}\n` +
+    `path: ${name}\nsha512: ${w.sha512}\nreleaseDate: '${w.uploadedAt}'\n`);
+});
+
+app.get('/download/windows/:file', (req, res) => {
+  const w = _windowsReleaseLive();
+  if (!w || req.params.file !== _winSetupName(w.version)) return res.status(404).end();
+  if (req.method === 'GET' && !req.headers.range) _countWindows('updates');
+  _sendWindowsExe(req, res, w);
+});
+
+/* size + hashes without reading the whole file into memory */
+function _hashFile(fp) {
+  return new Promise((resolve, reject) => {
+    const h512 = crypto.createHash('sha512');
+    const h256 = crypto.createHash('sha256');
+    let size = 0;
+    fs.createReadStream(fp)
+      .on('data', (c) => { size += c.length; h512.update(c); h256.update(c); })
+      .on('error', reject)
+      .on('end', () => resolve({ size, sha512: h512.digest('base64'), sha256: h256.digest('hex') }));
+  });
+}
+
+/* Is this really a Windows installer? (an .exe built by NSIS) */
+async function _looksLikeWindowsInstaller(fp) {
+  const fh = await fs.promises.open(fp, 'r');
+  try {
+    const st = await fh.stat();
+    if (st.size < 1024 * 1024) return false;
+    const len = Math.min(st.size, 8 * 1024 * 1024);
+    const head = Buffer.alloc(len);
+    await fh.read(head, 0, len, 0);
+    if (head.toString('latin1', 0, 2) !== 'MZ') return false;
+    const pe = head.readUInt32LE(0x3c);
+    if (pe + 4 > len || head.toString('latin1', pe, pe + 4) !== 'PE\u0000\u0000') return false;
+    return head.indexOf('NullsoftInst', 0, 'latin1') !== -1;
+  } finally { await fh.close(); }
+}
+
+/* make a checked .exe the live Windows release */
+async function _publishWindows(tmp, { version, notes, by, source, test }) {
+  const { size, sha512, sha256 } = await _hashFile(tmp);
+  const name = `AeroGyan-Setup-${version}-${crypto.randomBytes(4).toString('hex')}.exe`;
+  await fs.promises.copyFile(tmp, path.join(APP_RELEASE_DIR, name));
+  const rel = readAppRelease();
+  const prev = rel.windows;
+  const windows = {
+    version, file: name, size, sha512, sha256,
+    notes: String(notes || '').slice(0, 500),
+    uploadedAt: new Date().toISOString(), uploadedBy: by || 'admin',
+    source: source || 'upload', test: test || null, downloads: 0, updates: 0
+  };
+  /* keep the previous installer for one release (rollback), delete older ones */
+  const keep = new Set([name, prev && prev.file].filter(Boolean));
+  for (const f of await fs.promises.readdir(APP_RELEASE_DIR)) {
+    if (/\.exe$/i.test(f) && !keep.has(f)) fs.promises.rm(path.join(APP_RELEASE_DIR, f), { force: true }).catch(() => {});
+  }
+  await writeAppRelease(Object.assign({}, readAppRelease(), {
+    windows,
+    windowsPrevious: prev ? { version: prev.version, file: prev.file, uploadedAt: prev.uploadedAt } : null
+  }));
+  console.log(`[app-release] 🪟 Windows ${version} published (${source}) · ${(size / 1048576).toFixed(1)} MB`);
+  return windows;
+}
+
+const exeUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, require('os').tmpdir()),
+    filename: (req, file, cb) => cb(null, 'exe-upload-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'))
+  }),
+  limits: { fileSize: WIN_MAX_BYTES, files: 1 }
+});
+
+app.post('/api/admin/app-release/windows', requireAdminAuth, (req, res) => {
+  exeUpload.single('file')(req, res, async (err) => {
+    const tmp = req.file && req.file.path;
+    const cleanup = () => { if (tmp) fs.promises.rm(tmp, { force: true }).catch(() => {}); };
+    try {
+      if (err) {
+        return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400)
+          .json({ success: false, message: err.code === 'LIMIT_FILE_SIZE' ? 'The installer is larger than 300 MB.' : 'Upload failed.' });
+      }
+      if (!req.file) return res.status(400).json({ success: false, message: 'Choose the .exe file first.' });
+      if (!(await _looksLikeWindowsInstaller(tmp))) {
+        cleanup();
+        return res.status(415).json({ success: false, message: 'That file is not the AeroGyan Windows installer. Upload AeroGyan-Setup-x.y.z.exe from GitHub.' });
+      }
+      const m = /(\d+)\.(\d+)\.(\d+)/.exec(String((req.body && req.body.version) || req.file.originalname || ''));
+      if (!m) { cleanup(); return res.status(400).json({ success: false, message: 'Keep the version in the file name (AeroGyan-Setup-1.0.5.exe).' }); }
+      const version = m[0];
+      const cur = readAppRelease().windows;
+      if (cur && _cmpVer(version, cur.version) <= 0 && !(req.body && req.body.force === '1')) {
+        cleanup();
+        return res.status(409).json({ success: false, code: 'OLDER_VERSION',
+          message: `Version ${version} is not newer than the current ${cur.version}. Installed apps only update to newer versions.` });
+      }
+      const windows = await _publishWindows(tmp, {
+        version, notes: req.body && req.body.notes, source: 'upload',
+        by: (req.authUser && req.authUser.username) || 'admin'
+      });
+      cleanup();
+      res.json({ success: true, windows: _publicWindows(windows) });
+    } catch (e) {
+      cleanup();
+      console.error('[app-release] windows upload', e);
+      res.status(500).json({ success: false, message: 'Could not save the installer.' });
+    }
+  });
+});
+
+/* ---- publish the newest "windows-v*" GitHub Release (runs in the background) ---- */
+let _winJob = { state: 'idle' };
+async function _ghFetch(url, ms) {
+  const headers = { 'User-Agent': 'aerogyan-server', Accept: 'application/vnd.github+json' };
+  if (process.env.GITHUB_TOKEN && /^https:\/\/api\.github\.com\//.test(url)) headers.Authorization = 'Bearer ' + process.env.GITHUB_TOKEN;
+  return fetch(url, { headers, redirect: 'follow', signal: AbortSignal.timeout(ms) });
+}
+async function _runWindowsFromGithub({ force, by }) {
+  const tmp = path.join(require('os').tmpdir(), 'exe-gh-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex'));
+  const set = (o) => { _winJob = Object.assign({}, _winJob, o, { at: Date.now() }); };
+  try {
+    set({ step: 'Looking for the newest Windows build on GitHub…' });
+    const r = await _ghFetch(`https://api.github.com/repos/${APP_GITHUB_REPO}/releases?per_page=40`, 20000);
+    if (!r.ok) throw new Error(`GitHub answered ${r.status}${r.status === 403 ? ' (rate limit — try again in a few minutes)' : ''}.`);
+    const list = await r.json();
+    const rels = (Array.isArray(list) ? list : [])
+      .filter((x) => x && !x.draft && /^windows-v\d+\.\d+\.\d+$/.test(x.tag_name || ''))
+      .sort((a, b) => _cmpVer(b.tag_name.slice(9), a.tag_name.slice(9)));
+    const rel = rels.find((x) => (x.assets || []).some((a) => /^AeroGyan-Setup-[\d.]+\.exe$/.test(a.name)));
+    if (!rel) throw new Error('No Windows build on GitHub yet. Run "Windows app (installer)" in GitHub → Actions first.');
+    const version = rel.tag_name.slice(9);
+    const asset = rel.assets.find((a) => /^AeroGyan-Setup-[\d.]+\.exe$/.test(a.name));
+    const cur = readAppRelease().windows;
+    if (cur && _cmpVer(version, cur.version) <= 0 && !force) {
+      return set({ state: 'done', step: '', code: 'UP_TO_DATE', version, message: `Windows ${cur.version} is already live — GitHub has nothing newer.` });
+    }
+    if (asset.size > WIN_MAX_BYTES) throw new Error('The installer on GitHub is larger than 300 MB.');
+
+    /* the build's own test report (small text file), if attached */
+    let test = null;
+    const rep = rel.assets.find((a) => /^windows-test-report.*\.txt$/.test(a.name));
+    if (rep && rep.size < 200000) {
+      try {
+        const t = await (await _ghFetch(rep.browser_download_url, 20000)).text();
+        const fails = (t.match(/^FAIL/gm) || []).length;
+        const passes = (t.match(/^PASS/gm) || []).length;
+        test = { passes, fails, url: rep.browser_download_url, failed: (t.match(/^FAIL.*$/gm) || []).slice(0, 8) };
+      } catch (_) {}
+    }
+
+    set({ step: `Downloading AeroGyan-Setup-${version}.exe…`, version, total: asset.size, received: 0 });
+    const dl = await _ghFetch(asset.browser_download_url, 15 * 60 * 1000);
+    if (!dl.ok || !dl.body) throw new Error(`Download failed (${dl.status}).`);
+    const { Readable, Transform } = require('stream');
+    const { pipeline } = require('stream/promises');
+    let received = 0;
+    let lastTick = 0;
+    const meter = new Transform({
+      transform(chunk, _enc, cb) {
+        received += chunk.length;
+        if (received > WIN_MAX_BYTES) return cb(new Error('The download is larger than 300 MB.'));
+        const now = Date.now();
+        if (now - lastTick > 500) { lastTick = now; set({ received }); }
+        cb(null, chunk);
+      }
+    });
+    await pipeline(Readable.fromWeb(dl.body), meter, fs.createWriteStream(tmp));
+    set({ received, step: 'Checking the installer…' });
+    if (received !== asset.size) throw new Error('The download was incomplete — please try again.');
+    if (!(await _looksLikeWindowsInstaller(tmp))) throw new Error('The file on GitHub is not a Windows installer.');
+    const w = await _publishWindows(tmp, { version, notes: '', by, source: 'github ' + rel.tag_name, test });
+    set({ state: 'done', step: '', code: 'PUBLISHED', version: w.version, message: `Windows ${w.version} is live — students can download it now.` });
+  } catch (e) {
+    console.error('[app-release] windows from GitHub', e && e.message);
+    set({ state: 'error', step: '', message: (e && e.name === 'TimeoutError') ? 'GitHub took too long — please try again.' : ((e && e.message) || 'Failed.') });
+  } finally {
+    fs.promises.rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+app.post('/api/admin/app-release/windows/from-github', requireAdminAuth, (req, res) => {
+  if (typeof fetch !== 'function') return res.status(501).json({ success: false, message: 'The server needs Node.js 18 or newer for this. Upload the .exe instead.' });
+  if (_winJob.state === 'running' && Date.now() - (_winJob.at || 0) < 2 * 60 * 1000) {
+    return res.status(409).json({ success: false, message: 'Already fetching from GitHub — please wait.', windowsJob: _winJob });
+  }
+  _winJob = { state: 'running', step: 'Starting…', startedAt: Date.now(), at: Date.now() };
+  _runWindowsFromGithub({ force: !!(req.body && (req.body.force === true || req.body.force === '1')), by: (req.authUser && req.authUser.username) || 'admin' });
+  res.status(202).json({ success: true, windowsJob: _winJob });
+});
+
+app.delete('/api/admin/app-release/windows', requireAdminAuth, async (req, res) => {
+  try {
+    const rel = readAppRelease();
+    await writeAppRelease(Object.assign({}, rel, {
+      windows: null,
+      windowsPrevious: rel.windows ? { version: rel.windows.version, file: rel.windows.file, uploadedAt: rel.windows.uploadedAt } : (rel.windowsPrevious || null)
+    }));
     res.json({ success: true });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
 });

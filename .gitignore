@@ -32,3 +32,7 @@ android-app/build/
 android-app/app/build/
 android-app/local.properties
 android-app/.idea/
+
+# Desktop app (Windows / macOS) — build output
+desktop-app/dist/
+desktop-app/selftest-out/
