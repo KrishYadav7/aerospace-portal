@@ -7,13 +7,18 @@
 
 /* ---------- section shell ---------- */
 #studentNotesView { --nt-accent: var(--brand-600, #4f46e5); }
+/* an open notebook takes the whole window: it sits above the site header
+   (z 200) but below app modals (z 1000+), popups and toasts */
 #studentNotesView.active.nt-editing {
-  display: flex; flex-direction: column;
-  height: calc(100vh - var(--aero-header-h, 64px) - var(--aero-bnav-h, 0px) - 24px);
-  height: calc(100dvh - var(--aero-header-h, 64px) - var(--aero-bnav-h, 0px) - 24px);
-  min-height: 420px;
+  position: fixed; inset: 0; z-index: 900; margin: 0;
+  display: flex; flex-direction: column; min-height: 0;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  background: var(--bg-surface);
 }
-.main-content:has(> #studentNotesView.active.nt-editing) { padding-top: 12px !important; padding-bottom: 12px !important; }
+html.aero-nt-full, html.aero-nt-full body { overflow: hidden !important; overscroll-behavior: none; }
+html.aero-nt-full .aero-to-top { display: none !important; }
+#studentNotesView.nt-editing .nt-editor { border: 0; border-radius: 0; box-shadow: none; }
+.nt-ibtn.nt-fs.on { background: rgba(99,102,241,.14); color: var(--nt-accent); }
 
 /* ---------- library ---------- */
 .nt-lib { max-width: 1240px; margin: 0 auto; padding: 4px 0 24px; }
@@ -307,9 +312,6 @@ html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
   .nt-bar-c::-webkit-scrollbar { display: none; }
 }
 @media (max-width: 640px) {
-  #studentNotesView.active.nt-editing { min-height: 360px; }
-  .main-content:has(> #studentNotesView.active.nt-editing) { padding-left: 6px !important; padding-right: 6px !important; padding-top: 6px !important; padding-bottom: 6px !important; }
-  .nt-editor { border-radius: 14px; }
   .nt-bar { padding: 6px; gap: 6px; }
   .nt-bar-c { justify-self: stretch; padding: 3px; }
   .nt-title { max-width: 150px; padding: 0 6px; font-size: 14px; }

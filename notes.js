@@ -253,6 +253,41 @@
   const inks = () => nightPaper() ? INKS_DARK : INKS_LIGHT;
   const scale = () => S.base * S.zoom;
 
+  /* ---------- full window & full screen ----------
+     An open notebook always takes the whole window (the site header,
+     footer and page scroll step aside — the ← button brings them back).
+     Where the browser allows it, the ⤢ button also hides the browser's
+     own bars (true full screen). */
+  function setEditing(on) {
+    if (S.root) S.root.classList.toggle('nt-editing', !!on);
+    document.documentElement.classList.toggle('aero-nt-full', !!on);
+  }
+  const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+  const fsSupported = () => !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);
+  function enterFullscreen() {
+    const el = document.documentElement, fn = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (!fn) return;
+    try { const r = fn.call(el, { navigationUI: 'hide' }); if (r && r.catch) r.catch(() => toast('Full screen is not available here.', 'info')); } catch (_) {}
+    S.fsByUs = true;
+  }
+  function exitFullscreen() {
+    if (!S.fsByUs) return;
+    S.fsByUs = false;
+    if (!fsElement()) return;
+    const fn = document.exitFullscreen || document.webkitExitFullscreen;
+    try { const r = fn && fn.call(document); if (r && r.catch) r.catch(() => {}); } catch (_) {}
+  }
+  function syncFsButton() {
+    const b = S.root && S.root.querySelector('[data-act="fullscreen"]'); if (!b) return;
+    const on = !!fsElement();
+    b.innerHTML = `<i class="fas ${on ? 'fa-compress' : 'fa-expand'}"></i>`;
+    b.title = on ? 'Exit full screen' : 'Full screen';
+    b.setAttribute('aria-label', b.title);
+    b.classList.toggle('on', on);
+  }
+  document.addEventListener('fullscreenchange', syncFsButton);
+  document.addEventListener('webkitfullscreenchange', syncFsButton);
+
   /* =========================================================
      LIBRARY
      ========================================================= */
@@ -275,7 +310,7 @@
   function renderLibrary() {
     const root = S.root; if (!root) return;
     S.mode = 'library';
-    root.classList.remove('nt-editing');
+    setEditing(false);
     const list = S.list;
     const q = S.filter.trim().toLowerCase();
     const shown = (list || []).filter(n => !q || (n.title + ' ' + courseName(n.courseId)).toLowerCase().includes(q));
@@ -444,7 +479,7 @@
     await closeEditor(true);
     S.mode = 'editor';
     try { history.pushState(null, '', '#/notes/' + id); } catch (_) {}
-    S.root.classList.add('nt-editing');
+    setEditing(true);
     S.root.innerHTML = `<div class="nt-empty"><i class="fas fa-spinner fa-spin"></i><p>Opening notebook…</p></div>`;
     let j = created;
     try { if (!j) j = await api('GET', `${API}/${id}`); }
@@ -493,6 +528,7 @@
             <button type="button" class="nt-zoom" data-act="zoomfit" id="ntZoom" title="Fit width">100%</button>
             <button type="button" class="nt-ibtn" data-act="zoomin" title="Zoom in" aria-label="Zoom in"><i class="fas fa-magnifying-glass-plus"></i></button>
             <button type="button" class="nt-ibtn nt-primary" data-act="addpage" title="Add a page" aria-label="Add a page"><i class="fas fa-file-circle-plus"></i></button>
+            ${fsSupported() ? `<button type="button" class="nt-ibtn nt-fs" data-act="fullscreen" title="Full screen" aria-label="Full screen"><i class="fas fa-expand"></i></button>` : ''}
             <button type="button" class="nt-ibtn" data-act="more" title="More" aria-label="More"><i class="fas fa-ellipsis"></i></button>
           </div>
         </div>
@@ -503,7 +539,7 @@
       </div>`;
     S.scroller = $('#ntScroller', root);
     S.pagesEl = $('#ntPages', root);
-    updateTitle(); renderToolOptions(); setStatus(S.status);
+    updateTitle(); renderToolOptions(); setStatus(S.status); syncFsButton();
     computeBase();
     applyPaper();
     S.pages.forEach(p => S.pagesEl.appendChild(pageShell(p)));
@@ -1225,6 +1261,7 @@
     else if (act === 'zoomfit') setZoom(1);
     else if (act === 'addpage') addPage(S.current);
     else if (act === 'more') moreMenu(a);
+    else if (act === 'fullscreen') { if (fsElement()) { S.fsByUs = true; exitFullscreen(); } else enterFullscreen(); }
   }
   function onKey(e) {
     if (S.mode !== 'editor' || !S.root || !S.root.isConnected) return;
@@ -1277,7 +1314,8 @@
     if (!hasUnsaved()) { S.pages = []; S.byId = new Map(); S.nb = null; }
     S.undo = []; S.redo = [];
     S.mode = 'library';
-    if (S.root) S.root.classList.remove('nt-editing');
+    setEditing(false);
+    exitFullscreen();
     closePopup();
   }
   async function refreshList() {
