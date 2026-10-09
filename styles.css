@@ -17073,3 +17073,37 @@ html[data-skin="space"] .theme-switch .ts-knob::after {
     width: min(420px, calc(100vw - 24px)); max-width: none;
   }
 }
+
+/* ==========================================================================
+   ⭐ 2026-10-09 — "MADE IN INDIA" BADGE (login, app footer, landing page)
+   The tricolour is an inline SVG (#aeroFlagIN) — flag emoji don't show on
+   Windows, so it is drawn rather than typed.
+   ========================================================================== */
+.mii {
+  display: inline-flex; align-items: center; gap: 7px; vertical-align: middle;
+  font-weight: 600; letter-spacing: .2px; white-space: nowrap; line-height: 1;
+}
+.mii-flag {
+  width: 21px; height: 14px; flex: 0 0 auto; border-radius: 2.5px; display: block;
+  box-shadow: 0 0 0 .5px rgba(0,0,0,.18), 0 1px 3px rgba(0,0,0,.18);
+}
+/* login: a soft pill under the sign-in links */
+.lg-made-in { display: flex; justify-content: center; margin-top: 18px; }
+.mii-login {
+  padding: 7px 13px 7px 14px; border-radius: 999px; font-size: 12.5px; color: var(--text-secondary);
+  background: linear-gradient(90deg, rgba(255,153,51,.10), rgba(255,255,255,0) 45%, rgba(255,255,255,0) 55%, rgba(19,136,8,.10));
+  border: 1px solid var(--border-subtle);
+}
+.mii-login .mii-flag { width: 24px; height: 16px; }
+/* app footer: sits after the copyright */
+.app-footer-sep { opacity: .55; margin: 0 7px; }
+.mii-footer { color: rgba(255,255,255,.78); font-size: inherit; gap: 6px; }
+.mii-footer .mii-flag { width: 18px; height: 12px; }
+/* landing hero: a small pill under the eyebrow */
+.lp-made-in { display: flex; justify-content: center; margin: -6px 0 18px; }
+.mii-hero {
+  padding: 6px 12px 6px 13px; border-radius: 999px; font-size: 12.5px; color: rgba(255,255,255,.9);
+  background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.16);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+}
+.lp-foot-made { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; }
