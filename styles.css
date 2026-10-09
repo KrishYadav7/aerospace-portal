@@ -16177,6 +16177,9 @@ body.aero-prof .playlist-item-remove { display: none !important; }
   background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.18); backdrop-filter: blur(4px);
 }
+/* 2026-10-10 — the AeroGyan logo on a white tile (same as the header) */
+.lg-brand .login-icon.lg-mark { background: #fff; border-color: rgba(255,255,255,.6); padding: 7px; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.lg-brand .login-icon.lg-mark svg { width: 100%; height: 100%; display: block; }
 .lg-brand-name { display: block; font-size: 17px; font-weight: 700; letter-spacing: -.2px; color: #fff; }
 .lg-brand-tag { display: block; font-size: 12.5px; color: rgba(224,231,255,.72); margin-top: 1px; }
 .lg-brand-body { position: relative; margin-top: auto; }
