@@ -5365,17 +5365,68 @@ function _renderAppNow() {
   }
 }
 
+/* ============================================================
+   ⭐ HEADER FIT (2026-10-09) — tablets & small laptops
+   ------------------------------------------------------------
+   Between the phone menu (≤860px) and a wide desktop, the nav links,
+   search, notifications, theme switch, Get App, streak and profile
+   can need more room than the header has (iPad, Android tablets,
+   1024–1300px laptops) — they used to slide under each other.
+   The header now measures itself and steps down only as far as
+   needed:  1 → compact pills · 2 → icon-only links (the current page
+   and AI keep their label) · 3 → all links icon-only · 4 → hide the
+   streak chip & Get App pill. Every link keeps a tooltip/aria-label.
+   ============================================================ */
+const HEADER_FIT_LEVELS = ['hdr-fit-1', 'hdr-fit-2', 'hdr-fit-3', 'hdr-fit-4'];
+let _headerFitRaf = 0;
+function fitHeaderNav() {
+  const h = document.getElementById('appHeader'), nav = document.getElementById('mainNav');
+  if (!h || !nav) return;
+  h.classList.remove(...HEADER_FIT_LEVELS);
+  if (getComputedStyle(h).display === 'none') return;
+  if (getComputedStyle(nav).position === 'absolute') return;          // phone menu mode
+  const ui = h.querySelector('.user-info');
+  const tooWide = () => {
+    if (nav.scrollWidth > nav.clientWidth + 1) return true;
+    const hr = h.getBoundingClientRect();
+    const padR = parseFloat(getComputedStyle(h).paddingRight) || 0;
+    if (ui && ui.getBoundingClientRect().right > hr.right - padR + 1) return true;
+    const nr = nav.getBoundingClientRect(), br = h.querySelector('.brand');
+    if (br && br.getBoundingClientRect().right > nr.left + 1) return true;
+    return false;
+  };
+  for (const c of HEADER_FIT_LEVELS) { if (!tooWide()) break; h.classList.add(c); }
+}
+function scheduleHeaderFit() {
+  if (_headerFitRaf) return;
+  _headerFitRaf = requestAnimationFrame(() => { _headerFitRaf = 0; try { fitHeaderNav(); } catch (_) {} });
+}
+(function wireHeaderFit() {
+  try {
+    window.addEventListener('resize', scheduleHeaderFit, { passive: true });
+    window.addEventListener('orientationchange', scheduleHeaderFit);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleHeaderFit).catch(() => {});
+    if (typeof ResizeObserver === 'function') {
+      const ro = new ResizeObserver(scheduleHeaderFit);
+      const hook = () => { const ui = document.querySelector('#appHeader .user-info'); if (ui) ro.observe(ui); };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', hook); else hook();
+    }
+  } catch (_) {}
+})();
+
 function buildNav() {
   if (isAdmin(currentUser)) {
     $('mainNav').innerHTML = `<a href="#" class="active" onclick="event.preventDefault();">Dashboard</a>`;
+    scheduleHeaderFit();
     return;
   }
   if (isProfessor(currentUser)) {
     const onDash = !currentCourseId && !editingCourseId && !quizEditingCourseId;
     $('mainNav').innerHTML = `
-      <a href="#" class="${onDash && professorNav === 'courses' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> My Courses</a>
-      <a href="#" class="${onDash && professorNav === 'requests' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Course Requests</a>
-      <a href="#" class="${onDash && professorNav === 'profile' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('profile')"><i class="fas fa-id-badge"></i> My Profile</a>`;
+      <a href="#" class="${onDash && professorNav === 'courses' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> <span class="nav-label">My Courses</span></a>
+      <a href="#" class="${onDash && professorNav === 'requests' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> <span class="nav-label">Course Requests</span></a>
+      <a href="#" class="${onDash && professorNav === 'profile' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('profile')"><i class="fas fa-id-badge"></i> <span class="nav-label">My Profile</span></a>`;
+    scheduleHeaderFit();
     return;
   }
   const aiActive        = (studentNav === 'ai'        && !currentCourseId) ? 'active' : '';
@@ -5386,13 +5437,14 @@ function buildNav() {
   const notesActive     = (studentNav === 'notes'     && !currentCourseId) ? 'active' : '';
   const savedCount = (currentUser.bookmarks || []).length;
   $('mainNav').innerHTML = `
-    <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> Home</a>
-    <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> Courses</a>
-    <a href="#" class="${savedActive}" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> Saved${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
-    <a href="#" class="${analyticsActive}" onclick="event.preventDefault();navigateStudent('analytics')"><i class="fas fa-chart-line"></i> Analytics</a>
-    <a href="#" class="${notesActive}" onclick="event.preventDefault();navigateStudent('notes')"><i class="fas fa-book-open"></i> Notes</a>
-    <a href="#" class="nav-ai-btn ${aiActive}" onclick="event.preventDefault();navigateStudent('ai')"><i class="fas fa-robot"></i> AI Solver</a>
+    <a href="#" class="${homeActive}" title="Home" aria-label="Home" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> <span class="nav-label">Home</span></a>
+    <a href="#" class="${coursesActive}" title="Courses" aria-label="Courses" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> <span class="nav-label">Courses</span></a>
+    <a href="#" class="${savedActive}" title="Saved" aria-label="Saved" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> <span class="nav-label">Saved</span>${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
+    <a href="#" class="${analyticsActive}" title="Analytics" aria-label="Analytics" onclick="event.preventDefault();navigateStudent('analytics')"><i class="fas fa-chart-line"></i> <span class="nav-label">Analytics</span></a>
+    <a href="#" class="${notesActive}" title="Notes" aria-label="Notes" onclick="event.preventDefault();navigateStudent('notes')"><i class="fas fa-book-open"></i> <span class="nav-label">Notes</span></a>
+    <a href="#" class="nav-ai-btn ${aiActive}" title="AI Solver" aria-label="AI Solver" onclick="event.preventDefault();navigateStudent('ai')"><i class="fas fa-robot"></i> <span class="nav-label">AI Solver</span></a>
   `;
+  scheduleHeaderFit();
 }
 
 /* ============================================================

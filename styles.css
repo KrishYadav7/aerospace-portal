@@ -17040,3 +17040,36 @@ html[data-skin="space"] .theme-switch .ts-knob::after {
 [data-theme="dark"] .lg-tab-error-btn, [data-theme="dim"] .lg-tab-error-btn { color: #fca5a5; }
 #loginView .login-role-toggle button.lg-hint:not(.active) { color: #ef4444; animation: lgHintPulse 1.2s ease-in-out 2; }
 @keyframes lgHintPulse { 50% { background: rgba(239, 68, 68, .12); } }
+
+/* ==========================================================================
+   ⭐ 2026-10-09 — HEADER FIT FOR TABLETS & SMALL LAPTOPS (see fitHeaderNav)
+   The header adds hdr-fit-1…4 only when its items would otherwise overlap.
+   ========================================================================== */
+.main-nav a .nav-label { white-space: nowrap; }
+#appHeader.hdr-fit-1 { gap: 8px !important; padding-left: 16px !important; padding-right: 16px !important; }
+#appHeader.hdr-fit-1 .brand-text span { display: none !important; }
+#appHeader.hdr-fit-1 .main-nav a { padding: 6px 10px !important; gap: 5px !important; }
+#appHeader.hdr-fit-1 .main-nav a.nav-ai-btn { margin-left: 2px !important; }
+#appHeader.hdr-fit-1 .app-install-pill { padding: 8px 10px !important; gap: 0 !important; min-width: 38px; }
+#appHeader.hdr-fit-1 .app-install-pill .landing-install-pill-text { display: none !important; }
+#appHeader.hdr-fit-1 .user-info { gap: 5px !important; }
+/* 2 — icon-only links; the current page and AI Solver keep their words */
+#appHeader.hdr-fit-2 .main-nav a:not(.active):not(.nav-ai-btn) .nav-label { display: none !important; }
+#appHeader.hdr-fit-2 .main-nav a:not(.active):not(.nav-ai-btn) { padding: 6px 11px !important; }
+/* 3 — every link icon-only, brand shows just its mark */
+#appHeader.hdr-fit-3 .main-nav a .nav-label { display: none !important; }
+#appHeader.hdr-fit-3 .main-nav a { padding: 6px 11px !important; }
+#appHeader.hdr-fit-3 .brand-text { display: none !important; }
+/* 4 — last resort: drop the streak chip and the Get App pill */
+#appHeader.hdr-fit-4 .streak-badge, #appHeader.hdr-fit-4 .app-install-pill { display: none !important; }
+#appHeader.hdr-fit-4 .main-nav a { padding: 6px 9px !important; }
+/* Tablet portrait (641–860px): the header is two rows and the bell sits at the
+   LEFT of row 2, so a dropdown anchored to the bell's right edge ran off the
+   left side of the screen. Anchor it to the header instead (as on phones). */
+@media (min-width: 641px) and (max-width: 860px) {
+  #appHeader .notif-wrap, #appHeader .user-info { position: static; }
+  #appHeader .notif-dropdown {
+    top: calc(100% + 6px); left: auto; right: 12px;
+    width: min(420px, calc(100vw - 24px)); max-width: none;
+  }
+}

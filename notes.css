@@ -172,6 +172,7 @@ html.aero-nt-full .aero-to-top { display: none !important; }
 .nt-scroller {
   position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain;
   touch-action: none;                 /* drawing & finger scrolling are handled in notes.js */
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   background: var(--bg-surface-3); cursor: crosshair; outline: none;
 }
 html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
@@ -179,6 +180,7 @@ html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
 .nt-scroller.is-panning { cursor: grabbing; }
 .nt-scroller[data-tool="text"] { cursor: text; }
 .nt-scroller[data-tool="eraser"] { cursor: cell; }
+.nt-pages, .nt-page { touch-action: none; }
 .nt-pages { width: max-content; min-width: 100%; box-sizing: border-box; padding: 24px 28px 64px; }
 
 .nt-page {
@@ -208,7 +210,7 @@ html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
       calc(var(--u) * 30px) calc(var(--u) * 30px) / calc(var(--u) * 60px) calc(var(--u) * 60px),
     var(--nt-paper, #fff);
 }
-.nt-ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; border-radius: inherit; }
+.nt-ink { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }   /* no rounded clip: keeps the canvas on the fast path */
 .nt-page-foot {
   position: absolute; right: 8px; bottom: 8px; z-index: 2; display: flex; align-items: center; gap: 2px;
   padding: 2px 2px 2px 9px; border-radius: 99px; background: rgba(20,22,28,.06); color: rgba(20,22,28,.55);
@@ -304,6 +306,14 @@ html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
 }
 
 /* ---------- tablets & phones ---------- */
+/* two-row toolbar — chosen by notes.js (fitBar) whenever one row would
+   overlap (iPads, tablets, small laptops, phones); the media query is
+   only the fallback before the script has measured */
+.nt-bar.nt-bar-2row { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "l r" "c c"; row-gap: 8px; }
+.nt-bar.nt-bar-2row .nt-bar-l { grid-area: l; }
+.nt-bar.nt-bar-2row .nt-bar-r { grid-area: r; }
+.nt-bar.nt-bar-2row .nt-bar-c { grid-area: c; justify-self: center; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.nt-bar.nt-bar-2row .nt-bar-c::-webkit-scrollbar { display: none; }
 @media (max-width: 980px) {
   .nt-bar { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "l r" "c c"; row-gap: 8px; }
   .nt-bar-l { grid-area: l; }
@@ -341,3 +351,10 @@ html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
 
 /* a night page on a dark desk still needs an edge */
 .nt-page.nt-pc-night { box-shadow: 0 0 0 1px rgba(148,163,184,.20), 0 6px 22px -6px rgba(0,0,0,.6); }
+/* the notebook title gives way first on narrow screens (never slides under undo) */
+.nt-bar-l { overflow: hidden; }
+.nt-bar-l .nt-title { flex: 0 1 auto; min-width: 0; }
+@media (max-width: 380px) {
+  .nt-bar-r [data-act="fullscreen"] { display: none; }
+  .nt-title i { display: none; }
+}

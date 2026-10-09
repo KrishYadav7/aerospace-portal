@@ -247,7 +247,8 @@
     zoom: 1, base: 0.4, fingerDraw: lsGet('aero_nt_finger') !== '0', penSeen: false,
     undo: [], redo: [], status: 'saved', saveTimer: 0, saving: false, retryMs: 4000,
     active: null, touches: new Map(), gesture: null, editing: null, overlay: null,
-    remountTimer: 0, loadQueue: new Set(), loadTimer: 0, current: 0
+    remountTimer: 0, loadQueue: new Set(), loadTimer: 0, current: 0,
+    palms: new Set(), lastPenAt: 0
   };
   const nightPaper = () => !!(S.nb && (PAPER_COLORS[S.nb.paperColor] || {}).dark);
   const inks = () => nightPaper() ? INKS_DARK : INKS_LIGHT;
@@ -573,6 +574,21 @@
     S.pages.forEach(paintPaperClass);
     renderToolOptions();
   }
+  /* one toolbar row when everything fits, two rows otherwise — measured
+     against the widest tool (pen: colours + sizes) so switching tools
+     never makes the bar jump between one and two rows */
+  function fitBar() {
+    const bar = S.root && S.root.querySelector('.nt-bar'); if (!bar) return;
+    const c = bar.querySelector('.nt-bar-c'), r = bar.querySelector('.nt-bar-r');
+    bar.classList.remove('nt-bar-2row');
+    if (getComputedStyle(bar).gridTemplateAreas.indexOf('c c') >= 0) { bar.classList.add('nt-bar-2row'); return; }  // narrow-screen CSS already stacks it
+    const centre = Math.max(c.scrollWidth, S.centreMax || 0);
+    if (S.tool === 'pen') S.centreMax = Math.max(S.centreMax || 0, c.scrollWidth);
+    const kids = Array.from(r.children).filter(k => k.offsetWidth);
+    const rNeed = kids.reduce((t, k) => t + k.offsetWidth, 0) + Math.max(0, kids.length - 1) * 4;
+    const side = Math.max(rNeed, 240);
+    if (Math.max(centre, 540) + side * 2 + 44 > bar.clientWidth) bar.classList.add('nt-bar-2row');
+  }
   function updateTitle() { const t = $('#ntTitleTxt'); if (t && S.nb) t.textContent = S.nb.title; }
   function computeBase() {
     const w = S.scroller ? S.scroller.clientWidth : 800;
@@ -600,6 +616,7 @@
     cEl.parentElement.querySelectorAll('.nt-sep').forEach(s => { s.style.display = key ? '' : 'none'; });
     S.root.querySelectorAll('[data-tool]').forEach(b => { const on = b.dataset.tool === t; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
     if (S.scroller) S.scroller.dataset.tool = t;
+    fitBar();
   }
   function setStatus(st, msg) {
     S.status = st;
@@ -732,6 +749,7 @@
   async function saveNow() {
     clearTimeout(S.saveTimer);
     if (S.saving || !S.nb) return;
+    if (S.active) { scheduleSave(500); return; }        // never pause the main thread mid-stroke
     const nbId = S.nb.id;
     const dirty = S.pages.filter(p => p.dirty && p.d);
     if (!dirty.length) { if (S.status !== 'saved') setStatus('saved'); return; }
@@ -779,17 +797,36 @@
     const el = e.target.closest && e.target.closest('.nt-page');
     return el ? S.byId.get(el.dataset.pid) : null;
   }
+  /* ---------- stylus first: palm rejection ----------
+     A resting palm or wrist touches the glass before (and while) the
+     pencil writes. Those touches must never scroll, zoom or draw, and
+     they must never steal the pencil's stroke. */
+  const PALM_MS = 900;                                   // touches this soon after the pen are treated as palm
+  function penBusy() { return !!(S.active && S.active.pointerType === 'pen') || (performance.now() - (S.lastPenAt || 0) < PALM_MS); }
+  function dropTouches() {
+    S.touches.forEach((_, id) => S.palms.add(id));
+    S.touches.clear(); S.gesture = null;
+    if (S.pan && S.pan.pointerType === 'touch') { S.pan = null; if (S.scroller) S.scroller.classList.remove('is-panning'); }
+    if (S.active && S.active.pointerType === 'touch') cancelStroke();
+  }
   function onPointerDown(e) {
     stopFling();
     if (e.target.closest('.nt-page-foot') || e.target.closest('.nt-textedit')) return;
-    if (e.pointerType === 'pen' && !S.penSeen) {
-      S.penSeen = true;
-      if (S.fingerDraw && lsGet('aero_nt_finger') === null) {
-        S.fingerDraw = false;
-        toast('Stylus detected — draw with the pen, scroll with your finger.', 'info');
+    if (e.pointerType === 'pen') {
+      S.lastPenAt = performance.now();
+      if (!S.penSeen) {
+        S.penSeen = true;
+        if (S.fingerDraw && lsGet('aero_nt_finger') === null) {
+          S.fingerDraw = false;
+          toast('Stylus detected — write with the pencil, scroll with your finger.', 'info');
+        }
       }
+      dropTouches();                                     // the palm landed first — forget it
     }
+    if (S.active && S.active.pointerId !== e.pointerId && S.active.pointerType === e.pointerType && e.pointerType !== 'touch') finishActive();
+    if (S.active && S.active.pointerId === e.pointerId) finishActive();   // a lost pointerup — keep that stroke
     if (e.pointerType === 'touch') {
+      if (S.penSeen && penBusy()) { S.palms.add(e.pointerId); return; }   // palm while writing
       S.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (S.touches.size >= 2) {                         // two fingers → scroll / zoom, cancel a finger stroke
         if (S.active && S.active.pointerType === 'touch') cancelStroke();
@@ -801,11 +838,12 @@
                       !(S.tool === 'hand') && e.button !== 1;
     if (!drawsHere) { startPan(e); return; }
     const p = pageFromEvent(e);
-    if (!p || !p.d) return;
+    if (!p) return;
+    if (!p.d) { if (p.raw != null) { p.d = decodePage(p.raw); p.raw = null; } else { queueLoad(p); return; } }
     if (S.editing) { commitText(); if (S.tool === 'text') return; }
     e.preventDefault();
     S.current = S.pages.indexOf(p);
-    if (S.tool === 'text') return startText(p, pagePoint(p, e));
+    if (S.tool === 'text') return startText(p, pagePoint(p, e), e.pointerType);
     try { p.el.setPointerCapture(e.pointerId); } catch (_) {}
     const [x, y] = pagePoint(p, e);
     if (S.tool === 'eraser') {
@@ -825,6 +863,8 @@
     if (isHl) showOverlay(p);
   }
   function onPointerMove(e) {
+    if (e.pointerType === 'touch' && S.palms.has(e.pointerId)) return;
+    if (e.pointerType === 'pen' && S.active && S.active.pointerType === 'pen') S.lastPenAt = performance.now();
     if (e.pointerType === 'touch' && S.touches.has(e.pointerId)) {
       S.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (S.gesture) { moveGesture(); return; }
@@ -858,11 +898,15 @@
       if (Math.abs(x - lx) + Math.abs(y - ly) < a.min) continue;
       pts.push(x, y, pressureOf(ev));
     }
-    if (!a.raf) a.raf = requestAnimationFrame(() => drawLive(a));
+    /* ink is drawn right here, in the event — pointer events already arrive
+       once per display frame, so waiting for the next frame only adds lag.
+       The translucent highlighter redraws its overlay once per frame. */
+    if (a.st.tool === TOOL_HL) { if (!a.raf) a.raf = requestAnimationFrame(() => drawLive(a)); }
+    else drawLive(a);
   }
-  function drawLive(a) {
+  function drawLive(a, force) {
     a.raf = 0;
-    if (S.active !== a) return;
+    if (S.active !== a && !force) return;
     const n = a.st.pts.length / 3;
     if (a.st.tool === TOOL_HL) {                         // translucent: redraw on the light overlay only
       const o = S.overlay; if (!o) return;
@@ -877,6 +921,12 @@
     a.drawn = n;
   }
   function onPointerUp(e) {
+    if (e.pointerType === 'touch' && S.palms.has(e.pointerId)) { S.palms.delete(e.pointerId); return; }
+    if (S.editing && S.editing.needFocus && e.type === 'pointerup') {
+      S.editing.needFocus = false;
+      try { S.editing.ta.focus({ preventScroll: true }); } catch (_) {}
+    }
+    if (e.pointerType === 'pen') S.lastPenAt = performance.now();
     if (e.pointerType === 'touch') {
       S.touches.delete(e.pointerId);
       if (S.gesture && S.touches.size < 2) endGesture();
@@ -887,6 +937,10 @@
       return;
     }
     const a = S.active; if (!a || a.pointerId !== e.pointerId) return;
+    finishActive();
+  }
+  function finishActive() {
+    const a = S.active; if (!a) return;
     S.active = null;
     if (a.raf) cancelAnimationFrame(a.raf);
     const p = a.page;
@@ -894,7 +948,7 @@
       if (a.removed.length) { pushUndo({ k: 'erase', pid: p.id, items: a.removed }); markDirty(p); }
       return;
     }
-    drawLive(a);
+    drawLive(a, true);
     const st = withBox(a.st);
     st.pts = st.pts.map((v, i) => i % 3 === 2 ? v : Math.round(v));   // integers, as stored
     p.d.s.push(st);
@@ -953,7 +1007,7 @@
   }
 
   /* ---------- text boxes ---------- */
-  function startText(p, pt) {
+  function startText(p, pt, ptype) {
     const ctx = p.ctx; if (!ctx) return;
     let idx = -1;
     for (let i = p.d.t.length - 1; i >= 0; i--) {
@@ -989,7 +1043,10 @@
     p.el.appendChild(ta);
     S.editing.ta = ta;
     grow();
-    setTimeout(() => ta.focus({ preventScroll: true }), 0);
+    /* mouse: focus now. Pencil / finger: iPad & Android only open the keyboard
+       for a focus made on the lift (pointerup), so onPointerUp does it then. */
+    S.editing.needFocus = ptype === 'touch' || ptype === 'pen';
+    if (!S.editing.needFocus) setTimeout(() => { if (S.editing && S.editing.ta === ta && document.activeElement !== ta) { try { ta.focus({ preventScroll: true }); } catch (_) {} } }, 0);
   }
   function commitText() {
     const ed = S.editing; if (!ed) return;
@@ -1285,7 +1342,7 @@
   let resizeTimer = 0;
   function onResize() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (S.mode !== 'editor' || !S.scroller) return; computeBase(); setZoom(S.zoom); }, 150);
+    resizeTimer = setTimeout(() => { if (S.mode !== 'editor' || !S.scroller) return; fitBar(); computeBase(); setZoom(S.zoom); }, 150);
   }
   function wireEditor() {
     const sc = S.scroller;
@@ -1296,6 +1353,16 @@
     sc.addEventListener('wheel', onWheel, { passive: false });
     sc.addEventListener('scroll', () => { if (!S._scrollRaf) S._scrollRaf = requestAnimationFrame(() => { S._scrollRaf = 0; updateCurrent(); }); }, { passive: true });
     sc.addEventListener('contextmenu', (e) => e.preventDefault());
+    sc.addEventListener('lostpointercapture', (e) => { if (S.active && S.active.pointerId === e.pointerId) finishActive(); });
+    /* iPad / iPhone Safari: stop the long-press loupe, text selection,
+       double-tap zoom and "scroll instead of ink" guesses that made the
+       Pencil sometimes not write. Buttons and the text box keep their taps. */
+    const keepTouch = (t) => t && t.closest && t.closest('button, textarea, input, select, a, .nt-page-foot');
+    const stopTouch = (e) => { if (!keepTouch(e.target) && e.cancelable) e.preventDefault(); };
+    sc.addEventListener('touchstart', stopTouch, { passive: false });
+    sc.addEventListener('touchmove', stopTouch, { passive: false });
+    sc.addEventListener('touchend', (e) => { if (!keepTouch(e.target) && e.cancelable && e.changedTouches && e.changedTouches.length && e.touches.length === 0 && S.tool !== 'text') e.preventDefault(); }, { passive: false });
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach(t => sc.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
   }
 
   function backupDirty() {
@@ -1306,6 +1373,7 @@
     if (S.editing) commitText();
     if (S.active) cancelStroke();
     stopFling();
+    S.palms.clear(); S.touches.clear(); S.gesture = null; S.pan = null;
     backupDirty();
     if (hasUnsaved()) { try { await saveNow(); } catch (_) {} }
     if (S.io) { S.io.disconnect(); S.io = null; }
