@@ -4817,6 +4817,28 @@ app.post('/api/login', async (req, res) => {
       });
     }
 
+    // ---------- ⭐ STRICT role tab (2026-10-09) ----------
+    // The account may only sign in from its own tab on the login page:
+    // a student from "Student", a professor from "Professor", the admin
+    // from "Admin". Checked after the password, so the account type is
+    // only revealed to someone who already knows the password.
+    {
+      const LOGIN_TABS = ['student', 'professor', 'admin'];
+      const tab = LOGIN_TABS.includes(String(roleFromClient || '').trim().toLowerCase())
+        ? String(roleFromClient).trim().toLowerCase() : 'student';
+      const dbRole = String(user.role || 'student').trim().toLowerCase();
+      if (tab !== dbRole) {
+        const label = { student: 'Student', professor: 'Professor', admin: 'Admin' };
+        console.log(`[login] ⛔ "${user.username}" (${dbRole}) tried the ${tab} tab`);
+        return res.status(403).json({
+          success: false,
+          code: 'WRONG_LOGIN_TAB',
+          accountRole: label[dbRole] ? dbRole : 'student',
+          message: `These details belong to ${dbRole === 'admin' ? 'an' : 'a'} ${label[dbRole] || 'different'} account. Select the ${label[dbRole] || 'correct'} tab to sign in.`
+        });
+      }
+    }
+
     // ---------- ⭐ Professors: only approved accounts may sign in ----------
     if (String(user.role || '').toLowerCase() === 'professor') {
       const ps = (user.professor && user.professor.status) || 'pending';
@@ -4831,14 +4853,7 @@ app.post('/api/login', async (req, res) => {
       }
     }
 
-    // ---------- Role check — LENIENT (warn only, never block) ----------
-    // The frontend auto-flips the role toggle when the username contains "admin".
-    // Trust the DB role instead of the UI tab to avoid locking out real students.
-    if (roleFromClient && user.role !== roleFromClient) {
-      console.warn(
-        `[login] ⚠️ role tab mismatch: DB="${user.role}" UI="${roleFromClient}" — proceeding with DB role.`
-      );
-    }
+    // (old lenient role-tab warning removed — the strict check above handles it)
 
     // ---------- Email-OTP 2FA path: admin + professor (2026-10-08) ----------
     const _otpRole = String(user.role || '').trim().toLowerCase();

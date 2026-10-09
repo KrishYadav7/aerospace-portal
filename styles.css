@@ -17021,3 +17021,22 @@ html[data-skin="space"] .theme-switch .ts-knob::after {
 }
 
 .ai-answer-body li.md-sub-li, .ai-stream-body li.md-sub-li { margin-left: 20px; list-style-type: circle; }
+
+/* ⭐ 2026-10-09 — strict login tabs: "wrong tab" notice */
+.lg-tab-error {
+  display: flex; gap: 10px; align-items: flex-start; margin: -8px 0 16px; padding: 11px 13px; border-radius: 12px;
+  background: rgba(239, 68, 68, .07); border: 1px solid rgba(239, 68, 68, .28); color: var(--text-secondary); font-size: 13px; line-height: 1.5;
+  animation: fadeIn .2s ease;
+}
+.lg-tab-error[hidden] { display: none; }
+.lg-tab-error > i { color: #ef4444; margin-top: 3px; }
+.lg-tab-error strong { display: block; color: var(--text-primary); font-size: 13.5px; }
+.lg-tab-error span { display: block; }
+.lg-tab-error-btn {
+  margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 9px; cursor: pointer;
+  border: 1px solid rgba(239, 68, 68, .35); background: var(--bg-surface); color: #dc2626; font: inherit; font-size: 12.5px; font-weight: 650;
+}
+.lg-tab-error-btn:hover { background: rgba(239, 68, 68, .08); }
+[data-theme="dark"] .lg-tab-error-btn, [data-theme="dim"] .lg-tab-error-btn { color: #fca5a5; }
+#loginView .login-role-toggle button.lg-hint:not(.active) { color: #ef4444; animation: lgHintPulse 1.2s ease-in-out 2; }
+@keyframes lgHintPulse { 50% { background: rgba(239, 68, 68, .12); } }

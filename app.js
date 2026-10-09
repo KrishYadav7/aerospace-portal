@@ -3662,9 +3662,38 @@ const LOGIN_ROLE_COPY = {
 function _loginSubmitLabel() {
   return (LOGIN_ROLE_COPY[loginRole] || LOGIN_ROLE_COPY.student).btn;
 }
+function _loginClearTabError() {
+  const el = document.getElementById('loginTabError');
+  if (el) el.hidden = true;
+  document.querySelectorAll('.login-role-toggle button').forEach(b => b.classList.remove('lg-hint'));
+}
+function _loginShowTabError(accountRole, message) {
+  const names = { student: 'Student', professor: 'Professor', admin: 'Admin' };
+  const role = names[accountRole] ? accountRole : 'student';
+  let el = document.getElementById('loginTabError');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'loginTabError';
+    el.className = 'lg-tab-error';
+    el.setAttribute('role', 'alert');
+    const form = document.getElementById('loginForm');
+    if (form) form.parentNode.insertBefore(el, form);
+  }
+  el.innerHTML = `<i class="fas fa-circle-exclamation"></i>
+    <div><strong>Wrong tab for this account</strong>
+    <span>${escapeHtml(message || ('These details belong to a ' + names[role] + ' account.'))}</span>
+    <button type="button" class="lg-tab-error-btn" onclick="setLoginRole('${role}');document.getElementById('loginPassword')?.focus();">
+      <i class="fas fa-arrow-right-arrow-left"></i> Switch to ${names[role]} tab</button></div>`;
+  el.hidden = false;
+  const tg = document.querySelector('.login-role-toggle');
+  if (tg) { tg.classList.remove('aero-shake'); void tg.offsetWidth; tg.classList.add('aero-shake'); }
+  const target = document.querySelector(`.login-role-toggle button[data-role="${role}"]`);
+  if (target) target.classList.add('lg-hint');
+}
 function setLoginRole(role) {
   if (!LOGIN_ROLE_COPY[role]) role = 'student';
   loginRole = role;
+  _loginClearTabError();
   document.querySelectorAll('.login-role-toggle button').forEach(b => {
     const on = b.dataset.role === role;
     b.classList.toggle('active', on);
@@ -3859,6 +3888,12 @@ async function handleLogin(e) {
 
       // ─── Real server reply, definitive failure (bad credentials, etc.) ───
       // Do NOT retry — this is intentional.
+      if (data.code === 'WRONG_LOGIN_TAB') {
+        /* ⭐ strict tabs: the account belongs to another tab — say which, don't switch */
+        _loginShowTabError(data.accountRole, data.message);
+        resetBtn();
+        return;
+      }
       if (data.professorStatus) {
         /* ⭐ professor account not (or no longer) approved — explain clearly */
         const st = data.professorStatus;
@@ -15931,14 +15966,14 @@ async function aeroGuestSignIn(username, password) {
     showToast('Could not reach the server. Please check your connection.', 'error');
     return false;
   }
-  if (data && data.requires2FA) {
-    /* Admin accounts use the full sign-in page (email code) */
+  if (data && (data.requires2FA || data.code === 'WRONG_LOGIN_TAB')) {
+    /* Admin / professor accounts use the full sign-in page (their own tab + email code) */
     aeroCloseGuestGate();
     _aeroSetGuest(false);
     currentCourseId = null; window.currentSelectedCourseId = null;
     try { history.replaceState(null, '', '#/home'); } catch (e) {}
     renderApp();
-    showToast('Admin and professor accounts sign in here, with the code sent to your email.', 'info');
+    showToast('Professor and admin accounts sign in here — pick the Professor or Admin tab.', 'info');
     return false;
   }
   if (!data || !data.success || !data.user) {
@@ -16556,12 +16591,9 @@ window.addEventListener('popstate', () => { syncHashToState(); renderApp(); });
 // Only AUTO-UPGRADE to Admin (e.g. when the username contains "admin").
 // Never auto-downgrade — the user may have deliberately clicked the Admin
 // tab, and many admin usernames aren't literally the word "admin".
-document.getElementById('loginUsername')?.addEventListener('input', (e) => {
-  const val = e.target.value.trim().toLowerCase();
-  if (/admin/i.test(val) && loginRole !== 'admin') {
-    setLoginRole('admin');
-  }
-});
+/* ⭐ 2026-10-09: no automatic tab switching any more — the tab the user
+   picks is the only one their account can sign in from (server-enforced). */
+document.getElementById('loginUsername')?.addEventListener('input', () => _loginClearTabError());
 /* ============================================================
 /* ---------- Student: Alumni section (cached) ---------- */
 async function renderAlumniSection() {
