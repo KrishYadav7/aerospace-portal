@@ -2510,6 +2510,13 @@ let liveOwnerProfile = {
 let _ownerProfileLoaded = false;
 
 let _ownerProfileCacheAt = 0;
+/* ⚡ the founder card the ADMIN saved last time is kept on this device, so
+   Home paints it instantly; it is refreshed from the server right after.
+   (Never a built-in text — only what came from the server.) */
+try {
+  const _oc = JSON.parse(localStorage.getItem('aero_owner_v2') || 'null');
+  if (_oc && typeof _oc === 'object' && typeof _oc.name === 'string') { liveOwnerProfile = _oc; _ownerProfileLoaded = true; }
+} catch (_) {}
 const OWNER_PROFILE_CACHE_MS = 30 * 1000;   // 30s — short enough for live hide/show
 
 async function fetchOwnerProfile(force = false) {
@@ -2529,6 +2536,7 @@ async function fetchOwnerProfile(force = false) {
     if (data.success && data.owner) {
       liveOwnerProfile = data.owner;
       _ownerProfileCacheAt = Date.now();
+      try { localStorage.setItem('aero_owner_v2', JSON.stringify(data.owner)); } catch (_) {}
     }
   } catch (e) { /* silent */ }
 
@@ -5343,6 +5351,7 @@ function _renderAppNow() {
     }
   }
 
+  setTimeout(prefetchNotesModule, 2500);
   if (studentNav === 'home') {
     const homeView = $('studentHomeView');
     if (homeView) homeView.classList.add('active');
@@ -9831,6 +9840,11 @@ function getInitials(name) {
 function renderOwnerProfile() {
   const container = document.getElementById('ownerProfileContainer');
   if (!container) return;
+  /* ⭐ the whole "About the Founder" card stays hidden until the admin's
+     founder details have arrived — and stays hidden if there are none */
+  const sec = document.getElementById('aboutOwnerSection');
+  const hasFounder = _ownerProfileLoaded && !!(liveOwnerProfile && liveOwnerProfile.name) && liveOwnerProfile.visible !== false;
+  if (sec) sec.style.display = hasFounder ? '' : 'none';
 
   // 1. Agar data abhi load nahi hua hai, toh container ko khaali rakho.
   // Isse koi bhi static ya fake text flash nahi hoga.
@@ -17403,17 +17417,68 @@ async function submitStudentFeedback(e) {
   }
 }
 
+/* ============================================================
+   ⚡ FAST LISTS (2026-10-09) — stale-while-revalidate
+   ------------------------------------------------------------
+   Reviews and "My contributions" used to show a spinner and hit
+   the server on EVERY visit to Home. Now the last copy is painted
+   instantly (from memory, or from this device on a fresh visit),
+   and the server is asked again only when that copy is older than
+   a minute; the list is re-painted only if something changed.
+   ============================================================ */
+const _fastLists = {};
+function fastList(key, store, maxAgeMs) {
+  let c = _fastLists[key];
+  if (!c && store) {
+    try { const raw = store.getItem('aero_fl_' + key); const o = raw && JSON.parse(raw); if (o && Array.isArray(o.v)) c = _fastLists[key] = { at: o.at || 0, v: o.v, sig: JSON.stringify(o.v) }; } catch (_) {}
+  }
+  return {
+    cached: c ? c.v : null,
+    fresh: !!(c && Date.now() - c.at < maxAgeMs),
+    put(v) {
+      const sig = JSON.stringify(v), changed = !c || c.sig !== sig;
+      c = _fastLists[key] = { at: Date.now(), v, sig };
+      if (store) { try { store.setItem('aero_fl_' + key, JSON.stringify({ at: c.at, v })); } catch (_) {} }
+      return changed;
+    }
+  };
+}
+
+/* mark a cached list stale (it still paints instantly, then refreshes) */
+function staleFastList(prefix) {
+  Object.keys(_fastLists).forEach(k => { if (k.indexOf(prefix) === 0) _fastLists[k].at = 0; });
+  [window.localStorage, window.sessionStorage].forEach(st => {
+    try { for (let i = 0; i < st.length; i++) { const k = st.key(i); if (k && k.indexOf('aero_fl_' + prefix) === 0) { const o = JSON.parse(st.getItem(k)); o.at = 0; st.setItem(k, JSON.stringify(o)); } } } catch (_) {}
+  });
+}
+
 async function loadApprovedFeedback() {
   const host = document.getElementById('studentFeedbackList');
   if (!host) return;
-
-  host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+  let ls = null; try { ls = window.localStorage; } catch (_) {}
+  const fl = fastList('reviews', ls, 60 * 1000);
+  if (fl.cached) _paintApprovedFeedback(host, fl.cached);
+  else host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
     <i class="fas fa-spinner fa-spin"></i><p>Loading reviews…</p></div>`;
-
+  if (fl.fresh) return;
+  if (loadApprovedFeedback._busy) return;
+  loadApprovedFeedback._busy = true;
   try {
-    const data = await fetchJSON(`${API_BASE}/feedback?_t=${Date.now()}`);
-    const list = (data && data.success && Array.isArray(data.feedback)) ? data.feedback : [];
-
+    const data = await fetchJSON(`${API_BASE}/feedback`);
+    if (!data || !data.success || !Array.isArray(data.feedback)) throw new Error('bad response');
+    if (fl.put(data.feedback) || !fl.cached) {
+      const h = document.getElementById('studentFeedbackList');
+      if (h) _paintApprovedFeedback(h, data.feedback);
+    }
+  } catch (err) {
+    console.error('[loadApprovedFeedback]', err);
+    if (!fl.cached) host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+      <p style="color:var(--rose-500);">Could not load reviews.</p>
+    </div>`;
+  } finally { loadApprovedFeedback._busy = false; }
+}
+function _paintApprovedFeedback(host, list) {
+  {
     if (list.length === 0) {
       host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
         <i class="fas fa-star-half-alt"></i>
@@ -17454,11 +17519,6 @@ async function loadApprovedFeedback() {
     html += '</div>';
     host.innerHTML = html;
     _initFeedbackReadMore(host);
-  } catch (err) {
-    console.error('[loadApprovedFeedback]', err);
-    host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
-      <p style="color:var(--rose-500);">Could not load reviews.</p>
-    </div>`;
   }
 }
 
@@ -17603,6 +17663,7 @@ async function submitContribution(e) {
     if (data.success) {
       closeModal('contributionModal');
       showToast('✅ ' + (data.message || 'Contribution submitted!'), 'success');
+      staleFastList('contrib_');
       loadMyContributions();
     } else {
       showToast(data.message || 'Upload failed.', 'error');
@@ -17624,13 +17685,31 @@ async function loadMyContributions() {
     return;
   }
 
-  host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+  let ss = null; try { ss = window.sessionStorage; } catch (_) {}
+  const uname = currentUser.username;
+  const fl = fastList('contrib_' + String(uname).toLowerCase(), ss, 60 * 1000);
+  if (fl.cached) _paintMyContributions(host, fl.cached);
+  else host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
     <i class="fas fa-spinner fa-spin"></i><p>Loading your contributions…</p></div>`;
-
+  if (fl.fresh) return;
+  if (loadMyContributions._busy) return;
+  loadMyContributions._busy = true;
   try {
-    const data = await fetchJSON(`${API_BASE}/contributions/mine/${encodeURIComponent(currentUser.username)}?_t=${Date.now()}`);
-    const list = (data && data.success && Array.isArray(data.contributions)) ? data.contributions : [];
-
+    const data = await fetchJSON(`${API_BASE}/contributions/mine/${encodeURIComponent(uname)}`, { cache: 'no-store' });
+    if (!data || !data.success || !Array.isArray(data.contributions)) throw new Error('bad response');
+    if (fl.put(data.contributions) || !fl.cached) {
+      const h = document.getElementById('myContributionsList');
+      if (h && currentUser && currentUser.username === uname) _paintMyContributions(h, data.contributions);
+    }
+  } catch (err) {
+    console.error('[loadMyContributions]', err);
+    if (!fl.cached) host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
+      <p style="color:var(--rose-500);">Could not load your contributions.</p>
+    </div>`;
+  } finally { loadMyContributions._busy = false; }
+}
+function _paintMyContributions(host, list) {
+  {
     if (list.length === 0) {
       host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
         <i class="fas fa-inbox"></i>
@@ -17668,11 +17747,6 @@ async function loadMyContributions() {
     });
     html += '</div>';
     host.innerHTML = html;
-  } catch (err) {
-    console.error('[loadMyContributions]', err);
-    host.innerHTML = `<div class="empty-state" style="padding:30px 20px;">
-      <p style="color:var(--rose-500);">Could not load your contributions.</p>
-    </div>`;
   }
 }
 
@@ -17758,7 +17832,7 @@ async function approveFeedback(id) {
   if (!confirm('Approve this feedback? It will become public.')) return;
   try {
     const data = await fetchJSON(`${API_BASE}/admin/feedback/${id}/approve`, { method: 'PUT' });
-    if (data.success) { showToast('✅ Approved.', 'success'); renderAdminFeedback(); }
+    if (data.success) { showToast('✅ Approved.', 'success'); staleFastList('reviews'); renderAdminFeedback(); }
     else showToast(data.message || 'Failed.', 'error');
   } catch (e) { showToast(e.message, 'error'); }
 }
@@ -17766,7 +17840,7 @@ async function rejectFeedback(id) {
   if (!confirm('Reject / Unpublish this feedback?')) return;
   try {
     const data = await fetchJSON(`${API_BASE}/admin/feedback/${id}/reject`, { method: 'PUT' });
-    if (data.success) { showToast('Rejected.', 'info'); renderAdminFeedback(); }
+    if (data.success) { showToast('Rejected.', 'info'); staleFastList('reviews'); renderAdminFeedback(); }
     else showToast(data.message || 'Failed.', 'error');
   } catch (e) { showToast(e.message, 'error'); }
 }
@@ -17774,7 +17848,7 @@ async function deleteFeedback(id, who) {
   if (!confirm(`Delete feedback from "${who}"?`)) return;
   try {
     const data = await fetchJSON(`${API_BASE}/admin/feedback/${id}`, { method: 'DELETE' });
-    if (data.success) { showToast('Deleted.', 'info'); renderAdminFeedback(); }
+    if (data.success) { showToast('Deleted.', 'info'); staleFastList('reviews'); renderAdminFeedback(); }
     else showToast(data.message || 'Failed.', 'error');
   } catch (e) { showToast(e.message, 'error'); }
 }
@@ -18148,6 +18222,18 @@ function loadNotesModule() {
 function _notesIdFromHash() {
   const m = /^#\/notes\/([A-Za-z0-9_-]{6,40})/.exec(location.hash || '');
   return m ? m[1] : null;
+}
+/* ⚡ fetch the Notes files quietly once the student is idle, so opening
+   "My Notes" later is instant (prefetch = download only, nothing runs) */
+var _notesPrefetched = false;
+function prefetchNotesModule() {
+  if (_notesPrefetched || window.AeroNotes) return;
+  _notesPrefetched = true;
+  try { const c = navigator.connection; if (c && (c.saveData || /2g/.test(c.effectiveType || ''))) return; } catch (_) {}
+  const go = () => [['notes-js', 'notes.js', 'script'], ['notes-css', 'notes.css', 'style']].forEach(([name, file, as]) => {
+    const l = document.createElement('link'); l.rel = 'prefetch'; l.as = as; l.href = _lazyAssetUrl(name, file); document.head.appendChild(l);
+  });
+  if ('requestIdleCallback' in window) requestIdleCallback(go, { timeout: 6000 }); else setTimeout(go, 3000);
 }
 function renderStudentNotes(view) {
   if (window.AeroNotes) { window.AeroNotes.show(view, _notesIdFromHash()); return; }

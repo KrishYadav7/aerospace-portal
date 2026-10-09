@@ -2419,6 +2419,8 @@ app.use('/api/', (req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = function (body) {
     try {
+      /* ⚡ any change to reviews drops the cached public review list */
+      if (/^\/(admin\/)?feedback/.test(req.path) && res.statusCode < 400) cacheClear('feedback:');
       if (res.statusCode >= 200 && res.statusCode < 300 &&
           body && body.success !== false) {
         const scope = classifyMutation(req.method, req.path);
@@ -9268,9 +9270,10 @@ app.get('/api/settings/owner', async (req, res) => {
     const payload = {
       success: true,
       owner: {
-        name:    op.name  || 'Krish Yadav',
-        title:   op.title || 'Founder & Course Director',
-        role:    op.role  || 'Founder',
+        /* ⭐ only what the admin saved — no built-in name/bio is ever shown */
+        name:    op.name  || '',
+        title:   op.title || '',
+        role:    op.role  || '',
         bio:     op.bio   || '',
         email:   op.email || '',
         phone:   op.phone || '',
@@ -13146,16 +13149,22 @@ app.post('/api/feedback/submit', feedbackLimiter, async (req, res) => {
 /* Public: list APPROVED feedback only */
 app.get('/api/feedback', async (req, res) => {
   try {
+    /* Public (also shown on the landing page): short shared cache so a
+       traffic spike doesn't hit Mongo, while a newly approved review
+       still appears within a minute. ⚡ The server also keeps the list in
+       memory (cleared the moment any review is submitted / approved /
+       rejected / deleted), so most visits never touch MongoDB at all. */
+    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    const hit = cacheGet('feedback:approved');
+    if (hit) { res.setHeader('X-Cache', 'HIT'); return res.json(hit); }
     const list = await Feedback.find({ status: 'approved' })
-      .select('-studentEmail -approvedBy')
+      .select('studentName studentUsername rating title message courseName approvedAt submittedAt createdAt')
       .sort({ approvedAt: -1 })
       .limit(60)
       .lean();
-    /* Public (also shown on the landing page): short shared cache so a
-       traffic spike doesn't hit Mongo, while a newly approved review
-       still appears within a minute. */
-    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-    res.json({ success: true, feedback: list });
+    const payload = { success: true, feedback: list };
+    cacheSet('feedback:approved', payload, 5 * 60 * 1000);
+    res.json(payload);
   } catch (e) {
     console.error('[feedback/list]', e);
     res.status(500).json({ success: false, message: 'Server error.' });

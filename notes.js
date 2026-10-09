@@ -482,12 +482,26 @@
   /* =========================================================
      LIBRARY
      ========================================================= */
+  /* ⚡ the shelf is kept on this device (per student) so "My Notes" opens
+     instantly; the server copy replaces it a moment later */
+  function listKey() {
+    try { const u = (typeof currentUser !== 'undefined' && currentUser) || null; return u ? 'aero_nt_list_' + (u._id || u.id || u.username) : null; } catch (_) { return null; }
+  }
+  function cachedList() {
+    const k = listKey(); if (!k) return null;
+    try { const o = JSON.parse(lsGet(k) || 'null'); return o && Array.isArray(o.list) ? o : null; } catch (_) { return null; }
+  }
+  function saveListCache() {
+    const k = listKey(); if (!k || !S.list) return;
+    lsSet(k, JSON.stringify({ list: S.list.slice(0, 200).map(n => ({ id: n.id, title: n.title, cover: n.cover, paper: n.paper, paperColor: n.paperColor, courseId: n.courseId, pageCount: n.pageCount, updatedAt: n.updatedAt, bytes: n.bytes })), usage: S.usage }));
+  }
   async function loadList(force) {
     if (S.list && !force) return S.list;
     S.loadingList = true;
     try {
       const j = await api('GET', API);
       S.list = j.notebooks || []; S.usage = j.usage || null; S.listAt = Date.now();
+      saveListCache();
     } catch (e) {
       if (!S.list) S.list = null;
       throw e;
@@ -2158,6 +2172,7 @@
       /* app.js re-renders often (course refresh, notifications…) — keep the
          library as it is unless it is missing or older than 30 s */
       if (S.mode === 'library' && S.list && container.querySelector('.nt-lib') && Date.now() - (S.listAt || 0) < 30000) return;
+      if (!S.list) { const c = cachedList(); if (c) { S.list = c.list; S.usage = c.usage || null; } }
       renderLibrary();
       try { await loadList(true); } catch (e) { if (!S.list) { S.list = []; toast(e.offline ? 'You are offline.' : e.message, 'error'); } }
       if (S.mode === 'library' && S.root === container) renderLibrary();
