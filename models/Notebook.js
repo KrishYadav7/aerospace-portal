@@ -10,7 +10,7 @@ const notebookSchema = new mongoose.Schema({
   userId:     { type: mongoose.Schema.Types.ObjectId, required: true },
   title:      { type: String, default: 'Untitled notebook', maxlength: 120 },
   cover:      { type: String, default: 'indigo' },     // cover colour key
-  paper:      { type: String, default: 'lined' },      // blank | lined | grid | dotted
+  paper:      { type: String, default: 'lined' },      // blank | lined | grid | dotted | eng | cornell
   paperColor: { type: String, default: 'white' },      // white | cream | night
   courseId:   { type: String, default: null },         // optional link to a course
   pages:      { type: [String], default: [] },         // page ids, in order

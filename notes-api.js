@@ -26,7 +26,7 @@ const LIMITS = {
   batch: 12                  // pages per GET
 };
 const COVERS = ['indigo', 'violet', 'rose', 'amber', 'emerald', 'teal', 'sky', 'slate', 'crimson', 'forest'];
-const PAPERS = ['blank', 'lined', 'grid', 'dotted'];
+const PAPERS = ['blank', 'lined', 'grid', 'dotted', 'eng', 'cornell'];
 const PAPER_COLORS = ['white', 'cream', 'night'];
 const PAGE_ID = /^[A-Za-z0-9_-]{6,32}$/;
 

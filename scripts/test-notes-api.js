@@ -90,6 +90,9 @@ const page = (strokes) => JSON.stringify({ v: 1, s: strokes, t: [] });
   assert.strictEqual(r.code, 409);
   r = await call('put', `/api/notes/${nb.id}`, { order: ['pg_second2', 'pg_first01', 'pg_third03'], title: 'Aero I', paperColor: 'night', cover: 'hacker' });
   assert.ok(r.body.success); assert.strictEqual(r.body.notebook.title, 'Aero I'); assert.strictEqual(r.body.notebook.cover, 'rose', 'unknown cover ignored');
+  r = await call('put', `/api/notes/${nb.id}`, { paper: 'eng' }); assert.strictEqual(r.body.notebook.paper, 'eng', 'engineering paper accepted');
+  r = await call('put', `/api/notes/${nb.id}`, { paper: 'music' }); assert.strictEqual(r.body.notebook.paper, 'eng', 'unknown paper ignored');
+  r = await call('put', `/api/notes/${nb.id}/pages/pg_first01`, { data: page([[3, '#123456', 6, 0, 0, 0, 100, 0, 1]]), paper: 'cornell' }); assert.ok(r.body.success, 'shape stroke + cornell page accepted');
 
   // bad data refused
   r = await call('put', `/api/notes/${nb.id}/pages/pg_first01`, { data: '<script>alert(1)</script>' }); assert.strictEqual(r.code, 400);
