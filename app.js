@@ -3013,6 +3013,8 @@ function syncHashToState() {
     studentNav = 'analytics';
   } else if (parts[0] === 'ai') {
     studentNav = 'ai';
+  } else if (parts[0] === 'notes') {
+    studentNav = 'notes';            // #/notes or #/notes/<notebookId> (id is read at render time)
   } else {
     studentNav = 'home';
   }
@@ -5042,7 +5044,7 @@ function navigateStudent(dest) {
   window.currentSelectedCourseId = null;
   editingCourseId = null;
   currentMaterialFilter = 'all';
-  const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home', ai: '#/ai' };
+  const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home', ai: '#/ai', notes: '#/notes' };
   pushHash(pathMap[dest] || '#/home');
   studentNav = dest;
 
@@ -5059,7 +5061,7 @@ function navigateStudent(dest) {
   // own finally-block will call renderApp() and paint the courses.
   // Only fire a new fetch when nothing is running. Force-fresh when
   // we have no data; respect the cache when we do.
-  const needsCourses = (dest === 'courses' || dest === 'saved' || dest === 'home');
+  const needsCourses = (dest === 'courses' || dest === 'saved' || dest === 'home' || dest === 'notes');
   if (needsCourses && !_coursesLoading) {
     fetchCoursesFromDB(liveCourses.length === 0).catch(function (err) {
       console.warn('[navigateStudent] auto-fetch failed:', err);
@@ -5226,7 +5228,12 @@ window.addEventListener('hashchange', function () {
 });
 
 function _renderAppNow() {
-  ['loginView', 'adminView', 'adminEditView', 'professorView', 'studentAIHomeView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
+  /* ⭐ leaving My Notes → save the open notebook and give its memory back */
+  if (_notesMounted && !(currentUser && studentNav === 'notes' && !currentCourseId)) {
+    _notesMounted = false;
+    try { if (window.AeroNotes) window.AeroNotes.suspend(); } catch (_) {}
+  }
+  ['loginView', 'adminView', 'adminEditView', 'professorView', 'studentAIHomeView', 'studentNotesView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
     .forEach(id => { const el = $(id); if (el) el.classList.remove('active'); });
   $('appHeader').style.display = 'none';
   $('appFooter').style.display = 'none';
@@ -5325,6 +5332,17 @@ function _renderAppNow() {
     return;
   }
 
+  // ─── MY NOTES (handwritten notebooks — loaded on demand) ───
+  if (studentNav === 'notes') {
+    const notesView = ensureStudentNotesView();
+    if (notesView) {
+      notesView.classList.add('active');
+      _notesMounted = true;
+      renderStudentNotes(notesView);
+      return;
+    }
+  }
+
   if (studentNav === 'home') {
     const homeView = $('studentHomeView');
     if (homeView) homeView.classList.add('active');
@@ -5365,12 +5383,14 @@ function buildNav() {
   const coursesActive   = (studentNav === 'courses'   && !currentCourseId) ? 'active' : '';
   const savedActive     = (studentNav === 'saved'     && !currentCourseId) ? 'active' : '';
   const analyticsActive = (studentNav === 'analytics' && !currentCourseId) ? 'active' : '';
+  const notesActive     = (studentNav === 'notes'     && !currentCourseId) ? 'active' : '';
   const savedCount = (currentUser.bookmarks || []).length;
   $('mainNav').innerHTML = `
     <a href="#" class="${homeActive}" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> Home</a>
     <a href="#" class="${coursesActive}" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> Courses</a>
     <a href="#" class="${savedActive}" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> Saved${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
     <a href="#" class="${analyticsActive}" onclick="event.preventDefault();navigateStudent('analytics')"><i class="fas fa-chart-line"></i> Analytics</a>
+    <a href="#" class="${notesActive}" onclick="event.preventDefault();navigateStudent('notes')"><i class="fas fa-book-open"></i> Notes</a>
     <a href="#" class="nav-ai-btn ${aiActive}" onclick="event.preventDefault();navigateStudent('ai')"><i class="fas fa-robot"></i> AI Solver</a>
   `;
 }
@@ -18021,6 +18041,73 @@ function _aiLoad() {
       _aiHadFiles = !!d.hadFiles;
     }
   } catch (_) {}
+}
+
+/* ============================================================
+   ⭐ MY NOTES (2026-10-09) — GoodNotes-style notebooks
+   ------------------------------------------------------------
+   notes.js / notes.css are fetched the first time a student opens
+   Notes, so nobody else pays for them. Their versioned URLs come
+   from <template id="aeroLazyAssets"> in index.html (the server
+   stamps the ?v= hashes there).
+   ============================================================ */
+var _notesMounted = false;   // var: read by _renderAppNow, which is defined earlier in the file
+var _notesLoading = null;
+function ensureStudentNotesView() {
+  let el = document.getElementById('studentNotesView');
+  if (el) return el;
+  const main = document.querySelector('.main-content');
+  if (!main) return null;
+  el = document.createElement('section');
+  el.id = 'studentNotesView';
+  el.className = 'view';
+  const ai = document.getElementById('studentAIHomeView');
+  if (ai && ai.parentNode === main) ai.insertAdjacentElement('afterend', el);
+  else main.appendChild(el);
+  return el;
+}
+function _lazyAssetUrl(name, fallback) {
+  try {
+    const tpl = document.getElementById('aeroLazyAssets');
+    const node = tpl && tpl.content && tpl.content.querySelector(`[data-asset="${name}"]`);
+    const url = node && (node.getAttribute('src') || node.getAttribute('href'));
+    if (url) return url;
+  } catch (_) {}
+  return fallback;
+}
+function loadNotesModule() {
+  if (window.AeroNotes) return Promise.resolve();
+  if (_notesLoading) return _notesLoading;
+  _notesLoading = new Promise((resolve, reject) => {
+    if (!document.querySelector('link[data-aero-notes]')) {
+      const l = document.createElement('link');
+      l.rel = 'stylesheet'; l.href = _lazyAssetUrl('notes-css', 'notes.css'); l.setAttribute('data-aero-notes', '1');
+      document.head.appendChild(l);
+    }
+    const s = document.createElement('script');
+    s.src = _lazyAssetUrl('notes-js', 'notes.js');
+    s.async = true;
+    s.onload = () => window.AeroNotes ? resolve() : reject(new Error('Notes failed to start.'));
+    s.onerror = () => { try { s.remove(); } catch (_) {} reject(new Error('Could not load Notes. Check your connection.')); };
+    document.head.appendChild(s);
+  }).catch((e) => { _notesLoading = null; throw e; });
+  return _notesLoading;
+}
+function _notesIdFromHash() {
+  const m = /^#\/notes\/([A-Za-z0-9_-]{6,40})/.exec(location.hash || '');
+  return m ? m[1] : null;
+}
+function renderStudentNotes(view) {
+  if (window.AeroNotes) { window.AeroNotes.show(view, _notesIdFromHash()); return; }
+  if (!view.firstElementChild) {
+    view.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:64px 16px;color:var(--text-secondary)"><i class="fas fa-spinner fa-spin" style="font-size:26px;color:var(--brand-600,#4f46e5)"></i><p style="margin:0">Opening your notes…</p></div>';
+  }
+  loadNotesModule().then(() => {
+    if (studentNav === 'notes' && view.classList.contains('active')) window.AeroNotes.show(view, _notesIdFromHash());
+  }).catch((e) => {
+    if (studentNav !== 'notes') return;
+    view.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:64px 16px;text-align:center;color:var(--text-secondary)"><i class="fas fa-wifi" style="font-size:26px"></i><p style="margin:0">${escapeHtml(e.message || 'Could not load Notes.')}</p><button type="button" class="btn btn-primary" onclick="renderApp()"><i class="fas fa-rotate-right"></i> Try again</button></div>`;
+  });
 }
 
 /* ============================================================

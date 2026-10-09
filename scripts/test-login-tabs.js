@@ -8,6 +8,7 @@ const users = {
   stu:  { _id: 's1', username: 'stu', role: 'student', password: 'pw', email: 's@x', referralCode: 'R1' },
   prof: { _id: 'p1', username: 'prof', role: 'professor', password: 'pw', email: 'p@x', professor: { status: 'approved' } },
   pend: { _id: 'p2', username: 'pend', role: 'professor', password: 'pw', email: 'q@x', professor: { status: 'pending' } },
+  leg:  { _id: 'l1', username: 'leg', role: 'user', password: 'pw', email: 'l@x', referralCode: 'R2' },
   adm:  { _id: 'a1', username: 'adm', role: 'admin', password: 'pw', email: 'a@x' },
 };
 const ctx = {
@@ -39,6 +40,8 @@ const call = (username, role) => new Promise(resolve => {
   }
   let r = await call('pend', 'professor'); assert.strictEqual(r.body.code, 'PROFESSOR_PENDING'); rows.push('pending prof on professor → ' + r.body.code);
   r = await call('pend', 'student'); assert.strictEqual(r.body.code, 'WRONG_LOGIN_TAB');
+  r = await call('leg', 'student'); assert.strictEqual(r.body.success, true); rows.push('legacy role "user" on student → OK');
+  r = await call('leg', 'admin'); assert.strictEqual(r.body.code, 'WRONG_LOGIN_TAB');
   r = await call('stu', undefined); assert.strictEqual(r.body.success, true); rows.push('student, no tab sent → OK (defaults to Student)');
   r = await call('adm', undefined); assert.strictEqual(r.body.code, 'WRONG_LOGIN_TAB');
   r = await (async () => { users.stu.password = 'other'; const x = await call('stu', 'admin'); users.stu.password = 'pw'; return x; })();

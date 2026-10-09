@@ -1771,7 +1771,7 @@ app.use((err, req, res, next) => {
    the background) instead of gzip-on-every-request: ~20 % fewer
    bytes on slow connections and no per-request CPU.
    ============================================================ */
-const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js'];
+const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css'];
 const _assetHashCache = new Map();   // file → { key, hash }
 function assetHash(file) {
   try {
@@ -1899,7 +1899,7 @@ function sendImmutableAsset(res, filename) {
 }
 /* Warm the compressed copies right after boot so the first visitor is fast too. */
 setTimeout(() => {
-  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js',
+  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css',
    'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'].forEach(f => {
     try {
       const fp = path.join(__dirname, f);
@@ -1914,6 +1914,9 @@ app.get('/media-viewer.js',    (req, res) => sendImmutableAsset(res, 'media-view
 app.get('/document-viewer.js', (req, res) => sendImmutableAsset(res, 'document-viewer.js'));
 app.get('/content-shield.js', (req, res) => sendImmutableAsset(res, 'content-shield.js'));
 app.get('/login-popup.js',    (req, res) => sendImmutableAsset(res, 'login-popup.js'));
+/* ⭐ Notes — loaded only when a student opens "My Notes" */
+app.get('/notes.js',          (req, res) => sendImmutableAsset(res, 'notes.js'));
+app.get('/notes.css',         (req, res) => sendImmutableAsset(res, 'notes.css'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 
 /* ⭐ PDF.js — self-hosted so campus / corporate proxies that
@@ -4826,7 +4829,9 @@ app.post('/api/login', async (req, res) => {
       const LOGIN_TABS = ['student', 'professor', 'admin'];
       const tab = LOGIN_TABS.includes(String(roleFromClient || '').trim().toLowerCase())
         ? String(roleFromClient).trim().toLowerCase() : 'student';
-      const dbRole = String(user.role || 'student').trim().toLowerCase();
+      /* legacy / odd roles ('user', '', 'Student'…) count as students */
+      const rawRole = String(user.role || '').trim().toLowerCase();
+      const dbRole = rawRole === 'admin' || rawRole === 'professor' ? rawRole : 'student';
       if (tab !== dbRole) {
         const label = { student: 'Student', professor: 'Professor', admin: 'Admin' };
         console.log(`[login] ⛔ "${user.username}" (${dbRole}) tried the ${tab} tab`);
@@ -13943,11 +13948,39 @@ function getGeminiClient() {
   return _geminiClient;
 }
 
+/* ⭐ Student notes (2026-10-09) — see notes-api.js. Guarded like the AI
+   engine: a missing file can never take login or courses down. */
+try {
+  const Notebook = require('./models/Notebook');
+  const NotePage = require('./models/NotePage');
+  require('./notes-api')(app, { requireUser, rateLimit, mongoose, Notebook, NotePage, logger: console });
+  console.log('[notes] ✅ notes API ready');
+} catch (e) {
+  console.error('❌ [notes] notes API not loaded:', e.message);
+  app.all('/api/notes', (req, res) => res.status(503).json({ success: false, message: 'Notes are being updated on the server. Please try again shortly.' }));
+  app.all('/api/notes/*rest', (req, res) => res.status(503).json({ success: false, message: 'Notes are being updated on the server. Please try again shortly.' }));
+}
+
 /* ⭐ AI engine v3 (2026-10-08) — Gemini + Groq, model picker, fallbacks.
    See ai-engine.js. GROQ_API_KEY is optional; GEMINI_API_KEY is optional;
    at least one is needed. AI_MODELS (comma list) pins the models. */
-const { createAiEngine } = require('./ai-engine');
-const aiEngine = createAiEngine({ getGeminiClient, logger: console });
+/* A missing ai-engine.js (e.g. not added to git) must never take the whole
+   site down — login, courses and payments keep working, only AI is off. */
+let aiEngine;
+try {
+  const { createAiEngine } = require('./ai-engine');
+  aiEngine = createAiEngine({ getGeminiClient, logger: console });
+} catch (e) {
+  console.error('❌ [ai] ai-engine.js could not be loaded — AI Solver disabled until it is deployed:', e.message);
+  const off = { message: 'The AI Solver is being updated on the server. Please try again in a few minutes.' };
+  aiEngine = {
+    configured: () => false, hasGemini: () => false, hasGroq: () => false, catalogErrors: () => ({ engine: e.message }),
+    getCatalog: async () => [], buildChain: () => ({ chain: [], picked: null, switched: null, requested: null }),
+    run: async () => ({ used: null, attempts: [], lastError: null }), failureMessage: () => off,
+    publicList: async () => ({ default: 'auto', providers: { gemini: false, groq: false }, models: [] }),
+    testAll: async () => [], coolLeft: () => 0
+  };
+}
 const AI_MODEL_ID_RE = /^(auto|(gemini|groq):[A-Za-z0-9._\/-]{2,80})$/;
 function _aiPickedModel(v) {
   const s = String(v || '').trim();
