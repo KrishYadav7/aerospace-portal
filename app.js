@@ -246,7 +246,7 @@ ${isPrint ? `
 @media print{html,body{background:none}.toolbar{display:none!important}.stage{padding:0;display:block;min-height:0}.cert{transform:none!important;box-shadow:none;border-radius:0;margin:0}}
 ` : ''}
 </style></head><body>
-${isPrint ? `<div class="toolbar"><button class="btn-print" onclick="window.print()">🖨️ Print / Save as PDF</button><button class="btn-close" onclick="window.close()">Close</button></div>` : ''}
+${isPrint ? `<div class="toolbar"><button class="btn-print" onclick="if(window.AeroGyanPrint){AeroGyanPrint.print()}else{window.print()}">🖨️ Print / Save as PDF</button><button class="btn-close" onclick="window.close()">Close</button></div>` : ''}
 <div class="stage"><div class="cert ${t.borderStyle}" id="cert">
   ${t.borderStyle === 'modern' ? '<div class="band"></div>' : ''}
   ${watermark}${corners}${seal}
@@ -25031,6 +25031,56 @@ async function maRemoveRelease() {
                                           this device
    Hidden inside the AeroGyan Android app itself.
    ============================================================ */
+/* ============================================================
+   ⭐ ANDROID APP — downloads (2026-10-09)
+   ------------------------------------------------------------
+   Inside the AeroGyan Android app a WebView cannot save "blob:"
+   downloads (notes PDF/PNG, exports, contribution files). The app
+   exposes window.AeroGyanAndroid; files are streamed to it in small
+   base64 chunks and land in Downloads › AeroGyan. In a normal
+   browser nothing here runs.
+   ============================================================ */
+(function aeroNativeDownloads() {
+  'use strict';
+  const B = window.AeroGyanAndroid;
+  if (!B || typeof B.begin !== 'function') return;
+  const CHUNK = 393216;                                   // 384 KB — a multiple of 3, so every chunk is valid base64
+  function b64(buf) {
+    const u8 = new Uint8Array(buf); let bin = '';
+    for (let i = 0; i < u8.length; i += 32768) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 32768));
+    return btoa(bin);
+  }
+  const say = (m, t) => { try { (window.showToast || console.log)(m, t || 'info'); } catch (_) {} };
+  async function saveBlob(blob, name) {
+    const ok = B.begin(String(name || 'download'), blob.type || '');
+    if (ok !== 'ok') { say(ok === 'denied' ? 'Downloads are only available on AeroGyan pages.' : 'Could not save the file on this phone.', 'error'); return; }
+    try {
+      for (let i = 0; i < blob.size; i += CHUNK) {
+        if (!B.chunk(b64(await blob.slice(i, i + CHUNK).arrayBuffer()))) throw new Error('write failed');
+      }
+      B.end();
+    } catch (e) { try { B.abort(); } catch (_) {} say('Could not save the file.', 'error'); }
+  }
+  window.__aeroSaveBlob = saveBlob;
+  window.__aeroSaveUrl = async function (url, name) {
+    try {
+      const r = await fetch(url, { credentials: 'include' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await saveBlob(await r.blob(), name);
+    } catch (e) { say('Download failed — please try again.', 'error'); }
+  };
+  /* every <a download href="blob:…|data:…"> the site clicks (notes export, CSV, ZIP…) */
+  document.addEventListener('click', (e) => {
+    const a = e.target && e.target.closest ? e.target.closest('a[download]') : null;
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    if (!/^(blob:|data:)/i.test(href)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    fetch(href).then(r => r.blob()).then(b => saveBlob(b, a.getAttribute('download') || 'download'))
+      .catch(() => say('Download failed — please try again.', 'error'));
+  }, true);
+})();
+
 (function initDashboardInstallPill() {
   'use strict';
   if (window.__aeroDashInstallInstalled) return;
