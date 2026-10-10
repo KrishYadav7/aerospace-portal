@@ -1,9 +1,12 @@
 /* ============================================================
    AeroGyan — desktop app (Windows now, macOS later)
    ------------------------------------------------------------
-   A real installed app (not a browser shortcut). It opens
-   https://aerogyan.tech/app in its own window with its own icon,
-   Start-menu / desktop entry and taskbar button.
+   A real installed app (not a browser shortcut). It opens the
+   AeroGyan landing page (https://aerogyan.tech/) in its own window
+   with its own icon, Start-menu / desktop entry and taskbar button;
+   "Log in" / "Start learning" lead on to https://aerogyan.tech/app.
+   • Back (mouse back button, Alt+←) closes the site's pop-ups and
+     menus first (window.aeroBack), then goes back a page.
 
    • Screenshots, screen recording and screen sharing show a black
      window (content protection) — like FLAG_SECURE on Android.
@@ -26,6 +29,7 @@ const path = require('path');
 const fs = require('fs');
 
 const APP_URL = 'https://aerogyan.tech/app';
+const START_URL = 'https://aerogyan.tech/';       // first page on launch: the landing page
 const APP_ID = 'tech.aerogyan.app';
 const PROTOCOL = 'aerogyan';
 const IS_MAC = process.platform === 'darwin';
@@ -249,7 +253,7 @@ function createMainWindow() {
     if (r.response === 0) wc.reload(); else mainWin.close();
   });
 
-  const start = pendingDeepLink ? (deepLinkToUrl(pendingDeepLink) || APP_URL) : APP_URL;
+  const start = pendingDeepLink ? (deepLinkToUrl(pendingDeepLink) || START_URL) : START_URL;
   pendingDeepLink = null;
   wc.loadURL(start).catch(() => {});          // failures are shown by did-fail-load
 }
@@ -334,9 +338,18 @@ function openExternal(url) {
 }
 
 /* ---------------------------------------------------------------- keys, zoom, menu */
-function goBack(wc) {
+function historyBack(wc) {
   const h = wc.navigationHistory;
   if (h && h.canGoBack()) h.goBack(); else if (!h && wc.canGoBack && wc.canGoBack()) wc.goBack();
+}
+/* the website first closes its own pop-up / menu (or goes up a page) */
+function goBack(wc) {
+  let host = '';
+  try { host = new URL(wc.getURL()).hostname; } catch (_) {}
+  if (!/(^|\.)aerogyan\.tech$/i.test(host)) return historyBack(wc);
+  wc.executeJavaScript('(function(){try{return !!(window.aeroBack&&window.aeroBack());}catch(e){return false;}})()', true)
+    .then((handled) => { if (!handled) historyBack(wc); })
+    .catch(() => historyBack(wc));
 }
 function goForward(wc) {
   const h = wc.navigationHistory;

@@ -16,6 +16,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.os.SystemClock;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintManager;
@@ -72,7 +73,10 @@ import java.util.Set;
  *   (and hides the content in the recent-apps switcher).
  * • File uploads (AI Doubt Solver, contributions) incl. taking a photo with the camera.
  * • Payment / bank pop-ups open inside the app; UPI apps open via their own links.
- * • Back button walks back through the site; offline screen with Retry.
+ * • Opens on the landing page; its buttons lead into the app.
+ * • Back button: closes the site's pop-ups / menus first (window.aeroBack),
+ *   then walks back through the site; at the very start "press back again
+ *   to exit" instead of closing at once. Offline screen with Retry.
  * • Checks the website for a newer APK and offers the update.
  * • Downloads made by the website (notes PDF/PNG, exports, files) are saved to
  *   Downloads/AeroGyan through a small JavaScript bridge, and generated pages
@@ -108,6 +112,9 @@ public class MainActivity extends Activity {
     private String lastFailedUrl;
     /** host of the page now shown in the main view — the download bridge only serves our own site */
     private volatile String mainHost = "";
+    /** time of the last back press that had nowhere to go (for "press again to exit") */
+    private long lastExitBackAt = 0;
+    private boolean backPending = false;
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -196,11 +203,32 @@ public class MainActivity extends Activity {
             else closePopup();
             return;
         }
+        /* let the website close its own pop-up / menu or go up a page first */
+        if (isOwnHost(mainHost) && !backPending) {
+            backPending = true;
+            web.evaluateJavascript(
+                    "(function(){try{return !!(window.aeroBack&&window.aeroBack());}catch(e){return false;}})()",
+                    value -> {
+                        backPending = false;
+                        if (!"true".equals(value)) backThroughHistory();
+                    });
+            return;
+        }
+        if (!backPending) backThroughHistory();
+    }
+
+    private void backThroughHistory() {
         if (web.canGoBack()) {
             web.goBack();
             return;
         }
-        super.onBackPressed();
+        long now = SystemClock.uptimeMillis();
+        if (now - lastExitBackAt < 2200) {
+            finish();
+        } else {
+            lastExitBackAt = now;
+            Toast.makeText(this, "Press back again to exit", Toast.LENGTH_SHORT).show();
+        }
     }
 
     // ------------------------------------------------------------------ WebView
@@ -210,7 +238,7 @@ public class MainActivity extends Activity {
         if (data != null && "https".equalsIgnoreCase(data.getScheme()) && isOwnHost(hostOf(data))) {
             return data.toString();
         }
-        return BuildConfig.APP_URL;
+        return BuildConfig.START_URL;
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -304,7 +332,7 @@ public class MainActivity extends Activity {
         if (scheme.equals("file") && "/android_asset/offline.html".equals(uri.getPath())) return false;
 
         if (scheme.equals("aerogyan") && "retry".equals(uri.getHost())) {      // from the offline page
-            web.loadUrl(lastFailedUrl != null ? lastFailedUrl : BuildConfig.APP_URL);
+            web.loadUrl(lastFailedUrl != null ? lastFailedUrl : BuildConfig.START_URL);
             return true;
         }
 

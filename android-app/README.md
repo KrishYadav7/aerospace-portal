@@ -1,7 +1,7 @@
 # AeroGyan Android app
 
-A real Android app (APK) for AeroGyan — not a browser shortcut. It opens
-`https://aerogyan.tech/app` full-screen, with its own icon and name, no browser
+A real Android app (APK) for AeroGyan — not a browser shortcut. It opens the landing page
+(`https://aerogyan.tech/`) full-screen, leading into `https://aerogyan.tech/app`, with its own icon and name, no browser
 bar and no browser badge.
 
 ## What it does
@@ -37,7 +37,16 @@ GitHub builds the APK for you:
    From then on the Android "Get App" button downloads it, and installed apps offer the update.
 
 ## Settings
-`app.properties` → `APP_URL` (the page the app opens). Change it only if the domain changes.
+`app.properties`:
+- `START_URL` — the first page when the app opens: the landing page (`https://aerogyan.tech/`).
+  Its "Log in" / "Start learning" buttons lead into the app.
+- `APP_URL` — the app itself (`https://aerogyan.tech/app`); its domain decides which links stay
+  inside the app. Change these only if the domain changes.
+
+## Back button
+Back first asks the website (`window.aeroBack()`) to close whatever is open on top — a pop-up,
+menu, file viewer or full-screen video — or to go back a page; an exam in progress is never left
+by accident. With nothing left to go back to, the first press shows "Press back again to exit".
 
 ## Building on your own computer (optional)
 Android Studio → Open → `android-app/`. For a signed release set the environment variables

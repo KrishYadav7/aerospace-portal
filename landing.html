@@ -4795,5 +4795,27 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
   window.addEventListener('online', function () { ping(true); });
 })();
 </script>
+<script>
+  /* ⭐ 2026-10-10 — already signed in (e.g. came back here with the app's
+     back button)? Offer to continue instead of asking to log in again. */
+  (function () {
+    var user = null;
+    try { if (sessionStorage.getItem('aero_token')) user = JSON.parse(sessionStorage.getItem('aero_user') || 'null'); } catch (e) {}
+    if (!user) return;
+    var first = String(user.fullName || user.username || '').trim().split(/\s+/)[0] || '';
+    var safe = first.replace(/[<>&"']/g, '');
+    var home = '/app#/home';
+    function apply() {
+      var signin = document.querySelector('.landing-signin-btn');
+      if (signin) { signin.href = home; signin.innerHTML = '<i class="fas fa-gauge-high"></i> Dashboard'; }
+      var cta = document.querySelector('.landing-cta-btn');
+      if (cta) { cta.href = home; cta.innerHTML = '<i class="fas fa-arrow-right"></i> <span>' + (safe ? 'Continue as ' + safe : 'Continue') + '</span>'; }
+      document.querySelectorAll('a.landing-cta-magnet[href^="/app?intent=register"]').forEach(function (a) {
+        a.href = home; a.innerHTML = '<i class="fas fa-rocket"></i> Continue learning';
+      });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', apply); else apply();
+  })();
+</script>
 </body>
 </html>

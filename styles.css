@@ -17635,3 +17635,37 @@ html[data-skin="aurora"] .course-progress-fill { background: var(--au-grad) !imp
   .premium-perk-card b { font-size: 12.5px; }
   .premium-perk-card small { font-size: 11.5px; }
 }
+
+/* ==========================================================================
+   ⭐ 2026-10-10 — SMART BACK button (header). Shown on every page except
+   Home; closes the top pop-up first, then goes back a page.
+   ========================================================================== */
+.aero-back-btn {
+  -webkit-tap-highlight-color: transparent; flex: 0 0 auto; cursor: pointer; font: inherit;
+  display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 13px 0 10px; margin-right: 10px;
+  border-radius: 12px; border: 1px solid rgba(255, 255, 255, .16);
+  background: rgba(255, 255, 255, .08); color: #fff; font-size: 13.5px; font-weight: 600;
+  transition: background .15s, transform .15s, border-color .15s;
+  animation: aeroBackIn .22s var(--ease-out, ease-out) both;
+}
+.aero-back-btn[hidden] { display: none; }
+.aero-back-btn i { font-size: 13px; transition: transform .15s; }
+.aero-back-btn:hover { background: rgba(255, 255, 255, .16); border-color: rgba(255, 255, 255, .3); }
+.aero-back-btn:hover i { transform: translateX(-2px); }
+.aero-back-btn:active { transform: scale(.95); }
+.aero-back-btn:focus-visible { outline: 2px solid var(--accent-400, #22d3ee); outline-offset: 2px; }
+@keyframes aeroBackIn { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+/* phones & tablets: a round chevron next to the logo; the long subtitle gives way */
+@media (max-width: 900px) {
+  .aero-back-btn { width: 40px; height: 40px; padding: 0; justify-content: center; margin-right: 8px; border-radius: 12px; }
+  .aero-back-btn span { display: none; }
+  .aero-back-btn i { font-size: 15px; }
+  html.aero-has-back #appHeader .brand-text span { display: none; }
+}
+@media (max-width: 380px) {
+  html.aero-has-back #appHeader .brand-text h1 { font-size: 15px; }
+}
+html[data-skin="aurora"] .aero-back-btn { background: rgba(127, 233, 221, .10); border-color: rgba(127, 233, 221, .28); }
+html[data-skin="space"] .aero-back-btn { background: rgba(157, 140, 255, .12); border-color: rgba(157, 140, 255, .3); }
+@media (prefers-reduced-motion: reduce) { .aero-back-btn { animation: none; } }
+@media print { .aero-back-btn { display: none !important; } }

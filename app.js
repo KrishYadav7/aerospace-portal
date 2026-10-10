@@ -26760,3 +26760,174 @@ function admToggleAllSections() {
   }
   setTimeout(schedule, 400);
 })();
+
+/* ============================================================
+   ⭐ SMART BACK (2026-10-10)
+   ------------------------------------------------------------
+   One back action for every way of going back — the phone's back
+   gesture, the Android app's back button, the Windows app's mouse
+   back button / Alt+←, and the ‹ Back button in the header:
+     1. close whatever is on top (full screen, file viewer, pop-up,
+        menu, dropdown) — most recent first;
+     2. never leave a running exam by accident;
+     3. otherwise go back one page — or, when there is no page to go
+        back to (opened from a link), up to the page above it.
+   window.aeroBack() returns true when it handled the back press;
+   false means "nothing left here" (the apps then go to the landing
+   page / offer to exit).
+   ============================================================ */
+(function () {
+  const IN_APP = /AeroGyanApp\//.test(navigator.userAgent || '');
+  const vis = (el) => !!(el && el.isConnected && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
+
+  /* ---- what is open on top, most recent / top-most first ---- */
+  function topLayer() {
+    if (typeof quizPlayerState !== 'undefined' && quizPlayerState) {
+      const shell = document.getElementById('quizExamShell');
+      if (vis(shell)) {
+        if (typeof _inExam === 'function' && _inExam()) {
+          return { exam: true, close() { showToast('Your exam is still running — submit it to leave.', 'info'); } };
+        }
+        return { close() { exitQuizSession(); } };
+      }
+    }
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      return { close() { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (e) {} } };
+    }
+    for (const name of ['VideoPlayer', 'PDFViewer', 'DocumentViewer']) {
+      const v = window[name];
+      if (v && v.active && typeof v.close === 'function') return { close() { v.close(); } };
+    }
+    /* pop-ups: the notes editor's menus, then any modal (last in the page = on top) */
+    const ntPop = document.querySelector('.nt-pop-ov');
+    if (ntPop) return { close() { ntPop.dispatchEvent(new MouseEvent('click', { bubbles: true })); } };
+    const ai = document.getElementById('aiModelMenu');
+    if (ai && typeof aiCloseModelMenu === 'function') return { close() { aiCloseModelMenu(); } };
+    const modals = Array.from(document.querySelectorAll('.modal-overlay.active, .modal-overlay[style*="flex"], .modal-overlay[style*="block"]')).filter(vis);
+    if (modals.length) {
+      const m = modals[modals.length - 1];
+      return { close() { closeOverlayEl(m); } };
+    }
+    const gs = document.getElementById('globalSearchOverlay');
+    if (gs && gs.classList.contains('active')) return { close() { closeGlobalSearch(); } };
+    for (const id of ['notifWrap', 'userProfileWrap']) {
+      const w = document.getElementById(id);
+      if (w && w.classList.contains('open')) return { close() { w.classList.remove('open'); } };
+    }
+    const nav = document.getElementById('mainNav');
+    if (nav && nav.classList.contains('open')) return { close() { const t = document.getElementById('navToggle'); if (t) t.click(); else nav.classList.remove('open'); } };
+    return null;
+  }
+  /* pop-ups written into the page itself are reused — they are hidden,
+     never removed; pop-ups built later by scripts can be removed */
+  document.querySelectorAll('.modal-overlay').forEach(m => { m.dataset.aeroStatic = '1'; });
+  /* close one modal the way its own UI would: a tap on the dim backdrop,
+     else its own close (✕) button, else simply hide it */
+  function closeOverlayEl(m) {
+    m.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    if (!vis(m)) return;
+    const x = m.querySelector('.modal-close, [data-close], .premium-hub-x, .hd-icon-btn[aria-label="Close"], button[aria-label="Close"]');
+    if (x) { x.click(); if (!vis(m)) return; }
+    m.classList.remove('active');
+    if (vis(m) && !m.dataset.aeroStatic) m.remove();
+    else if (vis(m)) m.style.display = 'none';
+  }
+
+  /* ---- pages ---- */
+  function routeParts() { return (location.hash || '#/home').replace(/^#\/?/, '').split('/').filter(Boolean); }
+  function isRootView() {
+    if (!currentUser) return true;
+    const p = routeParts();
+    if (!p.length || p[0] === 'home') return true;
+    if (p[0] === 'admin') return !p[1] || (p[1] === 'overview' && !p[2]);
+    if (p[0] === 'professor') return !p[1] || p[1] === 'courses';
+    return false;
+  }
+  function parentRoute() {
+    const p = routeParts();
+    if (p[0] === 'course') return '#/courses';
+    if (p[0] === 'notes' && p[1]) return '#/notes';
+    if (p[0] === 'admin') return (p[1] === 'edit' || p[1] === 'quiz' || p[1] === 'course' || p[1] === 'professor' || p[1] === 'student') ? '#/admin/' + ({ edit: 'courses', quiz: 'courses', course: 'courses', professor: 'professors', student: 'students' }[p[1]]) : '#/admin/overview';
+    if (p[0] === 'professor') return '#/professor/courses';
+    return '#/home';
+  }
+  const navIndex = () => (history.state && history.state.aeroNav) || 0;
+
+  function aeroBack() {
+    const top = topLayer();
+    if (top) { top.close(); setTimeout(refreshBackBtn, 60); return true; }
+    if (isRootView()) return false;
+    if (navIndex() > 0) { history.back(); return true; }
+    /* opened straight on a deep page — go up instead of out of the app */
+    history.replaceState({ aeroNav: 0 }, '', parentRoute());
+    try { syncHashToState(); renderApp(); } catch (e) {}
+    return true;
+  }
+  window.aeroBack = aeroBack;
+
+  /* every in-app page change carries its depth, so "back" knows whether
+     there is an earlier AeroGyan page to return to */
+  window.pushHash = function (path) {
+    if (location.hash === path) return;
+    history.pushState({ aeroNav: navIndex() + 1 }, '', path);
+  };
+
+  /* ---- phone browsers: the back gesture closes pop-ups first ----
+     When something opens on top, one extra history entry (same URL) is
+     added; going back pops it and closes the top layer instead of
+     leaving the page. If the layer is closed some other way, that
+     entry is quietly removed again. */
+  let guarded = false, skipPop = 0, scheduled = 0;
+  const isGuardState = () => !!(history.state && history.state.aeroLayer);
+  function syncGuard() {
+    scheduled = 0;
+    const open = !!topLayer();
+    if (open && !guarded) {
+      history.pushState({ aeroNav: navIndex(), aeroLayer: true }, '', location.href);
+      guarded = true;
+    } else if (!open && guarded) {
+      guarded = false;
+      if (isGuardState()) { skipPop++; history.back(); }
+    }
+  }
+  const scheduleGuard = () => { if (!scheduled) scheduled = setTimeout(syncGuard, 120); };
+  window.addEventListener('popstate', () => {
+    if (skipPop) { skipPop--; return; }
+    if (!guarded) return refreshBackBtn();
+    guarded = false;                          // the guard entry was just popped
+    const top = topLayer();
+    if (top) {
+      top.close();
+      if (top.exam) { history.pushState({ aeroNav: navIndex(), aeroLayer: true }, '', location.href); guarded = true; }
+    }
+    scheduleGuard();
+  });
+  new MutationObserver(scheduleGuard).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style'] });
+
+  /* ---- the ‹ Back button in the header ---- */
+  function ensureBackBtn() {
+    let b = document.getElementById('aeroBackBtn');
+    if (b) return b;
+    const header = document.getElementById('appHeader'), brand = header && header.querySelector('.brand');
+    if (!brand) return null;
+    b = document.createElement('button');
+    b.type = 'button'; b.id = 'aeroBackBtn'; b.className = 'aero-back-btn';
+    b.setAttribute('aria-label', 'Back'); b.title = 'Back';
+    b.innerHTML = '<i class="fas fa-chevron-left" aria-hidden="true"></i><span>Back</span>';
+    b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (!aeroBack()) navigateStudent('home'); });
+    brand.parentNode.insertBefore(b, brand);
+    return b;
+  }
+  function refreshBackBtn() {
+    const b = ensureBackBtn(); if (!b) return;
+    const show = !!currentUser && !isRootView();
+    b.hidden = !show;
+    document.documentElement.classList.toggle('aero-has-back', show);
+    document.documentElement.classList.toggle('aero-in-app', IN_APP || document.documentElement.classList.contains('aero-in-app'));
+  }
+  const _origRenderApp = window.renderApp;
+  window.renderApp = function () { const r = _origRenderApp.apply(this, arguments); try { refreshBackBtn(); } catch (e) {} return r; };
+  window.addEventListener('hashchange', refreshBackBtn);
+  window.addEventListener('popstate', () => setTimeout(refreshBackBtn, 0));
+  setTimeout(refreshBackBtn, 300);
+})();
