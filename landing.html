@@ -30,6 +30,26 @@
         onload="this.onload=null;this.rel='stylesheet'">
   <noscript><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"></noscript>
 
+  <!-- ⭐ One scroll loop for the whole landing page: the position is read
+       once per frame, then every feature updates from that value — reads
+       never follow writes, so the browser never recalculates mid-frame. -->
+  <script>
+    (function () {
+      var subs = [], raf = 0, lastY = -1;
+      function frame() {
+        raf = 0;
+        var y = window.pageYOffset || 0;
+        if (y === lastY) return;
+        lastY = y;
+        for (var i = 0; i < subs.length; i++) { try { subs[i](y); } catch (e) {} }
+      }
+      function kick() { if (!raf) raf = requestAnimationFrame(frame); }
+      window.lpOnScroll = function (fn) { subs.push(fn); try { fn(window.pageYOffset || 0); } catch (e) {} };
+      window.lpScrollRefresh = function () { lastY = -1; kick(); };
+      window.addEventListener('scroll', kick, { passive: true });
+      window.addEventListener('resize', window.lpScrollRefresh, { passive: true });
+    })();
+  </script>
   <!-- Same global stylesheet → 100% theme continuity with the app -->
   <script>
     /* ⭐ Pre-paint theme — avoids a light flash for dark-mode users */
@@ -127,15 +147,17 @@
       -webkit-backdrop-filter: blur(22px) saturate(180%);
       border-bottom: 1px solid var(--header-border);
       padding: 14px 32px;
-      transition: padding .25s var(--ease), box-shadow .25s var(--ease);
+      transition: box-shadow .25s var(--ease), background-color .25s var(--ease);
     }
     [data-theme="light"] .landing-nav {
       background: linear-gradient(135deg, #0a0e1f 0%, #131b3d 55%, #1f1a4d 100%);
     }
     [data-theme="dark"] .landing-nav { background: rgba(16,18,22,.72); }
     [data-theme="dim"]  .landing-nav { background: rgba(24,24,31,.78); }
+    /* ⭐ scrolled = shadow only. It used to shrink the padding too, which
+       changed the bar's height and re-laid out the whole page on every
+       frame of the first scroll — the stutter right at the start. */
     .landing-nav.scrolled {
-      padding: 10px 32px;
       box-shadow: 0 8px 32px rgba(0,0,0,.28);
     }
     .landing-nav-inner {
@@ -1098,7 +1120,6 @@
     }
     @media (max-width: 860px) {
       .landing-nav { padding: 12px 20px; }
-      .landing-nav.scrolled { padding: 10px 20px; }
       .landing-links {
         position: absolute;
         top: 100%;
@@ -2281,6 +2302,41 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
         linear-gradient(160deg, rgba(5,8,22,.55) 0%, rgba(26,18,79,.55) 55%, rgba(44,15,102,.55) 100%);
     }
   </style>
+<style id="lp-mobile-perf">
+  /* ⭐ The top bar is sticky, but overflow-x:hidden on the page wrappers
+     silently turned that off (it scrolled away). "clip" cuts sideways
+     overflow the same way without breaking sticky. */
+  @supports (overflow: clip) {
+    html body, html body #landingPage { overflow-x: clip !important; }
+  }
+  /* ⭐ 2026-10-10 — smooth scrolling on phones.
+     • Frosted-glass blur (backdrop-filter) over content that is scrolling
+       has to be recomputed every frame; on phones the bars & pills become
+       near-solid glass instead (looks the same against the dark hero).
+     • The hero's glow orbs are already soft radial gradients — the extra
+       90px blur filter is dropped on phones (the drift stays, it is cheap).
+     • Numbers that count up keep a fixed width, so nothing beside them moves. */
+  @media (max-width: 900px), (hover: none) {
+    .landing-nav { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; background: rgba(10,14,31,.96); }
+    [data-theme="dark"] .landing-nav { background: rgba(16,18,22,.97); }
+    [data-theme="dim"] .landing-nav { background: rgba(24,24,31,.97); }
+    .landing-hero-eyebrow, .landing-cta-ghost, .landing-install-pill, .lp-mini-cta {
+      -webkit-backdrop-filter: none !important; backdrop-filter: none !important;
+    }
+    .landing-cta-ghost { background: rgba(255,255,255,.10); }
+    .lp-mini-cta { background: rgba(10,14,31,.97); }
+    .landing-hero-orb { filter: none !important; opacity: .8; }
+    .landing-hero-orb-1 { background: radial-gradient(circle, rgba(99,102,241,.55), transparent 65%); }
+    .landing-hero-orb-2 { background: radial-gradient(circle, rgba(6,182,212,.45), transparent 65%); }
+    .landing-hero-orb-3 { background: radial-gradient(circle, rgba(236,72,153,.35), transparent 65%); }
+  }
+  .landing-stat-num { font-variant-numeric: tabular-nums; }
+  @media (max-width: 900px) {
+    .landing-nav { transition: transform .28s cubic-bezier(.22,1,.36,1), box-shadow .25s ease; will-change: transform; }
+    .landing-nav.nav-away { transform: translateY(-105%); box-shadow: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .landing-nav { transition: none; } }
+</style>
 </head>
 <body>
   <svg width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true" focusable="false"><symbol id="aeroFlagIN" viewBox="0 0 30 20"><rect width="30" height="20" fill="#fff"/><rect width="30" height="6.67" fill="#FF9933"/><rect y="13.33" width="30" height="6.67" fill="#138808"/><circle cx="15" cy="10" r="2.75" fill="none" stroke="#000080" stroke-width=".42"/><path d="M15 10L17.45 10.00 M15 10L17.37 10.63 M15 10L17.12 11.22 M15 10L16.73 11.73 M15 10L16.23 12.12 M15 10L15.63 12.37 M15 10L15.00 12.45 M15 10L14.37 12.37 M15 10L13.78 12.12 M15 10L13.27 11.73 M15 10L12.88 11.22 M15 10L12.63 10.63 M15 10L12.55 10.00 M15 10L12.63 9.37 M15 10L12.88 8.78 M15 10L13.27 8.27 M15 10L13.77 7.88 M15 10L14.37 7.63 M15 10L15.00 7.55 M15 10L15.63 7.63 M15 10L16.23 7.88 M15 10L16.73 8.27 M15 10L17.12 8.77 M15 10L17.37 9.37" stroke="#000080" stroke-width=".22"/><circle cx="15" cy="10" r=".55" fill="#000080"/></symbol></svg>
@@ -3104,12 +3160,20 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
   (function navScroll() {
     const nav = document.getElementById('landingNav');
     if (!nav) return;
-    const onScroll = () => {
-      if (window.scrollY > 30) nav.classList.add('scrolled');
-      else nav.classList.remove('scrolled');
-    };
-    window.addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
+    let on = null, hidden = false, lastY = 0;
+    const phone = window.matchMedia('(max-width: 900px)');
+    lpOnScroll((y) => {
+      const want = y > 30;
+      if (want !== on) { on = want; nav.classList.toggle('scrolled', want); }   // touch the DOM only when it changes
+      /* phones: the two-row bar slides away while reading down, back on the way up */
+      const dy = y - lastY;
+      let hide = hidden;
+      if (!phone.matches || y < 160 || nav.classList.contains('menu-open')) hide = false;
+      else if (dy > 8) hide = true;
+      else if (dy < -6) hide = false;
+      if (Math.abs(dy) > 6 || hide !== hidden) lastY = y;
+      if (hide !== hidden) { hidden = hide; nav.classList.toggle('nav-away', hide); }
+    });
   })();
 
   /* ---------- Mobile menu toggle ---------- */
@@ -3467,9 +3531,8 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
     btn.innerHTML = '<i class="fas fa-arrow-up"></i>';
     btn.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
     document.body.appendChild(btn);
-    const toggle = () => btn.classList.toggle('visible', window.scrollY > 900);
-    window.addEventListener('scroll', toggle, { passive: true });
-    toggle();
+    let shown = null;
+    lpOnScroll((y) => { const v = y > 900; if (v !== shown) { shown = v; btn.classList.toggle('visible', v); } });
   }
 
   /* ---------- 3. Sticky mini-CTA ---------- */
@@ -3488,14 +3551,17 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
       cta.classList.remove('visible');
     });
     const hero = $('#hero');
-    const toggle = () => {
+    /* sizes are measured once (and on resize), not on every scroll event */
+    let heroH = 0, docH = 0, shown = null;
+    const measure = () => { heroH = hero ? hero.offsetHeight : 0; docH = document.documentElement.scrollHeight - window.innerHeight; };
+    measure();
+    window.addEventListener('load', () => { measure(); lpScrollRefresh(); });
+    if ('ResizeObserver' in window) new ResizeObserver(() => { measure(); lpScrollRefresh(); }).observe(document.body);
+    lpOnScroll((y) => {
       if (dismissed) return;
-      const past = hero ? window.scrollY > (hero.offsetHeight * 0.75) : window.scrollY > 700;
-      const nearEnd = window.scrollY > (document.documentElement.scrollHeight - window.innerHeight - 400);
-      cta.classList.toggle('visible', past && !nearEnd);
-    };
-    window.addEventListener('scroll', toggle, { passive: true });
-    toggle();
+      const v = (hero ? y > heroH * 0.75 : y > 700) && !(y > docH - 400);
+      if (v !== shown) { shown = v; cta.classList.toggle('visible', v); }
+    });
   }
 
   /* ---------- 4. Hero spotlight ---------- */
@@ -3851,7 +3917,7 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
 
   /* ---------- Boot ---------- */
   function boot() {
-    safe('progress',       setupProgress);
+    /* (scroll progress: the shared .aero-scroll-progress bar below does it — two bars doubled the work) */
     safe('backToTop',      setupBackToTop);
     safe('stickyCta',      setupStickyCta);
     safe('heroSpotlight',  setupHeroSpotlight);
@@ -4569,20 +4635,18 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
       bar.style.opacity = '0';
       document.body.appendChild(bar);
 
-      var raf = 0;
-      function paint() {
-        raf = 0;
-        var doc = document.documentElement;
-        var max = doc.scrollHeight - window.innerHeight;
-        var y = window.scrollY || doc.scrollTop || 0;
+      /* page height measured on load / resize, not every frame */
+      var max = 0;
+      function measure() { max = document.documentElement.scrollHeight - window.innerHeight; }
+      measure();
+      window.addEventListener('load', function () { measure(); lpScrollRefresh(); });
+      if ('ResizeObserver' in window) new ResizeObserver(function () { measure(); lpScrollRefresh(); }).observe(document.body);
+      lpOnScroll(function (y) {
         var pct = max > 40 ? Math.min(100, Math.max(0, (y / max) * 100)) : 0;
-        bar.style.width = pct.toFixed(2) + '%';
-        bar.style.opacity = pct > 0.5 ? '1' : '0';
-      }
-      function onScroll() { if (!raf) raf = requestAnimationFrame(paint); }
-      window.addEventListener('scroll', onScroll, { passive: true });
-      window.addEventListener('resize', onScroll, { passive: true });
-      paint();
+        bar.style.transform = 'scaleX(' + (pct / 100).toFixed(4) + ')';
+        var op = pct > 0.5 ? '1' : '0';
+        if (bar.style.opacity !== op) bar.style.opacity = op;
+      });
     } catch (e) { /* purely additive */ }
   }
   if (document.readyState === 'loading') {
@@ -4817,5 +4881,59 @@ html.aero-in-app #landingInstallPill, html.aero-in-app #apps, html.aero-in-app a
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', apply); else apply();
   })();
 </script>
+<style id="lp-anim-perf">
+  /* ⭐ 2026-10-10 — the same pulses & shimmers, drawn by the GPU.
+     Animating box-shadow or background-position repaints on the main
+     thread every frame (forever, for looping ones) and stole time from
+     scrolling. These versions move/fade a layer instead — identical look. */
+
+  /* loading shimmer: a light band slides across (transform), the card stays still */
+  .lp-review--skeleton { animation: none !important; background: var(--bg-surface-2) !important; position: relative; overflow: hidden; }
+  .lp-review--skeleton::after,
+  .landing-instructor-card.is-loading #instructorRole::after,
+  .landing-instructor-card.is-loading #instructorName::after,
+  .landing-instructor-card.is-loading #instructorTitle::after,
+  .landing-instructor-card.is-loading #instructorBio::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(90deg, transparent 0%, rgba(148,163,184,.22) 50%, transparent 100%);
+    transform: translateX(-100%);
+    animation: lpShimmerMove 1.3s ease-in-out infinite;
+  }
+  .landing-instructor-card.is-loading #instructorRole,
+  .landing-instructor-card.is-loading #instructorName,
+  .landing-instructor-card.is-loading #instructorTitle,
+  .landing-instructor-card.is-loading #instructorBio {
+    animation: none !important; background: rgba(148,163,184,.18) !important; position: relative; overflow: hidden;
+  }
+  @keyframes lpShimmerMove { to { transform: translateX(100%); } }
+
+  /* green "ready" pulses: a ring that grows and fades (transform + opacity) */
+  .landing-install-pill.is-ready { animation: none !important; box-shadow: none !important; }
+  .landing-install-pill.is-ready::after {
+    content: ""; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+    box-shadow: 0 0 0 6px rgba(52,211,153,.45);
+    opacity: 0; animation: lpRingPulse 2.4s ease-out infinite;
+  }
+  .landing-install-pill-dot { animation: none !important; box-shadow: none !important; }
+  .landing-install-pill-dot::after {
+    content: ""; position: absolute; inset: -2px; border-radius: 50%; pointer-events: none;
+    box-shadow: 0 0 0 5px rgba(52,211,153,.6);
+    opacity: 0; animation: lpRingPulse 1.6s ease-out infinite;
+  }
+  .lp-app-card.lp-app-ready .lp-app-btn { animation: none !important; position: relative; }
+  .lp-app-card.lp-app-ready .lp-app-btn::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    box-shadow: 0 8px 26px rgba(16,185,129,.7);
+    opacity: 0; animation: lpGlowFade 2.4s ease-in-out infinite;
+  }
+  @keyframes lpRingPulse { 0% { opacity: .9; transform: scale(.92); } 100% { opacity: 0; transform: scale(1.18); } }
+  @keyframes lpGlowFade { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lp-review--skeleton::after, .landing-instructor-card.is-loading *::after,
+    .landing-install-pill.is-ready::after, .landing-install-pill-dot::after,
+    .lp-app-card.lp-app-ready .lp-app-btn::after { animation: none !important; }
+  }
+</style>
 </body>
 </html>

@@ -23589,7 +23589,7 @@ function aiHomeUsePrompt(btn) {
         const max = doc.scrollHeight - window.innerHeight;
         const y = window.scrollY || doc.scrollTop || 0;
         const pct = max > 40 ? Math.min(100, Math.max(0, (y / max) * 100)) : 0;
-        bar.style.width = pct.toFixed(2) + '%';
+        bar.style.transform = 'scaleX(' + (pct / 100).toFixed(4) + ')';
         /* The bar only earns its place once the page actually scrolls. */
         bar.style.opacity = pct > 0.5 ? '1' : '0';
         btn.classList.toggle('is-visible', y > 420);

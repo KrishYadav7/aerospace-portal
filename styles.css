@@ -11494,14 +11494,17 @@ html { scroll-padding-top: 88px; }
 .aero-scroll-progress {
   position: fixed;
   top: 0; left: 0;
-  width: 0;
+  width: 100%;
   height: 3px;
   z-index: 3000;
   pointer-events: none;
   border-radius: 0 999px 999px 0;
   background: linear-gradient(90deg, var(--brand-500), var(--accent-500), var(--emerald-500));
   box-shadow: 0 0 12px rgba(99,102,241,.5);
-  transition: width .08s linear;
+  /* ⭐ scaled, not resized: moving it costs no layout while you scroll */
+  transform: scaleX(0); transform-origin: 0 50%;
+  will-change: transform;
+  transition: transform .08s linear, opacity .2s;
 }
 
 .aero-to-top {
