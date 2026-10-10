@@ -79,6 +79,8 @@ const userSchema = new mongoose.Schema({
 
     autoRenew:        { type: Boolean, default: false },
     paymentMode:      { type: String,  default: 'subscription' }, // 'subscription' | 'one-time'
+    /* ⭐ an extension bought while premium is live — applied once its payment is confirmed */
+    pendingPlan:      { type: Object,  default: null },
     lastPaymentId:    { type: String,  default: null },
 
     history: [{

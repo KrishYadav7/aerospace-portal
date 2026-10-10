@@ -4973,7 +4973,7 @@ function renderNotificationList() {
   let html = '';
   notifs.forEach(n => {
     const ago = timeAgo(n.createdAt);
-    const icon = n.type === 'doubt-reply' ? 'fa-comment-dots' : 'fa-bell';
+    const icon = n.type === 'doubt-reply' ? 'fa-comment-dots' : n.type === 'help-reply' ? 'fa-headset' : 'fa-bell';
     html += `
       <div class="notif-item ${n.read ? '' : 'unread'}" onclick="openNotification('${n.id}')">
         <div class="notif-icon"><i class="fas ${icon}"></i></div>
@@ -5009,6 +5009,7 @@ async function openNotification(notifId) {
   }
 
   document.getElementById('notifWrap')?.classList.remove('open');
+  if (n.link && n.link.indexOf('help:') === 0) { openHelpDesk(n.link.slice(5)); return; }
   if (n.link) location.hash = n.link;
 }
 
@@ -10230,11 +10231,7 @@ async function startSubscriptionCheckout() {
       subscription_id: data.subscriptionId,
       name: 'Aerospace Department',
       description: data.title + ' — ₹' + data.amount + '/month',
-      prefill: {
-        name: currentUser.fullName || currentUser.username,
-        email: currentUser.email || 'student@aerospace.com',
-        contact: '9999999999'
-      },
+      prefill: premiumPrefill(),   // ⭐ only real details — a made-up email/phone sent the receipt nowhere
       theme: { color: '#4f46e5' },
       handler: async function (response) {
         showToast('Verifying subscription…', 'info');
@@ -10280,7 +10277,7 @@ async function startSubscriptionCheckout() {
    Step 2: submitCancelOtp()    → verify the code and finalize
    Step 3: closeCancelSubscriptionModal() → safe exit, no cancel
    ============================================================ */
-async function cancelSubscription() {
+async function cancelSubscription(confirmed) {
   if (!currentUser || !currentUser._id) {
     return showToast('Please log in first.', 'error');
   }
@@ -10288,7 +10285,8 @@ async function cancelSubscription() {
     return showToast('You do not have an active subscription.', 'info');
   }
 
-  const proceed = confirm(
+  /* ⭐ the Premium hub asks first in-page (confirm() does not work inside the Android app) */
+  const proceed = confirmed === true || confirm(
     'To prevent accidental cancellation, we will send a 6-digit verification code to your registered email.\n\n' +
     'Your subscription will only be cancelled AFTER you enter the correct code.\n\n' +
     'Continue?'
@@ -10364,7 +10362,7 @@ async function submitCancelOtp() {
       currentUser = data.user;
       saveSessionUser(currentUser);
       closeModal('cancelSubscriptionModal');
-      showToast('✅ Subscription cancelled. Access remains until the end of your billing period.', 'success');
+      showToast('✅ ' + (data.message || 'Auto-pay cancelled. Premium stays active until your end date.'), 'success');
       renderApp();
     } else {
       showToast(data.message || 'Verification failed.', 'error');
@@ -19472,10 +19470,7 @@ function renderSubscriptionPlansGrid(containerId) {
         ${savings}
         <p class="plan-desc">${escapeHtml(p.description || '')}</p>
         <ul class="plan-features">
-          <li><i class="fas fa-check"></i> Every course unlocked</li>
-          <li><i class="fas fa-check"></i> All premium materials</li>
-          <li><i class="fas fa-check"></i> AI Doubt Solver (unlimited)</li>
-          <li><i class="fas fa-check"></i> Full quiz & analytics</li>
+          ${PREMIUM_PERKS.map(k => `<li><i class="fas fa-check"></i> ${escapeHtml(k.short)}</li>`).join('')}
         </ul>
         <button class="btn btn-primary btn-block plan-select-btn"
                 onclick="startCheckoutForPlan(${jsStr(p.id)})">
@@ -19494,8 +19489,9 @@ function startCheckoutForPlan(planId) {
   if (!currentUser || currentUser.role !== 'student') {
     return showToast('Please log in as a student first.', 'error');
   }
-  if (currentUser.isSubscribed) {
-    return showToast('You already have an active subscription.', 'info');
+  const curSub = currentUser.subscription || {};
+  if (currentUser.isSubscribed && curSub.autoRenew) {
+    return showToast('Your premium renews automatically — there is nothing to pay now.', 'info');
   }
 
   const plan = (_livePlans || []).find(p => p.id === planId);
@@ -19503,6 +19499,7 @@ function startCheckoutForPlan(planId) {
 
   _activeCheckoutPlan = plan;
   _activeCheckoutCoupon = null;
+  _activeCheckoutExtend = !!currentUser.isSubscribed;   // ⭐ extend: the days are added to the current end date
 
   // Build modal (inject once)
   let modal = document.getElementById('checkoutPlanModal');
@@ -19572,6 +19569,12 @@ function renderCheckoutSummary() {
       <div class="checkout-plan-price">₹${plan.amount}</div>
     </div>
     <p class="checkout-plan-desc">${escapeHtml(plan.description || '')}</p>
+    ${_activeCheckoutExtend ? (() => {
+      const sub = (currentUser && currentUser.subscription) || {};
+      const from = sub.expiresAt && new Date(sub.expiresAt) > new Date() ? new Date(sub.expiresAt) : new Date();
+      const until = new Date(from.getTime() + plan.durationDays * 86400000);
+      return `<div class="checkout-extend-note"><i class="fas fa-calendar-plus"></i> Adds <strong>${plan.durationDays} days</strong> to your current premium — active until <strong>${until.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</strong>. One-time payment, no auto-pay.</div>`;
+    })() : ''}
   `;
 
   const final = _activeCheckoutCoupon ? _activeCheckoutCoupon.finalAmount : plan.amount;
@@ -19652,20 +19655,17 @@ async function proceedCheckout() {
       key: createRes.key_id,
       name: 'Aerospace Department',
       description: `${createRes.planTitle} — ${createRes.durationDays} days${createRes.couponCode ? ' · ' + createRes.couponCode : ''}`,
-      prefill: {
-        name: currentUser.fullName || currentUser.username,
-        email: currentUser.email || 'student@aerospace.com',
-        contact: '9999999999'
-      },
+      prefill: premiumPrefill(),   // ⭐ only real details — a made-up email/phone sent the receipt nowhere
       theme: { color: '#4f46e5' },
       modal: { ondismiss: function () { showToast('Checkout cancelled.', 'info'); } }
     };
 
     if (createRes.mode === 'one-time') {
+      const extend = !!createRes.extend;
       rzpOptions.amount = Math.round(createRes.amount * 100);
       rzpOptions.order_id = createRes.orderId;
       rzpOptions.handler = async function (response) {
-        await _finalizeOneTimeSubscription(response);
+        await _finalizeOneTimeSubscription(response, extend);
       };
     } else {
       rzpOptions.subscription_id = createRes.subscriptionId;
@@ -19700,17 +19700,17 @@ async function _finalizeSubscription(response) {
     if (vres.success) {
       currentUser = vres.user;
       saveSessionUser(currentUser);
-      showToast('🎉 Subscription activated! All courses unlocked.', 'success');
       renderApp();
+      showPremiumWelcome(false);
     } else {
       showToast(vres.message || 'Verification failed.', 'error');
     }
   } catch (err) {
-    showToast('Verification error — contact support.', 'error');
+    showToast('We could not confirm the payment yet. If money was deducted, premium switches on by itself within a few minutes.', 'error');
   }
 }
 
-async function _finalizeOneTimeSubscription(response) {
+async function _finalizeOneTimeSubscription(response, extend) {
   showToast('Verifying payment…', 'info');
   try {
     const vres = await fetchJSON(`${API_BASE}/subscribe/verify-order`, {
@@ -19726,13 +19726,13 @@ async function _finalizeOneTimeSubscription(response) {
     if (vres.success) {
       currentUser = vres.user;
       saveSessionUser(currentUser);
-      showToast('🎉 Subscription activated! All courses unlocked.', 'success');
       renderApp();
+      showPremiumWelcome(!!extend);
     } else {
       showToast(vres.message || 'Verification failed.', 'error');
     }
   } catch (err) {
-    showToast('Verification error — contact support.', 'error');
+    showToast('We could not confirm the payment yet. If money was deducted, premium switches on by itself within a few minutes.', 'error');
   }
 }
 
@@ -19744,7 +19744,7 @@ window.startSubscriptionCheckout = function () {
   if (!currentUser || currentUser.role !== 'student') {
     return showToast('Please log in as a student first.', 'error');
   }
-  if (currentUser.isSubscribed) return showToast('You already have an active subscription.', 'info');
+  if (currentUser.isSubscribed) return showMyPlanModal();
   if (!_livePlans.length) {
     showToast('No plans available right now.', 'error');
     return;
@@ -19979,16 +19979,25 @@ async function renderStudentSubscriptionBanner() {
     const exp = sub.expiresAt
       ? new Date(sub.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
       : '—';
+    const left = premiumDaysLeft(sub);
+    const ending = !sub.autoRenew && left !== null && left <= 7;
+    const unread = helpUnreadCount();
     wrap.innerHTML = `
-      <div class="subscribe-active-banner">
+      <div class="subscribe-active-banner ${ending ? 'is-ending' : ''}">
         <div class="subscribe-active-icon"><i class="fas fa-crown"></i></div>
         <div class="subscribe-active-info">
           <h4>${escapeHtml(sub.planTitle || 'Premium')} active</h4>
-          <p>Renews on <strong>${exp}</strong> · ₹${sub.amount || 0}${sub.autoRenew ? ' · auto-renew on' : ''}</p>
+          <p>${sub.autoRenew ? 'Renews on' : 'Ends on'} <strong>${exp}</strong>${left !== null ? ` · ${left === 0 ? 'last day' : left + ' day' + (left === 1 ? '' : 's') + ' left'}` : ''}${sub.autoRenew ? ' · auto-pay on' : ''}</p>
         </div>
-        <button class="btn btn-outline btn-sm" onclick="showMyPlanModal()">
-          <i class="fas fa-info-circle"></i> Manage
-        </button>
+        <div class="subscribe-active-actions">
+          ${ending ? `<button class="btn btn-primary btn-sm" onclick="openPlansShowcaseModal()"><i class="fas fa-calendar-plus"></i> Extend</button>` : ''}
+          <button class="btn btn-outline btn-sm premium-help-btn" onclick="openHelpDesk()">
+            <i class="fas fa-headset"></i> Help Desk${unread ? `<span class="premium-dot">${unread}</span>` : ''}
+          </button>
+          <button class="btn btn-outline btn-sm" onclick="showMyPlanModal()">
+            <i class="fas fa-crown"></i> My Premium
+          </button>
+        </div>
       </div>`;
   } else if (liveSubscriptionSettings.enabled && _livePlans.length > 0) {
     const cheapest = _livePlans.reduce((min, p) => (p.amount < min.amount ? p : min), _livePlans[0]);
@@ -20784,64 +20793,442 @@ window.registerStudent = function (e) {
     if (typeof _origRegisterStudent === 'function') _origRegisterStudent.call(this, e);
   }
 };
+/* ============================================================
+   ⭐ PREMIUM (2026-10-10) — what a subscription gives, the Premium
+   hub (plan, days left, receipts, auto-pay), the welcome screen after
+   paying, and the Premium Help Desk (student + admin).
+   ============================================================ */
+const PREMIUM_PERKS = [
+  { icon: 'fa-unlock-keyhole', short: 'Every premium course & material', title: 'Everything unlocked', desc: 'All premium courses, lectures, notes, papers and videos — nothing stays locked.' },
+  { icon: 'fa-headset', short: 'Premium Help Desk — ask the team directly', title: 'Premium Help Desk', desc: 'Stuck on a course, an exam, your account or a payment? Ask the team — premium questions are answered first.' },
+  { icon: 'fa-robot', short: '3× higher AI Doubt Solver limit', title: '3× AI Doubt Solver', desc: '30 AI questions a minute instead of 10 — for long study sessions.' },
+  { icon: 'fa-receipt', short: 'Receipt for every payment', title: 'Payment receipts', desc: 'A receipt for every payment, ready to save or print from My Premium.' },
+  { icon: 'fa-shield-heart', short: 'Stop auto-pay any time, keep your days', title: 'Fair cancellation', desc: 'Turn auto-pay off any time — premium stays on until the end of what you paid for.' }
+];
+let _activeCheckoutExtend = false;
+const _premiumDate = (d) => d ? new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : '—';
+
+function premiumPrefill() {
+  const u = currentUser || {}, phone = String(u.phone || '').replace(/[\s-]/g, '');
+  return Object.assign({ name: u.fullName || u.username || '' },
+    u.email ? { email: u.email } : {},
+    /^\+?\d{10,13}$/.test(phone) ? { contact: phone } : {});
+}
+function premiumDaysLeft(sub) {
+  if (!sub || !sub.expiresAt) return null;
+  return Math.max(0, Math.ceil((new Date(sub.expiresAt).getTime() - Date.now()) / 86400000));
+}
+function helpUnreadCount() {
+  return ((currentUser && currentUser.notifications) || []).filter(n => !n.read && n.type === 'help-reply').length;
+}
+
+/* ---------- welcome screen right after a payment ---------- */
+function showPremiumWelcome(extended) {
+  const sub = (currentUser && currentUser.subscription) || {};
+  const name = (currentUser && (currentUser.fullName || currentUser.username) || '').split(' ')[0];
+  const old = document.getElementById('premiumWelcomeModal'); if (old) old.remove();
+  const modal = document.createElement('div');
+  modal.id = 'premiumWelcomeModal';
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal-box premium-welcome" role="dialog" aria-modal="true" aria-labelledby="premiumWelcomeTitle">
+      <div class="premium-welcome-crown" aria-hidden="true"><i class="fas fa-crown"></i></div>
+      <h3 id="premiumWelcomeTitle">${extended ? 'Premium extended' : `Welcome to Premium${name ? ', ' + escapeHtml(name) : ''}!`}</h3>
+      <p class="premium-welcome-sub">${extended ? 'Your new end date is' : 'Everything is unlocked until'} <strong>${_premiumDate(sub.expiresAt)}</strong>${sub.autoRenew ? ' · renews automatically' : ''}.</p>
+      <ul class="premium-perks">
+        ${PREMIUM_PERKS.map(k => `<li><span class="premium-perk-ic"><i class="fas ${k.icon}"></i></span><div><b>${escapeHtml(k.title)}</b><small>${escapeHtml(k.desc)}</small></div></li>`).join('')}
+      </ul>
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="document.getElementById('premiumWelcomeModal').remove(); openHelpDesk();"><i class="fas fa-headset"></i> Meet the Help Desk</button>
+        <button class="btn btn-primary" onclick="document.getElementById('premiumWelcomeModal').remove(); navigateStudent('courses');"><i class="fas fa-rocket"></i> Start learning</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+/* ---------- My Premium hub ---------- */
 function showMyPlanModal() {
-  if (!currentUser || !currentUser.subscription) return;
+  if (!currentUser || !currentUser.subscription) return openPlansShowcaseModal();
   const sub = currentUser.subscription;
-  const exp = sub.expiresAt
-    ? new Date(sub.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
-    : '—';
-  const started = sub.startedAt
-    ? new Date(sub.startedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
-    : '—';
+  const active = !!currentUser.isSubscribed;
+  const left = premiumDaysLeft(sub);
+  const total = Math.max(1, sub.planDurationDays || 30);
+  const pct = left === null ? 100 : Math.max(0, Math.min(100, Math.round(left / total * 100)));
+  const pays = (sub.history || []).map((h, i) => ({ h, i })).filter(x => x.h && x.h.status === 'charged').reverse();
+  const unread = helpUnreadCount();
 
-  const old = document.getElementById('myPlanModal');
-  if (old) old.remove();
-
+  const old = document.getElementById('myPlanModal'); if (old) old.remove();
   const modal = document.createElement('div');
   modal.id = 'myPlanModal';
   modal.className = 'modal-overlay active';
   modal.innerHTML = `
-    <div class="modal-box" style="max-width:480px;">
-      <div class="modal-icon-header">
-        <div class="modal-icon-tile tone-emerald" style="background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#422006;">
-          <i class="fas fa-crown"></i>
+    <div class="modal-box premium-hub" role="dialog" aria-modal="true" aria-labelledby="premiumHubTitle">
+      <div class="premium-hub-head">
+        <div class="premium-hub-crown"><i class="fas fa-crown"></i></div>
+        <div class="premium-hub-title">
+          <h3 id="premiumHubTitle">${escapeHtml(sub.planTitle || 'Premium')}</h3>
+          <span class="premium-chip ${active ? (sub.autoRenew ? 'on' : 'ending') : 'off'}">
+            ${active ? (sub.autoRenew ? '<i class="fas fa-rotate"></i> Active · auto-pay on' : '<i class="fas fa-hourglass-half"></i> Active · auto-pay off') : '<i class="fas fa-circle-pause"></i> Not active'}
+          </span>
         </div>
-        <div>
-          <h3>Your Premium Plan</h3>
-          <p class="modal-sub" style="margin:2px 0 0;">Active subscription details</p>
-        </div>
+        <button class="premium-hub-x" aria-label="Close" onclick="document.getElementById('myPlanModal').remove()"><i class="fas fa-xmark"></i></button>
       </div>
 
-      <div class="checkout-plan-summary">
-        <div class="checkout-plan-row">
-          <div>
-            <strong>${escapeHtml(sub.planTitle || 'Premium')}</strong>
-            <div class="checkout-plan-meta">
-              <i class="fas fa-clock"></i> ${sub.planDurationDays || 30} days · ${sub.paymentMode === 'one-time' ? 'One-time' : 'Auto-renew'}
-            </div>
-          </div>
-          <div class="checkout-plan-price">₹${sub.amount || 0}</div>
+      ${active ? `
+      <div class="premium-days">
+        <div class="premium-days-row">
+          <span><b>${left === null ? '∞' : left}</b> day${left === 1 ? '' : 's'} left</span>
+          <span>${sub.autoRenew ? 'Renews' : 'Ends'} on <b>${_premiumDate(sub.expiresAt)}</b></span>
         </div>
-        <p class="checkout-plan-desc">
-          Started: <strong>${started}</strong><br>
-          ${sub.paymentMode === 'subscription' ? 'Renews' : 'Expires'}: <strong>${exp}</strong>
-        </p>
+        <div class="premium-days-bar"><span style="width:${pct}%"></span></div>
+        ${!sub.autoRenew && left !== null && left <= 7 ? `<p class="premium-days-warn"><i class="fas fa-bell"></i> Ending soon — extend now and the new days are added after ${_premiumDate(sub.expiresAt)}, so you lose nothing.</p>` : ''}
+      </div>` : `<p class="premium-days-warn"><i class="fas fa-circle-info"></i> Your premium ended on ${_premiumDate(sub.expiresAt)}. Pick a plan to switch everything back on.</p>`}
+
+      <div class="premium-section-title">What you get</div>
+      <div class="premium-perk-grid">
+        ${PREMIUM_PERKS.map(k => `<div class="premium-perk-card"><i class="fas ${k.icon}"></i><b>${escapeHtml(k.title)}</b><small>${escapeHtml(k.desc)}</small></div>`).join('')}
       </div>
 
-      <div class="modal-actions">
-        <button class="btn btn-outline" onclick="document.getElementById('myPlanModal').remove()">
-          <i class="fas fa-times"></i> Close
-        </button>
-        ${sub.autoRenew
-          ? `<button class="btn btn-danger" onclick="document.getElementById('myPlanModal').remove(); cancelSubscription();">
-               <i class="fas fa-times-circle"></i> Cancel Auto-Pay
-             </button>`
-          : ''}
+      <button class="premium-help-cta" onclick="document.getElementById('myPlanModal').remove(); openHelpDesk();">
+        <span class="premium-help-cta-ic"><i class="fas fa-headset"></i></span>
+        <span><b>Need help? Ask the team</b><small>Courses, exams, account or payments — premium questions are answered first.</small></span>
+        ${unread ? `<span class="premium-dot">${unread}</span>` : '<i class="fas fa-chevron-right"></i>'}
+      </button>
+
+      <div class="premium-section-title">Payments & receipts</div>
+      ${pays.length ? `<div class="premium-pay-list">${pays.slice(0, 12).map(({ h, i }) => `
+        <div class="premium-pay">
+          <div><b>₹${Number(h.amount || 0).toLocaleString('en-IN')}</b><small>${_premiumDate(h.date)} · ${escapeHtml(h.note && /webhook|subscription\.(charged|authenticated)/.test(h.note) ? 'Auto-pay' : (h.note || 'Payment'))}</small></div>
+          <button class="btn btn-outline btn-sm" onclick="showPremiumReceipt(${i})"><i class="fas fa-receipt"></i> Receipt</button>
+        </div>`).join('')}</div>` : `<p class="premium-muted">No payments yet${sub.history && sub.history.some(h => h && h.status === 'granted') ? ' — your premium was granted by the team' : ''}.</p>`}
+
+      <div class="modal-actions premium-hub-actions">
+        ${active && sub.autoRenew ? `<button class="btn btn-outline btn-danger-text" id="premiumCancelBtn" onclick="premiumAskCancel()"><i class="fas fa-circle-stop"></i> Stop auto-pay</button>` : ''}
+        ${!active || !sub.autoRenew ? `<button class="btn btn-primary" onclick="document.getElementById('myPlanModal').remove(); openPlansShowcaseModal();"><i class="fas ${active ? 'fa-calendar-plus' : 'fa-crown'}"></i> ${active ? 'Extend premium' : 'Renew premium'}</button>` : ''}
       </div>
-    </div>
-  `;
+      <div id="premiumCancelConfirm"></div>
+    </div>`;
   document.body.appendChild(modal);
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+function premiumAskCancel() {
+  const box = document.getElementById('premiumCancelConfirm'); if (!box) return;
+  const sub = (currentUser && currentUser.subscription) || {};
+  box.innerHTML = `
+    <div class="premium-cancel-confirm">
+      <p><b>Stop auto-pay?</b> You will not be charged again. Premium stays on until <b>${_premiumDate(sub.expiresAt)}</b> — every day you paid for is kept. We'll email you a code to confirm.</p>
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="document.getElementById('premiumCancelConfirm').innerHTML=''">Keep auto-pay</button>
+        <button class="btn btn-danger" onclick="document.getElementById('myPlanModal').remove(); cancelSubscription(true);"><i class="fas fa-envelope"></i> Send code</button>
+      </div>
+    </div>`;
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/* ---------- receipt (on screen, printable / save as PDF) ---------- */
+function showPremiumReceipt(idx) {
+  const sub = (currentUser && currentUser.subscription) || {};
+  const h = (sub.history || [])[idx]; if (!h) return;
+  const no = 'AG-' + new Date(h.date).toISOString().slice(0, 10).replace(/-/g, '') + '-' + String(h.paymentId || idx).slice(-6).toUpperCase();
+  const old = document.getElementById('premiumReceiptModal'); if (old) old.remove();
+  const modal = document.createElement('div');
+  modal.id = 'premiumReceiptModal';
+  modal.className = 'modal-overlay active';
+  modal.innerHTML = `
+    <div class="modal-box premium-receipt-box">
+      <div class="premium-receipt" id="premiumReceipt">
+        <div class="premium-receipt-head">
+          <div><b>AeroGyan</b><small>Aerospace Department · IIT Kharagpur</small></div>
+          <div class="premium-receipt-tag">PAYMENT RECEIPT</div>
+        </div>
+        <table>
+          <tr><td>Receipt no.</td><td>${escapeHtml(no)}</td></tr>
+          <tr><td>Date</td><td>${_premiumDate(h.date)}</td></tr>
+          <tr><td>Billed to</td><td>${escapeHtml(currentUser.fullName || currentUser.username || '')}${currentUser.email ? `<br><small>${escapeHtml(currentUser.email)}</small>` : ''}</td></tr>
+          <tr><td>Item</td><td>${escapeHtml(sub.planTitle || 'Premium subscription')}${sub.planDurationDays ? ` · ${sub.planDurationDays} days` : ''}</td></tr>
+          ${sub.couponApplied && /coupon/i.test(h.note || '') ? `<tr><td>Coupon</td><td>${escapeHtml(sub.couponApplied)}</td></tr>` : ''}
+          <tr><td>Payment ref.</td><td><code>${escapeHtml(h.paymentId || '—')}</code></td></tr>
+          <tr class="premium-receipt-total"><td>Amount paid</td><td>₹${Number(h.amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
+        </table>
+        <p class="premium-receipt-foot">Paid online via Razorpay. Keep this receipt for your records. Questions about a payment? Use the Premium Help Desk.</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-outline" onclick="document.getElementById('premiumReceiptModal').remove()">Close</button>
+        <button class="btn btn-primary" onclick="printPremiumReceipt()"><i class="fas fa-print"></i> Print / Save as PDF</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+function printPremiumReceipt() {
+  document.documentElement.classList.add('aero-print-receipt');
+  const done = () => { document.documentElement.classList.remove('aero-print-receipt'); window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  try { window.print(); } catch (e) { showToast('Printing is not available here — take a screenshot of the receipt instead.', 'info'); }
+  setTimeout(done, 60000);
+}
+
+/* ============================================================
+   PREMIUM HELP DESK — student side
+   ============================================================ */
+const HD = { tickets: [], categories: {}, premium: false, view: 'list', open: null, loading: false };
+async function openHelpDesk(ticketId) {
+  if (!currentUser || currentUser.role !== 'student') return showToast('Please log in as a student.', 'error');
+  let modal = document.getElementById('helpDeskModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'helpDeskModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `<div class="modal-box help-desk" role="dialog" aria-modal="true" aria-label="Premium Help Desk"><div id="helpDeskBody"></div></div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) closeModal('helpDeskModal'); });
+  }
+  openModal('helpDeskModal');
+  HD.view = 'list'; HD.open = null;
+  helpDeskRender();
+  await helpDeskLoad();
+  if (ticketId && HD.tickets.some(t => t.id === ticketId)) helpDeskOpen(ticketId);
+  else if (!HD.tickets.length && HD.premium) { HD.view = 'new'; helpDeskRender(); }
+}
+async function helpDeskLoad() {
+  HD.loading = true;
+  try {
+    const d = await fetchJSON(`${API_BASE}/help/tickets?_t=${Date.now()}`, { cache: 'no-store' });
+    if (d.success) { HD.tickets = d.tickets || []; HD.categories = d.categories || {}; HD.premium = !!d.premium; }
+    else showToast(d.message || 'Could not load the help desk.', 'error');
+  } catch (e) { showToast(e.message, 'error'); }
+  HD.loading = false;
+  helpDeskRender();
+}
+function helpDeskStatus(t) {
+  return t.status === 'open' ? '<span class="hd-status open"><i class="fas fa-clock"></i> Waiting for the team</span>'
+    : t.status === 'answered' ? '<span class="hd-status answered"><i class="fas fa-reply"></i> Answered</span>'
+    : '<span class="hd-status closed"><i class="fas fa-check"></i> Solved</span>';
+}
+function helpDeskRender() {
+  const body = document.getElementById('helpDeskBody'); if (!body) return;
+  const head = (title, sub, back) => `
+    <div class="hd-head">
+      ${back ? `<button class="hd-icon-btn" onclick="HD.view='list';helpDeskRender()" aria-label="Back"><i class="fas fa-arrow-left"></i></button>` : `<div class="hd-head-ic"><i class="fas fa-headset"></i></div>`}
+      <div class="hd-head-t"><h3>${title}</h3>${sub ? `<p>${sub}</p>` : ''}</div>
+      <button class="hd-icon-btn" onclick="closeModal('helpDeskModal')" aria-label="Close"><i class="fas fa-xmark"></i></button>
+    </div>`;
+
+  if (HD.view === 'new') {
+    body.innerHTML = head('Ask the team', 'Premium questions are answered first. You will get a notification and an email when we reply.', true) + `
+      <form class="hd-form" onsubmit="helpDeskSubmit(event)">
+        <label>Topic<select id="hdCategory">${Object.entries(HD.categories).map(([k, v]) => `<option value="${k}">${escapeHtml(v)}</option>`).join('')}</select></label>
+        <label>Subject<input id="hdSubject" maxlength="140" required placeholder="e.g. Can't open Lecture 4 PDF"></label>
+        <label>Your question<textarea id="hdMessage" rows="6" maxlength="4000" required placeholder="Tell us what you need — which course or exam, what you tried, any error you saw."></textarea></label>
+        <div class="modal-actions"><button type="button" class="btn btn-outline" onclick="HD.view='list';helpDeskRender()">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="hdSendBtn"><i class="fas fa-paper-plane"></i> Send question</button></div>
+      </form>`;
+    setTimeout(() => { const s = document.getElementById('hdSubject'); if (s) s.focus(); }, 50);
+    return;
+  }
+
+  if (HD.view === 'thread') {
+    const t = HD.tickets.find(x => x.id === HD.open); if (!t) { HD.view = 'list'; return helpDeskRender(); }
+    body.innerHTML = head(escapeHtml(t.subject), `${escapeHtml(t.categoryLabel)} · ${helpDeskStatus(t)}`, true) + `
+      <div class="hd-thread" id="hdThread">
+        ${t.messages.map(m => `
+          <div class="hd-msg ${m.from}">
+            <div class="hd-msg-meta">${m.from === 'admin' ? '<i class="fas fa-shield-halved"></i> ' + escapeHtml(m.name || 'AeroGyan Team') : 'You'} · ${timeAgo(m.at)}</div>
+            <div class="hd-msg-text">${escapeHtml(m.text)}</div>
+          </div>`).join('')}
+        ${t.status === 'open' ? '<div class="hd-waiting"><i class="fas fa-hourglass-half"></i> The team has your message and will reply here.</div>' : ''}
+      </div>
+      <form class="hd-reply" onsubmit="helpDeskReply(event)">
+        <textarea id="hdReply" rows="2" maxlength="4000" placeholder="${t.status === 'closed' ? 'Write to reopen this question…' : 'Write a reply…'}" required></textarea>
+        <div class="hd-reply-actions">
+          ${t.status !== 'closed' ? `<button type="button" class="btn btn-outline btn-sm" onclick="helpDeskClose()"><i class="fas fa-check"></i> Mark as solved</button>` : '<span></span>'}
+          <button type="submit" class="btn btn-primary btn-sm" id="hdReplyBtn"><i class="fas fa-paper-plane"></i> Send</button>
+        </div>
+      </form>`;
+    const th = document.getElementById('hdThread'); if (th) th.scrollTop = th.scrollHeight;
+    return;
+  }
+
+  /* list */
+  const locked = !HD.premium;
+  body.innerHTML = head('Premium Help Desk', 'Ask the team about courses, exams, your account or payments.') + `
+    ${locked ? `
+      <div class="hd-locked">
+        <i class="fas fa-lock"></i>
+        <b>The Help Desk is part of Premium</b>
+        <p>Premium students can ask the team directly and get answers first.${HD.tickets.length ? ' You can still read and reply to your earlier questions below.' : ''}</p>
+        <button class="btn btn-primary" onclick="closeModal('helpDeskModal'); openPlansShowcaseModal();"><i class="fas fa-crown"></i> See premium plans</button>
+      </div>` : `
+      <button class="hd-new" onclick="HD.view='new';helpDeskRender()"><i class="fas fa-plus"></i> Ask a new question</button>`}
+    ${HD.loading && !HD.tickets.length ? '<div class="hd-empty"><i class="fas fa-spinner fa-spin"></i></div>' : ''}
+    ${HD.tickets.length ? `<div class="hd-list">${HD.tickets.map(t => `
+      <button class="hd-item ${t.unread ? 'unread' : ''}" onclick="helpDeskOpen('${t.id}')">
+        <div class="hd-item-top"><b>${escapeHtml(t.subject)}</b>${t.unread ? '<span class="premium-dot">new</span>' : ''}</div>
+        <div class="hd-item-meta">${helpDeskStatus(t)} · ${escapeHtml(t.categoryLabel)} · ${timeAgo(t.lastActivityAt)}</div>
+      </button>`).join('')}</div>` : (!HD.loading && !locked ? '<div class="hd-empty"><i class="fas fa-comments"></i><p>No questions yet. Whatever you are stuck on, we are here to help.</p></div>' : '')}`;
+}
+async function helpDeskOpen(id) {
+  HD.view = 'thread'; HD.open = id;
+  const t = HD.tickets.find(x => x.id === id);
+  helpDeskRender();
+  if (t && t.unread) {
+    t.unread = false;
+    try { await fetchJSON(`${API_BASE}/help/tickets/${id}/seen`, { method: 'POST' }); } catch (e) {}
+    /* the matching bell notifications are read now too */
+    const ns = ((currentUser && currentUser.notifications) || []).filter(n => !n.read && n.link === 'help:' + id);
+    for (const n of ns) { try { await fetch(`/api/user/notifications/${currentUser._id}/mark-read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notifId: n.id }) }); n.read = true; } catch (e) {} }
+    if (ns.length) { saveSessionUser(currentUser); try { renderNotificationBadge(); } catch (e) {} try { renderStudentSubscriptionBanner(); } catch (e) {} }
+  }
+}
+function _hdPut(ticket) {
+  const i = HD.tickets.findIndex(x => x.id === ticket.id);
+  if (i >= 0) HD.tickets.splice(i, 1);
+  HD.tickets.unshift(ticket);
+}
+async function helpDeskSubmit(e) {
+  e.preventDefault();
+  const btn = document.getElementById('hdSendBtn'); if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…'; }
+  try {
+    const d = await fetchJSON(`${API_BASE}/help/tickets`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category: document.getElementById('hdCategory').value, subject: document.getElementById('hdSubject').value, message: document.getElementById('hdMessage').value })
+    });
+    if (!d.success) { showToast(d.message || 'Could not send.', 'error'); if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send question'; } return; }
+    _hdPut(d.ticket);
+    showToast('Question sent — the team will reply here.', 'success');
+    helpDeskOpen(d.ticket.id);
+  } catch (err) { showToast(err.message, 'error'); if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send question'; } }
+}
+async function helpDeskReply(e) {
+  e.preventDefault();
+  const ta = document.getElementById('hdReply'), btn = document.getElementById('hdReplyBtn');
+  if (!ta || !ta.value.trim()) return;
+  if (btn) btn.disabled = true;
+  try {
+    const d = await fetchJSON(`${API_BASE}/help/tickets/${HD.open}/reply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: ta.value }) });
+    if (!d.success) { showToast(d.message || 'Could not send.', 'error'); if (btn) btn.disabled = false; return; }
+    _hdPut(d.ticket); helpDeskRender();
+  } catch (err) { showToast(err.message, 'error'); if (btn) btn.disabled = false; }
+}
+async function helpDeskClose() {
+  try {
+    const d = await fetchJSON(`${API_BASE}/help/tickets/${HD.open}/close`, { method: 'POST' });
+    if (d.success) { _hdPut(d.ticket); showToast('Marked as solved. Glad we could help!', 'success'); helpDeskRender(); }
+    else showToast(d.message || 'Could not update.', 'error');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+/* ============================================================
+   PREMIUM HELP DESK — admin tab
+   ============================================================ */
+const AHD = { status: 'open', tickets: [], counts: {}, open: null, summaryAt: 0 };
+(function ensureHelpDeskAdminTab() {
+  const tabsEl = document.querySelector('.admin-tabs');
+  if (!tabsEl || tabsEl.querySelector('[data-tab="helpdesk"]')) return;
+  const btn = document.createElement('button');
+  btn.className = 'admin-tab'; btn.dataset.tab = 'helpdesk';
+  btn.setAttribute('onclick', "switchAdminTab('helpdesk')");
+  btn.innerHTML = '<i class="fas fa-headset"></i> Help Desk <span class="ahd-badge" id="ahdBadge" hidden></span>';
+  const anchor = tabsEl.querySelector('[data-tab="replies"]');
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor); else tabsEl.appendChild(btn);
+  if (!document.getElementById('adminTabHelpdesk')) {
+    const c = document.createElement('div');
+    c.className = 'admin-tab-content'; c.id = 'adminTabHelpdesk';
+    c.innerHTML = '<div id="adminHelpDeskContent"></div>';
+    const view = document.getElementById('adminView'); if (view) view.appendChild(c);
+  }
+})();
+const _hdOrigUpdateAdminTabUI = window.updateAdminTabUI;
+window.updateAdminTabUI = function () {
+  if (typeof _hdOrigUpdateAdminTabUI === 'function') _hdOrigUpdateAdminTabUI.apply(this, arguments);
+  if (adminTab === 'helpdesk') {
+    const t = document.getElementById('adminPageTitle'); if (t) t.innerHTML = '<i class="fas fa-headset"></i> Premium Help Desk';
+    const a = document.getElementById('adminHeaderActions');
+    if (a) a.innerHTML = `<button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="renderAdminHelpDesk()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`;
+  }
+};
+const _hdOrigRenderAdminDashboard = window.renderAdminDashboard;
+window.renderAdminDashboard = function () {
+  if (Date.now() - AHD.summaryAt > 60000) refreshHelpDeskBadge();
+  if (adminTab === 'helpdesk') { try { updateAdminTabUI(); } catch (e) {} return renderAdminHelpDesk(); }
+  if (typeof _hdOrigRenderAdminDashboard === 'function') return _hdOrigRenderAdminDashboard.apply(this, arguments);
+};
+async function refreshHelpDeskBadge() {
+  AHD.summaryAt = Date.now();
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/help/summary?_t=${Date.now()}`, { cache: 'no-store' });
+    const b = document.getElementById('ahdBadge');
+    if (b && d.success) { b.textContent = d.waiting; b.hidden = !d.waiting; }
+  } catch (e) {}
+}
+async function renderAdminHelpDesk() {
+  const host = document.getElementById('adminHelpDeskContent'); if (!host) return;
+  if (!AHD.tickets.length) host.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading questions…</p></div>';
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/help/tickets?status=${AHD.status}&_t=${Date.now()}`, { cache: 'no-store' });
+    if (!d.success) throw new Error(d.message || 'Could not load.');
+    AHD.tickets = d.tickets || []; AHD.counts = d.counts || {};
+    const b = document.getElementById('ahdBadge'); if (b) { b.textContent = AHD.counts.open || 0; b.hidden = !AHD.counts.open; }
+  } catch (e) { host.innerHTML = `<div class="empty-state"><i class="fas fa-triangle-exclamation"></i><p>${escapeHtml(e.message)}</p></div>`; return; }
+  if (AHD.open && !AHD.tickets.some(t => t.id === AHD.open)) AHD.open = null;
+  adminHelpDeskPaint();
+}
+function adminHelpDeskPaint() {
+  const host = document.getElementById('adminHelpDeskContent'); if (!host) return;
+  const c = AHD.counts, tab = (id, label, n) => `<button class="${AHD.status === id ? 'on' : ''}" onclick="AHD.status='${id}';AHD.open=null;renderAdminHelpDesk()">${label}${n != null ? ` <b>${n}</b>` : ''}</button>`;
+  const t = AHD.tickets.find(x => x.id === AHD.open);
+  host.innerHTML = `
+    <div class="ahd-filters">${tab('open', 'Waiting', c.open || 0)}${tab('answered', 'Answered', c.answered || 0)}${tab('closed', 'Solved', c.closed || 0)}${tab('all', 'All')}</div>
+    <div class="ahd-wrap ${t ? 'has-open' : ''}">
+      <div class="ahd-list">
+        ${AHD.tickets.length ? AHD.tickets.map(x => `
+          <button class="ahd-item ${x.id === AHD.open ? 'on' : ''}" onclick="AHD.open='${x.id}';adminHelpDeskPaint()">
+            <div class="ahd-item-top">${x.premium ? '<i class="fas fa-crown" title="Premium"></i>' : ''}<b>${escapeHtml(x.subject)}</b></div>
+            <div class="ahd-item-meta">${escapeHtml(x.fullName || x.username)} · ${escapeHtml(x.categoryLabel)} · ${x.status === 'open' ? 'waiting ' + timeAgo(x.waitingSince) : timeAgo(x.lastActivityAt)}</div>
+          </button>`).join('') : `<div class="empty-state"><i class="fas fa-mug-hot"></i><p>${AHD.status === 'open' ? 'No one is waiting. All caught up!' : 'Nothing here.'}</p></div>`}
+      </div>
+      <div class="ahd-thread">
+        ${t ? `
+          <div class="ahd-thread-head">
+            <button class="hd-icon-btn ahd-back" onclick="AHD.open=null;adminHelpDeskPaint()" aria-label="Back"><i class="fas fa-arrow-left"></i></button>
+            <div><h4>${escapeHtml(t.subject)}</h4>
+              <small>${t.premium ? '<i class="fas fa-crown"></i> Premium · ' : ''}${escapeHtml(t.fullName || '')} (@${escapeHtml(t.username)})${t.email ? ' · ' + escapeHtml(t.email) : ''} · ${escapeHtml(t.categoryLabel)}</small></div>
+          </div>
+          <div class="hd-thread ahd-msgs">${t.messages.map(m => `
+            <div class="hd-msg ${m.from === 'admin' ? 'student' : 'admin'}">
+              <div class="hd-msg-meta">${m.from === 'admin' ? 'You (' + escapeHtml(m.name || 'Team') + ')' : escapeHtml(m.name || t.username)} · ${timeAgo(m.at)}</div>
+              <div class="hd-msg-text">${escapeHtml(m.text)}</div>
+            </div>`).join('')}</div>
+          <form class="hd-reply" onsubmit="adminHelpDeskReply(event, false)">
+            <textarea id="ahdReply" rows="4" maxlength="4000" placeholder="Write your reply — the student gets a notification and an email." required></textarea>
+            <div class="hd-reply-actions">
+              <span>${t.status !== 'closed' ? `<button type="button" class="btn btn-outline btn-sm" onclick="adminHelpDeskStatus('closed')"><i class="fas fa-check"></i> Mark solved</button>` : `<button type="button" class="btn btn-outline btn-sm" onclick="adminHelpDeskStatus('open')"><i class="fas fa-rotate-left"></i> Reopen</button>`}</span>
+              <span><button type="button" class="btn btn-outline btn-sm" onclick="adminHelpDeskReply(event, true)">Send & mark solved</button>
+              <button type="submit" class="btn btn-primary btn-sm"><i class="fas fa-paper-plane"></i> Send reply</button></span>
+            </div>
+          </form>` : '<div class="empty-state ahd-pick"><i class="fas fa-comments"></i><p>Pick a question to read and reply.</p></div>'}
+      </div>
+    </div>`;
+  const m = host.querySelector('.ahd-msgs'); if (m) m.scrollTop = m.scrollHeight;
+}
+async function adminHelpDeskReply(e, close) {
+  e.preventDefault();
+  const ta = document.getElementById('ahdReply'); if (!ta || !ta.value.trim()) return showToast('Write a reply first.', 'error');
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/help/tickets/${AHD.open}/reply`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: ta.value, close: !!close }) });
+    if (!d.success) return showToast(d.message || 'Could not send.', 'error');
+    showToast('Reply sent — the student has been notified.', 'success');
+    renderAdminHelpDesk();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+async function adminHelpDeskStatus(status) {
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/help/tickets/${AHD.open}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+    if (!d.success) return showToast(d.message || 'Could not update.', 'error');
+    renderAdminHelpDesk();
+  } catch (err) { showToast(err.message, 'error'); }
 }
 /* ============================================================
    SUBJECTIVE ANSWER UPLOAD HELPERS
@@ -26065,7 +26452,7 @@ const ADM_NAV_GROUPS = [
   { id: 'insights', label: 'Insights',      icon: 'fa-chart-line',       tabs: ['traffic'] },
   { id: 'people',   label: 'People',        icon: 'fa-users',            tabs: ['professors', 'community', 'feedback', 'contributions'] },
   { id: 'revenue',  label: 'Revenue',       icon: 'fa-indian-rupee-sign', tabs: ['subscriptions', 'plans', 'coupons', 'referrals'] },
-  { id: 'messages', label: 'Messages',      icon: 'fa-envelope',         tabs: ['replies', 'popup'] },
+  { id: 'messages', label: 'Messages',      icon: 'fa-envelope',         tabs: ['helpdesk', 'replies', 'popup'] },
   { id: 'site',     label: 'Site & brand',  icon: 'fa-swatchbook',       tabs: ['organization', 'branding', 'certificates', 'mobileapp'] },
   { id: 'system',   label: 'System',        icon: 'fa-gear',             tabs: ['security', 'backup'] }
 ];
@@ -26074,7 +26461,7 @@ const ADM_NAV_DESC = {
   profaccess: 'Approve professors & courses', live: 'Who is online now', traffic: 'Visitors & page views',
   professors: 'Faculty profiles', community: 'Alumni & friends', feedback: 'Reviews to moderate',
   contributions: 'Notes sent by students', subscriptions: 'Auto-pay & members', plans: 'Prices & durations',
-  coupons: 'Discount codes', referrals: 'Invite rewards', replies: 'Replies to your emails',
+  coupons: 'Discount codes', referrals: 'Invite rewards', helpdesk: 'Premium students\' questions', replies: 'Replies to your emails',
   popup: 'Announcement pop-up', organization: 'Owner & team details', branding: 'Logo, favicon & icons',
   certificates: 'Course certificates', mobileapp: 'Android & Windows app downloads', security: 'Password, 2FA & devices',
   backup: 'Export & restore data'

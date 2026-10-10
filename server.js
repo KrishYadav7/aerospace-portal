@@ -10285,6 +10285,19 @@ app.post('/api/subscribe/create', requireUser, requireSelfOrAdmin('body'), async
     const plan = (s.subscriptionPlans || []).find(p => p.id === planId && p.enabled);
     if (!plan) return res.status(404).json({ success:false, message:'Plan not found or disabled.' });
 
+    /* ⭐ 2026-10-10: a student who already has premium.
+       Before, this route set status 'pending' on them — which switched their
+       PAID premium off until the new payment finished (forever, if they closed
+       the payment window). Now:
+         • auto-pay on  → nothing to buy, it renews by itself;
+         • auto-pay off → "extend": a one-time order whose days are ADDED to
+           the current end date. Nothing about the live plan changes until
+           the payment is confirmed (the new plan waits in pendingPlan). */
+    const renewing = userHasActiveSubscription(user);
+    if (renewing && user.subscription.autoRenew) {
+      return res.status(409).json({ success:false, message:'Your premium renews automatically — there is nothing to pay now.' });
+    }
+
     /* ---- Coupon (optional) ---- */
     let coupon = null;
     let finalAmount = Number(plan.amount) || 0;
@@ -10298,8 +10311,8 @@ app.post('/api/subscribe/create', requireUser, requireSelfOrAdmin('body'), async
       finalAmount = Math.max(1, Math.round((finalAmount - discount) * 100) / 100);
     }
 
-    /* ---- Mode 1: One-time ORDER (with coupon) ---- */
-    if (coupon) {
+    /* ---- Mode 1: One-time ORDER (with coupon, or extending live premium) ---- */
+    if (coupon || renewing) {
       const order = await razorpay.orders.create({
         amount: Math.round(finalAmount * 100),   // paise
         currency: 'INR',
@@ -10307,11 +10320,29 @@ app.post('/api/subscribe/create', requireUser, requireSelfOrAdmin('body'), async
         notes: {
           userId: String(user._id),
           planId: plan.id,
-          couponCode: coupon.code,
+          couponCode: coupon ? coupon.code : '',
           purpose: 'aero-one-time-subscription',
-          durationDays: plan.durationDays
+          durationDays: plan.durationDays,
+          planTitle: plan.title,
+          extend: renewing ? '1' : ''
         }
       });
+
+      if (renewing) {
+        user.subscription.lastOrderId = order.id;
+        user.subscription.pendingPlan = {
+          orderId: order.id, planId: plan.id, planTitle: plan.title, durationDays: plan.durationDays,
+          amount: plan.amount, amountPaid: finalAmount, couponApplied: coupon ? coupon.code : null
+        };
+        user.markModified('subscription');
+        await user.save();
+        console.log(`[subscribe/create] extension order ${order.id} for ${user.username} · ₹${finalAmount}`);
+        return res.json({
+          success: true, mode: 'one-time', extend: true, key_id: process.env.RAZORPAY_KEY_ID, orderId: order.id,
+          amount: finalAmount, originalAmount: plan.amount, discountPercent: coupon ? coupon.discountPercent : 0,
+          couponCode: coupon ? coupon.code : null, planTitle: plan.title, durationDays: plan.durationDays
+        });
+      }
 
       if (!user.subscription) user.subscription = {};
       user.subscription.status = 'pending';
@@ -10393,6 +10424,18 @@ app.post('/api/subscribe/create', requireUser, requireSelfOrAdmin('body'), async
    verify, webhook, a replayed request). Without this check each hop
    extended the subscription again, re-counted the coupon and bumped
    the referrer's stats. */
+/* ⭐ 2026-10-10: an extension bought while premium was live waits in
+   pendingPlan until its payment is confirmed — then it becomes the plan. */
+function applyPendingPlan(user, orderId) {
+  const sub = user && user.subscription, pp = sub && sub.pendingPlan;
+  if (!pp || !pp.orderId || pp.orderId !== orderId) return false;
+  sub.planId = pp.planId; sub.planTitle = pp.planTitle; sub.planDurationDays = pp.durationDays;
+  sub.amount = pp.amount; sub.amountPaid = pp.amountPaid; sub.couponApplied = pp.couponApplied || null;
+  sub.pendingPlan = null;
+  user.markModified('subscription');
+  return true;
+}
+
 function paymentAlreadyApplied(user, paymentId) {
   if (!paymentId || !user || !user.subscription) return false;
   const hist = user.subscription.history || [];
@@ -10528,6 +10571,7 @@ app.post('/api/subscribe/verify-order', requireUser, requireSelfOrAdmin('body'),
     }
 
     if (!user.subscription) user.subscription = {};
+    applyPendingPlan(user, razorpay_order_id);
     const now = new Date();
     const durationDays = user.subscription.planDurationDays || 30;
     const base = (user.subscription.expiresAt && new Date(user.subscription.expiresAt) > now)
@@ -10937,8 +10981,11 @@ app.post('/api/subscribe/cancel/verify', requireUser, requireSelfOrAdmin('body')
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
 
-    if (!user.subscription || !user.subscription.active) {
+    if (!userHasActiveSubscription(user)) {
       return res.status(400).json({ success: false, message: 'This subscription is no longer active.' });
+    }
+    if (!user.subscription.autoRenew) {
+      return res.json({ success: true, message: 'Auto-pay is already off. Premium stays active until it ends.', user: serializeUser(user) });
     }
 
     // Try to cancel on Razorpay's side (best-effort)
@@ -10950,14 +10997,15 @@ app.post('/api/subscribe/cancel/verify', requireUser, requireSelfOrAdmin('body')
       }
     }
 
-    user.subscription.active = false;
+    /* ⭐ 2026-10-10: only auto-pay stops. The student already paid for this
+       period, so premium stays on until expiresAt (it used to switch off at
+       once, while the message promised "until the end of the billing period"). */
     user.subscription.autoRenew = false;
-    user.subscription.status = 'cancelled';
     user.subscription.history = user.subscription.history || [];
     user.subscription.history.push({
-      status: 'revoked',
+      status: 'auto-renew-off',
       amount: 0,
-      note: 'Cancelled by user (OTP verified)',
+      note: 'Auto-pay cancelled by user (OTP verified) — access kept until the end of the paid period',
       date: new Date()
     });
     _clearAuthUserCache();          // ⭐ NEW
@@ -10967,7 +11015,8 @@ app.post('/api/subscribe/cancel/verify', requireUser, requireSelfOrAdmin('body')
 
     res.json({
       success: true,
-      message: 'Subscription cancelled. You can continue using it until the end of the current billing period.',
+      message: 'Auto-pay cancelled. Your premium stays active until ' +
+        (user.subscription.expiresAt ? new Date(user.subscription.expiresAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : 'the end of the paid period') + '.',
       user: serializeUser(user)
     });
   } catch (e) {
@@ -11303,6 +11352,9 @@ app.post('/api/razorpay-webhook', async (req, res) => {
             const durationDays = parseInt(order.notes.durationDays, 10) || 30;
             const now = new Date();
             if (!user.subscription) user.subscription = {};
+            applyPendingPlan(user, orderId);
+            if (order.notes.planTitle) user.subscription.planTitle = order.notes.planTitle;
+            user.subscription.planDurationDays = durationDays;
             const base = (user.subscription.expiresAt && new Date(user.subscription.expiresAt) > now)
               ? new Date(user.subscription.expiresAt) : now;
             user.subscription.active = true;
@@ -11385,7 +11437,10 @@ app.post('/api/razorpay-webhook', async (req, res) => {
           user.subscription.active = true;
           user.subscription.status = 'active';
           user.subscription.subscriptionId = subEntity.id || user.subscription.subscriptionId;
-          user.subscription.planId = subEntity.plan_id || user.subscription.planId;
+          /* ⭐ 2026-10-10: our plan id (plan_6m…), never Razorpay's plan_XXXX —
+             verify looks the duration up by it, and a Razorpay id fell back to 30 days */
+          if (notes.planId) user.subscription.planId = notes.planId;
+          if (subEntity.plan_id) user.subscription.razorpayPlanId = subEntity.plan_id;
           user.subscription.planDurationDays = durationDays;
           user.subscription.startedAt = user.subscription.startedAt || now;
           user.subscription.expiresAt = expiresAt;
@@ -11417,8 +11472,13 @@ app.post('/api/razorpay-webhook', async (req, res) => {
       if (userId) {
         const user = await User.findById(userId);
         if (user && user.subscription) {
-          user.subscription.active = false;
-          user.subscription.status = event === 'subscription.halted' ? 'halted' : 'cancelled';
+          /* ⭐ 2026-10-10: auto-pay stopping must not take away days already
+             paid for — premium stays on until expiresAt, then lapses by itself */
+          const paidUntil = user.subscription.expiresAt && new Date(user.subscription.expiresAt) > new Date();
+          if (!paidUntil) {
+            user.subscription.active = false;
+            user.subscription.status = event === 'subscription.halted' ? 'halted' : 'cancelled';
+          }
           user.subscription.autoRenew = false;
           user.subscription.history = user.subscription.history || [];
           user.subscription.history.push({
@@ -11428,6 +11488,7 @@ app.post('/api/razorpay-webhook', async (req, res) => {
             date: new Date()
           });
           await user.save();
+          _clearAuthUserCache();
           console.log(`[Webhook] Subscription ${event} → user ${userId}`);
         }
       }
@@ -12513,12 +12574,10 @@ app.post('/api/materials/:courseId/:materialId/video-session',
         });
       }
 
-      const ownsCourse   = (user.purchases || []).includes(String(course._id));
-      const ownsMaterial = (user.purchases || []).includes(String(mat._id));
-      const subscribed   = userHasActiveSubscription(user);
-      const isAdminUser  = String(user.role || '').trim().toLowerCase() === 'admin';
-
-      if (!ownsCourse && !ownsMaterial && !subscribed && !isAdminUser) {
+      /* ⭐ 2026-10-10: the same rule as files (evaluateMaterialAccess) — this
+         copy forgot approved professors, who could not play premium videos
+         of the very courses they were given */
+      if (!evaluateMaterialAccess(user, course, mat).allowed) {
         return res.status(403).json({
           success: false,
           message: 'Purchase or subscription required to watch this video.'
@@ -13923,7 +13982,8 @@ app.get('/api/admin/live-activity', requireAdminAuth, async (req, res) => {
 /* ---- Rate limiter — 10 requests / minute, per-user when possible ---- */
 const aiDoubtLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 10,
+  /* ⭐ Premium perk (2026-10-10): 3× the AI limit while subscribed */
+  max: (req) => (req.authUser && userHasActiveSubscription(req.authUser)) ? 30 : 10,
   standardHeaders: true,
   legacyHeaders: false,
   // Per signed-in user (from the verified token, never from the body). Fall back to IP.
@@ -13968,6 +14028,16 @@ try {
   console.error('❌ [notes] notes API not loaded:', e.message);
   app.all('/api/notes', (req, res) => res.status(503).json({ success: false, message: 'Notes are being updated on the server. Please try again shortly.' }));
   app.all('/api/notes/*rest', (req, res) => res.status(503).json({ success: false, message: 'Notes are being updated on the server. Please try again shortly.' }));
+}
+
+/* ⭐ Premium Help Desk (2026-10-10) — see help-api.js */
+try {
+  const SupportTicket = require('./models/SupportTicket');
+  require('./help-api')(app, { requireUser, requireAdminAuth, rateLimit, mongoose, SupportTicket, User,
+    userHasActiveSubscription, transporter, escapeHtml, withTimeout, clearAuthCache: _clearAuthUserCache, logger: console });
+  console.log('[help] ✅ premium help desk ready');
+} catch (e) {
+  console.error('❌ [help] help desk not loaded:', e.message);
 }
 
 /* ⭐ AI engine v3 (2026-10-08) — Gemini + Groq, model picker, fallbacks.
