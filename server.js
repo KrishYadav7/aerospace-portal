@@ -1771,7 +1771,7 @@ app.use((err, req, res, next) => {
    the background) instead of gzip-on-every-request: ~20 % fewer
    bytes on slow connections and no per-request CPU.
    ============================================================ */
-const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css'];
+const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css', 'tex-render.js'];
 const _assetHashCache = new Map();   // file → { key, hash }
 function assetHash(file) {
   try {
@@ -1899,7 +1899,7 @@ function sendImmutableAsset(res, filename) {
 }
 /* Warm the compressed copies right after boot so the first visitor is fast too. */
 setTimeout(() => {
-  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css',
+  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css', 'tex-render.js',
    'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'].forEach(f => {
     try {
       const fp = path.join(__dirname, f);
@@ -1917,6 +1917,8 @@ app.get('/login-popup.js',    (req, res) => sendImmutableAsset(res, 'login-popup
 /* ⭐ Notes — loaded only when a student opens "My Notes" */
 app.get('/notes.js',          (req, res) => sendImmutableAsset(res, 'notes.js'));
 app.get('/notes.css',         (req, res) => sendImmutableAsset(res, 'notes.css'));
+/* ⭐ LaTeX renderer for quizzes (2026-10-10) */
+app.get('/tex-render.js',     (req, res) => sendImmutableAsset(res, 'tex-render.js'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 
 /* ⭐ PDF.js — self-hosted so campus / corporate proxies that
@@ -14028,6 +14030,15 @@ try {
   console.error('❌ [notes] notes API not loaded:', e.message);
   app.all('/api/notes', (req, res) => res.status(503).json({ success: false, message: 'Notes are being updated on the server. Please try again shortly.' }));
   app.all('/api/notes/*rest', (req, res) => res.status(503).json({ success: false, message: 'Notes are being updated on the server. Please try again shortly.' }));
+}
+
+/* ⭐ LaTeX engine (2026-10-10) — real TeX Live for quiz diagrams; see tex-api.js */
+try {
+  const TexRender = require('./models/TexRender');
+  require('./tex-api')(app, { requireUser, rateLimit, TexRender, logger: console });
+  console.log('[tex] ✅ LaTeX engine API ready');
+} catch (e) {
+  console.error('❌ [tex] LaTeX engine not loaded:', e.message);
 }
 
 /* ⭐ Premium Help Desk (2026-10-10) — see help-api.js */

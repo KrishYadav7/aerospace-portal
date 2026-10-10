@@ -11347,8 +11347,24 @@ window.__mathjaxReady   = false;
 window.__mathjaxLoading = false;
 window.__mathjaxQueue   = window.__mathjaxQueue || [];
 
+const TEX_TEXT_SEL = '.latex-content, .latex-preview, .quiz-play-question, .quiz-play-text, .quiz-explain';
 function renderMathIn(el) {
   if (!el || !el.isConnected) return;
+
+  /* ⭐ 2026-10-10: quiz text is LaTeX — lists, tables, sections, TikZ … are
+     turned into a page first (tex-render.js); MathJax then does the math */
+  if (window.AeroTeX && !el.__texPrepped) {
+    try {
+      const targets = el.matches && el.matches(TEX_TEXT_SEL) ? [el] : Array.from(el.querySelectorAll ? el.querySelectorAll(TEX_TEXT_SEL) : []);
+      targets.forEach(t => {
+        const before = t.__texOut;
+        window.AeroTeX.prepare(t);
+        if (before !== undefined && before !== t.__texOut && window.MathJax && window.MathJax.typesetClear) {
+          try { window.MathJax.typesetClear([t]); } catch (e) {}
+        }
+      });
+    } catch (e) { console.warn('[tex] render failed:', e && e.message); }
+  }
 
   // ---- Not ready yet: queue the element + trigger loader ----
   if (!window.__mathjaxReady ||
@@ -11381,6 +11397,9 @@ function renderMathIn(el) {
 
   // ---- Ready: typeset this element ----
   try {
+    /* ⭐ equation numbers & \\label names start fresh for each block of quiz
+       text (a re-rendered preview must not report "label multiply defined") */
+    if (window.MathJax.texReset) { try { window.MathJax.typesetClear([el]); window.MathJax.texReset(); } catch (e) {} }
     window.MathJax.typesetPromise([el]).catch(err => {
       console.warn('[MathJax] typeset error:', err && err.message);
     });
@@ -12093,8 +12112,10 @@ async function renderQuizEditor() {
       <p class="editor-hint">
         <strong>Overleaf-standard LaTeX is supported.</strong>
         Inline math: <code>$E = mc^2$</code> · Display math: <code>$$\\int_0^1 x^2\\,dx$$</code> ·
-        Also supports <code>\\begin{align}</code>, <code>\\begin{pmatrix}</code>, <code>\\ce{H2O}</code>, <code>\\textcolor</code>, and all amsmath/physics macros.
-        Live preview appears below every input.
+        Text LaTeX works too — <code>\\textbf</code>, lists, <code>tabular</code> tables, sections, theorem boxes, code — and
+        <strong>diagrams are compiled by real LaTeX</strong>: TikZ, pgfplots, circuitikz, chemfig, any <code>\\usepackage</code>
+        inside <code>\\begin{latex}…\\end{latex}</code>, even a whole <code>\\documentclass</code> document.
+        Click a field for the LaTeX toolbar, <button type="button" class="editor-hint-link" onclick="window.AeroTeX && AeroTeX.openGuide(document.querySelector('.latex-source'))">open the guide</button>.
       </p>
 
       <div id="quizDraftList"></div>

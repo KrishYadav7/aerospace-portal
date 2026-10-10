@@ -82,22 +82,25 @@
         processEscapes: true,
         processEnvironments: true,
         processRefs: true,
-        tags: 'none',
-        packages: {
-          '[+]': [
-            'ams', 'newcommand', 'configmacros', 'noundefined', 'noerrors',
-            'mhchem', 'boldsymbol', 'html', 'textmacros', 'color',
-            'mathtools', 'physics', 'cancel', 'enclose', 'unicode'
-          ]
-        },
+        /* ⭐ 2026-10-10: numbered equations like LaTeX (\\label / \\eqref / \\tag work) */
+        tags: 'ams',
+        /* ⭐ every MathJax TeX package — each one is also LOADED below (before,
+           several were listed here but never loaded, so e.g. \\qty or \\cancel
+           could fail) */
+        packages: { '[+]': ['ams', 'newcommand', 'configmacros', 'noundefined', 'noerrors', 'mhchem', 'boldsymbol', 'html', 'textmacros', 'textcomp', 'color', 'colortbl', 'mathtools', 'physics', 'cancel', 'enclose', 'unicode', 'braket', 'bbox', 'cases', 'centernot', 'empheq', 'extpfeil', 'gensymb', 'upgreek', 'verb', 'action', 'amscd', 'bussproofs', 'tagformat', 'setoptions'] },
         macros: {
           RR: '\\mathbb{R}', NN: '\\mathbb{N}', ZZ: '\\mathbb{Z}',
           CC: '\\mathbb{C}', QQ: '\\mathbb{Q}', dd: '\\mathrm{d}',
-          braket: ['\\left\\langle #1 \\right\\rangle', 1],
-          ket:    ['\\left| #1 \\right\\rangle', 1],
-          bra:    ['\\left\\langle #1 \\right|', 1]
+          /* siunitx-style units inside math */
+          SI: ['#1\\,\\mathrm{#2}', 2], si: ['\\mathrm{#1}', 1], num: ['#1', 1], unit: ['\\mathrm{#1}', 1],
+          metre: 'm', meter: 'm', second: 's', kilogram: 'kg', gram: 'g', newton: 'N', joule: 'J', watt: 'W',
+          pascal: 'Pa', kelvin: 'K', ampere: 'A', volt: 'V', ohm: '\\Omega', hertz: 'Hz', mole: 'mol', coulomb: 'C',
+          litre: 'L', liter: 'L', radian: 'rad', celsius: '{}^{\\circ}\\mathrm{C}', degreeCelsius: '{}^{\\circ}\\mathrm{C}',
+          per: '/', squared: '^{2}', cubed: '^{3}',
+          kilo: 'k', mega: 'M', giga: 'G', milli: 'm', micro: '\\mu ', nano: 'n', centi: 'c'
         }
       },
+      loader: { load: ['[tex]/noerrors', '[tex]/mhchem', '[tex]/boldsymbol', '[tex]/html', '[tex]/textmacros', '[tex]/textcomp', '[tex]/color', '[tex]/colortbl', '[tex]/mathtools', '[tex]/physics', '[tex]/cancel', '[tex]/enclose', '[tex]/unicode', '[tex]/braket', '[tex]/bbox', '[tex]/cases', '[tex]/centernot', '[tex]/empheq', '[tex]/extpfeil', '[tex]/gensymb', '[tex]/upgreek', '[tex]/verb', '[tex]/action', '[tex]/amscd', '[tex]/bussproofs', '[tex]/tagformat', '[tex]/setoptions', 'ui/safe'] },
       options: {
         skipHtmlTags: ['script','noscript','style','textarea','pre','code'],
         ignoreHtmlClass: 'no-mathjax',
@@ -1941,7 +1944,7 @@
 
         window.__mathjaxLoaderPromise = new Promise((res, rej) => {
           const s = document.createElement('script');
-          s.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js';
+          s.src = 'https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js';
           s.async = true;
 
           s.onload = () => {
@@ -1974,6 +1977,8 @@
   <script src="content-shield.js?v=145" defer></script>
   <script src="login-popup.js?v=1" defer></script>
   <script src="document-viewer.js?v=145" defer></script>
+  <!-- ⭐ LaTeX renderer for quizzes (text-mode LaTeX + real TeX diagrams) -->
+  <script src="tex-render.js?v=1" defer></script>
   <script src="app.js?v=145" defer></script>
   <!-- ⭐ Loaded on demand by app.js (My Notes) — the server stamps the ?v= hashes -->
   <template id="aeroLazyAssets">

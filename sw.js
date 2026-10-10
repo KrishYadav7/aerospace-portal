@@ -32,6 +32,7 @@ const NEVER_CACHE_PATTERNS = [
   /\/content-shield\.js$/,
   /\/login-popup\.js$/,
   /\/notes\.js$/,
+  /\/tex-render\.js$/,
   /\/notes\.css$/,
   /\/sw\.js$/
 ];
