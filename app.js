@@ -10997,7 +10997,8 @@ function renderMaterialCard(course, m, isPurchased) {
 
       /* ⭐ Attempt-limit math — computed locally from data we
          already have, so no extra network call is needed. */
-      const cap       = Math.max(0, Number(cfg.maxAttempts) || 0);
+      const baseCap   = Math.max(0, Number(cfg.maxAttempts) || 0);
+      const cap       = baseCap > 0 ? baseCap + Math.max(0, Number(qr.extraAttempts) || 0) : 0;   // + attempts granted by the instructor
       const attempts  = Number(qr.attempts) || 0;
       const unlimited = (cap === 0);
       const exhausted = (!unlimited && attempts >= cap);
@@ -12225,6 +12226,614 @@ function exportQuizSubmissionsCsv() {
   a.download = `${(S.data.title || 'test').replace(/[^\w\- ]+/g, '').trim() || 'test'} - submissions.csv`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/* ============================================================
+   ⭐ GRADING SECTION (2026-10-10) — admin dashboard tab "Grading"
+   ------------------------------------------------------------
+   Overview  → to-grade queue, live attempts, every test by course
+   Test      → course + paper details, class statistics, score
+               spread, question-by-question analysis, submissions
+   Attempt   → one student's paper: every answer next to the key,
+               marks + time per question, uploaded sheets with
+               grading, proctoring timeline, earlier attempts,
+               "grant another attempt"
+   Professors get the same screens for their own courses.
+   ============================================================ */
+const GR = { view: 'home', home: null, test: null, attempt: null, testKey: null, attemptKey: null,
+             q: '', course: 'all', show: 'all', subFilter: 'all', subQ: '', qSort: 'order', host: null };
+
+(function ensureGradingAdminTab() {
+  const tabsEl = document.querySelector('.admin-tabs');
+  if (!tabsEl || tabsEl.querySelector('[data-tab="grading"]')) return;
+  const btn = document.createElement('button');
+  btn.className = 'admin-tab'; btn.dataset.tab = 'grading';
+  btn.setAttribute('onclick', "switchAdminTab('grading')");
+  btn.innerHTML = '<i class="fas fa-marker"></i> Grading <span class="ahd-badge" id="grBadge" hidden></span>';
+  const anchor = tabsEl.querySelector('[data-tab="students"]');
+  if (anchor && anchor.nextSibling) anchor.parentNode.insertBefore(btn, anchor.nextSibling); else tabsEl.appendChild(btn);
+  if (!document.getElementById('adminTabGrading')) {
+    const c = document.createElement('div');
+    c.className = 'admin-tab-content'; c.id = 'adminTabGrading';
+    c.innerHTML = '<div id="adminGradingContent" class="gr-root"></div>';
+    const view = document.getElementById('adminView'); if (view) view.appendChild(c);
+  }
+})();
+const _grOrigUpdateAdminTabUI = window.updateAdminTabUI;
+window.updateAdminTabUI = function () {
+  if (typeof _grOrigUpdateAdminTabUI === 'function') _grOrigUpdateAdminTabUI.apply(this, arguments);
+  if (adminTab === 'grading') {
+    const t = document.getElementById('adminPageTitle'); if (t) t.innerHTML = '<i class="fas fa-marker"></i> Grading & Results';
+    const a = document.getElementById('adminHeaderActions');
+    if (a) a.innerHTML = `<button class="btn btn-outline" onclick="switchAdminTab('overview')"><i class="fas fa-chart-pie"></i> <span class="btn-text">Overview</span></button>
+      <button class="btn btn-primary" onclick="grRefresh()"><i class="fas fa-rotate"></i> <span class="btn-text">Refresh</span></button>`;
+  }
+};
+const _grOrigRenderAdminDashboard = window.renderAdminDashboard;
+window.renderAdminDashboard = function () {
+  if (adminTab === 'grading') { try { updateAdminTabUI(); } catch (e) {} GR.host = document.getElementById('adminGradingContent'); return grRender(); }
+  if (typeof _grOrigRenderAdminDashboard === 'function') return _grOrigRenderAdminDashboard.apply(this, arguments);
+};
+
+/* Professors: the same section in a full-screen panel */
+function openGradingPanel() {
+  let ov = document.getElementById('grOverlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'grOverlay'; ov.className = 'gr-overlay';
+    ov.innerHTML = `<div class="gr-overlay-bar"><strong><i class="fas fa-marker"></i> Grading & Results</strong>
+      <span><button class="btn btn-outline btn-sm" onclick="grRefresh()"><i class="fas fa-rotate"></i></button>
+      <button class="btn btn-outline btn-sm" onclick="closeGradingPanel()" aria-label="Close"><i class="fas fa-xmark"></i></button></span></div>
+      <div class="gr-root" id="grOverlayContent"></div>`;
+    document.body.appendChild(ov);
+  }
+  document.body.classList.add('quiz-subs-open');
+  GR.host = document.getElementById('grOverlayContent');
+  GR.view = 'home';
+  grRender();
+}
+function closeGradingPanel() {
+  const ov = document.getElementById('grOverlay'); if (ov) ov.remove();
+  document.body.classList.remove('quiz-subs-open');
+  GR.host = null;
+}
+
+/* ---------- helpers ---------- */
+const _grN = (v) => { const n = Math.round((Number(v) || 0) * 100) / 100; return String(n); };
+function _grAgo(d) { try { return d ? timeAgo(d) : '—'; } catch (_) { return _qsFmtDate(d); } }
+function _grPctTone(p) { return p >= 75 ? 'ok' : p >= 40 ? 'mid' : 'bad'; }
+function _grLetter(i) { return String.fromCharCode(65 + i); }
+const _GR_RIGHT = ['P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y'];
+function _grSpin(msg) { return `<div class="gr-loading"><i class="fas fa-spinner fa-spin"></i> ${escapeHtml(msg || 'Loading…')}</div>`; }
+function _grHost() { return GR.host || document.getElementById('adminGradingContent'); }
+function _grCrumbs(items) {
+  return `<nav class="gr-crumbs">${items.map((it, i) => i < items.length - 1
+    ? `<button type="button" onclick="${it.go}">${escapeHtml(it.label)}</button><i class="fas fa-chevron-right"></i>`
+    : `<span>${escapeHtml(it.label)}</span>`).join('')}</nav>`;
+}
+
+async function grRefresh() {
+  if (GR.view === 'attempt' && GR.attemptKey) return grOpenAttempt(...GR.attemptKey, true);
+  if (GR.view === 'test' && GR.testKey) return grOpenTest(...GR.testKey, true);
+  GR.home = null;
+  return grRender();
+}
+function grGoHome() { GR.view = 'home'; grRender(); }
+
+async function grRender() {
+  const host = _grHost(); if (!host) return;
+  if (GR.view === 'test' && GR.test) return grRenderTest();
+  if (GR.view === 'attempt' && GR.attempt) return grRenderAttempt();
+  GR.view = 'home';
+  if (!GR.home) host.innerHTML = _grSpin('Loading tests and submissions…');
+  try {
+    const d = await fetchJSON(`${API_BASE}/admin/grading/overview?_t=${Date.now()}`, { cache: 'no-store' });
+    if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.');
+    GR.home = d;
+    const b = document.getElementById('grBadge'); if (b) { b.textContent = d.totals.toGrade; b.hidden = !d.totals.toGrade; }
+  } catch (e) {
+    if (!GR.home) { host.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${escapeHtml(e.message)}</div>`; return; }
+  }
+  if (GR.view === 'home') grRenderHome();
+}
+
+/* ============================ HOME ============================ */
+function grRenderHome() {
+  const host = _grHost(); const d = GR.home; if (!host || !d) return;
+  const T = d.totals;
+  const courses = [...new Map(d.tests.map(t => [t.courseId, { id: t.courseId, name: t.courseName, code: t.courseCode }])).values()]
+    .sort((a, b) => (a.code || a.name).localeCompare(b.code || b.name));
+  const q = GR.q.trim().toLowerCase();
+  const tests = d.tests.filter(t =>
+    (GR.course === 'all' || t.courseId === GR.course) &&
+    (GR.show === 'all' || (GR.show === 'grade' && t.toGrade) || (GR.show === 'live' && t.running) || (GR.show === 'subs' && t.submissions)) &&
+    (!q || (t.title + ' ' + t.courseName + ' ' + t.courseCode).toLowerCase().includes(q)));
+  const byCourse = new Map();
+  tests.forEach(t => { if (!byCourse.has(t.courseId)) byCourse.set(t.courseId, []); byCourse.get(t.courseId).push(t); });
+
+  const queue = d.queue.slice(0, 12).map(it => `
+    <button type="button" class="gr-queue-item" onclick="grOpenAttempt('${it.courseId}','${it.materialId}','${it.userId}')">
+      <span class="gr-avatar">${escapeHtml((it.name || '?').charAt(0).toUpperCase())}</span>
+      <span class="gr-queue-main">
+        <b>${escapeHtml(it.name)}</b>
+        <span class="qs-muted">${escapeHtml(it.testTitle)} · ${escapeHtml(it.courseCode || it.courseName)}</span>
+      </span>
+      <span class="gr-queue-meta">
+        <span class="qs-chip warn">${it.pending} to grade</span>
+        <span class="qs-muted"><i class="fas fa-paperclip"></i> ${it.files} · ${_grAgo(it.submittedAt)}</span>
+      </span>
+      <i class="fas fa-chevron-right gr-go"></i>
+    </button>`).join('');
+
+  const groups = [...byCourse.entries()].map(([cid, list]) => {
+    const c = courses.find(x => x.id === cid) || {};
+    const rows = list.map(t => `
+      <button type="button" class="gr-test" onclick="grOpenTest('${t.courseId}','${t.materialId}')">
+        <span class="gr-test-main">
+          <b>${escapeHtml(t.title)}</b>
+          <span class="gr-test-meta">
+            <span><i class="fas fa-list-ol"></i> ${t.questions} Q</span>
+            <span><i class="fas fa-star"></i> ${_grN(t.totalMarks)} marks</span>
+            ${t.timeLimit ? `<span><i class="fas fa-clock"></i> ${escapeHtml(t.timeLimit)}</span>` : ''}
+            <span><i class="fas fa-rotate-right"></i> ${t.maxAttempts ? t.maxAttempts + ' attempt' + (t.maxAttempts === 1 ? '' : 's') : 'unlimited'}</span>
+            ${t.subjectiveQuestions ? `<span><i class="fas fa-file-pen"></i> ${t.subjectiveQuestions} written</span>` : ''}
+            <span class="gr-mode gr-mode-${escapeHtml(t.publishMode)}">${escapeHtml(t.publishMode)}</span>
+          </span>
+        </span>
+        <span class="gr-test-stats">
+          ${t.running ? `<span class="qs-chip ok"><span class="qs-live-dot"></span> ${t.running} writing</span>` : ''}
+          ${t.toGrade ? `<span class="qs-chip warn"><i class="fas fa-hourglass-half"></i> ${t.toGrade} to grade</span>` : ''}
+          ${t.flagged ? `<span class="qs-chip bad"><i class="fas fa-shield-halved"></i> ${t.flagged}</span>` : ''}
+          <span class="gr-subs"><b>${t.submissions}</b> submitted</span>
+          <span class="gr-avg" title="Class average">
+            <span class="gr-bar"><span class="gr-bar-fill ${_grPctTone(t.avgPct)}" style="width:${Math.min(100, t.avgPct)}%"></span></span>
+            <b>${t.submissions ? _grN(t.avgPct) + '%' : '—'}</b>
+          </span>
+        </span>
+        <i class="fas fa-chevron-right gr-go"></i>
+      </button>`).join('');
+    return `<section class="gr-course">
+      <header><span class="gr-code">${escapeHtml(c.code || '')}</span><h3>${escapeHtml(c.name || 'Course')}</h3>
+        <span class="qs-muted">${list.length} test${list.length === 1 ? '' : 's'}</span></header>
+      ${rows}</section>`;
+  }).join('');
+
+  host.innerHTML = `
+    <div class="gr-kpis">
+      <div class="gr-kpi ${T.toGrade ? 'warn' : ''}"><i class="fas fa-hourglass-half"></i><b>${T.toGrade}</b><span>answer sheets to grade</span></div>
+      <div class="gr-kpi live"><i class="fas fa-circle-play"></i><b>${T.running}</b><span>writing right now</span></div>
+      <div class="gr-kpi"><i class="fas fa-inbox"></i><b>${T.submissions}</b><span>submissions</span></div>
+      <div class="gr-kpi ${T.flagged ? 'bad' : ''}"><i class="fas fa-shield-halved"></i><b>${T.flagged}</b><span>flagged attempts</span></div>
+      <div class="gr-kpi"><i class="fas fa-file-lines"></i><b>${T.tests}</b><span>tests${T.last24h ? ` · ${T.last24h} active today` : ''}</span></div>
+    </div>
+
+    ${d.queue.length ? `<section class="gr-card">
+      <div class="gr-card-head"><h3><i class="fas fa-list-check"></i> Grading queue <span class="qs-muted">oldest first</span></h3>
+        <button class="btn btn-primary btn-sm" onclick="grOpenAttempt('${d.queue[0].courseId}','${d.queue[0].materialId}','${d.queue[0].userId}')"><i class="fas fa-play"></i> Start grading</button></div>
+      <div class="gr-queue">${queue}</div>
+      ${d.queue.length > 12 ? `<div class="qs-muted gr-more">+ ${d.queue.length - 12} more — they come up one after another as you grade.</div>` : ''}
+    </section>` : `<section class="gr-card gr-allclear"><i class="fas fa-circle-check"></i><div><b>All caught up</b><span class="qs-muted">No answer sheets are waiting for marks.</span></div></section>`}
+
+    <section class="gr-card">
+      <div class="gr-card-head"><h3><i class="fas fa-layer-group"></i> Tests by course</h3></div>
+      <div class="gr-toolbar">
+        <div class="gr-search"><i class="fas fa-magnifying-glass"></i><input type="search" placeholder="Search tests or courses…" value="${escapeHtml(GR.q)}" oninput="GR.q=this.value;grRenderHomeDebounced()"></div>
+        <select onchange="GR.course=this.value;grRenderHome()">
+          <option value="all">All courses</option>
+          ${courses.map(c => `<option value="${c.id}" ${GR.course === c.id ? 'selected' : ''}>${escapeHtml((c.code ? c.code + ' — ' : '') + c.name)}</option>`).join('')}
+        </select>
+        <div class="qs-filters">${[['all', 'All'], ['grade', 'Needs grading'], ['live', 'Live now'], ['subs', 'Has submissions']].map(([k, l]) =>
+          `<button class="qs-filter ${GR.show === k ? 'on' : ''}" onclick="GR.show='${k}';grRenderHome()">${l}</button>`).join('')}</div>
+      </div>
+      ${groups || `<div class="qs-empty"><i class="fas fa-folder-open"></i><p>${d.tests.length ? 'No test matches.' : 'No tests yet — add a Quiz / Test material to a course.'}</p></div>`}
+    </section>`;
+  const inp = host.querySelector('.gr-search input');
+  if (inp && GR._refocus) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); GR._refocus = false; }
+}
+let _grDeb = null;
+function grRenderHomeDebounced() { clearTimeout(_grDeb); _grDeb = setTimeout(() => { GR._refocus = true; grRenderHome(); }, 180); }
+
+/* ============================ TEST ============================ */
+async function grOpenTest(courseId, materialId, keep) {
+  const host = _grHost(); if (!host) return;
+  GR.view = 'test'; GR.testKey = [courseId, materialId];
+  if (!keep || !GR.test) { GR.subFilter = 'all'; GR.subQ = ''; host.innerHTML = _grSpin('Loading the test…'); }
+  try {
+    const res = await fetch(`/api/admin/quiz/${courseId}/${materialId}/submissions?_t=${Date.now()}`, { cache: 'no-store' });
+    const d = await res.json();
+    if (!d.success) throw new Error(d.message || 'Could not load the test.');
+    d.courseId = courseId; d.materialId = materialId;
+    GR.test = d;
+    if (GR.view === 'test') grRenderTest();
+  } catch (e) {
+    host.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${escapeHtml(e.message)} <button class="btn btn-outline btn-sm" onclick="grGoHome()">Back</button></div>`;
+  }
+}
+function grRenderTest() {
+  const host = _grHost(); const d = GR.test; if (!host || !d) return;
+  const S = d.stats || {}; const C = d.config || {};
+  const subs = d.submissions || [];
+  const isAdminUser = GR.home ? GR.home.role === 'admin' : isAdmin(currentUser);
+  const maxBar = Math.max(1, ...(S.distribution || [0]));
+  const hist = (S.distribution || []).map((n, i) => `
+    <div class="gr-hist-col" title="${i * 10}–${i === 9 ? 100 : i * 10 + 9}%: ${n} student${n === 1 ? '' : 's'}">
+      <span class="gr-hist-n">${n || ''}</span>
+      <span class="gr-hist-bar ${_grPctTone(i * 10 + 5)}" style="height:${Math.round(n / maxBar * 100)}%"></span>
+      <span class="gr-hist-l">${i * 10}</span>
+    </div>`).join('');
+
+  let qs = (d.questionStats || []).slice();
+  if (GR.qSort === 'hard') qs.sort((a, b) => (a.correctPct ?? 101) - (b.correctPct ?? 101));
+  if (GR.qSort === 'time') qs.sort((a, b) => (b.avgTimeSeconds || 0) - (a.avgTimeSeconds || 0));
+  const hardest = (d.questionStats || []).filter(x => x.correctPct !== null && x.responses >= 3).sort((a, b) => a.correctPct - b.correctPct).slice(0, 2).map(x => x.index);
+  const qRows = qs.map(x => `
+    <tr>
+      <td><span class="qs-chip">Q${x.index + 1}</span></td>
+      <td class="gr-qtext"><span class="latex-content">${escapeHtml(x.question || '')}</span>
+        <div class="qs-muted">${escapeHtml(x.type)}${hardest.includes(x.index) ? ' · <b class="gr-hard">hardest</b>' : ''}</div></td>
+      <td>${x.attemptedPct === null ? '—' : x.attemptedPct + '%'}</td>
+      <td>${x.correctPct === null ? '<span class="qs-muted">—</span>' : `<span class="gr-mini"><span class="gr-bar"><span class="gr-bar-fill ${_grPctTone(x.correctPct)}" style="width:${x.correctPct}%"></span></span><b>${x.correctPct}%</b></span>`}</td>
+      <td class="qs-muted">${x.avgTimeSeconds ? _qsFmtSecs(x.avgTimeSeconds) : '—'}</td>
+    </tr>`).join('');
+
+  const sq = GR.subQ.trim().toLowerCase();
+  const list = subs.filter(r =>
+    (GR.subFilter === 'all' || (GR.subFilter === 'grade' && r.pendingEvaluation) || (GR.subFilter === 'flagged' && ((r.proctor && r.proctor.strikes > 0) || r.autoSubmitted))) &&
+    (!sq || ((r.fullName || '') + ' ' + r.username + ' ' + r.email).toLowerCase().includes(sq)));
+  const subRows = list.map(r => {
+    const pct = r.finalMarksPossible > 0 ? Math.round(r.finalMarksEarned / r.finalMarksPossible * 1000) / 10 : 0;
+    const strikes = (r.proctor && r.proctor.strikes) || 0;
+    const cap = C.maxAttempts ? C.maxAttempts + (r.extraAttempts || 0) : 0;
+    return `<tr class="gr-row" onclick="grOpenAttempt('${d.courseId}','${d.materialId}','${escapeHtml(r.userId)}')">
+      <td><div class="gr-who"><span class="gr-avatar">${escapeHtml((r.fullName || r.username || '?').charAt(0).toUpperCase())}</span>
+        <span><b>${escapeHtml(r.fullName || r.username)}</b><span class="qs-muted">@${escapeHtml(r.username || '')}</span></span></div></td>
+      <td data-label="Marks"><b>${_grN(r.finalMarksEarned)}</b><span class="qs-muted"> / ${_grN(r.finalMarksPossible)}</span>
+        <div class="gr-mini"><span class="gr-bar"><span class="gr-bar-fill ${_grPctTone(pct)}" style="width:${Math.min(100, pct)}%"></span></span><span class="qs-muted">${pct}%</span></div></td>
+      <td data-label="Status">${r.pendingEvaluation ? `<span class="qs-chip warn">${r.subjectiveTotal - r.subjectiveGraded} to grade</span>` : '<span class="qs-chip ok">Done</span>'}
+        ${r.finalizedBy === 'server' ? '<span class="qs-chip bad">Time ran out</span>' : r.autoSubmitted ? '<span class="qs-chip bad">Auto-submitted</span>' : ''}</td>
+      <td data-label="Warnings">${strikes ? `<span class="qs-chip bad"><i class="fas fa-shield-halved"></i> ${strikes}</span>` : '<span class="qs-muted">0</span>'}</td>
+      <td data-label="Attempts" class="qs-muted">${r.attempts}${cap ? ' / ' + cap : ''}${r.extraAttempts ? ` <span title="extra granted">(+${r.extraAttempts})</span>` : ''}</td>
+      <td data-label="Time" class="qs-muted">${r.timeSpentTotalSeconds ? _qsFmtSecs(r.timeSpentTotalSeconds) : '—'}</td>
+      <td data-label="Submitted" class="qs-muted">${_grAgo(r.lastAttemptAt)}</td>
+      <td><i class="fas fa-chevron-right gr-go"></i></td>
+    </tr>`;
+  }).join('');
+  const toGrade = subs.filter(r => r.pendingEvaluation).length;
+  const flagged = subs.filter(r => (r.proctor && r.proctor.strikes > 0) || r.autoSubmitted).length;
+  const running = (d.running || []).map(r => `
+    <div class="qs-live-row"><span class="qs-live-dot"></span><strong>${escapeHtml(r.name)}</strong>
+      <span class="qs-chip">${r.remainingSeconds === null ? 'no time limit' : _qsFmtSecs(r.remainingSeconds) + ' left'}</span>
+      <span class="qs-chip">${r.answered} answered</span>
+      ${r.strikes ? `<span class="qs-chip bad"><i class="fas fa-shield-halved"></i> ${r.strikes}</span>` : ''}
+      <span class="qs-muted">last saved ${r.savedAt ? _grAgo(r.savedAt) : '—'}</span></div>`).join('');
+
+  host.innerHTML = `
+    ${_grCrumbs([{ label: 'Grading', go: 'grGoHome()' }, { label: (d.course.code ? d.course.code + ' · ' : '') + d.course.name, go: 'grGoHome()' }, { label: d.title }])}
+    <div class="gr-head">
+      <div><h2>${escapeHtml(d.title)}</h2>
+        <div class="gr-test-meta">
+          <span><i class="fas fa-book"></i> ${escapeHtml((d.course.code ? d.course.code + ' — ' : '') + d.course.name)}</span>
+          <span><i class="fas fa-list-ol"></i> ${C.questionCount} questions</span>
+          <span><i class="fas fa-star"></i> ${_grN(C.totalMarks)} marks</span>
+          <span><i class="fas fa-clock"></i> ${escapeHtml(C.totalTime || 'no time limit')}</span>
+          <span><i class="fas fa-rotate-right"></i> ${C.maxAttempts ? C.maxAttempts + ' attempt' + (C.maxAttempts === 1 ? '' : 's') : 'unlimited attempts'}</span>
+          <span><i class="fas ${C.allowBackNavigation ? 'fa-arrows-left-right' : 'fa-lock'}"></i> ${C.allowBackNavigation ? 'free navigation' : 'forward-only'}</span>
+          <span class="gr-mode gr-mode-${escapeHtml(C.resultPublishMode)}">results: ${escapeHtml(C.resultPublishMode)}</span>
+        </div></div>
+      <div class="gr-head-actions">
+        <button class="btn btn-outline btn-sm" onclick="grOpenTest('${d.courseId}','${d.materialId}',true)" title="Refresh"><i class="fas fa-rotate"></i></button>
+        <button class="btn btn-outline btn-sm" onclick="grExportCsv()" ${subs.length ? '' : 'disabled'}><i class="fas fa-file-csv"></i> CSV</button>
+        <button class="btn btn-outline btn-sm" onclick="${GR.host && GR.host.id === 'grOverlayContent' ? 'closeGradingPanel();' : ''}openQuizEditor('${d.courseId}','${d.materialId}')"><i class="fas fa-pen-ruler"></i> Edit paper</button>
+        ${isAdminUser && C.resultPublishMode !== 'immediate' ? `<button class="btn btn-primary btn-sm" onclick="grPublishNow()"><i class="fas fa-bullhorn"></i> Publish results</button>` : ''}
+      </div>
+    </div>
+
+    <div class="gr-kpis gr-kpis-6">
+      <div class="gr-kpi"><b>${S.count || 0}</b><span>submitted</span></div>
+      <div class="gr-kpi"><b>${_grN(S.avgPct)}%</b><span>average</span></div>
+      <div class="gr-kpi"><b>${_grN(S.medianPct)}%</b><span>median</span></div>
+      <div class="gr-kpi ok"><b>${_grN(S.highestPct)}%</b><span>highest</span></div>
+      <div class="gr-kpi bad"><b>${_grN(S.lowestPct)}%</b><span>lowest</span></div>
+      <div class="gr-kpi"><b>${S.passPct || 0}%</b><span>scored 40%+</span></div>
+    </div>
+
+    ${running ? `<section class="qs-live"><div class="qs-section-title"><i class="fas fa-circle-play"></i> Writing now (${(d.running || []).length})</div>${running}</section>` : ''}
+
+    <div class="gr-split">
+      <section class="gr-card">
+        <div class="gr-card-head"><h3><i class="fas fa-chart-column"></i> Score spread</h3><span class="qs-muted">% of total marks</span></div>
+        ${S.count ? `<div class="gr-hist">${hist}</div>` : '<div class="qs-empty"><p>No submissions yet.</p></div>'}
+      </section>
+      <section class="gr-card">
+        <div class="gr-card-head"><h3><i class="fas fa-magnifying-glass-chart"></i> Question analysis</h3>
+          <select onchange="GR.qSort=this.value;grRenderTest()">
+            <option value="order" ${GR.qSort === 'order' ? 'selected' : ''}>Paper order</option>
+            <option value="hard" ${GR.qSort === 'hard' ? 'selected' : ''}>Hardest first</option>
+            <option value="time" ${GR.qSort === 'time' ? 'selected' : ''}>Slowest first</option>
+          </select></div>
+        ${qRows ? `<div class="qs-table-wrap gr-qtable"><table class="qs-table"><thead><tr><th>#</th><th>Question</th><th>Attempted</th><th>Correct</th><th>Avg time</th></tr></thead><tbody>${qRows}</tbody></table></div>` : ''}
+      </section>
+    </div>
+
+    <section class="gr-card">
+      <div class="gr-card-head"><h3><i class="fas fa-users"></i> Submissions</h3>
+        ${toGrade ? `<button class="btn btn-primary btn-sm" onclick="grGradeNextInTest()"><i class="fas fa-play"></i> Grade next</button>` : ''}</div>
+      <div class="gr-toolbar">
+        <div class="gr-search"><i class="fas fa-magnifying-glass"></i><input type="search" placeholder="Search students…" value="${escapeHtml(GR.subQ)}" oninput="GR.subQ=this.value;clearTimeout(_grDeb);_grDeb=setTimeout(()=>{grRenderTest();const i=document.querySelector('.gr-sub-search input');if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length);}},180)"></div>
+        <div class="qs-filters">${[['all', `All (${subs.length})`], ['grade', `To grade (${toGrade})`], ['flagged', `Flagged (${flagged})`]].map(([k, l]) =>
+          `<button class="qs-filter ${GR.subFilter === k ? 'on' : ''}" onclick="GR.subFilter='${k}';grRenderTest()">${l}</button>`).join('')}</div>
+      </div>
+      ${subRows ? `<div class="qs-table-wrap"><table class="qs-table gr-subs-table"><thead><tr><th>Student</th><th>Marks</th><th>Status</th><th>Warnings</th><th>Attempts</th><th>Time</th><th>Submitted</th><th></th></tr></thead><tbody>${subRows}</tbody></table></div>`
+        : `<div class="qs-empty"><i class="fas fa-inbox"></i><p>${subs.length ? 'Nobody matches.' : 'No submissions yet.'}</p></div>`}
+    </section>`;
+  const si = host.querySelectorAll('.gr-search')[0]; if (si) si.classList.add('gr-sub-search');
+  try { renderMathIn(host.querySelector('.gr-qtable')); } catch (_) {}
+}
+function grGradeNextInTest() {
+  const d = GR.test; if (!d) return;
+  const next = (d.submissions || []).filter(r => r.pendingEvaluation).sort((a, b) => new Date(a.lastAttemptAt || 0) - new Date(b.lastAttemptAt || 0))[0];
+  if (next) grOpenAttempt(d.courseId, d.materialId, next.userId);
+}
+async function grPublishNow() {
+  const d = GR.test; if (!d) return;
+  if (!(await quizConfirm({ title: 'Publish results now?', icon: 'fa-bullhorn', ok: 'Publish now',
+    text: 'Every submitted result is released and every student is notified. The paper switches to "Immediate" mode.' }))) return;
+  try {
+    const res = await fetch(`/api/admin/quiz/${d.courseId}/${d.materialId}/publish-now`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const j = await res.json();
+    if (!j.success) throw new Error(j.message || 'Could not publish.');
+    showToast('✅ ' + (j.message || 'Results published.'), 'success');
+    grOpenTest(d.courseId, d.materialId, true);
+  } catch (e) { showToast(e.message, 'error'); }
+}
+function grExportCsv() {
+  const d = GR.test; if (!d) return;
+  _quizSubs = { data: d };
+  try { exportQuizSubmissionsCsv(); } finally { _quizSubs = null; }
+}
+
+/* ============================ ATTEMPT ============================ */
+async function grOpenAttempt(courseId, materialId, userId, keep) {
+  const host = _grHost(); if (!host) return;
+  GR.view = 'attempt'; GR.attemptKey = [courseId, materialId, userId];
+  if (!keep) host.innerHTML = _grSpin('Opening the answer sheet…');
+  try {
+    const res = await fetch(`/api/admin/quiz/${courseId}/${materialId}/attempt/${userId}?_t=${Date.now()}`, { cache: 'no-store' });
+    const d = await res.json();
+    if (!d.success) throw new Error(d.message || 'Could not open the attempt.');
+    d.courseId = courseId; d.materialId = materialId;
+    GR.attempt = d;
+    if (GR.view === 'attempt') grRenderAttempt();
+    if (!keep) { const h = _grHost(); if (h) (h.closest('.gr-overlay') || window).scrollTo({ top: 0 }); }
+  } catch (e) {
+    host.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${escapeHtml(e.message)} <button class="btn btn-outline btn-sm" onclick="grGoHome()">Back</button></div>`;
+  }
+}
+function _grAnswerHtml(q, resp, r) {
+  const a = resp ? resp.a : undefined;
+  if (q.type === 'single' || q.type === 'multiple') {
+    const chosen = Array.isArray(a) ? a.map(Number) : (a === null || a === undefined ? [] : [Number(a)]);
+    return `<div class="gr-opts">${q.options.map((o, oi) => {
+      const isKey = q.correctIndexes.map(Number).includes(oi), isPick = chosen.includes(oi);
+      const cls = isPick && isKey ? 'pick-ok' : isPick ? 'pick-bad' : isKey ? 'key' : '';
+      return `<div class="gr-opt ${cls}"><span class="gr-opt-l">${_grLetter(oi)}</span><span class="latex-content">${escapeHtml(o)}</span>
+        <span class="gr-opt-tags">${isPick ? `<span class="qs-chip ${isKey ? 'ok' : 'bad'}">${isKey ? '<i class="fas fa-check"></i>' : '<i class="fas fa-xmark"></i>'} student</span>` : ''}${isKey ? '<span class="qs-chip ok">answer key</span>' : ''}</span></div>`;
+    }).join('')}</div>`;
+  }
+  if (q.type === 'integer' || q.type === 'numerical') {
+    const key = q.type === 'integer'
+      ? `${_grN(q.integerAnswer)}${q.integerTolerance ? ` (± ${_grN(q.integerTolerance)})` : ''}`
+      : `${_grN(q.rangeMin)} to ${_grN(q.rangeMax)}`;
+    return `<div class="gr-num">
+      <div><span class="qs-muted">Student answered</span><b class="${resp && resp.c ? 'ok' : (a === null || a === undefined ? '' : 'bad')}">${a === null || a === undefined ? '<em>not answered</em>' : escapeHtml(String(a))}</b></div>
+      <div><span class="qs-muted">Correct</span><b class="ok">${escapeHtml(key)}</b></div></div>`;
+  }
+  if (q.type === 'matrix') {
+    const picks = Array.isArray(a) ? a : [];
+    return `<table class="gr-matrix"><thead><tr><th>List I</th><th>Student</th><th>Correct</th></tr></thead><tbody>${(q.matrixLeftItems || []).map((item, li) => {
+      const row = (q.matrixRows || [])[li] || {};
+      const p = picks[li], ok = p !== null && p !== undefined && Number(p) === Number(row.correctIndex);
+      const lab = (i) => i === null || i === undefined || i === '' ? '—' : `${_GR_RIGHT[i] || i + 1}. ${escapeHtml(String((q.matrixRightItems || [])[i] || '').slice(0, 60))}`;
+      return `<tr><td><b>${_grLetter(li)}.</b> <span class="latex-content">${escapeHtml(item)}</span></td>
+        <td class="${p === null || p === undefined ? '' : ok ? 'ok' : 'bad'}">${lab(p)}</td><td class="ok">${lab(row.correctIndex)}</td></tr>`;
+    }).join('')}</tbody></table>`;
+  }
+  return '';
+}
+function grRenderAttempt() {
+  const host = _grHost(); const d = GR.attempt; if (!host || !d) return;
+  const r = d.result || {}; const st = d.student; const cfg = (d.test && d.test.config) || {};
+  const responses = Array.isArray(r.responses) && r.responses.length === d.quiz.length ? r.responses : null;
+  const tsp = r.timeSpentPerQuestion || {};
+  const evals = r.subjectiveEvaluations || {};
+  const strikes = (r.proctor && r.proctor.strikes) || 0;
+  const cap = Number(cfg.maxAttempts) > 0 ? Number(cfg.maxAttempts) + (Number(r.extraAttempts) || 0) : 0;
+  const timeTaken = Number(r.timeSpentTotalSeconds) || Object.values(tsp).reduce((s, v) => s + (Number(v) || 0), 0);
+  const pending = _grPendingCount(r);
+
+  /* per-question summary counts */
+  let nRight = 0, nWrong = 0, nSkip = 0;
+  d.quiz.forEach((q, i) => {
+    if (q.type === 'subjective' || !responses) return;
+    const x = responses[i]; if (x.c) nRight++; else if (x.at) nWrong++; else nSkip++;
+  });
+
+  /* where to go next: same test list, else the global queue */
+  const subs = GR.test && GR.test.materialId === d.materialId ? GR.test.submissions : null;
+  const idx = subs ? subs.findIndex(x => x.userId === st.id) : -1;
+  const prevS = idx > 0 ? subs[idx - 1] : null, nextS = idx >= 0 && idx < subs.length - 1 ? subs[idx + 1] : null;
+  const qNext = GR.home ? GR.home.queue.find(x => !(x.userId === st.id && x.materialId === d.materialId)) : null;
+
+  const cards = d.quiz.map((q, i) => {
+    const t = Number(tsp[i]) || 0;
+    let chip = '';
+    if (q.type === 'subjective') {
+      const ev = evals[i] || evals[String(i)];
+      chip = ev ? `<span class="qs-chip ok">${_grN(ev.awardedMarks)} / ${_grN(q.subjectiveMaxMarks)}</span>` : `<span class="qs-chip warn"><i class="fas fa-hourglass-half"></i> to grade</span>`;
+    } else if (responses) {
+      const x = responses[i];
+      chip = x.c ? `<span class="qs-chip ok"><i class="fas fa-check"></i> +${_grN(x.g)}</span>`
+        : x.at ? `<span class="qs-chip bad"><i class="fas fa-xmark"></i> ${_grN(x.g)}</span>` : `<span class="qs-chip">skipped · 0</span>`;
+    }
+    let body;
+    if (q.type === 'subjective') body = _grSubjectiveHtml(q, i, r);
+    else if (responses) body = _grAnswerHtml(q, responses[i], r);
+    else body = `<div class="qs-muted gr-legacy"><i class="fas fa-circle-info"></i> Answer details are recorded for attempts submitted from today on. This attempt only has its total.</div>`;
+    return `<article class="gr-q ${q.type === 'subjective' && !(evals[i] || evals[String(i)]) ? 'is-pending' : ''}" id="grQ${i}">
+      <header><span class="qs-chip">Q${i + 1}</span><span class="qs-muted">${escapeHtml(q.type)} · ${q.type === 'subjective' ? '+' + _grN(q.subjectiveMaxMarks) : `+${_grN(q.marks)}${q.negativeMarks ? ' / ' + _grN(q.negativeMarks) : ''}`}</span>
+        ${t ? `<span class="qs-muted"><i class="fas fa-stopwatch"></i> ${_qsFmtSecs(t)}</span>` : ''}<span class="gr-q-chip">${chip}</span></header>
+      <div class="gr-q-text latex-content">${escapeHtml(q.question)}</div>
+      ${body}
+      ${q.explanation ? `<details class="gr-expl"><summary>Explanation</summary><div class="latex-content">${escapeHtml(q.explanation)}</div></details>` : ''}
+    </article>`;
+  }).join('');
+
+  const timeline = ((r.proctor && r.proctor.events) || []).slice().sort((a, b) => (a.at || 0) - (b.at || 0)).map(e => `
+    <li class="${e.strike === false ? '' : 'bad'}"><span>${e.at ? new Date(e.at).toLocaleTimeString() : ''}</span>${escapeHtml(e.reason || '')}${e.strike === false ? ' <em>(not a warning)</em>' : ''}</li>`).join('');
+  const history = (Array.isArray(r.history) ? r.history : []).slice().reverse().map(h => `
+    <tr><td>#${h.attempt}</td><td>${_grN(h.marksEarned)} / ${_grN(h.marksPossible)}</td><td>${h.strikes || 0}</td>
+      <td>${h.finalizedBy === 'server' ? 'time ran out' : h.autoSubmitted ? 'auto-submitted' : 'submitted'}</td><td class="qs-muted">${_qsFmtDate(h.at)}</td></tr>`).join('');
+
+  const backLabel = subs ? d.test.title : 'Grading';
+  host.innerHTML = `
+    ${_grCrumbs([{ label: 'Grading', go: 'grGoHome()' }, { label: d.test.title, go: `grOpenTest('${d.courseId}','${d.materialId}')` }, { label: st.fullName || st.username }])}
+    <div class="gr-attempt">
+      <aside class="gr-side">
+        <section class="gr-card gr-student">
+          <span class="gr-avatar lg">${escapeHtml((st.fullName || st.username || '?').charAt(0).toUpperCase())}</span>
+          <h2>${escapeHtml(st.fullName || st.username)}</h2>
+          <div class="qs-muted">@${escapeHtml(st.username || '')}</div>
+          <ul class="gr-facts">
+            ${st.email ? `<li><i class="fas fa-envelope"></i><a href="mailto:${escapeHtml(st.email)}">${escapeHtml(st.email)}</a></li>` : ''}
+            ${st.phone ? `<li><i class="fas fa-phone"></i>${escapeHtml(st.phone)}</li>` : ''}
+            <li><i class="fas fa-book"></i>${escapeHtml((d.course.code ? d.course.code + ' — ' : '') + d.course.name)}</li>
+            <li><i class="fas fa-file-pen"></i>${escapeHtml(d.test.title)}</li>
+            ${st.joinedAt ? `<li><i class="fas fa-user-clock"></i>joined ${_qsFmtDate(st.joinedAt)}</li>` : ''}
+          </ul>
+        </section>
+        <section class="gr-card gr-score">
+          <div class="gr-score-big"><b>${_grN(d.final.earned)}</b><span>/ ${_grN(d.final.possible)}</span></div>
+          <div class="gr-bar lg"><span class="gr-bar-fill ${_grPctTone(d.final.pct)}" style="width:${Math.min(100, d.final.pct)}%"></span></div>
+          <div class="gr-score-row"><span>${_grN(d.final.pct)}%</span><span>rank <b>#${d.rank || '—'}</b> of ${d.of}</span><span>class avg ${_grN(d.classAvgPct)}%</span></div>
+          <ul class="gr-facts">
+            <li><i class="fas fa-robot"></i>Auto-graded <b>${_grN(r.marksEarned)} / ${_grN(r.marksPossible)}</b></li>
+            ${Number(r.subjectiveMaxTotal) ? `<li><i class="fas fa-pen-nib"></i>Written <b>${_grN(r.subjectiveMarksAwarded)} / ${_grN(r.subjectiveMaxTotal)}</b>${pending ? ` <span class="qs-chip warn">${pending} to grade</span>` : ''}</li>` : ''}
+            ${responses ? `<li><i class="fas fa-list-check"></i><span class="ok-t">${nRight} right</span> · <span class="bad-t">${nWrong} wrong</span> · ${nSkip} skipped</li>` : ''}
+            <li><i class="fas fa-stopwatch"></i>Time taken <b>${timeTaken ? _qsFmtSecs(timeTaken) : '—'}</b>${r.durationSeconds ? ` of ${_qsFmtSecs(r.durationSeconds)}` : ''}</li>
+            <li><i class="fas fa-calendar-check"></i>Submitted ${_qsFmtDate(r.lastAttemptAt)}</li>
+            <li><i class="fas fa-flag-checkered"></i>${r.finalizedBy === 'server' ? '<span class="bad-t">Time ran out — graded from autosave</span>' : r.autoSubmitted ? '<span class="bad-t">Auto-submitted</span>' : 'Submitted by the student'}</li>
+            <li><i class="fas fa-shield-halved"></i>${strikes ? `<span class="bad-t">${strikes} proctoring warning${strikes === 1 ? '' : 's'}</span>` : 'No warnings'}</li>
+            <li><i class="fas fa-rotate-right"></i>Attempt <b>${r.attempts}</b>${cap ? ` of ${cap}` : ''}${r.extraAttempts ? ` <span class="qs-muted">(+${r.extraAttempts} granted)</span>` : ''}</li>
+          </ul>
+          ${cap ? `<button class="btn btn-outline btn-sm btn-block" onclick="grGrantAttempt()"><i class="fas fa-plus"></i> Grant another attempt</button>` : ''}
+        </section>
+        ${timeline ? `<section class="gr-card"><h3 class="gr-h3"><i class="fas fa-shield-halved"></i> Proctoring timeline</h3><ul class="qs-log">${timeline}</ul></section>` : ''}
+        ${history ? `<section class="gr-card"><h3 class="gr-h3"><i class="fas fa-clock-rotate-left"></i> Earlier attempts</h3>
+          <div class="qs-table-wrap"><table class="qs-table gr-hist-table"><thead><tr><th>#</th><th>Marks</th><th>Warn.</th><th>Ended</th><th>When</th></tr></thead><tbody>${history}</tbody></table></div></section>` : ''}
+      </aside>
+
+      <div class="gr-main">
+        <div class="gr-attempt-bar">
+          <div class="gr-jump">${d.quiz.map((q, i) => {
+            let cls = '';
+            if (q.type === 'subjective') cls = (evals[i] || evals[String(i)]) ? 'ok' : 'warn';
+            else if (responses) cls = responses[i].c ? 'ok' : responses[i].at ? 'bad' : '';
+            return `<button type="button" class="${cls}" onclick="document.getElementById('grQ${i}').scrollIntoView({behavior:'smooth',block:'start'})">${i + 1}</button>`;
+          }).join('')}</div>
+          <div class="gr-nav">
+            ${prevS ? `<button class="btn btn-outline btn-sm" onclick="grOpenAttempt('${d.courseId}','${d.materialId}','${prevS.userId}')" title="Previous student"><i class="fas fa-chevron-left"></i></button>` : ''}
+            ${nextS ? `<button class="btn btn-outline btn-sm" onclick="grOpenAttempt('${d.courseId}','${d.materialId}','${nextS.userId}')" title="Next student"><i class="fas fa-chevron-right"></i></button>` : ''}
+            ${!pending && qNext ? `<button class="btn btn-primary btn-sm" onclick="grOpenAttempt('${qNext.courseId}','${qNext.materialId}','${qNext.userId}')">Next in queue <i class="fas fa-arrow-right"></i></button>` : ''}
+          </div>
+        </div>
+        ${cards}
+      </div>
+    </div>`;
+  try { renderMathIn(host.querySelector('.gr-main')); } catch (_) {}
+}
+function _grPendingCount(r) {
+  const total = Object.keys(r.subjectiveQuestionMeta || {}).length;
+  return Math.max(0, total - Object.keys(r.subjectiveEvaluations || {}).length);
+}
+function _grSubjectiveHtml(q, i, r) {
+  const files = (r.subjectiveAnswers || {})[i] || (r.subjectiveAnswers || {})[String(i)] || [];
+  const meta = (r.subjectiveQuestionMeta || {})[i] || (r.subjectiveQuestionMeta || {})[String(i)] || {};
+  const ev = (r.subjectiveEvaluations || {})[i] || (r.subjectiveEvaluations || {})[String(i)];
+  const max = Number(meta.maxMarks) || Number(q.subjectiveMaxMarks) || 0;
+  const fileHtml = files.length ? files.map(f => {
+    const isPdf = f.isPdf || /\.pdf($|\?)/i.test(f.url || '');
+    const href = withAuthToken(f.url);
+    return isPdf
+      ? `<a class="qs-file pdf" href="${escapeHtml(href)}" target="_blank" rel="noopener" onclick="return aeroOpenPdfUrl(event, ${jsStr(f.url || '')}, ${jsStr(f.fileName || 'Answer sheet')})"><i class="fas fa-file-pdf"></i><span>${escapeHtml(f.fileName || 'answer.pdf')}</span></a>`
+      : `<a class="qs-file img" href="${escapeHtml(href)}" target="_blank" rel="noopener"><img src="${escapeHtml(href)}" alt="" loading="lazy"><span>${escapeHtml(f.fileName || 'photo')}</span></a>`;
+  }).join('') : '<div class="qs-muted"><i class="fas fa-circle-exclamation"></i> No file was uploaded for this question.</div>';
+  const quick = max > 0 ? [0, 0.25, 0.5, 0.75, 1].map(f => Math.round(max * f * 2) / 2) : [];
+  return `
+    ${meta.instructions ? `<div class="qs-muted">${escapeHtml(meta.instructions)}</div>` : ''}
+    <div class="qs-files">${fileHtml}</div>
+    <div class="qs-grade-form gr-grade" data-qi="${i}" data-max="${max}">
+      <label><span>Marks <span class="qs-muted">(max ${_grN(max)})</span></span>
+        <input type="number" min="0" max="${max}" step="0.5" class="qs-marks" value="${ev ? escapeHtml(String(ev.awardedMarks)) : (files.length ? '' : '0')}" placeholder="0–${_grN(max)}"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();grSaveGrade(this);}">
+      </label>
+      <div class="gr-quick">${[...new Set(quick)].map(v => `<button type="button" onclick="this.closest('.gr-grade').querySelector('.qs-marks').value='${v}'">${_grN(v)}</button>`).join('')}</div>
+      <label class="qs-fb"><span>Feedback for the student <span class="qs-muted">(optional)</span></span>
+        <textarea rows="2" maxlength="1000" class="qs-feedback" placeholder="What was good, what was missing…">${ev ? escapeHtml(ev.feedback || '') : ''}</textarea>
+      </label>
+      <button class="btn btn-primary btn-sm" onclick="grSaveGrade(this)"><i class="fas fa-check"></i> ${ev ? 'Update' : 'Save marks'}</button>
+      ${ev ? `<span class="qs-chip ok"><i class="fas fa-check"></i> graded ${_qsFmtDate(ev.evaluatedAt)}</span>` : ''}
+    </div>`;
+}
+async function grSaveGrade(el) {
+  const d = GR.attempt; if (!d) return;
+  const box = el.closest('.gr-grade');
+  const qi = Number(box.dataset.qi), max = Number(box.dataset.max) || 0;
+  const mEl = box.querySelector('.qs-marks');
+  const raw = mEl.value.trim(), marks = Number(raw);
+  if (raw === '' || !isFinite(marks) || marks < 0 || marks > max) { mEl.focus(); return showToast(`Enter marks between 0 and ${_grN(max)}.`, 'error'); }
+  const btn = box.querySelector('.btn-primary'); if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
+  try {
+    const res = await fetch(`/api/admin/quiz/${d.courseId}/${d.materialId}/evaluate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: d.student.id, questionIndex: qi, awardedMarks: marks, feedback: box.querySelector('.qs-feedback').value })
+    });
+    const j = await res.json();
+    if (!j.success) throw new Error(j.message || 'Could not save.');
+    showToast(`Q${qi + 1}: ${_grN(marks)} mark${marks === 1 ? '' : 's'} saved.`, 'success');
+    GR.home = null; GR.test = GR.test && GR.test.materialId === d.materialId ? GR.test : GR.test;
+    const scrollY = (document.querySelector('.gr-overlay') || document.scrollingElement || document.documentElement).scrollTop;
+    await grOpenAttempt(d.courseId, d.materialId, d.student.id, true);
+    try { (document.querySelector('.gr-overlay') || document.scrollingElement || document.documentElement).scrollTop = scrollY; } catch (_) {}
+    /* refresh the lists in the background (counts, queue) */
+    fetchJSON(`${API_BASE}/admin/grading/overview?_t=${Date.now()}`, { cache: 'no-store' }).then(h => {
+      if (h && h.success) { GR.home = h; const b = document.getElementById('grBadge'); if (b) { b.textContent = h.totals.toGrade; b.hidden = !h.totals.toGrade; } if (GR.view === 'attempt') grRenderAttempt(); }
+    }).catch(() => {});
+    if (GR.test && GR.test.materialId === d.materialId) {
+      fetch(`/api/admin/quiz/${d.courseId}/${d.materialId}/submissions?_t=${Date.now()}`, { cache: 'no-store' }).then(r => r.json()).then(t => {
+        if (t && t.success) { t.courseId = d.courseId; t.materialId = d.materialId; GR.test = t; }
+      }).catch(() => {});
+    }
+  } catch (e) {
+    showToast(e.message, 'error');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Save marks'; }
+  }
+}
+async function grGrantAttempt() {
+  const d = GR.attempt; if (!d) return;
+  const ok = await quizConfirm({
+    title: 'Grant another attempt?', icon: 'fa-rotate-right', ok: 'Grant 1 attempt',
+    text: `${d.student.fullName || d.student.username} will be able to take "${d.test.title}" one more time (for example after a network or power failure). Their current result stays until they submit again.`
+  });
+  if (!ok) return;
+  try {
+    const res = await fetch(`/api/admin/quiz/${d.courseId}/${d.materialId}/grant-attempt`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: d.student.id, count: 1 })
+    });
+    const j = await res.json();
+    if (!j.success) throw new Error(j.message || 'Could not grant.');
+    showToast(j.message, 'success');
+    grOpenAttempt(d.courseId, d.materialId, d.student.id, true);
+  } catch (e) { showToast(e.message, 'error'); }
 }
 
 async function publishQuizResultsNow() {
@@ -26719,6 +27328,7 @@ function renderProfessorDashboard() {
         </div>
       </div>
       <div class="pw-hero-actions">
+        ${myCourses.length ? `<button class="btn pw-btn-light" onclick="openGradingPanel()"><i class="fas fa-marker"></i> Grading & results</button>` : ''}
         <button class="btn pw-btn-light" onclick="navigateProfessor('requests')"><i class="fas fa-plus"></i> Request a course</button>
       </div>
     </section>
@@ -27090,7 +27700,7 @@ async function adminRemoveProfessorCourse(profId, courseId, label) {
    blocks inject later), so every onclick / badge keeps working.
    ============================================================ */
 const ADM_NAV_GROUPS = [
-  { id: 'main',     label: 'Main',          icon: 'fa-star',             tabs: ['overview', 'courses', 'students', 'profaccess', 'live'] },
+  { id: 'main',     label: 'Main',          icon: 'fa-star',             tabs: ['overview', 'courses', 'students', 'grading', 'profaccess', 'live'] },
   { id: 'insights', label: 'Insights',      icon: 'fa-chart-line',       tabs: ['traffic'] },
   { id: 'people',   label: 'People',        icon: 'fa-users',            tabs: ['professors', 'community', 'feedback', 'contributions'] },
   { id: 'revenue',  label: 'Revenue',       icon: 'fa-indian-rupee-sign', tabs: ['subscriptions', 'plans', 'coupons', 'referrals'] },
@@ -27100,6 +27710,7 @@ const ADM_NAV_GROUPS = [
 ];
 const ADM_NAV_DESC = {
   overview: 'Stats & quick actions', courses: 'Add & edit courses', students: 'Accounts, access & progress',
+  grading: 'Tests, answer sheets & results',
   profaccess: 'Approve professors & courses', live: 'Who is online now', traffic: 'Visitors & page views',
   professors: 'Faculty profiles', community: 'Alumni & friends', feedback: 'Reviews to moderate',
   contributions: 'Notes sent by students', subscriptions: 'Auto-pay & members', plans: 'Prices & durations',
@@ -27115,7 +27726,7 @@ function _admNavDecorate(btn) {
   if (btn.dataset.admDecorated === '1') return;
   const icon = btn.querySelector('i');
   const iconCls = icon ? Array.from(icon.classList).filter(c => c !== 'fas' && c !== 'fa-solid').join(' ') : 'fa-circle';
-  const badge = btn.querySelector('.nav-count');
+  const badge = btn.querySelector('.nav-count, .ahd-badge');   // keep injected badges too (Help Desk, Grading)
   let label = '';
   btn.childNodes.forEach(n => { if (n.nodeType === 3) label += n.textContent; });
   label = label.replace(/\s+/g, ' ').trim() || btn.dataset.tab;

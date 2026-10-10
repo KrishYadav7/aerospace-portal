@@ -7872,13 +7872,16 @@ app.post('/api/user/quiz/:courseId/:materialId/start', requireUser, requireSelfO
        student can resume it freely without burning an attempt.
        ============================================================ */
     const cfg          = mat.examConfig || {};
-    const maxAttempts  = Math.max(0, Number(cfg.maxAttempts) || 0);
+    const baseMaxAttempts = Math.max(0, Number(cfg.maxAttempts) || 0);
 
     const student = await User.findById(userId).select('quizResults').lean();
     if (!student) return res.status(404).json({ success: false, message: 'User not found.' });
 
     const existingResult = (student.quizResults || {})[String(req.params.materialId)] || {};
     const attemptsUsed   = Number(existingResult.attempts) || 0;
+    /* ⭐ extra attempts the instructor granted this student */
+    const extraGranted   = Math.max(0, Number(existingResult.extraAttempts) || 0);
+    const maxAttempts    = baseMaxAttempts > 0 ? baseMaxAttempts + extraGranted : 0;
 
     const publishMode   = cfg.resultPublishMode || 'immediate';
     const publishedAtMs = existingResult.publishedAt
@@ -8374,6 +8377,15 @@ app.post('/api/user/quiz/:courseId/:materialId/reset', requireUser, requireSelfO
    tab closed) all grade the same way. Returns { code, body }. */
 const _gr = (code, body) => ({ code, body });
 
+/* a student's answer in a small, safe shape for storing */
+function _compactAnswer(a) {
+  if (a === undefined || a === null || a === '') return null;
+  if (Array.isArray(a)) return a.slice(0, 50).map(x => (x === undefined || x === null || x === '') ? null : (isFinite(Number(x)) ? Number(x) : null));
+  if (typeof a === 'number') return isFinite(a) ? a : null;
+  const n = Number(a);
+  return isFinite(n) ? n : String(a).slice(0, 40);
+}
+
 /* proctoring log as the client reports it → a small, trusted shape */
 function _cleanProctorLog(p) {
   if (!p || typeof p !== 'object') return null;
@@ -8447,10 +8459,12 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
        /start checked it, so a direct submit (after /reset) could add
        attempts beyond the cap and overwrite the recorded result. */
     {
-      const capN = Math.max(0, Number((mat.examConfig || {}).maxAttempts) || 0);
+      let capN = Math.max(0, Number((mat.examConfig || {}).maxAttempts) || 0);
       if (capN > 0) {
         const u0 = await User.findById(userId).select('quizResults').lean();
-        const used0 = Number((((u0 && u0.quizResults) || {})[String(materialId)] || {}).attempts) || 0;
+        const r0 = (((u0 && u0.quizResults) || {})[String(materialId)] || {});
+        const used0 = Number(r0.attempts) || 0;
+        capN += Math.max(0, Number(r0.extraAttempts) || 0);     // instructor-granted extra attempts
         if (used0 >= capN) {
           return _gr(403, { success: false, code: 'ATTEMPT_LIMIT_REACHED', message: `You have used all ${capN} attempt${capN === 1 ? '' : 's'} for this test.` });
         }
@@ -8552,21 +8566,26 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
         }
       }
 
+      const attempted =
+        (qType === 'integer' || qType === 'numerical')
+          ? (ans !== null && ans !== undefined && ans !== '' && !isNaN(Number(ans)))
+          : (Array.isArray(ans) ? ans.filter(x => x !== undefined && x !== null && x !== '').length > 0
+                               : (ans !== null && ans !== undefined && ans !== -1));
+      let gained = 0;
       if (correct) {
         score++;
         marksEarned += qMarks;
-      } else {
-        const attempted =
-          (qType === 'integer' || qType === 'numerical')
-            ? (ans !== null && ans !== undefined && ans !== '' && !isNaN(Number(ans)))
-            : (Array.isArray(ans) ? ans.filter(x => x !== undefined && x !== null && x !== '').length > 0
-                                 : (ans !== null && ans !== undefined && ans !== -1));
-        if (attempted && qNeg < 0) marksEarned += qNeg;
+        gained = qMarks;
+      } else if (attempted && qNeg < 0) {
+        marksEarned += qNeg;
+        gained = qNeg;
       }
 
       return {
         type: qType,
         correct,
+        attempted,
+        gained,
         chosen: ans,
         correctIndexes: q.correctIndexes || (typeof q.correctIndex === 'number' ? [q.correctIndex] : []),
         integerAnswer: q.integerAnswer,
@@ -8588,6 +8607,17 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
       ? Math.max(0, Math.round(marksEarned * 100) / 100)
       : 0;
 
+    /* ⭐ a written question with nothing uploaded has nothing to grade —
+       it is marked 0 straight away (the grader can still change it), so
+       blank sheets don't sit in the grading queue */
+    const _blankSheetEvals = {};
+    Object.keys(subjectiveAnswers).forEach(qi => {
+      if (!subjectiveAnswers[qi].length) {
+        _blankSheetEvals[qi] = { awardedMarks: 0, feedback: 'No answer was uploaded.', evaluatedAt: new Date(), evaluatedBy: 'auto' };
+      }
+    });
+    const _sheetsToGrade = subjectiveCount - Object.keys(_blankSheetEvals).length;
+
     const user = await User.findById(userId);
     if (!user) return _gr(404, { success: false, message: 'User not found' });
     if (!user.quizResults) user.quizResults = new Map();
@@ -8607,14 +8637,35 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
       subjectiveQuestionMeta,
       subjectiveMaxTotal,
       subjectiveCount,
-      subjectiveEvaluations: {},              // a new attempt is a new answer sheet — old grades must not carry over
-      pendingEvaluation: subjectiveCount > 0,
-      manuallyEvaluated: false,
+      subjectiveEvaluations: _blankSheetEvals,  // a new attempt is a new answer sheet — old grades must not carry over
+      subjectiveMarksAwarded: 0,
+      pendingEvaluation: _sheetsToGrade > 0,
+      manuallyEvaluated: subjectiveCount > 0 && _sheetsToGrade === 0,
 
       /* ⭐ proctoring + how the attempt ended, for the instructor */
       proctor:      proctor || null,
       autoSubmitted: autoSubmitted === true,
-      finalizedBy:  finalizedBy || 'student'   // 'server' = time ran out, graded from the autosave
+      finalizedBy:  finalizedBy || 'student',  // 'server' = time ran out, graded from the autosave
+
+      /* ⭐ 2026-10-10 — what the student actually answered, question by
+         question (original question order), for the Grading section */
+      responses: results.map(r => r.type === 'subjective'
+        ? { t: 'subjective', a: null, c: null, g: null }
+        : { t: r.type, a: _compactAnswer(r.chosen), c: !!r.correct, at: !!r.attempted, g: r.gained }),
+      questionCount: quiz.length,
+      startedAt: _session && _session.startedAt ? _session.startedAt : null,
+      durationSeconds: _session ? Number(_session.durationSeconds) || 0 : 0,
+      extraAttempts: Number(prev.extraAttempts) || 0,     // granted by the instructor — survives new attempts
+      /* earlier attempts, newest last */
+      history: (prev.attempts > 0
+        ? [...(Array.isArray(prev.history) ? prev.history : []), {
+            attempt: prev.attempts, at: prev.lastAttemptAt || null,
+            marksEarned: (Number(prev.marksEarned) || 0) + (Number(prev.subjectiveMarksAwarded) || 0),
+            marksPossible: (Number(prev.marksPossible) || 0) + (Number(prev.subjectiveMaxTotal) || 0),
+            strikes: (prev.proctor && Number(prev.proctor.strikes)) || 0,
+            finalizedBy: prev.finalizedBy || 'student', autoSubmitted: !!prev.autoSubmitted
+          }]
+        : []).slice(-20)
     });
 
     logActivity(user, {
@@ -8761,7 +8812,7 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
       return _gr(200, {
         success: true,
         pendingPublication: true,
-        pendingEvaluation: subjectiveCount > 0 && !resultsVisible,
+        pendingEvaluation: _sheetsToGrade > 0 && !resultsVisible,
         subjectiveCount,
         subjectiveMaxTotal,
         ...baseMeta,
@@ -8785,7 +8836,7 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
 
       subjectiveCount,
       subjectiveMaxTotal,
-      pendingEvaluation: subjectiveCount > 0,
+      pendingEvaluation: _sheetsToGrade > 0,
 
       xp: user.xp || 0,
       level: user.level || 1,
@@ -8865,6 +8916,200 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
    when all subjective questions have been graded.
    ============================================================ */
 /* ============================================================
+   ⭐ GRADING SECTION (2026-10-10)
+   ------------------------------------------------------------
+   One place for the instructor: every test across every course
+   (only their own courses for a professor), the queue of answer
+   sheets waiting for marks, attempts running right now, and a
+   full question-by-question view of any attempt.
+   ============================================================ */
+async function requireGrader(req, res, next) {
+  const token = _extractToken(req, true);
+  if (!token) return res.status(401).json({ success: false, code: 'NO_TOKEN', message: 'Authentication required.' });
+  const r = await resolveSessionUser(token);
+  if (!r.user) return res.status(r.code === 'AUTH_UNAVAILABLE' ? 503 : 401).json({ success: false, code: r.code, message: r.message });
+  req.authUser = r.user;
+  if (_isAdminUser(r.user)) { req.graderScope = null; return next(); }
+  if (_isProfessorUser(r.user)) {
+    req.graderScope = new Set(((r.user.professor && r.user.professor.courses) || []).map(String));
+    return next();
+  }
+  return res.status(403).json({ success: false, message: 'Instructors only.' });
+}
+
+/* final marks of one stored result */
+function _resultFinal(r) {
+  const earned = (Number(r.marksEarned) || 0) + (Number(r.subjectiveMarksAwarded) || 0);
+  const possible = (Number(r.marksPossible) || 0) + (Number(r.subjectiveMaxTotal) || 0);
+  return { earned: Math.round(earned * 100) / 100, possible, pct: possible > 0 ? Math.round(earned / possible * 1000) / 10 : 0 };
+}
+function _resultPending(r) {
+  const total = Object.keys(r.subjectiveQuestionMeta || {}).length;
+  return Math.max(0, total - Object.keys(r.subjectiveEvaluations || {}).length);
+}
+
+app.get('/api/admin/grading/overview', requireGrader, async (req, res) => {
+  try {
+    const scope = req.graderScope;
+    const courseQuery = scope ? { _id: { $in: [...scope].filter(id => /^[a-f0-9]{24}$/i.test(id)) } } : {};
+    const courses = await Course.find(courseQuery).select('name code title isPremium materials').lean();
+
+    const tests = [];
+    const testById = new Map();
+    for (const c of courses) {
+      for (const m of (c.materials || [])) {
+        const quiz = Array.isArray(m.quiz) ? m.quiz : [];
+        if (m.type !== 'quiz' && quiz.length === 0) continue;
+        const cfg = m.examConfig || {};
+        const t = {
+          courseId: String(c._id), courseName: c.name || c.title || 'Course', courseCode: c.code || '',
+          materialId: String(m._id), title: m.title || 'Test',
+          questions: quiz.length,
+          subjectiveQuestions: quiz.filter(q => q.type === 'subjective').length,
+          totalMarks: quiz.reduce((s, q) => s + (q.type === 'subjective' ? (Number(q.subjectiveMaxMarks) || Number(q.marks) || 10) : (typeof q.marks === 'number' ? q.marks : 4)), 0),
+          timeLimit: cfg.totalTime || '', maxAttempts: Number(cfg.maxAttempts) || 0,
+          publishMode: cfg.resultPublishMode || 'immediate',
+          submissions: 0, toGrade: 0, flagged: 0, running: 0, avgPct: 0, best: 0, lastSubmissionAt: null, _sum: 0
+        };
+        tests.push(t);
+        testById.set(t.materialId, t);
+      }
+    }
+
+    const ids = [...testById.keys()];
+    const queue = [];
+    if (ids.length) {
+      const or = ids.map(id => ({ [`quizResults.${id}`]: { $exists: true } }));
+      const users = await User.find({ $or: or }).select('username fullName quizResults').lean();
+      for (const u of users) {
+        for (const [mid, r] of Object.entries(u.quizResults || {})) {
+          const t = testById.get(mid);
+          if (!t || !r || !r.attempts) continue;
+          const f = _resultFinal(r);
+          t.submissions++;
+          t._sum += f.pct;
+          t.best = Math.max(t.best, f.pct);
+          if ((r.proctor && r.proctor.strikes > 0) || r.autoSubmitted) t.flagged++;
+          if (!t.lastSubmissionAt || new Date(r.lastAttemptAt) > new Date(t.lastSubmissionAt)) t.lastSubmissionAt = r.lastAttemptAt || null;
+          const pending = _resultPending(r);
+          if (pending > 0) {
+            t.toGrade++;
+            const files = Object.values(r.subjectiveAnswers || {}).reduce((s, a) => s + (Array.isArray(a) ? a.length : 0), 0);
+            queue.push({
+              userId: String(u._id), name: u.fullName || u.username, username: u.username,
+              courseId: t.courseId, courseName: t.courseName, courseCode: t.courseCode,
+              materialId: mid, testTitle: t.title, submittedAt: r.lastAttemptAt || null,
+              pending, files, strikes: (r.proctor && r.proctor.strikes) || 0
+            });
+          }
+        }
+      }
+      const graceMs = await _quizGraceMs();
+      const live = await QuizSession.find({ materialId: { $in: ids }, status: { $ne: 'submitted' } })
+        .select('materialId startedAt durationSeconds').lean();
+      for (const s of live) {
+        if (_quizSessionOverdue(s, graceMs)) continue;
+        const t = testById.get(String(s.materialId));
+        if (t) t.running++;
+      }
+    }
+    tests.forEach(t => { t.avgPct = t.submissions ? Math.round(t._sum / t.submissions * 10) / 10 : 0; delete t._sum; });
+    queue.sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0));
+
+    const dayAgo = Date.now() - 24 * 3600e3;
+    res.set('Cache-Control', 'private, no-store');
+    res.json({
+      success: true,
+      role: scope ? 'professor' : 'admin',
+      totals: {
+        tests: tests.length,
+        submissions: tests.reduce((s, t) => s + t.submissions, 0),
+        toGrade: queue.length,
+        running: tests.reduce((s, t) => s + t.running, 0),
+        flagged: tests.reduce((s, t) => s + t.flagged, 0),
+        last24h: tests.filter(t => t.lastSubmissionAt && new Date(t.lastSubmissionAt).getTime() > dayAgo).length
+      },
+      tests, queue: queue.slice(0, 200)
+    });
+  } catch (e) {
+    console.error('[grading/overview]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* One attempt, question by question — with the answer key (instructors only) */
+app.get('/api/admin/quiz/:courseId/:materialId/attempt/:userId', requireCourseEditor, async (req, res) => {
+  try {
+    const mid = String(req.params.materialId), uid = String(req.params.userId);
+    if (!/^[a-f0-9]{24}$/i.test(mid) || !/^[a-f0-9]{24}$/i.test(uid)) return res.status(400).json({ success: false, message: 'Invalid request.' });
+    const course = await Course.findById(req.params.courseId).select('name code title description isPremium price materials').lean();
+    const mat = course && (course.materials || []).find(m => String(m._id) === mid);
+    if (!mat) return res.status(404).json({ success: false, message: 'Test not found.' });
+    const u = await User.findById(uid).select(`username fullName email phone createdAt quizResults.${mid}`).lean();
+    if (!u) return res.status(404).json({ success: false, message: 'Student not found.' });
+    const r = (u.quizResults || {})[mid];
+    if (!r) return res.status(404).json({ success: false, message: 'This student has not submitted this test.' });
+
+    /* rank among everyone who took it */
+    const others = await User.find({ [`quizResults.${mid}`]: { $exists: true } }).select(`quizResults.${mid}`).lean();
+    const pcts = others.map(o => _resultFinal((o.quizResults || {})[mid] || {}).pct).sort((a, b) => b - a);
+    const mine = _resultFinal(r);
+    const rank = pcts.findIndex(p => p <= mine.pct) + 1;
+
+    const session = await QuizSession.findOne({ userId: uid, materialId: mid }).select('status startedAt durationSeconds savedAt').lean();
+    const quiz = (mat.quiz || []).map((q, i) => ({
+      index: i, type: q.type || 'single', question: q.question || '', image: q.image || q.imageUrl || '',
+      options: q.options || [], correctIndexes: q.correctIndexes || (typeof q.correctIndex === 'number' ? [q.correctIndex] : []),
+      integerAnswer: q.integerAnswer, integerTolerance: q.integerTolerance || 0,
+      rangeMin: q.rangeMin, rangeMax: q.rangeMax,
+      matrixLeftItems: q.matrixLeftItems || [], matrixRightItems: q.matrixRightItems || [], matrixRows: q.matrixRows || [],
+      marks: typeof q.marks === 'number' ? q.marks : 4, negativeMarks: typeof q.negativeMarks === 'number' ? q.negativeMarks : -1,
+      subjectiveMaxMarks: Number(q.subjectiveMaxMarks) || Number(q.marks) || 10,
+      explanation: q.explanation || ''
+    }));
+    res.set('Cache-Control', 'private, no-store');
+    res.json({
+      success: true,
+      course: { id: String(course._id), name: course.name || course.title || 'Course', code: course.code || '', isPremium: !!course.isPremium },
+      test: { id: mid, title: mat.title || 'Test', config: mat.examConfig || {} },
+      student: { id: uid, username: u.username, fullName: u.fullName || '', email: u.email || '', phone: u.phone || '', joinedAt: u.createdAt || null },
+      result: r,
+      final: mine, rank, of: pcts.length,
+      classAvgPct: pcts.length ? Math.round(pcts.reduce((s, p) => s + p, 0) / pcts.length * 10) / 10 : 0,
+      session: session ? { status: session.status, startedAt: session.startedAt, savedAt: session.savedAt } : null,
+      quiz
+    });
+  } catch (e) {
+    console.error('[grading/attempt]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* Give one student another attempt (e.g. after a network failure) */
+app.post('/api/admin/quiz/:courseId/:materialId/grant-attempt', requireCourseEditor, async (req, res) => {
+  try {
+    const mid = String(req.params.materialId), uid = String((req.body || {}).userId || '');
+    const count = Math.max(1, Math.min(5, parseInt((req.body || {}).count, 10) || 1));
+    if (!/^[a-f0-9]{24}$/i.test(mid) || !/^[a-f0-9]{24}$/i.test(uid)) return res.status(400).json({ success: false, message: 'Invalid request.' });
+    const course = await Course.findById(req.params.courseId).select('materials._id materials.examConfig').lean();
+    const mat = course && (course.materials || []).find(m => String(m._id) === mid);
+    if (!mat) return res.status(404).json({ success: false, message: 'Test not found.' });
+    if (!(Number((mat.examConfig || {}).maxAttempts) > 0)) return res.status(400).json({ success: false, message: 'This test has unlimited attempts — nothing to grant.' });
+    const upd = await User.updateOne({ _id: uid, [`quizResults.${mid}`]: { $exists: true } }, { $inc: { [`quizResults.${mid}.extraAttempts`]: count } });
+    if (!upd.matchedCount) return res.status(404).json({ success: false, message: 'This student has not attempted the test yet.' });
+    const u = await User.findById(uid).select(`quizResults.${mid}`).lean();
+    const r = (u.quizResults || {})[mid] || {};
+    const cap = Number(mat.examConfig.maxAttempts) + (Number(r.extraAttempts) || 0);
+    console.log(`[grading] ➕ ${count} extra attempt(s) user=${uid} mat=${mid} by ${req.authUser.username}`);
+    res.json({ success: true, extraAttempts: Number(r.extraAttempts) || 0, attemptsUsed: Number(r.attempts) || 0, maxAttempts: cap,
+      message: `${count} extra attempt${count === 1 ? '' : 's'} granted — ${Math.max(0, cap - (Number(r.attempts) || 0))} left now.` });
+  } catch (e) {
+    console.error('[grading/grant-attempt]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* ============================================================
    ⭐ 2026-10-10 — SUBMISSIONS for one paper (admin, or the professor
    of the course): every student's latest attempt with marks, the
    uploaded answer sheets still to grade, proctoring strikes and how
@@ -8897,7 +9142,9 @@ app.get('/api/admin/quiz/:courseId/:materialId/submissions', requireCourseEditor
         subjectiveEvaluations: r.subjectiveEvaluations || {},
         publishedAt: r.publishedAt || null,
         proctor: r.proctor || null, autoSubmitted: !!r.autoSubmitted, finalizedBy: r.finalizedBy || 'student',
-        timeSpentTotalSeconds: Number(r.timeSpentTotalSeconds) || 0
+        timeSpentTotalSeconds: Number(r.timeSpentTotalSeconds) || 0,
+        extraAttempts: Number(r.extraAttempts) || 0,
+        hasDetail: Array.isArray(r.responses)
       };
     }).sort((a, b) => (b.pendingEvaluation - a.pendingEvaluation) || (new Date(b.lastAttemptAt || 0) - new Date(a.lastAttemptAt || 0)));
 
@@ -8919,12 +9166,67 @@ app.get('/api/admin/quiz/:courseId/:materialId/submissions', requireCourseEditor
     });
 
     const quiz = Array.isArray(mat.quiz) ? mat.quiz : [];
+
+    /* ⭐ class analytics — score spread + how each question went */
+    const pcts = rows.map(r => r.finalMarksPossible > 0 ? r.finalMarksEarned / r.finalMarksPossible * 100 : 0).sort((a, b) => a - b);
+    const median = pcts.length ? (pcts.length % 2 ? pcts[(pcts.length - 1) / 2] : (pcts[pcts.length / 2 - 1] + pcts[pcts.length / 2]) / 2) : 0;
+    const distribution = Array.from({ length: 10 }, (_, b) => pcts.filter(p => Math.min(9, Math.floor(p / 10)) === b).length);
+    const qStats = quiz.map((q, i) => ({ index: i, type: q.type || 'single', seen: 0, attempted: 0, correct: 0, timeSum: 0, timeN: 0, gradedSum: 0, gradedN: 0 }));
+    users.forEach(u => {
+      const r = (u.quizResults || {})[mid] || {};
+      const resp = Array.isArray(r.responses) && r.responses.length === quiz.length ? r.responses : null;
+      const tsp = r.timeSpentPerQuestion || {};
+      qStats.forEach((st, i) => {
+        const t = Number(tsp[i]);
+        if (t > 0) { st.timeSum += t; st.timeN++; }
+        if (st.type === 'subjective') {
+          const ev = (r.subjectiveEvaluations || {})[i];
+          const max = Number(((r.subjectiveQuestionMeta || {})[i] || {}).maxMarks) || 0;
+          if (ev && max > 0) { st.gradedSum += (Number(ev.awardedMarks) || 0) / max; st.gradedN++; }
+          if (((r.subjectiveAnswers || {})[i] || []).length) st.attempted++;
+          st.seen++;
+          return;
+        }
+        if (!resp) return;
+        st.seen++;
+        if (resp[i].at) st.attempted++;
+        if (resp[i].c) st.correct++;
+      });
+    });
+    const questionStats = qStats.map(st => ({
+      index: st.index, type: st.type,
+      question: String((quiz[st.index] || {}).question || '').slice(0, 200),
+      responses: st.seen,
+      attemptedPct: st.seen ? Math.round(st.attempted / st.seen * 100) : null,
+      correctPct: st.type === 'subjective' ? (st.gradedN ? Math.round(st.gradedSum / st.gradedN * 100) : null) : (st.seen ? Math.round(st.correct / st.seen * 100) : null),
+      avgTimeSeconds: st.timeN ? Math.round(st.timeSum / st.timeN) : null
+    }));
+
+    const cfg = mat.examConfig || {};
+    const fullCourse = await Course.findById(req.params.courseId).select('name code title').lean();
     res.set('Cache-Control', 'private, no-store');
     res.json({
       success: true,
       title: mat.title || 'Test',
+      course: { id: String(req.params.courseId), name: (fullCourse && (fullCourse.name || fullCourse.title)) || 'Course', code: (fullCourse && fullCourse.code) || '' },
+      config: {
+        totalTime: cfg.totalTime || '', maxAttempts: Number(cfg.maxAttempts) || 0,
+        allowBackNavigation: cfg.allowBackNavigation === true, resultPublishMode: cfg.resultPublishMode || 'immediate',
+        resultPublishAt: cfg.resultPublishAt || null, questionCount: quiz.length,
+        totalMarks: quiz.reduce((s2, q) => s2 + (q.type === 'subjective' ? (Number(q.subjectiveMaxMarks) || Number(q.marks) || 10) : (typeof q.marks === 'number' ? q.marks : 4)), 0)
+      },
       questions: quiz.map((q, i) => ({ index: i, type: q.type || 'single', question: String(q.question || '').slice(0, 300) })),
-      resultPublishMode: (mat.examConfig || {}).resultPublishMode || 'immediate',
+      resultPublishMode: cfg.resultPublishMode || 'immediate',
+      stats: {
+        count: pcts.length,
+        avgPct: pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length * 10) / 10 : 0,
+        medianPct: Math.round(median * 10) / 10,
+        highestPct: pcts.length ? Math.round(pcts[pcts.length - 1] * 10) / 10 : 0,
+        lowestPct: pcts.length ? Math.round(pcts[0] * 10) / 10 : 0,
+        passPct: pcts.length ? Math.round(pcts.filter(p => p >= 40).length / pcts.length * 100) : 0,
+        distribution
+      },
+      questionStats,
       submissions: rows,
       running
     });
