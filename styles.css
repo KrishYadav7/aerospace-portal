@@ -17306,3 +17306,332 @@ html[data-skin="space"] .theme-switch .ts-knob::after {
   .ahd-wrap:not(.has-open) .ahd-thread { display: none; }
   .ahd-back { display: inline-block; }
 }
+
+/* ==========================================================================
+   ⭐ 2026-10-10 — AURORA THEME
+   <html data-theme="light" data-skin="aurora">
+   Rides on the light theme (every light rule still applies) and adds:
+   a pearl page lit by slowly drifting northern-lights colour, twilight
+   header & hero skies with shimmering aurora ribbons, frosted cards with
+   colour-tinted depth, and violet → teal actions.
+   Motion is one transform-only layer (cheap on phones) and switches off
+   for reduced-motion users and in print.
+   ========================================================================== */
+html[data-skin="aurora"] {
+  color-scheme: light;
+  --brand-50: #f2f0ff; --brand-100: #e6e2ff; --brand-200: #cfc8ff; --brand-300: #ada2ff;
+  --brand-400: #8b7dfb; --brand-500: #6d5ef3; --brand-600: #5a48e3; --brand-700: #4936c4;
+  --brand-800: #3a2c9c; --brand-900: #2b2170;
+  --accent-300: #7fe9dd; --accent-400: #3fd6c6; --accent-500: #14b8a6; --accent-600: #0d9488;
+
+  --au-mint: rgba(45, 212, 191, .34);
+  --au-sky: rgba(56, 189, 248, .28);
+  --au-violet: rgba(139, 92, 246, .30);
+  --au-rose: rgba(244, 114, 182, .20);
+  --au-grad: linear-gradient(120deg, #6d5ef3 0%, #4f7cf7 45%, #14b8a6 100%);
+  --au-grad-soft: linear-gradient(120deg, rgba(109,94,243,.14), rgba(79,124,247,.10) 45%, rgba(20,184,166,.12));
+  --au-sky-band: linear-gradient(115deg, #070b24 0%, #0f1546 42%, #12285a 72%, #0b3a4a 100%);
+
+  --bg-page: #f4f6fb;
+  --bg-page-accent-1: transparent;
+  --bg-page-accent-2: transparent;
+  --bg-surface: #ffffff;
+  --bg-surface-2: #f7f8fd;
+  --bg-surface-3: #eef0f8;
+  --bg-elevated: #ffffff;
+
+  --border-subtle: #e6e9f4;
+  --border-default: #d7dcec;
+  --border-strong: #b9c0da;
+
+  --text-primary: #10142e;
+  --text-secondary: #464e74;
+  --text-tertiary: #7d86ab;
+
+  --shadow-xs: 0 1px 2px rgba(40, 44, 110, .05);
+  --shadow-sm: 0 2px 8px rgba(40, 44, 110, .06), 0 1px 2px rgba(40, 44, 110, .04);
+  --shadow-md: 0 12px 30px rgba(52, 48, 150, .09), 0 2px 6px rgba(40, 44, 110, .05);
+  --shadow-lg: 0 24px 56px rgba(52, 48, 150, .13), 0 6px 14px rgba(40, 44, 110, .06);
+  --shadow-xl: 0 36px 80px rgba(40, 36, 130, .18);
+
+  --header-bg: var(--au-sky-band);
+  --header-border: rgba(127, 233, 221, .28);
+}
+
+/* ---------- the sky: pearl base + four aurora lights that drift slowly ---------- */
+html[data-skin="aurora"] body {
+  background: linear-gradient(180deg, #f7f8fd 0%, #f2f4fb 55%, #f4f2fb 100%);
+  background-attachment: fixed;
+}
+html[data-skin="aurora"] #app { background: transparent; box-shadow: none; }
+html[data-skin="aurora"] body::before {
+  content: ""; position: fixed; inset: -18vmax; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(38vmax 30vmax at 18% 14%, var(--au-mint), transparent 70%),
+    radial-gradient(42vmax 32vmax at 84% 8%, var(--au-violet), transparent 70%),
+    radial-gradient(40vmax 34vmax at 72% 78%, var(--au-sky), transparent 70%),
+    radial-gradient(34vmax 28vmax at 12% 88%, var(--au-rose), transparent 70%);
+  will-change: transform;
+  animation: auroraDrift 46s ease-in-out infinite alternate;
+}
+/* a faint ribbon of light sweeping across the top of the page */
+html[data-skin="aurora"] body::after {
+  content: ""; position: fixed; left: -10vw; right: -10vw; top: -14vh; height: 52vh; z-index: -1; pointer-events: none;
+  background:
+    linear-gradient(100deg, transparent 8%, rgba(45,212,191,.14) 28%, rgba(109,94,243,.14) 48%, rgba(56,189,248,.10) 66%, transparent 86%);
+  transform: skewY(-6deg);
+  border-radius: 0 0 50% 50% / 0 0 40% 40%;
+  opacity: .9;
+  animation: auroraRibbon 22s ease-in-out infinite alternate;
+}
+@keyframes auroraDrift {
+  0%   { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50%  { transform: translate3d(3vmax, -2vmax, 0) rotate(8deg) scale(1.05); }
+  100% { transform: translate3d(-3vmax, 2vmax, 0) rotate(-6deg) scale(1.02); }
+}
+@keyframes auroraRibbon {
+  0%   { transform: skewY(-6deg) translateX(-4vw); opacity: .65; }
+  100% { transform: skewY(-3deg) translateX(4vw); opacity: 1; }
+}
+
+/* ---------- twilight header with a living aurora ---------- */
+html[data-skin="aurora"] #appHeader {
+  background: var(--au-sky-band);
+  isolation: isolate;          /* no overflow:hidden — the dropdowns hang out of the header */
+  border-bottom: 1px solid transparent;
+  border-image: linear-gradient(90deg, rgba(20,184,166,0) 0%, rgba(63,214,198,.75) 25%, rgba(139,125,251,.75) 60%, rgba(56,189,248,0) 100%) 1;
+  box-shadow: 0 12px 34px rgba(16, 18, 70, .22);
+}
+html[data-skin="aurora"] #appHeader::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(40% 90% at 20% 20%, rgba(52, 211, 153, .30), transparent 70%),
+    radial-gradient(35% 100% at 55% 0%, rgba(139, 92, 246, .34), transparent 70%),
+    radial-gradient(30% 90% at 85% 40%, rgba(56, 189, 248, .28), transparent 70%);
+  background-size: 130% 100%;
+  animation: auroraHeader 18s ease-in-out infinite alternate;
+}
+@keyframes auroraHeader {
+  0%   { background-position: 0% 0; }
+  100% { background-position: 100% 0; }
+}
+html[data-skin="aurora"] #appHeader #mainNav { background: transparent; }
+html[data-skin="aurora"] #mainNav a.active,
+html[data-skin="aurora"] #mainNav a[aria-current="page"] {
+  background: linear-gradient(120deg, rgba(139,125,251,.95), rgba(79,124,247,.95));
+  box-shadow: 0 6px 18px rgba(109, 94, 243, .45), inset 0 1px 0 rgba(255,255,255,.25);
+}
+
+/* phone header row 2 & bottom bar: frosted pearl */
+html[data-skin="aurora"] .mobile-bottom-nav {
+  background: rgba(255, 255, 255, .86);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border-top: 1px solid rgba(109, 94, 243, .14);
+  box-shadow: 0 -10px 30px rgba(52, 48, 150, .10);
+}
+
+/* ---------- hero: a window onto the northern lights ---------- */
+html[data-skin="aurora"] .hero-section,
+html[data-skin="aurora"] .ai-home-hero,
+html[data-skin="aurora"] .pw-hero {
+  background:
+    radial-gradient(1.2px 1.2px at 14% 22%, rgba(255,255,255,.9), transparent 70%),
+    radial-gradient(1px 1px at 38% 12%, rgba(255,255,255,.7), transparent 70%),
+    radial-gradient(1.3px 1.3px at 63% 30%, rgba(204,251,241,.9), transparent 70%),
+    radial-gradient(1px 1px at 88% 18%, rgba(255,255,255,.7), transparent 70%),
+    radial-gradient(70% 55% at 20% 0%, rgba(45, 212, 191, .45), transparent 70%),
+    radial-gradient(60% 60% at 70% -10%, rgba(139, 92, 246, .50), transparent 70%),
+    radial-gradient(55% 60% at 100% 100%, rgba(56, 189, 248, .30), transparent 70%),
+    linear-gradient(160deg, #070b24 0%, #121650 45%, #1b2a6b 75%, #0d3c55 100%);
+  box-shadow: 0 30px 70px rgba(30, 28, 110, .30), 0 0 0 1px rgba(127, 233, 221, .22), inset 0 1px 0 rgba(255,255,255,.08);
+}
+html[data-skin="aurora"] .hero-section::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(105deg, transparent 20%, rgba(52,211,153,.18) 38%, rgba(139,125,251,.20) 52%, transparent 70%);
+  background-size: 220% 100%;
+  animation: auroraCurtain 16s ease-in-out infinite alternate;
+  mix-blend-mode: screen;
+}
+@keyframes auroraCurtain { from { background-position: 0% 0; } to { background-position: 100% 0; } }
+
+/* ---------- frosted cards with colour-tinted depth ---------- */
+html[data-skin="aurora"] .section-card,
+html[data-skin="aurora"] .xp-widget,
+html[data-skin="aurora"] .course-card,
+html[data-skin="aurora"] .stat-card,
+html[data-skin="aurora"] .analytics-card,
+html[data-skin="aurora"] .material-item {
+  background: rgba(255, 255, 255, .80);
+  border-color: rgba(214, 220, 240, .9);
+  box-shadow: 0 1px 0 rgba(255,255,255,.9) inset, 0 10px 30px rgba(52, 48, 150, .07), 0 1px 3px rgba(40, 44, 110, .05);
+}
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  @media (min-width: 900px) and (hover: hover) {
+    html[data-skin="aurora"] .section-card,
+    html[data-skin="aurora"] .xp-widget {
+      background: rgba(255, 255, 255, .66);
+      backdrop-filter: blur(14px) saturate(140%);
+      -webkit-backdrop-filter: blur(14px) saturate(140%);
+    }
+  }
+}
+html[data-skin="aurora"] .course-card { position: relative; }
+html[data-skin="aurora"] .course-card::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px; pointer-events: none;
+  background: var(--au-grad);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  opacity: 0; transition: opacity .3s var(--ease);
+}
+html[data-skin="aurora"] .course-card:hover::after,
+html[data-skin="aurora"] .course-card:focus-visible::after { opacity: 1; }
+html[data-skin="aurora"] .course-card:hover {
+  border-color: transparent;
+  box-shadow: 0 22px 48px rgba(79, 70, 229, .16), 0 8px 18px rgba(20, 184, 166, .08);
+}
+html[data-skin="aurora"] .section-card h2 > i:first-child,
+html[data-skin="aurora"] .section-title-icon {
+  background: var(--au-grad); color: #fff; -webkit-text-fill-color: #fff;
+}
+
+/* ---------- actions ---------- */
+html[data-skin="aurora"] .btn-primary {
+  background: var(--au-grad); background-size: 140% 100%; background-position: 0 0;
+  border-color: transparent; color: #fff;
+  box-shadow: 0 8px 22px rgba(90, 72, 227, .30), inset 0 1px 0 rgba(255,255,255,.25);
+  transition: background-position .5s var(--ease), box-shadow .25s var(--ease), transform .2s var(--ease);
+}
+html[data-skin="aurora"] .btn-primary:hover:not(:disabled) {
+  background: var(--au-grad); background-size: 140% 100%; background-position: 100% 0;
+  box-shadow: 0 12px 30px rgba(90, 72, 227, .38), 0 6px 16px rgba(20, 184, 166, .18), inset 0 1px 0 rgba(255,255,255,.3);
+}
+html[data-skin="aurora"] .btn-accent {
+  background: linear-gradient(120deg, #2dd4bf, #38bdf8); color: #06222b;
+  box-shadow: 0 8px 22px rgba(20, 184, 166, .32);
+}
+html[data-skin="aurora"] .btn-outline:hover:not(:disabled) {
+  border-color: var(--brand-400); color: var(--brand-700); background: rgba(109, 94, 243, .06);
+}
+
+/* ---------- streak, XP & premium banners pick up the aurora ---------- */
+html[data-skin="aurora"] .xp-widget { background-image: var(--au-grad-soft); }
+html[data-skin="aurora"] .subscribe-active-banner {
+  background: linear-gradient(120deg, rgba(20,184,166,.12), rgba(79,124,247,.08) 60%, rgba(109,94,243,.10));
+  border-color: rgba(20, 184, 166, .35);
+}
+html[data-skin="aurora"] .subscribe-active-icon { background: linear-gradient(135deg, #14b8a6, #4f7cf7); }
+html[data-skin="aurora"] .subscribe-active-info h4 { color: #0f766e; }
+
+/* ---------- fields, overlays & small details ---------- */
+html[data-skin="aurora"] input:focus-visible,
+html[data-skin="aurora"] select:focus-visible,
+html[data-skin="aurora"] textarea:focus-visible {
+  border-color: var(--brand-400);
+  box-shadow: 0 0 0 3px rgba(109, 94, 243, .16), 0 0 0 6px rgba(20, 184, 166, .08);
+}
+html[data-skin="aurora"] .modal-overlay {
+  background: rgba(16, 20, 54, .40);
+  backdrop-filter: blur(6px) saturate(120%);
+  -webkit-backdrop-filter: blur(6px) saturate(120%);
+}
+html[data-skin="aurora"] .modal-box {
+  border-color: rgba(214, 220, 240, .9);
+  box-shadow: 0 40px 90px rgba(30, 28, 110, .24), 0 0 0 1px rgba(255,255,255,.6) inset;
+}
+html[data-skin="aurora"] ::selection { background: rgba(109, 94, 243, .22); color: inherit; }
+html[data-skin="aurora"] { scrollbar-color: #b7b0f6 transparent; }
+html[data-skin="aurora"] ::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #a79cf8, #6fd8cb); border: 3px solid transparent; background-clip: content-box;
+}
+html[data-skin="aurora"] :focus-visible { outline-color: var(--brand-500); }
+html[data-skin="aurora"] .empty-state > i { background: var(--au-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
+/* ---------- top-bar switch: the sun wears an aurora halo ---------- */
+html[data-skin="aurora"] .theme-switch[aria-checked="false"] .ts-track {
+  background: linear-gradient(120deg, #2dd4bf, #60a5fa 55%, #a78bfa);
+  border-color: rgba(255, 255, 255, .55);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,.15), 0 0 14px rgba(45, 212, 191, .45);
+}
+html[data-skin="aurora"] .theme-switch[aria-checked="false"] .ts-knob {
+  background: radial-gradient(circle at 35% 30%, #ffffff 0%, #fef9c3 45%, #fde68a 100%);
+  box-shadow: 0 0 0 3px rgba(255,255,255,.35), 0 0 12px rgba(253, 230, 138, .9);
+}
+
+/* ---------- Settings → Appearance: the Aurora choice previews itself ---------- */
+.theme-choice.theme-choice-aurora {
+  position: relative; overflow: hidden; color: #10142e; border-color: rgba(109, 94, 243, .35);
+  background:
+    radial-gradient(90px 50px at 10% 0%, rgba(45, 212, 191, .45), transparent 70%),
+    radial-gradient(90px 60px at 95% 10%, rgba(139, 92, 246, .40), transparent 70%),
+    radial-gradient(90px 50px at 60% 120%, rgba(56, 189, 248, .35), transparent 70%),
+    #f7f8fd;
+}
+.theme-choice.theme-choice-aurora i { color: #0d9488; }
+.theme-choice.theme-choice-aurora:hover { border-color: #8b7dfb; box-shadow: 0 0 18px rgba(109, 94, 243, .25); }
+.theme-choice.theme-choice-aurora[aria-checked="true"] {
+  border-color: #6d5ef3; color: #10142e;
+  box-shadow: 0 0 0 3px rgba(109, 94, 243, .25), 0 0 22px rgba(20, 184, 166, .30);
+}
+.theme-choice-aurora .tc-new {
+  position: absolute; top: 4px; right: 5px; font-size: 8.5px; font-weight: 800; letter-spacing: .4px; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 99px; color: #fff; background: linear-gradient(135deg, #6d5ef3, #14b8a6);
+}
+
+
+/* ---------- signature details ---------- */
+/* page titles: ink that fades into aurora */
+html[data-skin="aurora"] .dash-header h2,
+html[data-skin="aurora"] .cd-content h2 {
+  background: linear-gradient(100deg, #10142e 0%, #2b2170 45%, #5a48e3 75%, #0d9488 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+html[data-skin="aurora"] .dash-header h2 i,
+html[data-skin="aurora"] .cd-content h2 * { -webkit-text-fill-color: initial; }
+html[data-skin="aurora"] .dash-header h2 i {
+  background: var(--au-grad); color: #fff; box-shadow: 0 6px 16px rgba(90, 72, 227, .30);
+}
+/* filter pills */
+html[data-skin="aurora"] .material-tabs button.active {
+  background: var(--au-grad); box-shadow: 0 8px 20px rgba(90, 72, 227, .30), 0 0 0 3px rgba(109, 94, 243, .12);
+}
+/* each card catches a little aurora light in its corner */
+html[data-skin="aurora"] .course-card,
+html[data-skin="aurora"] .section-card {
+  background-image:
+    radial-gradient(240px 140px at 100% 0%, rgba(139, 125, 251, .10), transparent 70%),
+    radial-gradient(200px 120px at 0% 100%, rgba(45, 212, 191, .07), transparent 70%);
+}
+/* footer: the twilight sky again, edged with aurora */
+html[data-skin="aurora"] .app-footer {
+  background: var(--au-sky-band); color: rgba(226, 232, 255, .65);
+  border-top: 1px solid transparent;
+  border-image: linear-gradient(90deg, rgba(20,184,166,0), rgba(63,214,198,.6) 30%, rgba(139,125,251,.6) 70%, rgba(56,189,248,0)) 1;
+}
+/* progress bars glow like the lights */
+html[data-skin="aurora"] .xp-fill,
+html[data-skin="aurora"] .cd-progress-bar > span,
+html[data-skin="aurora"] .course-progress-fill { background: var(--au-grad) !important; box-shadow: 0 0 10px rgba(45, 212, 191, .35); }
+
+/* ---------- small screens: same look, less work for the GPU ---------- */
+@media (max-width: 640px) {
+  html[data-skin="aurora"] body::before { animation-duration: 70s; inset: -30vmax; }
+  html[data-skin="aurora"] body::after { height: 36vh; }
+  html[data-skin="aurora"] .hero-section::after { animation: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-skin="aurora"] body::before, html[data-skin="aurora"] body::after,
+  html[data-skin="aurora"] #appHeader::before, html[data-skin="aurora"] .hero-section::after { animation: none !important; }
+}
+@media print {
+  html[data-skin="aurora"] body::before, html[data-skin="aurora"] body::after,
+  html[data-skin="aurora"] #appHeader::before, html[data-skin="aurora"] .hero-section::after { display: none; }
+  html[data-skin="aurora"] body { background: #fff; }
+}
+@media (max-width: 480px) {
+  .premium-hub { padding: 20px 16px; }
+  .premium-perk-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .premium-perk-card { padding: 10px; }
+  .premium-perk-card b { font-size: 12.5px; }
+  .premium-perk-card small { font-size: 11.5px; }
+}

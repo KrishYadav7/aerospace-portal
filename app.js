@@ -3117,7 +3117,7 @@ async function copyToClipboard(text) {
    CSS variable block. Nothing else in the codebase changes.
    ============================================================ */
 const THEME_CONFIG = {
-  order: ['light', 'dim', 'dark', 'space'],
+  order: ['light', 'aurora', 'dim', 'dark', 'space'],
   themes: {
     light: {
       id: 'light', family: 'light', label: 'Light', icon: 'fa-sun',
@@ -3141,10 +3141,19 @@ const THEME_CONFIG = {
       id: 'space', family: 'dark', label: 'Space', icon: 'fa-user-astronaut',
       palette: 'deep-space navy, nebula glow and twinkling stars', next: 'light',
       ariaLabel: 'Space mode — click for Light'
+    },
+    /* ⭐ 2026-10-10 — "Aurora": data-theme="light" (every light rule keeps
+       working) + data-skin="aurora" — a pearl page lit by drifting
+       northern lights, twilight header and hero skies. */
+    aurora: {
+      id: 'aurora', family: 'light', label: 'Aurora', icon: 'fa-wand-magic-sparkles',
+      palette: 'pearl daylight with drifting northern-lights colour', next: 'dark',
+      ariaLabel: 'Aurora mode — click for Night'
     }
   }
 };
 const SPACE_SKIN = 'space';
+const AURORA_SKIN = 'aurora';
 const THEME_CYCLE = THEME_CONFIG.order;
 
 function getThemeMeta(theme) {
@@ -3153,6 +3162,7 @@ function getThemeMeta(theme) {
 function getCurrentTheme() {
   const root = document.documentElement;
   if (root.getAttribute('data-skin') === SPACE_SKIN) return 'space';
+  if (root.getAttribute('data-skin') === AURORA_SKIN) return 'aurora';
   const t = root.getAttribute('data-theme') || 'light';
   return THEME_CONFIG.themes[t] ? t : 'light';
 }
@@ -3162,6 +3172,9 @@ function _setThemeAttrs(id) {
   if (id === 'space') {
     root.setAttribute('data-theme', 'dark');
     root.setAttribute('data-skin', SPACE_SKIN);
+  } else if (id === 'aurora') {
+    root.setAttribute('data-theme', 'light');
+    root.setAttribute('data-skin', AURORA_SKIN);
   } else {
     root.setAttribute('data-theme', id);
     root.removeAttribute('data-skin');
@@ -3169,7 +3182,7 @@ function _setThemeAttrs(id) {
   /* browser / Android status-bar colour follows the theme */
   try {
     const m = document.querySelector('meta[name="theme-color"]');
-    if (m) m.setAttribute('content', id === 'space' ? '#050816' : id === 'light' ? '#0b1226' : id === 'dim' ? '#14142b' : '#0c0e12');
+    if (m) m.setAttribute('content', id === 'space' ? '#050816' : id === 'aurora' ? '#070b24' : id === 'light' ? '#0b1226' : id === 'dim' ? '#14142b' : '#0c0e12');
   } catch (_) {}
 }
 function isNightMode() {
@@ -3218,6 +3231,8 @@ function applyTheme(theme) {
      single header switch always returns them to it. */
   if (getThemeMeta(id).family === 'dark') {
     try { localStorage.setItem(PREFERRED_DARK_KEY, id); } catch (e) {}
+  } else {
+    try { localStorage.setItem(PREFERRED_LIGHT_KEY, id); } catch (e) {}
   }
   updateThemeIcon();
   renderSettingsThemeUI();
@@ -3230,6 +3245,13 @@ function getPreferredDarkTheme() {
   let t = null;
   try { t = localStorage.getItem(PREFERRED_DARK_KEY); } catch (e) {}
   return (t === 'dim' || t === 'dark' || t === 'space') ? t : 'dark';
+}
+/* …and which light style (Light / Aurora) it returns to */
+const PREFERRED_LIGHT_KEY = 'aero_theme_light';
+function getPreferredLightTheme() {
+  let t = null;
+  try { t = localStorage.getItem(PREFERRED_LIGHT_KEY); } catch (e) {}
+  return t === 'aurora' ? 'aurora' : 'light';
 }
 
 /* Kept for backward compatibility with any old onclick="cycleTheme()" */
@@ -3276,8 +3298,10 @@ function renderSettingsThemeUI() {
   const hint = document.getElementById('nightModeHint');
   if (hint) {
     hint.textContent = night
-      ? `${meta.label} theme active — ${meta.palette}. The top-bar switch flips back to Light.`
-      : 'The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here — try the new Space theme.';
+      ? `${meta.label} theme active — ${meta.palette}. The top-bar switch flips back to ${getThemeMeta(getPreferredLightTheme()).label}.`
+      : (theme === 'aurora'
+        ? 'Aurora theme active — pearl daylight with drifting northern-lights colour. The top-bar switch flips to your dark style.'
+        : 'The sun/moon switch in the top bar flips light ↔ dark and remembers the styles you pick here — try the new Aurora theme.');
   }
 }
 
@@ -3289,7 +3313,7 @@ function openSettingsModal() {
 
 /* Header switch: OFF → Light, ON → the user's preferred dark style. */
 function toggleNightMode() {
-  applyTheme(isNightMode() ? 'light' : getPreferredDarkTheme());
+  applyTheme(isNightMode() ? getPreferredLightTheme() : getPreferredDarkTheme());
 }
 
 /* Sub-option of Night mode */

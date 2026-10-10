@@ -9,12 +9,12 @@
     (function () {
       try {
         var t = localStorage.getItem('aero_theme');
-        if (t !== 'light' && t !== 'dim' && t !== 'dark' && t !== 'space') {
+        if (t !== 'light' && t !== 'dim' && t !== 'dark' && t !== 'space' && t !== 'aurora') {
           t = (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
         }
-        /* ⭐ Space = dark base + space skin */
-        if (t === 'space') document.documentElement.setAttribute('data-skin', 'space');
-        document.documentElement.setAttribute('data-theme', t === 'space' ? 'dark' : t);
+        /* ⭐ Space = dark base + space skin · Aurora = light base + aurora skin */
+        if (t === 'space' || t === 'aurora') document.documentElement.setAttribute('data-skin', t);
+        document.documentElement.setAttribute('data-theme', t === 'space' ? 'dark' : t === 'aurora' ? 'light' : t);
       } catch (e) {}
     })();
   </script>
@@ -1224,7 +1224,7 @@
         <div class="settings-row settings-row--stacked">
           <div class="settings-row-text">
             <strong>Theme</strong>
-            <span id="nightModeHint">The sun/moon switch in the top bar flips Light ↔ dark. Pick which dark style it uses here — try the new Space theme.</span>
+            <span id="nightModeHint">The sun/moon switch in the top bar flips light ↔ dark and remembers the styles you pick here — try the new Aurora theme.</span>
           </div>
         </div>
 
@@ -1233,6 +1233,11 @@
           <button type="button" class="theme-choice" data-theme-choice="light" role="radio"
                   aria-checked="false" onclick="setThemeFromSettings('light')">
             <i class="fas fa-sun"></i> Light
+          </button>
+          <button type="button" class="theme-choice theme-choice-aurora" data-theme-choice="aurora" role="radio"
+                  aria-checked="false" onclick="setThemeFromSettings('aurora')">
+            <i class="fas fa-wand-magic-sparkles"></i> Aurora
+            <span class="tc-new">New</span>
           </button>
           <button type="button" class="theme-choice" data-theme-choice="dim" role="radio"
                   aria-checked="false" onclick="setThemeFromSettings('dim')">
@@ -1246,7 +1251,6 @@
                   aria-checked="false" onclick="setThemeFromSettings('space')">
             <span class="tc-stars" aria-hidden="true"></span>
             <i class="fas fa-user-astronaut"></i> Space
-            <span class="tc-new">New</span>
           </button>
         </div>
       </div>
