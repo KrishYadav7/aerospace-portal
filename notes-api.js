@@ -46,6 +46,7 @@ function validPageData(data) {
     if (!j || j.v !== 1) return false;
     if (j.s != null && !Array.isArray(j.s)) return false;
     if (j.t != null && !Array.isArray(j.t)) return false;
+    if (j.b != null && !Array.isArray(j.b)) return false;   // pen tip table (notes.js 2026-10-10)
     return true;
   } catch (_) { return false; }
 }

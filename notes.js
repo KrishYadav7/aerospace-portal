@@ -49,6 +49,34 @@
   const MARGIN_X = 230, TOP_Y = 228;
   const CORNELL_X = 560, CORNELL_Y = PH - 560;
   const TOOL_PEN = 1, TOOL_HL = 2, TOOL_SHAPE = 3, TOOL_DASH = 4;   // 3/4 = straight-edged shapes (solid / dashed)
+  const TOOL_INK = 5;                         // a pen stroke with its own tip (st.b) — stored as 100 + index into the page's tip table
+  /* ---------- pens (2026-10-10) ----------
+     Every pen is a set of tip settings. The settings that shape the drawn
+     line (tip sharpness, flatness, nib angle, opacity) are saved with each
+     stroke, so a page looks the same on every device, in thumbnails and in
+     the PDF. Pressure, speed and stabilisation act while you write — their
+     effect is baked into the stored points.
+     The index of each pen below is stored: append new pens, never reorder. */
+  const PEN_TYPES = [
+    { id: 'ball',     label: 'Ballpoint',   icon: 'fa-pen',             sizes: [4, 7, 12],  d: { w: 7,  op: 100, pr: 40, sp: 10, sh: 20, fl: 0,  an: 45, st: 30 } },
+    { id: 'fountain', label: 'Fountain',    icon: 'fa-pen-nib',         sizes: [5, 8, 13],  d: { w: 8,  op: 100, pr: 55, sp: 35, sh: 35, fl: 60, an: 40, st: 35 } },
+    { id: 'brush',    label: 'Brush',       icon: 'fa-paintbrush',      sizes: [8, 14, 24], d: { w: 14, op: 100, pr: 95, sp: 55, sh: 85, fl: 0,  an: 45, st: 45 } },
+    { id: 'pencil',   label: 'Pencil',      icon: 'fa-pencil',          sizes: [3, 5, 9],   d: { w: 5,  op: 85,  pr: 60, sp: 0,  sh: 30, fl: 0,  an: 45, st: 15 } },
+    { id: 'fine',     label: 'Fineliner',   icon: 'fa-pen-fancy',       sizes: [2, 4, 6],   d: { w: 4,  op: 100, pr: 0,  sp: 0,  sh: 0,  fl: 0,  an: 45, st: 40 } },
+    { id: 'callig',   label: 'Calligraphy', icon: 'fa-feather-pointed', sizes: [10, 16, 26], d: { w: 16, op: 100, pr: 25, sp: 15, sh: 10, fl: 92, an: 35, st: 40 } },
+    { id: 'marker',   label: 'Marker',      icon: 'fa-marker',          sizes: [8, 12, 20], d: { w: 12, op: 70,  pr: 10, sp: 0,  sh: 0,  fl: 45, an: 30, st: 25 } }
+  ];
+  const PENCIL = 3;                           // drawn with a paper-grain texture
+  const PEN_PARAMS = [
+    { k: 'w',  label: 'Thickness',            min: 1,  max: 60,  unit: '' },
+    { k: 'op', label: 'Opacity',              min: 10, max: 100, unit: '%' },
+    { k: 'pr', label: 'Pressure sensitivity', min: 0,  max: 100, unit: '%', hint: 'How much pressing harder with a stylus widens the line' },
+    { k: 'sp', label: 'Speed thinning',       min: 0,  max: 100, unit: '%', hint: 'Fast strokes come out thinner, like real ink' },
+    { k: 'sh', label: 'Tip sharpness',        min: 0,  max: 100, unit: '%', hint: 'Tapers the start and end of every stroke to a point' },
+    { k: 'fl', label: 'Tip flatness',         min: 0,  max: 100, unit: '%', hint: 'Round tip → flat chisel nib: thick and thin strokes by direction' },
+    { k: 'an', label: 'Nib angle',            min: 0,  max: 180, unit: '°', hint: 'Angle of a flat nib' },
+    { k: 'st', label: 'Stabilization',        min: 0,  max: 100, unit: '%', hint: 'Smooths shaky lines; higher is steadier but trails the pen a little' }
+  ];
   /* a wide, friendly palette for "any colour" + a free picker */
   const PALETTE = [
     '#000000', '#374151', '#6b7280', '#9ca3af', '#d1d5db', '#ffffff', '#7f1d1d', '#b91c1c',
@@ -118,12 +146,27 @@
   }
 
   /* ---------- ink encoding (what is stored) ----------
-     page = {v:1, s:[[tool, color, width, x0,y0,p0, dx,dy,p, …]], t:[[x,y,w,size,color,text]]}
-     points are integers in page units; x/y after the first are deltas; p = pressure 0–15 */
+     page = {v:1, s:[[tool, color, width, x0,y0,p0, dx,dy,p, …]], t:[[x,y,w,size,color,text]], b:[[pen, sharp, flat, angle, opacity, flags]]}
+     points are integers in page units; x/y after the first are deltas; p = pressure 0–15.
+     A pen stroke's tool is 100 + its index in b (the tip table, one entry per
+     distinct tip on the page) and its p is the width factor × 50 (1–100). */
   const HEX = /^#[0-9a-f]{6}$/i;
+  const tipDesc = (b) => [b.t, b.sh, b.fl, b.an, b.op, b.nt || 0];
+  function parseTip(a) {
+    if (!Array.isArray(a)) return null;
+    const n = (v, lo, hi, dflt) => { v = Math.round(Number(v)); return isFinite(v) ? clamp(v, lo, hi) : dflt; };
+    return { t: n(a[0], 0, PEN_TYPES.length - 1, 0), sh: n(a[1], 0, 100, 0), fl: n(a[2], 0, 100, 0), an: n(a[3], 0, 180, 45), op: n(a[4], 10, 100, 100), nt: n(a[5], 0, 3, 0) };
+  }
   function encodePage(d) {
+    const tips = [], tipIdx = new Map();
     const s = d.s.map(st => {
-      const p = st.pts, out = [st.tool, st.c, Math.round(st.w)];
+      let code = st.tool;
+      if (st.tool === TOOL_INK && st.b) {
+        const desc = tipDesc(st.b), key = desc.join(',');
+        if (!tipIdx.has(key)) { tipIdx.set(key, tips.length); tips.push(desc); }
+        code = 100 + tipIdx.get(key);
+      }
+      const p = st.pts, out = [code, st.c, Math.round(st.w)];
       let lx = 0, ly = 0;
       for (let i = 0; i < p.length; i += 3) {
         const x = Math.round(p[i]), y = Math.round(p[i + 1]);
@@ -132,7 +175,7 @@
       return out;
     });
     const t = d.t.map(x => [Math.round(x.x), Math.round(x.y), Math.round(x.w), Math.round(x.s), x.c, x.txt]);
-    return JSON.stringify({ v: 1, s, t });
+    return JSON.stringify(tips.length ? { v: 1, s, t, b: tips } : { v: 1, s, t });
   }
   function decodePage(str) {
     const d = { s: [], t: [] };
@@ -140,18 +183,24 @@
     let j;
     try { j = JSON.parse(str); } catch (_) { return d; }
     if (!j || j.v !== 1) return d;
+    const tips = Array.isArray(j.b) ? j.b.slice(0, 500).map(parseTip) : [];
     (Array.isArray(j.s) ? j.s : []).forEach(a => {
       if (!Array.isArray(a) || a.length < 6) return;
-      const tool = (a[0] === TOOL_HL || a[0] === TOOL_SHAPE || a[0] === TOOL_DASH) ? a[0] : TOOL_PEN;
+      const tip = a[0] >= 100 ? tips[a[0] - 100] : null;
+      const tool = tip ? TOOL_INK : (a[0] === TOOL_HL || a[0] === TOOL_SHAPE || a[0] === TOOL_DASH) ? a[0] : TOOL_PEN;
       const c = HEX.test(a[1]) ? a[1] : '#111827';
       const w = clamp(Number(a[2]) || 6, 1, 200);
+      const pmax = tip ? 100 : 15;
       const pts = [];
       let x = 0, y = 0;
       for (let i = 3; i + 2 < a.length; i += 3) {
         x += Number(a[i]) || 0; y += Number(a[i + 1]) || 0;
-        pts.push(clamp(x, -50, PW + 50), clamp(y, -50, PH + 50), clamp(a[i + 2] | 0, 0, 15));
+        pts.push(clamp(x, -50, PW + 50), clamp(y, -50, PH + 50), clamp(a[i + 2] | 0, 0, pmax));
       }
-      if (pts.length) d.s.push(withBox({ tool, c, w, pts }));
+      if (!pts.length) return;
+      const st = { tool, c, w, pts };
+      if (tip) st.b = Object.assign({}, tip);
+      d.s.push(withBox(st));
     });
     (Array.isArray(j.t) ? j.t : []).forEach(a => {
       if (!Array.isArray(a) || typeof a[5] !== 'string') return;
@@ -258,11 +307,197 @@
     if (n === 1) ctx.lineTo(p[0] + 0.5, p[1]);
     ctx.stroke(); ctx.restore();
   }
+  /* ---------- pens: the nib swept along the stroke ----------
+     The centre line is smoothed (quadratic curves through the mid-points)
+     and sampled densely. At every sample the nib is stamped (an ellipse
+     turned to the nib angle — a circle when the tip is round) and joined to
+     the previous stamp by their common tangent hull. Everything goes into
+     ONE path filled once (non-zero), so a translucent pen never darkens
+     where its own stroke overlaps. */
+  const TAU = Math.PI * 2;
+  const IX = [], IY = [], IR = [];             // scratch: the sampled centre line and radii
+  /* fills IX/IY/IR for a stroke; returns how many samples are final while the
+     stroke is still being drawn (the rest move when the next point arrives) */
+  function inkSpine(st, live, k) {
+    const p = st.pts, n = p.length / 3, b = st.b;
+    IX.length = IY.length = IR.length = 0;
+    const wf = new Float32Array(n);                         // stored width factor, smoothed so it never steps
+    for (let i = 0; i < n; i++) { const t = p[i * 3 + 2] / 50; wf[i] = i ? wf[i - 1] + (t - wf[i - 1]) * 0.42 : t; }
+    const minGap = 0.3 / k;
+    const add = (x, y, r) => {
+      const m = IX.length;
+      if (m && Math.abs(x - IX[m - 1]) + Math.abs(y - IY[m - 1]) < minGap) { IR[m - 1] = r; return; }
+      IX.push(x); IY.push(y); IR.push(r);
+    };
+    add(p[0], p[1], wf[0]);
+    let fixed = 1;
+    if (n > 2) {
+      let sx = p[0], sy = p[1], sr = wf[0];
+      for (let i = 1; i < n - 1; i++) {
+        const cx = p[i * 3], cy = p[i * 3 + 1], cr = wf[i];
+        const ex = (cx + p[i * 3 + 3]) / 2, ey = (cy + p[i * 3 + 4]) / 2, er = (cr + wf[i + 1]) / 2;
+        const steps = clamp(Math.ceil((Math.hypot(cx - sx, cy - sy) + Math.hypot(ex - cx, ey - cy)) * k / 3.5), 1, 24);
+        for (let j = 1; j <= steps; j++) {
+          const t = j / steps, u = 1 - t, a1 = u * u, a2 = 2 * u * t, a3 = t * t;
+          add(a1 * sx + a2 * cx + a3 * ex, a1 * sy + a2 * cy + a3 * ey, a1 * sr + a2 * cr + a3 * er);
+        }
+        sx = ex; sy = ey; sr = er;
+      }
+      fixed = IX.length;
+    }
+    if (n > 1) { const i = (n - 1) * 3; IX.push(p[i]); IY.push(p[i + 1]); IR.push(wf[n - 1]); }
+    /* radius = half width × width factor × taper at the two ends */
+    const half = st.w / 2, m = IX.length;
+    const sharp = b.sh / 100, depth = 0.94 * Math.pow(sharp, 0.8);
+    const tl = half * (3 + 14 * sharp) + 8;
+    let L = 0; const total = [0];
+    for (let i = 1; i < m; i++) { L += Math.hypot(IX[i] - IX[i - 1], IY[i] - IY[i - 1]); total.push(L); }
+    const taperStart = depth > 0 && m > 1 && !(b.nt & 1), taperEnd = depth > 0 && m > 1 && !live && !(b.nt & 2);
+    for (let i = 0; i < m; i++) {
+      let f = 1;
+      if (taperStart) f *= 1 - depth * Math.pow(1 - Math.min(1, total[i] / tl), 1.6);
+      if (taperEnd) f *= 1 - depth * Math.pow(1 - Math.min(1, (L - total[i]) / tl), 1.6);
+      IR[i] = Math.max(0.35, half * IR[i] * Math.max(1 - depth, f));
+    }
+    return fixed;
+  }
+  /* pencil: the ink colour through a fixed paper-grain mask (1 grain = 1 screen pixel) */
+  let grainMask = null; const grainTiles = new Map();
+  function grainFill(ctx, hex) {
+    let tile = grainTiles.get(hex);
+    if (!tile) {
+      const N = 96;
+      if (!grainMask) {
+        grainMask = new Uint8ClampedArray(N * N);
+        let s = 20261010; const rnd = () => (s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff) / 0x7fffffff;
+        for (let i = 0; i < grainMask.length; i++) { const r = rnd(); grainMask[i] = r < 0.22 ? 30 + r * 420 : 175 + rnd() * 80; }
+      }
+      tile = document.createElement('canvas'); tile.width = tile.height = N;
+      const g = tile.getContext('2d'), img = g.createImageData(N, N);
+      const r = parseInt(hex.slice(1, 3), 16), gg = parseInt(hex.slice(3, 5), 16), bb = parseInt(hex.slice(5, 7), 16);
+      for (let i = 0; i < grainMask.length; i++) { img.data[i * 4] = r; img.data[i * 4 + 1] = gg; img.data[i * 4 + 2] = bb; img.data[i * 4 + 3] = grainMask[i]; }
+      g.putImageData(img, 0, 0);
+      if (grainTiles.size > 24) grainTiles.clear();
+      grainTiles.set(hex, tile);
+    }
+    const pat = ctx.createPattern(tile, 'repeat');
+    if (!pat) return hex;
+    try { const k = ctx.getTransform().a || 1; pat.setTransform(new DOMMatrix([1 / k, 0, 0, 1 / k, 0, 0])); } catch (_) {}
+    return pat;
+  }
+  /* fills samples [from, to) of the current spine in solid colour.
+     The nib itself is stamped only at the ends and where the line turns — on a
+     gentle curve the hulls alone already meet with no visible gap. The path is
+     filled in small batches: one huge self-overlapping path is many times
+     slower to fill than a few dozen small ones. */
+  function inkFill(ctx, st, from, to, fill) {
+    const b = st.b, flat = b.fl / 100, m = IX.length;
+    const ratio = 1 - 0.86 * flat, stretch = 1 + 0.25 * flat;
+    const ang = b.an * Math.PI / 180, ca = Math.cos(ang), sa = Math.sin(ang);
+    const nib = (i) => { const A = IR[i] * stretch; ctx.moveTo(IX[i] + A * ca, IY[i] + A * sa); ctx.ellipse(IX[i], IY[i], A, IR[i] * ratio, ang, 0, TAU); };
+    /* the nib's outermost point across a direction of travel (tx,ty) — returned in SX/SY */
+    let SX = 0, SY = 0;
+    const support = (i, tx, ty) => {
+      const ux = -ty, uy = tx, nx = ux * ca + uy * sa, ny = -ux * sa + uy * ca;
+      const A = IR[i] * stretch, B = IR[i] * ratio, k = Math.hypot(A * nx, B * ny) || 1;
+      const qx = A * A * nx / k, qy = B * B * ny / k;
+      SX = qx * ca - qy * sa; SY = qx * sa + qy * ca;
+    };
+    /* direction of travel AT sample j (from its neighbours), so the two hulls that meet
+       there share one edge and leave no wedge-shaped crack on the outside of a curve */
+    let JX = 0, JY = 0;
+    const joint = (j) => {
+      const a = j > 0 ? j - 1 : j, c = j < m - 1 ? j + 1 : j;
+      const dx = IX[c] - IX[a], dy = IY[c] - IY[a], len = Math.hypot(dx, dy);
+      if (len > 1e-6) { JX = dx / len; JY = dy / len; }
+    };
+    const quad = (px, py, sx0, sy0, x, y, sx1, sy1) => {
+      ctx.moveTo(px + sx0, py + sy0);                     // wound the same way as the ellipses, so non-zero fill = union
+      ctx.lineTo(px - sx0, py - sy0);
+      ctx.lineTo(x - sx1, y - sy1);
+      ctx.lineTo(x + sx1, y + sy1);
+      ctx.closePath();
+    };
+    let pdx = 0, pdy = 0, batch = 0, fresh = true;
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    for (let i = from; i < to; i++) {
+      const x = IX[i], y = IY[i];
+      if (i === 0 || i === from || i === to - 1) nib(i);
+      if (i) {
+        const px = IX[i - 1], py = IY[i - 1], dx = x - px, dy = y - py, len = Math.hypot(dx, dy);
+        if (len > 0.05) {
+          const tx = dx / len, ty = dy / len, cross = pdx * ty - pdy * tx, dot = pdx * tx + pdy * ty;
+          /* a sharp corner keeps its own straight hull plus the nib to round it; and every
+             batch starts on a nib, so the edge shared with the previous batch is inside ink */
+          const corner = !fresh && (cross > 0.35 || cross < -0.35 || dot < 0.6);
+          if (fresh || corner) nib(i - 1);
+          fresh = false;
+          if (corner || dot < 0.6) {
+            support(i - 1, tx, ty); const sx0 = SX, sy0 = SY;
+            support(i, tx, ty);
+            quad(px, py, sx0, sy0, x, y, SX, SY);
+            nib(i);
+          } else {
+            joint(i - 1); support(i - 1, JX, JY); const sx0 = SX, sy0 = SY;
+            joint(i); support(i, JX, JY);
+            quad(px, py, sx0, sy0, x, y, SX, SY);
+          }
+          pdx = tx; pdy = ty;
+        }
+      }
+      if (++batch >= 6) { ctx.fill(); ctx.beginPath(); batch = 0; fresh = true; }
+    }
+    if (batch) ctx.fill();
+  }
+  function spineBox(st) {                               // box of the current spine, in page units
+    const pad = 1 + 0.25 * st.b.fl / 100;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < IX.length; i++) {
+      const r = IR[i] * pad;
+      if (IX[i] - r < x0) x0 = IX[i] - r; if (IX[i] + r > x1) x1 = IX[i] + r;
+      if (IY[i] - r < y0) y0 = IY[i] - r; if (IY[i] + r > y1) y1 = IY[i] + r;
+    }
+    return [x0, y0, x1, y1];
+  }
+  /* translucent pens and the pencil: the stroke is drawn solid into a scratch
+     layer, then laid down once at the pen's opacity — so it never darkens
+     where it crosses itself, and the pencil grain is applied in one pass */
+  let layer = null, layerFreeT = 0;
+  function drawInk(ctx, st) {
+    let m; try { m = ctx.getTransform(); } catch (_) { m = { a: 1, d: 1, e: 0, f: 0 }; }
+    inkSpine(st, false, m.a || 1);
+    const b = st.b, bb = spineBox(st);
+    if (b.op >= 100 && b.t !== PENCIL) { inkFill(ctx, st, 0, IX.length, st.c); return bb; }
+    const cv = ctx.canvas, cw = cv ? cv.width : 1e5, ch = cv ? cv.height : 1e5;
+    const dx0 = Math.max(0, Math.floor(bb[0] * m.a + m.e) - 2), dy0 = Math.max(0, Math.floor(bb[1] * m.d + m.f) - 2);
+    const w = Math.min(cw, Math.ceil(bb[2] * m.a + m.e) + 2) - dx0, h = Math.min(ch, Math.ceil(bb[3] * m.d + m.f) + 2) - dy0;
+    if (w <= 0 || h <= 0) return bb;
+    if (!layer) layer = document.createElement('canvas');
+    if (layer.width < w || layer.height < h) { layer.width = Math.max(layer.width, w); layer.height = Math.max(layer.height, h); }
+    clearTimeout(layerFreeT); layerFreeT = setTimeout(() => { layer.width = layer.height = 0; }, 5000);
+    const L = layer.getContext('2d');
+    L.setTransform(1, 0, 0, 1, 0, 0); L.globalCompositeOperation = 'source-over'; L.clearRect(0, 0, w, h);
+    L.setTransform(m.a, 0, 0, m.d, m.e - dx0, m.f - dy0);
+    inkFill(L, st, 0, IX.length, st.c);
+    if (b.t === PENCIL) {
+      L.setTransform(1, 0, 0, 1, 0, 0); L.globalCompositeOperation = 'source-in';
+      L.fillStyle = grainFill(L, st.c); L.fillRect(0, 0, w, h);
+      L.globalCompositeOperation = 'source-over';
+    }
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = b.op / 100;
+    ctx.drawImage(layer, 0, 0, w, h, dx0, dy0, w, h);
+    ctx.restore();
+    return bb;
+  }
+  /* how far ink can reach from its centre line (erasing, selection boxes) */
+  const halfW = (st) => st.tool === TOOL_INK ? st.w * 1.2 : st.w / 2;
+
   const isShape = (st) => st.tool === TOOL_SHAPE || st.tool === TOOL_DASH;
-  function drawStroke(ctx, st) { if (st.tool === TOOL_HL) drawHL(ctx, st); else if (isShape(st)) drawShape(ctx, st); else drawPen(ctx, st); }
+  function drawStroke(ctx, st) { if (st.tool === TOOL_HL) drawHL(ctx, st); else if (isShape(st)) drawShape(ctx, st); else if (st.tool === TOOL_INK) drawInk(ctx, st); else drawPen(ctx, st); }
   function drawContent(ctx, d, skipText, skip) {
     for (const st of d.s) if (st.tool === TOOL_HL && !(skip && skip.has(st))) drawHL(ctx, st);   // highlighter under ink
-    for (const st of d.s) if (st.tool !== TOOL_HL && !(skip && skip.has(st))) { if (isShape(st)) drawShape(ctx, st); else drawPen(ctx, st); }
+    for (const st of d.s) if (st.tool !== TOOL_HL && !(skip && skip.has(st))) drawStroke(ctx, st);
     d.t.forEach((t, i) => { if (i !== skipText && !(skip && skip.has(t))) drawText(ctx, t); });   // skipText = index being edited
   }
   function drawPaper(ctx, paper, color) {
@@ -434,8 +669,29 @@
     eraseMode: lsGet('aero_nt_erase') === 'stroke' ? 'stroke' : 'precise',
     snap: lsGet('aero_nt_snap') !== '0',                // draw & hold → clean shape
     sel: null,                                          // lasso selection {page, items:[{kind,item}]}
-    sideOpen: null, thumbIo: null, thumbQueue: new Set(), thumbTimer: 0
+    sideOpen: null, thumbIo: null, thumbQueue: new Set(), thumbTimer: 0,
+    penType: 0, pens: [], favs: [], pressureSeen: false
   };
+  /* ---------- pen settings: one set per pen type, plus favourites (kept on this device) ---------- */
+  function cleanPen(c, dflt) {
+    const o = {};
+    PEN_PARAMS.forEach(p => { const v = Math.round(Number(c && c[p.k])); o[p.k] = isFinite(v) ? clamp(v, p.min, p.max) : dflt[p.k]; });
+    return o;
+  }
+  (function loadPens() {
+    let saved = null; try { saved = JSON.parse(lsGet('aero_nt_pens') || 'null'); } catch (_) {}
+    S.pens = PEN_TYPES.map((t, i) => cleanPen(saved && saved.c && saved.c[i] || t.d, t.d));
+    S.penType = saved && PEN_TYPES[saved.t] ? saved.t : 0;
+    let favs = null; try { favs = JSON.parse(lsGet('aero_nt_penfav') || '[]'); } catch (_) {}
+    S.favs = (Array.isArray(favs) ? favs : []).filter(f => f && PEN_TYPES[f.t] && HEX.test(f.c)).slice(0, 8)
+      .map(f => ({ t: f.t, c: f.c, cfg: cleanPen(f.cfg, PEN_TYPES[f.t].d) }));
+  })();
+  let penSaveTimer = 0;
+  function savePens() {
+    clearTimeout(penSaveTimer);
+    penSaveTimer = setTimeout(() => lsSet('aero_nt_pens', JSON.stringify({ t: S.penType, c: S.pens })), 300);
+  }
+  const penCfg = () => S.pens[S.penType];
   const penInk = () => S.penHex || inks()[S.penColor] || inks()[0];
   const hlInk = () => S.hlHex || HILITES[S.hlColor] || HILITES[0];
   function recentColors() { try { const a = JSON.parse(lsGet('aero_nt_recent') || '[]'); return Array.isArray(a) ? a.filter(c => HEX.test(c)).slice(0, 8) : []; } catch (_) { return []; } }
@@ -576,7 +832,9 @@
     const ov = document.createElement('div');
     ov.className = 'nt-pop-ov' + (opts && opts.center ? ' is-center' : '');
     ov.innerHTML = `<div class="nt-pop ${opts && opts.cls || ''}" role="dialog" aria-modal="true">${html}</div>`;
-    ov.addEventListener('click', (e) => { if (e.target === ov) closePopup(); else onClick && onClick(e, ov); });
+    let downInside = false;
+    ov.addEventListener('pointerdown', (e) => { downInside = e.target !== ov; });
+    ov.addEventListener('click', (e) => { if (e.target === ov) { if (!downInside) closePopup(); downInside = false; } else onClick && onClick(e, ov); });
     document.body.appendChild(ov);
     S.popup = ov;
     if (opts && opts.anchor && !opts.center) {
@@ -717,7 +975,7 @@
             <span class="nt-status" id="ntStatus" aria-live="polite"></span>
           </div>
           <div class="nt-bar-c" role="toolbar" aria-label="Tools">
-            ${toolBtn('pen', 'fa-pen', 'Pen (P) — hold at the end of a stroke to snap a clean shape')}
+            ${toolBtn('pen', PEN_TYPES[S.penType].icon, 'Pen (P) — tap again for pen types & tip settings; hold at the end of a stroke to snap a clean shape')}
             ${toolBtn('hl', 'fa-highlighter', 'Highlighter (H)')}
             ${toolBtn('eraser', 'fa-eraser', 'Eraser (E)')}
             <button type="button" class="nt-tool" data-tool="shape" title="Shapes (S)" aria-label="Shapes" aria-pressed="false">${shapeSvg('triangle')}</button>
@@ -843,10 +1101,14 @@
         <button type="button" class="nt-dash ${S.dashed ? 'on' : ''}" data-act="dash" title="Dashed line" aria-label="Dashed line" aria-pressed="${S.dashed}"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 12h3M10.5 12h3M18 12h3"/></svg></button>`;
       else if (t === 'eraser') oEl.innerHTML = `<div class="nt-seg nt-seg-sm" role="group" aria-label="Eraser type"><button type="button" class="${S.eraseMode === 'precise' ? 'on' : ''}" data-erase="precise" title="Erase only what you rub">Precise</button><button type="button" class="${S.eraseMode === 'stroke' ? 'on' : ''}" data-erase="stroke" title="Remove whole strokes">Stroke</button></div>`;
       else if (t === 'lasso') oEl.innerHTML = `<span class="nt-hint"><i class="fas fa-circle-info"></i> Draw around ink to select it</span>`;
+      else if (t === 'pen') oEl.innerHTML = `<button type="button" class="nt-pen-pick" data-act="penpanel" title="Pen type & tip settings" aria-label="Pen type and tip settings"><i class="fas ${PEN_TYPES[S.penType].icon}"></i><span>${PEN_TYPES[S.penType].label}</span><i class="fas fa-sliders nt-pen-tune"></i></button>`
+        + S.favs.slice(0, 5).map((f, i) => `<button type="button" class="nt-fav ${favOn(f) ? 'on' : ''}" data-fav="${i}" style="--c:${f.c}" title="${esc(PEN_TYPES[f.t].label)} · ${f.cfg.w}" aria-label="Favourite pen ${i + 1}: ${esc(PEN_TYPES[f.t].label)}"><i class="fas ${PEN_TYPES[f.t].icon}"></i></button>`).join('');
       else oEl.innerHTML = '';
     }
     const key = t === 'pen' || t === 'shape' ? 'pen' : t === 'hl' ? 'hl' : t === 'eraser' ? 'eraser' : t === 'text' ? 'text' : null;
-    sEl.innerHTML = key ? [0, 1, 2].map(i => `<button type="button" class="nt-size ${S.size[key] === i ? 'on' : ''}" data-size="${i}" aria-label="Size ${i + 1}"><i style="--d:${[5, 9, 14][i]}px"></i></button>`).join('') : '';
+    const sizeOn = (i) => t === 'pen' ? penCfg().w === PEN_TYPES[S.penType].sizes[i] : S.size[key] === i;
+    sEl.innerHTML = key ? [0, 1, 2].map(i => `<button type="button" class="nt-size ${sizeOn(i) ? 'on' : ''}" data-size="${i}" aria-label="Size ${i + 1}"><i style="--d:${[5, 9, 14][i]}px"></i></button>`).join('') : '';
+    const pb = S.root.querySelector('[data-tool="pen"] i'); if (pb) pb.className = 'fas ' + PEN_TYPES[S.penType].icon;
     cEl.parentElement.querySelectorAll('.nt-sep').forEach(s => { s.style.display = (key || t === 'lasso') ? '' : 'none'; });
     if (t !== 'lasso') clearSelection();
     S.root.querySelectorAll('[data-tool]').forEach(b => { const on = b.dataset.tool === t; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
@@ -1104,22 +1366,66 @@
       showOverlay(p);
       return;
     }
-    const isHl = S.tool === 'hl';
-    const st = {
-      tool: isHl ? TOOL_HL : TOOL_PEN,
-      c: isHl ? hlInk() : penInk(),
-      w: isHl ? SIZES.hl[S.size.hl] : SIZES.pen[S.size.pen],
-      pts: [x, y, pressureOf(e)]
-    };
-    S.active = Object.assign(base, { kind: 'stroke', st, drawn: 1,
-                 min: Math.max(0.8, 1.1 / (scale() * (window.devicePixelRatio || 1))), hx: e.clientX, hy: e.clientY });
-    if (isHl) showOverlay(p); else armHold(S.active);
+    const min = Math.max(0.8, 1.1 / (scale() * (window.devicePixelRatio || 1)));
+    if (S.tool === 'hl') {
+      const st = { tool: TOOL_HL, c: hlInk(), w: SIZES.hl[S.size.hl], pts: [x, y, pressureOf(e)] };
+      S.active = Object.assign(base, { kind: 'stroke', st, min, hx: e.clientX, hy: e.clientY });
+      showOverlay(p);
+      return;
+    }
+    /* pen: the stroke is drawn live on the overlay and lands on the page when the pen lifts */
+    const cfg = Object.assign({}, penCfg()), t = performance.now();
+    const a = Object.assign(base, {
+      kind: 'stroke', cfg, min, hx: e.clientX, hy: e.clientY, done: 0, box: null,
+      sx: x, sy: y, rx: x, ry: y, lt: e.timeStamp || t, lcx: e.clientX, lcy: e.clientY, vel: 0, pr: null,
+      tau: cfg.st ? 6 + 110 * Math.pow(cfg.st / 100, 2) : 0,             // stabilisation time constant (ms)
+      inc: S.penType !== PENCIL                                         // drawn piece by piece (the pencil's grain needs whole-stroke passes)
+    });
+    a.st = { tool: TOOL_INK, c: penInk(), w: cfg.w, b: { t: S.penType, sh: cfg.sh, fl: cfg.fl, an: cfg.an, op: cfg.op, nt: 0 }, pts: [x, y, inkWidth(a, e)] };
+    S.active = a;
+    showOverlay(p);
+    if (a.inc && cfg.op < 100 && S.overlay) S.overlay.c.style.opacity = String(cfg.op / 100);   // translucent ink: solid on the overlay, the overlay see-through
+    armHold(a);
+    drawLive(a);
+  }
+  /* ---------- pen input: pressure + speed → width, stabilisation → position ---------- */
+  function widthCode(pr, vel, cfg) {                     // pr 0–1, vel in screen px per ms → stored width factor × 50
+    const sens = cfg.pr / 100, thin = (cfg.sp / 100) * Math.min(1, vel / 3.2);
+    const f = (1 + sens * (Math.min(1.9, 0.12 + 1.76 * pr) - 1)) * (1 - 0.65 * thin);
+    return clamp(Math.round(f * 50), 1, 100);
+  }
+  function inkWidth(a, ev) {
+    let pr = 0.5;                                        // mouse & finger: no pressure, the middle of the range
+    if (ev.pointerType === 'pen' && ev.pressure > 0) {   // some styluses report 0 at the first contact
+      pr = Math.pow(ev.pressure, 0.8);
+      if (ev.pressure !== 0.5) S.pressureSeen = true;
+    }
+    a.pr = a.pr == null ? pr : a.pr + (pr - a.pr) * 0.5;
+    return widthCode(a.pr, a.vel, a.cfg);
+  }
+  function inkSample(a, ev) {
+    const [rx, ry] = pagePoint(a.page, ev);
+    const now = ev.timeStamp || performance.now(), dt = clamp(now - a.lt, 4, 60);
+    a.lt = now;
+    a.vel += (Math.min(6, Math.hypot(ev.clientX - a.lcx, ev.clientY - a.lcy) / dt) - a.vel) * 0.3;
+    a.lcx = ev.clientX; a.lcy = ev.clientY;
+    a.rx = rx; a.ry = ry;
+    const k = a.tau ? 1 - Math.exp(-dt / a.tau) : 1;     // the stabilised point follows the pen like on a short spring
+    a.sx += (rx - a.sx) * k; a.sy += (ry - a.sy) * k;
+  }
+  /* with stabilisation on, the line trails the pen — on lift it is drawn on to where the pen actually stopped */
+  function inkCatchUp(a) {
+    const pts = a.st.pts, n = pts.length, lx = pts[n - 3], ly = pts[n - 2], q = pts[n - 1];
+    const d = Math.hypot(a.rx - lx, a.ry - ly);
+    if (!a.tau || d < 1) return;
+    const steps = Math.min(10, Math.ceil(d / Math.max(2, a.st.w * 0.4)));
+    for (let i = 1; i <= steps; i++) pts.push(lx + (a.rx - lx) * i / steps, ly + (a.ry - ly) * i / steps, q);
   }
   /* draw & hold: keep the pen still for a moment at the end of a stroke and a
      rough line / circle / ellipse / triangle / box becomes a clean one */
   function armHold(a) {
     clearTimeout(a.hold);
-    if (!S.snap || a.snapped || a.st.tool !== TOOL_PEN) return;
+    if (!S.snap || a.snapped || (a.st.tool !== TOOL_PEN && a.st.tool !== TOOL_INK)) return;
     a.hold = setTimeout(() => trySnap(a), 620);
   }
   function trySnap(a) {
@@ -1127,8 +1433,12 @@
     const pts = recognize(a.st.pts); if (!pts) return;
     a.snapped = true;
     a.st = { tool: TOOL_SHAPE, c: a.st.c, w: a.st.w, pts };
-    renderPage(a.page);                                   // wipes the rough ink (not stored yet)
-    if (a.page.ctx) { a.page.ctx.setTransform(a.page.k, 0, 0, a.page.k, 0, 0); drawShape(a.page.ctx, a.st); }
+    const o = S.overlay;                                  // the rough ink lives on the overlay — swap it for the clean shape
+    if (o) {
+      o.c.style.opacity = '';
+      o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height);
+      o.ctx.setTransform(a.page.k, 0, 0, a.page.k, 0, 0); drawShape(o.ctx, a.st);
+    }
     try { if (navigator.vibrate) navigator.vibrate(10); } catch (_) {}
   }
   function onPointerMove(e) {
@@ -1170,18 +1480,19 @@
     }
     if (a.snapped) return;                               // already turned into a clean shape
     if (Math.abs(e.clientX - a.hx) + Math.abs(e.clientY - a.hy) > 7) { a.hx = e.clientX; a.hy = e.clientY; armHold(a); }
-    const pts = a.st.pts;
+    const pts = a.st.pts, ink = a.st.tool === TOOL_INK;
     for (const ev of evs) {
-      const [x, y] = pagePoint(a.page, ev);
+      let x, y;
+      if (ink) { inkSample(a, ev); x = a.sx; y = a.sy; } else [x, y] = pagePoint(a.page, ev);
       const lx = pts[pts.length - 3], ly = pts[pts.length - 2];
       if (Math.abs(x - lx) + Math.abs(y - ly) < a.min) continue;
-      pts.push(x, y, pressureOf(ev));
+      pts.push(x, y, ink ? inkWidth(a, ev) : pressureOf(ev));
     }
-    /* ink is drawn right here, in the event — pointer events already arrive
-       once per display frame, so waiting for the next frame only adds lag.
-       The translucent highlighter redraws its overlay once per frame. */
-    if (a.st.tool === TOOL_HL) { if (!a.raf) a.raf = requestAnimationFrame(() => drawLive(a)); }
-    else drawLive(a);
+    /* ink is drawn right here, in the event — pointer events already
+       arrive once per display frame, so waiting for the next frame only adds
+       lag. The pencil and the highlighter redraw once per frame. */
+    if (ink && a.inc) drawLive(a);
+    else if (!a.raf) a.raf = requestAnimationFrame(() => drawLive(a));
   }
   /* previews that live on the overlay: shape being dragged, lasso path, moving selection */
   function drawAux(a) {
@@ -1206,22 +1517,27 @@
       o.ctx.closePath(); o.ctx.fill(); o.ctx.stroke(); o.ctx.restore();
     }
   }
-  function drawLive(a, force) {
+  function drawLive(a) {
     a.raf = 0;
-    if (a.snapped) return;
-    if (S.active !== a && !force) return;
-    const n = a.st.pts.length / 3;
+    if (a.snapped || S.active !== a) return;
+    const o = S.overlay; if (!o) return;
+    const ctx = o.ctx, k = a.page.k;
     if (a.st.tool === TOOL_HL) {                         // translucent: redraw on the light overlay only
-      const o = S.overlay; if (!o) return;
-      o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height);
-      o.ctx.setTransform(a.page.k, 0, 0, a.page.k, 0, 0); drawHL(o.ctx, a.st);
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, o.c.width, o.c.height);
+      ctx.setTransform(k, 0, 0, k, 0, 0); drawHL(ctx, a.st);
       return;
     }
-    const ctx = a.page.ctx; if (!ctx) return;
-    ctx.setTransform(a.page.k, 0, 0, a.page.k, 0, 0);
-    ctx.strokeStyle = a.st.c; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    for (let i = Math.max(1, a.drawn); i < n; i++) penSeg(ctx, a.st, i);  // only the NEW segments
-    a.drawn = n;
+    if (a.inc) {                                          // only the samples that are now final — never a redraw
+      const fixed = inkSpine(a.st, true, k);
+      if (fixed > a.done) { ctx.setTransform(k, 0, 0, k, 0, 0); inkFill(ctx, a.st, a.done, fixed, a.st.c); a.done = fixed; }
+      return;
+    }
+    /* pencil: clear what was drawn last frame and draw the whole stroke once */
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (a.box) ctx.clearRect(a.box[0], a.box[1], a.box[2], a.box[3]);
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    const bb = drawInk(ctx, a.st);
+    a.box = [Math.floor(bb[0] * k) - 3, Math.floor(bb[1] * k) - 3, Math.ceil((bb[2] - bb[0]) * k) + 6, Math.ceil((bb[3] - bb[1]) * k) + 6];
   }
   function onPointerUp(e) {
     if (e.pointerType === 'touch' && S.palms.has(e.pointerId)) { S.palms.delete(e.pointerId); return; }
@@ -1266,14 +1582,14 @@
       markDirty(p);
       return;
     }
-    if (!a.snapped) drawLive(a, true);
-    const st = withBox(a.st);
+    if (a.st.tool === TOOL_INK) inkCatchUp(a);
+    const st = a.st;
     st.pts = st.pts.map((v, i) => i % 3 === 2 ? v : Math.round(v));   // integers, as stored
+    withBox(st);
     p.d.s.push(st);
     hideOverlay();
     if (st.tool === TOOL_HL) renderPage(p);               // highlighter goes under the ink
-    else if (a.snapped) { /* already drawn clean */ }
-    else if (p.ctx) { p.ctx.setTransform(p.k, 0, 0, p.k, 0, 0); penTail(p.ctx, st); }
+    else if (p.ctx) { p.ctx.setTransform(p.k, 0, 0, p.k, 0, 0); drawStroke(p.ctx, st); }   // the finished stroke, tapered at both ends
     pushUndo({ k: 'add', pid: p.id, kind: 's', item: st });
     markDirty(p);
   }
@@ -1282,21 +1598,26 @@
     S.active = null; hideOverlay(); clearTimeout(a.hold);
     if (a.kind === 'erase') commitErase(a);
     else if (a.kind === 'move') { if (S.sel) S.sel.hidden = null; if (S.sel && S.sel.box) S.sel.box.style.transform = ''; renderPage(a.page); }
-    else if (a.kind !== 'lasso' && a.kind !== 'shape') renderPage(a.page);
   }
+  /* the overlay is kept between strokes (re-allocating a page-sized canvas
+     for every stroke is slow on phones) and handed back after a few idle seconds */
   function showOverlay(p) {
+    if (!p.canvas) return;
     if (!S.overlay) {
       const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay';
-      S.overlay = { c, ctx: c.getContext('2d') };
+      S.overlay = { c, ctx: c.getContext('2d'), freeT: 0 };
     }
     const o = S.overlay;
-    o.c.width = p.canvas.width; o.c.height = p.canvas.height;
+    clearTimeout(o.freeT);
+    if (o.c.width !== p.canvas.width || o.c.height !== p.canvas.height) { o.c.width = p.canvas.width; o.c.height = p.canvas.height; }
+    else { o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height); }
     p.el.appendChild(o.c);
   }
   function hideOverlay() {
     const o = S.overlay; if (!o) return;
-    o.c.remove(); o.c.width = 0; o.c.height = 0;          // no memory kept between strokes
-    o.c.style.transform = '';
+    o.c.remove(); o.c.style.transform = ''; o.c.style.opacity = '';
+    clearTimeout(o.freeT);
+    o.freeT = setTimeout(() => { if (!o.c.isConnected) { o.c.width = 0; o.c.height = 0; } }, 4000);
   }
 
   /* ---------- eraser (whole strokes, like GoodNotes' stroke eraser) ---------- */
@@ -1326,11 +1647,22 @@
       }
       P.push(nx, ny, nq);
     }
-    const pieces = []; let cur = [];
-    const flush = () => { if (cur.length >= 6) { if (shape) cur[2] = 0; pieces.push(withBox({ tool: st.tool, c: st.c, w: st.w, pts: cur })); } cur = []; };
+    const pieces = []; let cur = [], first = 0, last = 0;
+    const flush = () => {
+      if (cur.length >= 6) {
+        if (shape) cur[2] = 0;
+        const pc = { tool: st.tool, c: st.c, w: st.w, pts: cur };
+        if (st.b) {                                       // a pen piece keeps its pointed tip only where the stroke really began / ended
+          pc.b = Object.assign({}, st.b);
+          pc.b.nt = (st.b.nt || 0) | (first > 0 ? 1 : 0) | (last < P.length - 3 ? 2 : 0);
+        }
+        pieces.push(withBox(pc));
+      }
+      cur = [];
+    };
     for (let i = 0; i < P.length; i += 3) {
       if ((P[i] - x) ** 2 + (P[i + 1] - y) ** 2 <= lim) flush();
-      else { if (shape && P[i + 2] === 0) flush(); cur.push(P[i], P[i + 1], P[i + 2]); }
+      else { if (shape && P[i + 2] === 0) flush(); if (!cur.length) first = i; last = i; cur.push(P[i], P[i + 1], P[i + 2]); }
     }
     flush();
     return pieces;
@@ -1339,9 +1671,9 @@
     const a = S.active, r = SIZES.eraser[S.size.eraser];
     const d = p.d; let hit = false;
     for (let i = d.s.length - 1; i >= 0; i--) {
-      const st = d.s[i], bb = st.bb, pad = r + st.w;
+      const st = d.s[i], bb = st.bb, hw = halfW(st), pad = r + hw * 2;
       if (x < bb[0] - pad || x > bb[2] + pad || y < bb[1] - pad || y > bb[3] + pad) continue;
-      const lim = (r + st.w / 2) * (r + st.w / 2);
+      const lim = (r + hw) * (r + hw);
       if (!strokeHit(st, x, y, lim)) continue;
       const pieces = S.eraseMode === 'precise' ? splitStroke(st, x, y, lim, Math.max(3, r / 2.5)) : [];
       d.s.splice(i, 1, ...pieces);
@@ -1371,7 +1703,7 @@
     return inside;
   }
   function itemBox(it) {
-    if (it.kind === 's') { const b = it.item.bb, h = it.item.w / 2; return [b[0] - h, b[1] - h, b[2] + h, b[3] + h]; }
+    if (it.kind === 's') { const b = it.item.bb, h = halfW(it.item); return [b[0] - h, b[1] - h, b[2] + h, b[3] + h]; }
     const t = it.item, h = textBox(measureCtx(), t).h; return [t.x, t.y, t.x + t.w, t.y + h];
   }
   function selBox(items) {
@@ -1457,7 +1789,7 @@
     if (S.sel) showSelectionUI();
   }
   function cloneItem(it) {
-    if (it.kind === 's') return { kind: 's', item: withBox({ tool: it.item.tool, c: it.item.c, w: it.item.w, pts: it.item.pts.slice() }) };
+    if (it.kind === 's') { const st = { tool: it.item.tool, c: it.item.c, w: it.item.w, pts: it.item.pts.slice() }; if (it.item.b) st.b = Object.assign({}, it.item.b); return { kind: 's', item: withBox(st) }; }
     return { kind: 't', item: Object.assign({}, it.item) };
   }
   function selectionAction(act, btn) {
@@ -1942,6 +2274,99 @@
     }, { anchor, cls: 'nt-menu nt-shapes', width: 320 });
   }
 
+  /* ---------- pens panel: type, tip settings, live preview, favourites ---------- */
+  function setPenType(i) { if (!PEN_TYPES[i]) return; S.penType = i; S.tool = 'pen'; savePens(); renderToolOptions(); }
+  function favOn(f) {
+    if (f.t !== S.penType || f.c.toLowerCase() !== penInk().toLowerCase()) return false;
+    const c = penCfg(); return PEN_PARAMS.every(p => c[p.k] === f.cfg[p.k]);
+  }
+  function useFav(i) {
+    const f = S.favs[i]; if (!f) return;
+    S.penType = f.t; S.pens[f.t] = Object.assign({}, f.cfg); S.penHex = f.c; S.tool = 'pen';
+    savePens(); renderToolOptions();
+  }
+  const saveFavs = () => lsSet('aero_nt_penfav', JSON.stringify(S.favs));
+  /* a handwriting-like sample stroke, fed through the same pressure / speed /
+     stabilisation code as real input, so the preview shows what you will get */
+  function sampleStroke(ti, cfg, color, W, H, jitter) {
+    const a = { cfg, vel: 0, pr: null }, pts = [], N = 96;
+    const tau = cfg.st ? 6 + 110 * Math.pow(cfg.st / 100, 2) : 0, kf = tau ? 1 - Math.exp(-8 / tau) : 1;
+    let s = 99, sx = 0, sy = 0;
+    const rnd = () => ((s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff) / 0x7fffffff) - 0.5;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      let x = W * (0.07 + 0.86 * u) - Math.sin(u * Math.PI * 4) * W * 0.025;
+      let y = H * 0.5 - Math.sin(u * Math.PI * 2.5) * H * 0.3;
+      if (jitter) { x += rnd() * jitter; y += rnd() * jitter; }
+      a.vel += (1.1 + 2.2 * Math.abs(Math.cos(u * Math.PI * 3)) - a.vel) * 0.3;
+      sx = i ? sx + (x - sx) * kf : x; sy = i ? sy + (y - sy) * kf : y;
+      const pr = Math.pow(0.2 + 0.75 * Math.pow(Math.sin(Math.PI * u), 0.7), 0.8);
+      a.pr = a.pr == null ? pr : a.pr + (pr - a.pr) * 0.5;
+      pts.push(sx, sy, widthCode(a.pr, a.vel, cfg));
+    }
+    return { tool: TOOL_INK, c: color, w: cfg.w, b: { t: ti, sh: cfg.sh, fl: cfg.fl, an: cfg.an, op: cfg.op, nt: 0 }, pts };
+  }
+  function drawSample(cv, ti, cfg, W, jitter) {
+    if (!cv) return;
+    const r = cv.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+    const cw = Math.max(1, Math.round(r.width * dpr)), ch = Math.max(1, Math.round(r.height * dpr));
+    if (cv.width !== cw || cv.height !== ch) { cv.width = cw; cv.height = ch; }
+    const ctx = cv.getContext('2d'), k = cw / W;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = (PAPER_COLORS[S.nb && S.nb.paperColor] || PAPER_COLORS.white).bg; ctx.fillRect(0, 0, cw, ch);
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    drawInk(ctx, sampleStroke(ti, cfg, penInk(), W, ch / k, jitter));
+  }
+  function penPanelHtml() {
+    const t = S.penType, c = penCfg();
+    return `
+      <div class="nt-pp-head"><span class="nt-cp-title">Pens</span><button type="button" class="nt-pp-link" data-pa="reset" title="Back to this pen's original settings"><i class="fas fa-rotate-left"></i> Reset</button></div>
+      <div class="nt-pp-types">${PEN_TYPES.map((p, i) => `<button type="button" class="${i === t ? 'on' : ''}" data-ptype="${i}" title="${p.label} (key ${i + 1})" aria-pressed="${i === t}"><canvas data-sample="${i}" width="1" height="1" aria-hidden="true"></canvas><span><i class="fas ${p.icon}"></i>${p.label}</span></button>`).join('')}</div>
+      <canvas class="nt-pp-prev" id="ntPenPrev" width="1" height="1" role="img" aria-label="Preview of the pen"></canvas>
+      <div class="nt-pp-sliders">${PEN_PARAMS.map(p => `<label class="nt-pp-row ${p.k === 'an' && !c.fl ? 'is-off' : ''}" data-row="${p.k}"${p.hint ? ` title="${esc(p.hint)}"` : ''}><span>${p.label}</span><b data-pv="${p.k}">${c[p.k]}${p.unit}</b><input type="range" min="${p.min}" max="${p.max}" step="1" value="${c[p.k]}" data-pk="${p.k}" aria-label="${p.label}"></label>`).join('')}</div>
+      <div class="nt-cp-title nt-pp-ftitle">Favourite pens</div>
+      <div class="nt-pp-favs">${S.favs.map((f, i) => `<span class="nt-pp-fav ${favOn(f) ? 'on' : ''}"><button type="button" data-favuse="${i}" style="--c:${f.c}" title="${esc(PEN_TYPES[f.t].label)} · size ${f.cfg.w}" aria-label="Use ${esc(PEN_TYPES[f.t].label)}"><i class="fas ${PEN_TYPES[f.t].icon}"></i></button><button type="button" class="nt-pp-favx" data-favdel="${i}" aria-label="Remove this favourite"><i class="fas fa-xmark"></i></button></span>`).join('')}${S.favs.length < 8 ? `<button type="button" class="nt-pp-add" data-pa="savefav"><i class="fas fa-plus"></i> Save this pen</button>` : ''}</div>
+      <p class="nt-menu-note"><i class="fas fa-lightbulb"></i> ${S.pressureSeen ? 'Stylus pressure detected — press harder for a bolder line.' : 'A mouse or finger has no pressure — speed thinning and tip sharpness shape the line instead.'} Keys <b>1–${PEN_TYPES.length}</b> switch pens, <b>[</b> <b>]</b> change size.</p>`;
+  }
+  function paintPenPanel(box) {
+    box.querySelectorAll('canvas[data-sample]').forEach(cv => drawSample(cv, +cv.dataset.sample, S.pens[+cv.dataset.sample], 330, 0));
+    drawSample(box.querySelector('#ntPenPrev'), S.penType, penCfg(), 700, 7);
+  }
+  function penPanel(anchor) {
+    if (S.tool !== 'pen') { S.tool = 'pen'; renderToolOptions(); }
+    const ov = popup(`<div class="nt-pp">${penPanelHtml()}</div>`, (e) => {
+      const pt = e.target.closest('[data-ptype]'), fu = e.target.closest('[data-favuse]'), fd = e.target.closest('[data-favdel]'), pa = e.target.closest('[data-pa]');
+      if (pt) S.penType = +pt.dataset.ptype;
+      else if (fu) { useFav(+fu.dataset.favuse); }
+      else if (fd) { S.favs.splice(+fd.dataset.favdel, 1); saveFavs(); }
+      else if (pa && pa.dataset.pa === 'reset') S.pens[S.penType] = Object.assign({}, PEN_TYPES[S.penType].d);
+      else if (pa && pa.dataset.pa === 'savefav') {
+        S.favs.unshift({ t: S.penType, c: penInk(), cfg: Object.assign({}, penCfg()) }); S.favs = S.favs.slice(0, 8); saveFavs();
+        toast('Pen saved to favourites.', 'success');
+      } else return;
+      savePens(); renderToolOptions(); refresh();
+    }, { anchor, cls: 'nt-menu nt-penpanel', width: 348 });
+    const box = ov.querySelector('.nt-pp');
+    const refresh = () => { box.innerHTML = penPanelHtml(); paintPenPanel(box); };
+    let raf = 0;
+    ov.addEventListener('input', (e) => {
+      const key = e.target.dataset && e.target.dataset.pk; if (!key) return;
+      const p = PEN_PARAMS.find(x => x.k === key), c = penCfg();
+      c[key] = clamp(Math.round(+e.target.value), p.min, p.max);
+      const v = box.querySelector(`[data-pv="${key}"]`); if (v) v.textContent = c[key] + p.unit;
+      if (key === 'fl') { const r = box.querySelector('[data-row="an"]'); if (r) r.classList.toggle('is-off', !c.fl); }
+      if (key === 'w') renderToolOptions();
+      box.querySelectorAll('.nt-pp-fav').forEach((el, i) => el.classList.toggle('on', !!S.favs[i] && favOn(S.favs[i])));
+      savePens();
+      if (!raf) raf = requestAnimationFrame(() => {
+        raf = 0;
+        drawSample(box.querySelector('#ntPenPrev'), S.penType, c, 700, 7);
+        drawSample(box.querySelector(`canvas[data-sample="${S.penType}"]`), S.penType, c, 330, 0);
+      });
+    });
+    paintPenPanel(box);
+  }
+
   /* ---------- export (page image / whole notebook as PDF) ---------- */
   async function ensureData(nbId, pages) {
     const missing = pages.filter(p => !p.d && p.raw == null);
@@ -2025,11 +2450,21 @@
   /* ---------- editor wiring ---------- */
   function onBarClick(e) {
     const tb = e.target.closest('button[data-tool]');
-    if (tb) { if (S.editing) commitText(); S.tool = tb.dataset.tool; renderToolOptions(); return; }
+    if (tb) {
+      if (S.editing) commitText();
+      if (tb.dataset.tool === 'pen' && S.tool === 'pen') { penPanel(S.root.querySelector('[data-act="penpanel"]') || tb); return; }
+      S.tool = tb.dataset.tool; renderToolOptions(); return;
+    }
+    const fv = e.target.closest('[data-fav]');
+    if (fv) { useFav(+fv.dataset.fav); return; }
     const cb = e.target.closest('[data-color]');
     if (cb) { if (S.tool === 'hl') { S.hlColor = +cb.dataset.color; S.hlHex = null; } else { S.penColor = +cb.dataset.color; S.penHex = null; } renderToolOptions(); return; }
     const sb = e.target.closest('[data-size]');
-    if (sb) { const key = (S.tool === 'pen' || S.tool === 'shape') ? 'pen' : S.tool; S.size[key] = +sb.dataset.size; renderToolOptions(); return; }
+    if (sb) {
+      if (S.tool === 'pen') { penCfg().w = PEN_TYPES[S.penType].sizes[+sb.dataset.size]; savePens(); }
+      else { const key = S.tool === 'shape' ? 'pen' : S.tool; S.size[key] = +sb.dataset.size; }
+      renderToolOptions(); return;
+    }
     const eb = e.target.closest('[data-erase]');
     if (eb) { S.eraseMode = eb.dataset.erase; lsSet('aero_nt_erase', S.eraseMode); renderToolOptions(); return; }
     const sa = e.target.closest('[data-sel]');
@@ -2051,6 +2486,7 @@
     else if (act === 'more') moreMenu(a);
     else if (act === 'pickcolor') colorPicker(a, (hex) => { if (S.tool === 'hl') S.hlHex = hex; else S.penHex = hex; renderToolOptions(); }, S.tool === 'hl' ? hlInk() : penInk());
     else if (act === 'pickshape') shapeMenu(a);
+    else if (act === 'penpanel') penPanel(a);
     else if (act === 'dash') { S.dashed = !S.dashed; renderToolOptions(); }
     else if (act === 'side') toggleSidebar();
     else if (act === 'sideclose') toggleSidebar(false);
@@ -2067,6 +2503,11 @@
     if (S.sel && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); selectionAction('del'); return; }
     if (e.key === 'Escape' && S.sel) { clearSelection(); return; }
     if (e.key === 'PageDown' || e.key === 'PageUp') { e.preventDefault(); const i = clamp(S.current + (e.key === 'PageDown' ? 1 : -1), 0, S.pages.length - 1); jumpToPage(S.pages[i].id); return; }
+    if (S.tool === 'pen' && /^[1-9]$/.test(k) && PEN_TYPES[+k - 1]) { setPenType(+k - 1); return; }
+    if (S.tool === 'pen' && (k === '[' || k === ']')) {
+      const c = penCfg(); c.w = clamp(c.w + (k === ']' ? 1 : -1) * Math.max(1, Math.round(c.w * 0.15)), 1, 60);
+      savePens(); renderToolOptions(); return;
+    }
     const map = { p: 'pen', h: 'hl', e: 'eraser', t: 'text', s: 'shape', l: 'lasso' };
     if (map[k]) { S.tool = map[k]; renderToolOptions(); }
     if (k === ' ' && S.tool !== 'hand') { e.preventDefault(); S.prevTool = S.tool; S.tool = 'hand'; renderToolOptions(); }
@@ -2123,7 +2564,7 @@
     clearTimeout(S.thumbTimer); clearTimeout(S.thumbLoadTimer); S.thumbQueue.clear();
     S.pages.forEach(p => { unmountThumb(p); p.thumbEl = null; p.thumbRaw = null; if (p.canvas) { p.canvas.width = p.canvas.height = 0; } p.canvas = null; p.ctx = null; p.el = null; });
     S.thumbsEl = null; S.sideEl = null; S._thumbOn = null;
-    if (S.overlay) { S.overlay.c.width = S.overlay.c.height = 0; S.overlay = null; }
+    if (S.overlay) { clearTimeout(S.overlay.freeT); S.overlay.c.remove(); S.overlay.c.width = S.overlay.c.height = 0; S.overlay = null; }
     if (!hasUnsaved()) { S.pages = []; S.byId = new Map(); S.nb = null; }
     S.undo = []; S.redo = [];
     S.mode = 'library';
@@ -2185,6 +2626,6 @@
       if (root && S.mode === 'library' && !root.classList.contains('active')) root.innerHTML = '';   // free the DOM too
     },
     hasUnsaved,
-    _test: { encodePage, decodePage, buildPdf, S }
+    _test: { encodePage, decodePage, buildPdf, S, PEN_TYPES, penPanel, renderPage, inkSpine, drawInk, drawContent }
   };
 })();

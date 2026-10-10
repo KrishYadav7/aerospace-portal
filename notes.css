@@ -538,3 +538,74 @@ html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
 /* the tool row never wraps (it scrolls sideways on phones), so the paper never jumps */
 .nt-bar-c > *, .nt-opts > *, .nt-colors > *, .nt-sizes > * { flex-shrink: 0; }
 .nt-seg.nt-seg-sm { flex-wrap: nowrap; }
+
+/* ==========================================================================
+   ⭐ 2026-10-10 — PENS: ballpoint, fountain, brush, pencil, fineliner,
+   calligraphy, marker · tip settings panel · favourite pens
+   ========================================================================== */
+.nt-pen-pick {
+  -webkit-tap-highlight-color: transparent; font: inherit; cursor: pointer; flex: 0 0 auto;
+  height: 32px; border-radius: 9px; padding: 0 9px; display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle); color: var(--text-primary); font-size: 12.5px; font-weight: 600;
+}
+.nt-pen-pick:hover { background: var(--bg-surface-3); }
+.nt-pen-pick .nt-pen-tune { font-size: 11px; color: var(--text-tertiary); }
+.nt-fav {
+  -webkit-tap-highlight-color: transparent; cursor: pointer; flex: 0 0 auto; padding: 0; border: 0;
+  width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 12px;
+  background: color-mix(in srgb, var(--c) 16%, transparent); color: var(--c); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent);
+}
+.nt-fav:hover { background: color-mix(in srgb, var(--c) 26%, transparent); }
+.nt-fav.on { box-shadow: 0 0 0 2px var(--nt-accent); }
+.nt-pen-pick:focus-visible, .nt-fav:focus-visible { outline: 2px solid var(--nt-accent); outline-offset: 1px; }
+@media (max-width: 640px) { .nt-pen-pick span { display: none; } }
+
+.nt-pop.nt-penpanel { padding: 12px; }
+.nt-pp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+.nt-pp-head .nt-cp-title { margin-bottom: 6px; }
+.nt-pp-link {
+  border: 0; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 600;
+  cursor: pointer; padding: 4px 8px; border-radius: 8px; display: inline-flex; align-items: center; gap: 5px;
+}
+.nt-pp-link:hover { background: var(--bg-surface-3); color: var(--text-primary); }
+.nt-pp-types { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 10px; }
+.nt-pp-types button {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 4px 4px 5px; border-radius: 11px; cursor: pointer;
+  border: 1.5px solid var(--border-subtle); background: var(--bg-surface-2); color: var(--text-secondary); font: inherit; font-size: 10.5px; font-weight: 600;
+  min-width: 0;
+}
+.nt-pp-types button canvas { display: block; width: 100%; height: 30px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }
+.nt-pp-types button span { display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nt-pp-types button span i { font-size: 9.5px; }
+.nt-pp-types button:hover { border-color: var(--border-strong); color: var(--text-primary); }
+.nt-pp-types button.on { border-color: var(--nt-accent, #4f46e5); color: var(--nt-accent, #4f46e5); background: rgba(99,102,241,.08); }
+.nt-pp-prev { display: block; width: 100%; height: 92px; border-radius: 12px; margin-bottom: 10px; box-shadow: inset 0 0 0 1px var(--border-subtle), 0 1px 2px rgba(0,0,0,.06); }
+.nt-pp-sliders { display: flex; flex-direction: column; gap: 2px; }
+.nt-pp-row {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 8px;
+  padding: 5px 4px 2px; border-radius: 8px; cursor: default; transition: opacity .12s;
+}
+.nt-pp-row span { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.nt-pp-row b { font-size: 12px; font-weight: 600; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.nt-pp-row input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 4px 0 2px; accent-color: var(--nt-accent, #4f46e5); height: 20px; cursor: pointer; touch-action: pan-y; }
+.nt-pp-row.is-off { opacity: .45; }
+.nt-pp-ftitle { margin-top: 12px; }
+.nt-pp-favs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.nt-pp-fav { position: relative; display: inline-flex; }
+.nt-pp-fav > button:first-child {
+  width: 34px; height: 34px; border: 0; border-radius: 10px; cursor: pointer; display: grid; place-items: center; font-size: 13px; padding: 0;
+  background: color-mix(in srgb, var(--c) 16%, transparent); color: var(--c); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c) 35%, transparent);
+}
+.nt-pp-fav.on > button:first-child { box-shadow: 0 0 0 2px var(--nt-accent); }
+.nt-pp-favx {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; border: 0; padding: 0; cursor: pointer;
+  background: var(--bg-elevated, #fff); color: var(--text-secondary); font-size: 9px; display: grid; place-items: center;
+  box-shadow: 0 0 0 1px var(--border-default), 0 1px 3px rgba(0,0,0,.15);
+}
+.nt-pp-favx:hover { color: #e11d48; }
+.nt-pp-add {
+  height: 34px; padding: 0 11px; border-radius: 10px; border: 1.5px dashed var(--border-strong); background: transparent; cursor: pointer;
+  color: var(--text-secondary); font: inherit; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;
+}
+.nt-pp-add:hover { border-color: var(--nt-accent); color: var(--nt-accent); }
+.nt-penpanel .nt-menu-note b { font-weight: 700; color: var(--text-secondary); }
