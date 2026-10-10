@@ -11043,6 +11043,13 @@ function renderMaterialCard(course, m, isPurchased) {
                               ${quizLabel}
                             </button>`;
       }
+      /* ⭐ the student's own result — marks, grading of uploaded answers, feedback */
+      if (attempts > 0) {
+        progressBtnHtml += ` <button class="btn btn-outline btn-sm"
+                              onclick="event.stopPropagation();openMyQuizResult('${course.id}', '${m.id}')">
+                              <i class="fas fa-square-poll-vertical"></i> My result
+                            </button>`;
+      }
     }
   }
 
@@ -11334,6 +11341,7 @@ let quizEditingCourseId   = null;
 let quizEditingMaterialId = null;
 let quizPaperConfig = { subject: '', paperCode: '', totalTime: '', totalMarks: 0 };
 let quizDraft = [];
+let _quizDraftSavedJSON = '';   // the paper as last loaded from / saved to the server (dirty check)
 
 /* ============================================================
    MathJax v3 — SINGLE CLEAN IMPLEMENTATION
@@ -11523,6 +11531,70 @@ function persistQuizAnswers() {
   try {
     localStorage.setItem('aero_quiz_answers_' + st.materialId, JSON.stringify(st.answers));
   } catch {}
+  _scheduleQuizServerSave();
+}
+
+/* ============================================================
+   ⭐ SERVER AUTOSAVE (2026-10-10)
+   A few seconds after every change the answers go to the server
+   too. If the final submit is late (network down at time-up) or
+   never happens (tab closed, phone died), the attempt is graded
+   from this copy instead of being lost — and the student can
+   continue on another device.
+   ============================================================ */
+let _quizServerSaveTimer = null;
+function _quizProctorLog(st) {
+  return { strikes: st.strikes || 0, events: (st.violations || []).slice(-50) };
+}
+function _scheduleQuizServerSave(delayMs) {
+  const st = quizPlayerState;
+  if (!st || st.previewMode || st.submitted || !st.serverSession) return;
+  clearTimeout(_quizServerSaveTimer);
+  _setQuizSaveState('pending');
+  _quizServerSaveTimer = setTimeout(() => flushQuizServerSave(), delayMs || 2500);
+}
+async function flushQuizServerSave(leaving) {
+  const st = quizPlayerState;
+  clearTimeout(_quizServerSaveTimer);
+  if (!st || st.previewMode || st.submitted || !st.serverSession || !currentUser) return;
+  const body = JSON.stringify({
+    userId: currentUser._id,
+    answers: st.answers.map((a, i) => st.quiz[i].type === 'subjective' && Array.isArray(a) ? a.filter(u => u && u.url) : a),
+    timeSpentPerQuestion: st.timeSpentPerQuestion,
+    proctor: _quizProctorLog(st)
+  });
+  if (body === st._lastServerSaveBody) { _setQuizSaveState('saved'); return; }
+  _setQuizSaveState('saving');
+  try {
+    const res = await fetch(`/api/user/quiz/${st.courseId}/${st.materialId}/autosave`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      keepalive: !!leaving && body.length < 60000          // still delivered while the page goes away
+    });
+    if (leaving) return;
+    const d = await res.json().catch(() => ({}));
+    if (quizPlayerState !== st || st.submitted) return;
+    if (d.success) { st._lastServerSaveBody = body; st.serverSavedAt = d.savedAt; _setQuizSaveState('saved'); }
+    else if (d.code === 'RATE_LIMITED') _scheduleQuizServerSave(15000);
+    else _setQuizSaveState('device');
+  } catch (_) {
+    if (quizPlayerState === st && !st.submitted) { _setQuizSaveState('device'); _scheduleQuizServerSave(10000); }
+  }
+}
+function _setQuizSaveState(state) {
+  if (quizPlayerState) quizPlayerState._saveState = state;
+  const el = document.getElementById('quizSaveState');
+  if (!el) return;
+  const map = {
+    idle:    ['fa-cloud', 'Auto-save on', ''],
+    pending: ['fa-pen', 'Editing…', ''],
+    saving:  ['fa-arrows-rotate fa-spin', 'Saving…', ''],
+    saved:   ['fa-cloud', 'Saved', 'ok'],
+    device:  ['fa-wifi', 'Offline — saved on this device', 'warn']
+  };
+  const m = map[state] || map.saved;
+  el.className = 'quiz-save-state ' + m[2];
+  el.innerHTML = `<i class="fas ${m[0]}"></i><span>${m[1]}</span>`;
+  el.title = state === 'device' ? 'Your answers are kept on this device and will be sent when the connection is back.' : '';
 }
 function restoreQuizAnswers(materialId) {
   try {
@@ -11557,23 +11629,23 @@ function formatDuration(sec) {
   return (h > 0 ? String(h).padStart(2, '0') + ':' : '')
        + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
 }
+/* ⭐ 2026-10-10: the countdown follows the SERVER's deadline (startedAt +
+   duration, corrected for clock skew) — it used to count from a start
+   time kept in this browser, so a resumed attempt could show more time
+   than the server allows and the final submit was then rejected. */
+function _examRemainingSeconds(st) {
+  if (!st || !st.durationSeconds) return null;
+  const deadline = Number(st.serverStartedAt) + st.durationSeconds * 1000;
+  return Math.max(0, Math.floor((deadline - (Date.now() + _examClockOffsetMs)) / 1000));
+}
 function startQuizTimer() {
   stopQuizTimer();
   const st = quizPlayerState;
-  if (!st || st.previewMode || st.submitted) return;
-  const duration = parseQuizTime(st.paperConfig && st.paperConfig.totalTime);
-  if (!duration) return;
-
-  const startKey = 'aero_quiz_start_' + st.materialId;
-  let startedAt = parseInt(localStorage.getItem(startKey), 10);
-  if (!startedAt) {
-    startedAt = Date.now();
-    localStorage.setItem(startKey, String(startedAt));
-  }
-
+  if (!st || st.previewMode || st.submitted || !st.durationSeconds) return;
   const tick = () => {
-    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-    const remaining = Math.max(0, duration - elapsed);
+    const cur = quizPlayerState;
+    if (!cur || cur.submitted) return stopQuizTimer();
+    const remaining = _examRemainingSeconds(cur);
     const el = document.getElementById('quizTimerDisplay');
     if (el) {
       el.textContent = formatDuration(remaining);
@@ -11582,17 +11654,56 @@ function startQuizTimer() {
     }
     if (remaining === 0) {
       stopQuizTimer();
-      try { showToast('⏰ Time is up!', 'error'); } catch (e) {}
-      submitQuiz();
+      /* time-up submits whatever is answered — it must never be blocked by "please answer Q3" */
+      submitQuiz({ auto: true, reason: 'time' });
     }
   };
   tick();
   _quizTimerHandle = setInterval(tick, 1000);
+  /* every 20 s: re-sync with the server clock, and submit if the server says time is over */
+  _examSessionPoll = setInterval(async () => {
+    const cur = quizPlayerState;
+    if (!cur || cur.submitted || cur.previewMode) return;
+    try {
+      const d = await fetchJSON(`/api/user/quiz/${cur.courseId}/${cur.materialId}/heartbeat?userId=${encodeURIComponent(currentUser._id)}`);
+      if (d && d.success && d.serverNow) _examClockOffsetMs = Number(d.serverNow) - Date.now();
+      if (d && d.success && d.expired && !cur.submitted) { stopQuizTimer(); submitQuiz({ auto: true, reason: 'time' }); }
+    } catch (e) { /* offline for a moment — the local countdown carries on */ }
+  }, 20000);
 }
 function stopQuizTimer() {
   if (_quizTimerHandle) { clearInterval(_quizTimerHandle); _quizTimerHandle = null; }
+  if (_examSessionPoll) { clearInterval(_examSessionPoll); _examSessionPoll = null; }
   const el = document.getElementById('quizTimerDisplay');
   if (el) el.classList.remove('warning', 'expired');
+}
+
+/* ⭐ In-page confirm (window.confirm() does not work reliably inside the
+   Android app and drops the exam out of full screen). Resolves true/false. */
+function quizConfirm(opts) {
+  opts = opts || {};
+  return new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.className = 'modal-overlay active aero-confirm-ov';
+    ov.innerHTML = `
+      <div class="modal-box aero-confirm" role="alertdialog" aria-modal="true" aria-labelledby="aeroConfirmTitle">
+        <h3 id="aeroConfirmTitle">${opts.icon ? `<i class="fas ${opts.icon}"></i> ` : ''}${escapeHtml(opts.title || 'Are you sure?')}</h3>
+        ${opts.html ? `<div class="aero-confirm-body">${opts.html}</div>` : `<p class="modal-sub">${escapeHtml(opts.text || '')}</p>`}
+        <div class="modal-actions">
+          ${opts.extra ? `<button type="button" class="btn btn-outline" data-r="extra">${escapeHtml(opts.extra)}</button>` : ''}
+          ${opts.cancel === false ? '' : `<button type="button" class="btn btn-outline" data-r="no">${escapeHtml(opts.cancel || 'Cancel')}</button>`}
+          <button type="button" class="btn ${opts.danger ? 'btn-danger' : 'btn-primary'}" data-r="yes">${escapeHtml(opts.ok || 'OK')}</button>
+        </div>
+      </div>`;
+    const done = (v) => { ov.remove(); resolve(v); };
+    ov.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-r]');
+      if (b) done(b.dataset.r === 'yes' ? true : b.dataset.r === 'extra' ? 'extra' : false);
+      else if (e.target === ov) done(false);
+    });
+    document.body.appendChild(ov);
+    setTimeout(() => { const b = ov.querySelector('[data-r="yes"]'); if (b) b.focus(); }, 30);
+  });
 }
 
 /* ---------- Preview HTML escaper ---------- */
@@ -11658,10 +11769,11 @@ async function openQuizEditor(courseId, materialId) {
   let useSaved = false;
   if (saved && Array.isArray(saved.quiz) && saved.quiz.length > 0) {
     const ageMin = Math.round((Date.now() - saved.savedAt) / 60000);
-    useSaved = confirm(
-      `An unsaved draft was autosaved ${ageMin} minute${ageMin === 1 ? '' : 's'} ago.\n\n` +
-      `Restore it?\n\n[OK] Restore draft\n[Cancel] Discard and use the last SAVED version`
-    );
+    useSaved = (await quizConfirm({
+      title: 'Restore unsaved draft?',
+      text: `An unsaved draft was autosaved ${ageMin} minute${ageMin === 1 ? '' : 's'} ago. Restore it, or open the last saved version?`,
+      ok: 'Restore draft', cancel: 'Use saved version', icon: 'fa-clock-rotate-left'
+    })) === true;
   }
 
   if (useSaved) {
@@ -11701,6 +11813,8 @@ async function openQuizEditor(courseId, materialId) {
     };
   }
 
+  _quizDraftSavedJSON = useSaved ? '' : JSON.stringify(quizDraft);
+
   addingCourse = false; addingProfessor = false;
   addingMaterialCourseId = null; addingStudent = false;
   editingCourseId = null; currentCourseId = null;
@@ -11710,10 +11824,15 @@ async function openQuizEditor(courseId, materialId) {
   renderApp();
 }
 
-function closeQuizEditor() {
-  const hasDraft = quizDraft.length > 0;
-  if (hasDraft) {
-    const ok = confirm('Close the paper editor?\n\nYour unsaved changes are autosaved locally and will be offered for restore next time.');
+async function closeQuizEditor() {
+  /* ask only when something changed since the last save */
+  const dirty = quizDraft.length > 0 && JSON.stringify(quizDraft) !== _quizDraftSavedJSON;
+  if (dirty) {
+    const ok = await quizConfirm({
+      title: 'Close the paper editor?',
+      text: 'Your unsaved changes are autosaved on this device and will be offered for restore next time.',
+      ok: 'Close', icon: 'fa-pen-ruler'
+    });
     if (!ok) return;
   }
   stopQuizAutosave();
@@ -11804,15 +11923,319 @@ function onQuizResultModeChange() {
 
 /* Admin override — release results now, bypassing any schedule.
    Calls POST /api/admin/quiz/:courseId/:materialId/publish-now  */
+/* ⭐ Student: my result for one test — total, written-answer marks and
+   the grader's feedback (before, once attempts were used up there was
+   no way to see any of it). */
+async function openMyQuizResult(courseId, materialId) {
+  if (!currentUser) return;
+  let d;
+  try {
+    const res = await fetch(`/api/user/quiz/${courseId}/${materialId}/my-result?userId=${encodeURIComponent(currentUser._id)}&_t=${Date.now()}`, { cache: 'no-store' });
+    d = await res.json();
+  } catch (_) { return showToast('Network error — try again.', 'error'); }
+  if (!d || !d.success) return showToast((d && d.message) || 'Could not load your result.', 'error');
+  if (!d.visible) {
+    return quizConfirm({
+      title: 'Result not published yet', icon: 'fa-hourglass-half', ok: 'OK', cancel: false,
+      text: d.publishAt ? `Your answers are recorded. Results will be published on ${new Date(d.publishAt).toLocaleString()}.` : 'Your answers are recorded. Your instructor will publish the results.'
+    });
+  }
+  const pct = d.finalMax > 0 ? Math.round(d.finalMarks / d.finalMax * 100) : 0;
+  const written = (d.written || []).map(w => `
+    <div class="myres-q">
+      <div class="myres-q-head">
+        <span class="qs-chip">Q${w.number}</span>
+        ${w.awardedMarks === null ? '<span class="qs-chip warn"><i class="fas fa-hourglass-half"></i> Being graded</span>'
+          : `<span class="qs-chip ok">${w.awardedMarks} / ${w.maxMarks}</span>`}
+      </div>
+      <div class="latex-content myres-q-text">${escapeHtml(w.question)}</div>
+      ${w.feedback ? `<div class="myres-fb"><i class="fas fa-comment-dots"></i> ${escapeHtml(w.feedback)}</div>` : ''}
+    </div>`).join('');
+  await quizConfirm({
+    title: 'My result', icon: 'fa-square-poll-vertical', ok: 'Close', cancel: false,
+    html: `
+      <div class="myres-total"><b>${d.finalMarks}</b><span>/ ${d.finalMax}</span><em>${pct}%</em></div>
+      <div class="myres-split">
+        <span>Auto-graded <b>${d.autoMarks} / ${d.autoMax}</b></span>
+        ${d.writtenMax ? `<span>Written <b>${d.writtenMarks} / ${d.writtenMax}</b></span>` : ''}
+        <span>Attempt <b>${d.attempts}</b></span>
+      </div>
+      ${d.pendingEvaluation ? '<p class="modal-sub"><i class="fas fa-hourglass-half"></i> Some written answers are still being graded — the total will change.</p>' : ''}
+      ${d.endedNote ? `<p class="modal-sub"><i class="fas fa-clock"></i> ${escapeHtml(d.endedNote)}</p>` : ''}
+      ${written ? `<div class="myres-written">${written}</div>` : ''}`
+  });
+}
+
+/* ============================================================
+   ⭐ SUBMISSIONS & GRADING (2026-10-10)
+   ------------------------------------------------------------
+   Every student's attempt at this paper — marks, warnings,
+   how it ended — the attempts running right now, and grading of
+   uploaded answer sheets (photos / PDFs). The grading API
+   existed, but nothing in the app called it, so uploaded answers
+   could never be marked and stayed "pending" forever.
+   ============================================================ */
+let _quizSubs = null;            // { courseId, materialId, data, gradingUserId, filter }
+
+async function openQuizSubmissions(courseId, materialId) {
+  courseId = courseId || quizEditingCourseId;
+  materialId = materialId || quizEditingMaterialId;
+  if (!courseId || !materialId) return showToast('No test is open.', 'error');
+  _quizSubs = { courseId, materialId, data: null, gradingUserId: null, filter: 'all' };
+  let ov = document.getElementById('quizSubsOverlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'quizSubsOverlay';
+    ov.className = 'quiz-subs-ov';
+    ov.addEventListener('click', (e) => { if (e.target === ov) closeQuizSubmissions(); });
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = `<div class="quiz-subs"><div class="quiz-subs-loading"><i class="fas fa-spinner fa-spin"></i> Loading submissions…</div></div>`;
+  document.body.classList.add('quiz-subs-open');
+  await _loadQuizSubmissions();
+}
+function closeQuizSubmissions() {
+  const ov = document.getElementById('quizSubsOverlay');
+  if (ov) ov.remove();
+  document.body.classList.remove('quiz-subs-open');
+  clearInterval(_quizSubs && _quizSubs.liveTimer);
+  _quizSubs = null;
+}
+async function _loadQuizSubmissions() {
+  const S = _quizSubs; if (!S) return;
+  try {
+    const res = await fetch(`/api/admin/quiz/${S.courseId}/${S.materialId}/submissions?_t=${Date.now()}`, { cache: 'no-store' });
+    const d = await res.json();
+    if (_quizSubs !== S) return;
+    if (!d.success) throw new Error(d.message || 'Could not load submissions.');
+    S.data = d;
+    _renderQuizSubmissions();
+    /* the "running now" list refreshes by itself while open */
+    clearInterval(S.liveTimer);
+    if (d.running && d.running.length) S.liveTimer = setInterval(() => { if (_quizSubs === S && !S.gradingUserId) _loadQuizSubmissions(); }, 20000);
+  } catch (e) {
+    const box = document.querySelector('#quizSubsOverlay .quiz-subs');
+    if (box) box.innerHTML = `<div class="quiz-subs-loading"><i class="fas fa-triangle-exclamation"></i> ${escapeHtml(e.message)}
+      <button class="btn btn-outline btn-sm" onclick="closeQuizSubmissions()">Close</button></div>`;
+  }
+}
+function _qsFmtDate(d) {
+  if (!d) return '—';
+  try { return new Date(d).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (_) { return '—'; }
+}
+function _qsFmtSecs(s) {
+  s = Math.max(0, Number(s) || 0);
+  const m = Math.floor(s / 60), r = s % 60;
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}:${String(r).padStart(2, '0')}`;
+}
+function _renderQuizSubmissions() {
+  const S = _quizSubs; if (!S || !S.data) return;
+  if (S.gradingUserId) return _renderQuizGrading();
+  const d = S.data;
+  const subs = d.submissions || [];
+  const toGrade = subs.filter(r => r.pendingEvaluation).length;
+  const flagged = subs.filter(r => (r.proctor && r.proctor.strikes > 0) || r.autoSubmitted).length;
+  const list = subs.filter(r => S.filter === 'grade' ? r.pendingEvaluation : S.filter === 'flagged' ? ((r.proctor && r.proctor.strikes > 0) || r.autoSubmitted) : true);
+  const avg = subs.length ? Math.round(subs.reduce((s, r) => s + (r.finalMarksPossible ? r.finalMarksEarned / r.finalMarksPossible : 0), 0) / subs.length * 100) : 0;
+
+  const running = (d.running || []).map(r => `
+    <div class="qs-live-row">
+      <span class="qs-live-dot"></span>
+      <strong>${escapeHtml(r.name)}</strong>
+      <span class="qs-chip">${r.remainingSeconds === null ? 'No time limit' : _qsFmtSecs(r.remainingSeconds) + ' left'}</span>
+      <span class="qs-chip">${r.answered} answered</span>
+      ${r.strikes ? `<span class="qs-chip bad"><i class="fas fa-shield-halved"></i> ${r.strikes} warning${r.strikes === 1 ? '' : 's'}</span>` : ''}
+      <span class="qs-muted">${r.savedAt ? 'saved ' + _qsFmtDate(r.savedAt) : 'not saved yet'}</span>
+    </div>`).join('');
+
+  const rows = list.map(r => {
+    const strikes = (r.proctor && r.proctor.strikes) || 0;
+    const status = r.pendingEvaluation
+      ? `<span class="qs-chip warn"><i class="fas fa-hourglass-half"></i> ${r.subjectiveTotal - r.subjectiveGraded} to grade</span>`
+      : r.subjectiveTotal ? `<span class="qs-chip ok"><i class="fas fa-check"></i> Graded</span>` : `<span class="qs-chip ok"><i class="fas fa-check"></i> Auto-graded</span>`;
+    const ended = r.finalizedBy === 'server' ? `<span class="qs-chip bad" title="Time ran out before a submit reached the server — graded from the autosaved answers"><i class="fas fa-clock"></i> Time ran out</span>`
+      : r.autoSubmitted ? `<span class="qs-chip bad" title="Submitted automatically (time-up or warnings)"><i class="fas fa-robot"></i> Auto-submitted</span>` : '';
+    return `
+      <tr>
+        <td><div class="qs-name">${escapeHtml(r.fullName || r.username)}</div><div class="qs-muted">@${escapeHtml(r.username || '')}</div></td>
+        <td><strong>${r.finalMarksEarned}</strong> <span class="qs-muted">/ ${r.finalMarksPossible}</span>
+            ${r.subjectiveTotal ? `<div class="qs-muted">auto ${r.marksEarned} + written ${r.subjectiveMarksAwarded}</div>` : ''}</td>
+        <td>${status} ${ended}</td>
+        <td data-label="Warnings">${strikes ? `<button class="qs-chip bad qs-link" onclick="showQuizProctorLog('${escapeHtml(r.userId)}')"><i class="fas fa-shield-halved"></i> ${strikes}</button>` : '<span class="qs-muted">0</span>'}</td>
+        <td class="qs-muted" data-label="Time">${r.timeSpentTotalSeconds ? _qsFmtSecs(r.timeSpentTotalSeconds) : '—'}</td>
+        <td class="qs-muted" data-label="Submitted">${_qsFmtDate(r.lastAttemptAt)}<div>attempt ${r.attempts}</div></td>
+        <td>${r.subjectiveTotal ? `<button class="btn btn-sm ${r.pendingEvaluation ? 'btn-primary' : 'btn-outline'}" onclick="openQuizGrading('${escapeHtml(r.userId)}')"><i class="fas fa-pen-to-square"></i> ${r.pendingEvaluation ? 'Grade' : 'Review'}</button>` : ''}</td>
+      </tr>`;
+  }).join('');
+
+  const box = document.querySelector('#quizSubsOverlay .quiz-subs');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="qs-head">
+      <div>
+        <h2><i class="fas fa-inbox"></i> Submissions</h2>
+        <div class="qs-muted">${escapeHtml(d.title)} · results ${escapeHtml(d.resultPublishMode)}</div>
+      </div>
+      <div class="qs-head-actions">
+        <button class="btn btn-outline btn-sm" onclick="_loadQuizSubmissions()" title="Refresh"><i class="fas fa-rotate"></i></button>
+        <button class="btn btn-outline btn-sm" onclick="exportQuizSubmissionsCsv()" ${subs.length ? '' : 'disabled'}><i class="fas fa-file-csv"></i> CSV</button>
+        <button class="btn btn-outline btn-sm" onclick="closeQuizSubmissions()" aria-label="Close"><i class="fas fa-xmark"></i></button>
+      </div>
+    </div>
+    <div class="qs-stats">
+      <div class="qs-stat"><b>${subs.length}</b><span>submitted</span></div>
+      <div class="qs-stat ${toGrade ? 'warn' : ''}"><b>${toGrade}</b><span>to grade</span></div>
+      <div class="qs-stat ${flagged ? 'bad' : ''}"><b>${flagged}</b><span>flagged</span></div>
+      <div class="qs-stat live"><b>${(d.running || []).length}</b><span>writing now</span></div>
+      <div class="qs-stat"><b>${avg}%</b><span>average</span></div>
+    </div>
+    ${running ? `<div class="qs-live"><div class="qs-section-title"><i class="fas fa-circle-play"></i> Writing now</div>${running}</div>` : ''}
+    <div class="qs-filters">
+      ${[['all', 'All'], ['grade', `To grade (${toGrade})`], ['flagged', `Flagged (${flagged})`]].map(([k, l]) =>
+        `<button class="qs-filter ${S.filter === k ? 'on' : ''}" onclick="_quizSubs.filter='${k}';_renderQuizSubmissions()">${l}</button>`).join('')}
+    </div>
+    ${list.length ? `<div class="qs-table-wrap"><table class="qs-table">
+      <thead><tr><th>Student</th><th>Marks</th><th>Status</th><th>Warnings</th><th>Time</th><th>Submitted</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`
+      : `<div class="qs-empty"><i class="fas fa-inbox"></i><p>${subs.length ? 'Nothing in this filter.' : 'No submissions yet.'}</p></div>`}`;
+}
+
+function showQuizProctorLog(userId) {
+  const r = _quizSubs && _quizSubs.data && _quizSubs.data.submissions.find(x => x.userId === userId);
+  if (!r) return;
+  const ev = ((r.proctor && r.proctor.events) || []).slice().sort((a, b) => (a.at || 0) - (b.at || 0));
+  quizConfirm({
+    title: `Proctoring log — ${r.fullName || r.username}`, icon: 'fa-shield-halved', ok: 'Close', cancel: false,
+    html: ev.length ? `<ul class="qs-log">${ev.map(e => `<li class="${e.strike === false ? '' : 'bad'}">
+        <span>${e.at ? new Date(e.at).toLocaleTimeString() : ''}</span> ${escapeHtml(e.reason || '')}
+        ${e.strike === false ? '<em>(not a warning)</em>' : ''}</li>`).join('')}</ul>`
+      : '<p class="modal-sub">No events recorded.</p>'
+  });
+}
+
+function openQuizGrading(userId) {
+  if (!_quizSubs) return;
+  _quizSubs.gradingUserId = userId;
+  _renderQuizGrading();
+}
+function _renderQuizGrading() {
+  const S = _quizSubs; if (!S || !S.data) return;
+  const r = S.data.submissions.find(x => x.userId === S.gradingUserId);
+  const box = document.querySelector('#quizSubsOverlay .quiz-subs');
+  if (!r || !box) { S.gradingUserId = null; return _renderQuizSubmissions(); }
+  const qText = (qi) => ((S.data.questions || [])[qi] || {}).question || '';
+  const pendingIds = S.data.submissions.filter(x => x.pendingEvaluation && x.userId !== r.userId).map(x => x.userId);
+
+  const cards = Object.keys(r.subjectiveQuestionMeta || {}).sort((a, b) => a - b).map(qi => {
+    const meta = r.subjectiveQuestionMeta[qi] || {};
+    const files = (r.subjectiveAnswers || {})[qi] || [];
+    const ev = (r.subjectiveEvaluations || {})[qi];
+    const fileHtml = files.length ? files.map(f => {
+      const isPdf = f.isPdf || /\.pdf($|\?)/i.test(f.url || '');
+      const href = withAuthToken(f.url);
+      return isPdf
+        ? `<a class="qs-file pdf" href="${escapeHtml(href)}" target="_blank" rel="noopener" onclick="return aeroOpenPdfUrl(event, ${jsStr(f.url || '')}, ${jsStr(f.fileName || 'Answer sheet')})"><i class="fas fa-file-pdf"></i><span>${escapeHtml(f.fileName || 'answer.pdf')}</span></a>`
+        : `<a class="qs-file img" href="${escapeHtml(href)}" target="_blank" rel="noopener"><img src="${escapeHtml(href)}" alt="" loading="lazy"><span>${escapeHtml(f.fileName || 'photo')}</span></a>`;
+    }).join('') : '<div class="qs-muted"><i class="fas fa-circle-exclamation"></i> No file was uploaded for this question.</div>';
+    return `
+      <div class="qs-grade-card" data-qi="${escapeHtml(qi)}">
+        <div class="qs-grade-q"><span class="qs-chip">Q${Number(qi) + 1}</span> <span class="latex-content">${escapeHtml(qText(qi))}</span></div>
+        ${meta.instructions ? `<div class="qs-muted">${escapeHtml(meta.instructions)}</div>` : ''}
+        <div class="qs-files">${fileHtml}</div>
+        <div class="qs-grade-form">
+          <label><span>Marks <span class="qs-muted">(max ${Number(meta.maxMarks) || 0})</span></span>
+            <input type="number" min="0" max="${Number(meta.maxMarks) || 0}" step="0.5" class="qs-marks" value="${ev ? escapeHtml(String(ev.awardedMarks)) : (files.length ? '' : '0')}" placeholder="0–${Number(meta.maxMarks) || 0}">
+          </label>
+          <label class="qs-fb"><span>Feedback for the student <span class="qs-muted">(optional)</span></span>
+            <textarea rows="2" maxlength="1000" class="qs-feedback" placeholder="What was good, what was missing…">${ev ? escapeHtml(ev.feedback || '') : ''}</textarea>
+          </label>
+          <button class="btn btn-primary btn-sm" onclick="saveQuizGrade(this)"><i class="fas fa-check"></i> ${ev ? 'Update' : 'Save'}</button>
+          ${ev ? `<span class="qs-chip ok"><i class="fas fa-check"></i> graded ${_qsFmtDate(ev.evaluatedAt)}</span>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="qs-head">
+      <div>
+        <button class="back-link" onclick="_quizSubs.gradingUserId=null;_renderQuizSubmissions()"><i class="fas fa-arrow-left"></i> All submissions</button>
+        <h2>${escapeHtml(r.fullName || r.username)}</h2>
+        <div class="qs-muted">Auto-graded ${r.marksEarned} / ${r.marksPossible} · written ${r.subjectiveMarksAwarded} / ${r.subjectiveMaxTotal} · total <strong>${r.finalMarksEarned} / ${r.finalMarksPossible}</strong></div>
+      </div>
+      <div class="qs-head-actions">
+        ${pendingIds.length ? `<button class="btn btn-outline btn-sm" onclick="openQuizGrading('${escapeHtml(pendingIds[0])}')">Next to grade <i class="fas fa-arrow-right"></i></button>` : ''}
+        <button class="btn btn-outline btn-sm" onclick="closeQuizSubmissions()" aria-label="Close"><i class="fas fa-xmark"></i></button>
+      </div>
+    </div>
+    <div class="qs-grade-list">${cards}</div>`;
+  try { renderMathIn(box); } catch (_) {}
+}
+async function saveQuizGrade(btn) {
+  const S = _quizSubs; if (!S) return;
+  const card = btn.closest('.qs-grade-card');
+  const qi = card.dataset.qi;
+  const marksEl = card.querySelector('.qs-marks');
+  const raw = marksEl.value.trim();
+  const max = Number(marksEl.max) || 0;
+  const marks = Number(raw);
+  if (raw === '' || !isFinite(marks) || marks < 0 || marks > max) {
+    marksEl.focus();
+    return showToast(`Enter marks between 0 and ${max}.`, 'error');
+  }
+  btn.disabled = true;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…';
+  try {
+    const res = await fetch(`/api/admin/quiz/${S.courseId}/${S.materialId}/evaluate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: S.gradingUserId, questionIndex: Number(qi), awardedMarks: marks, feedback: card.querySelector('.qs-feedback').value })
+    });
+    const d = await res.json();
+    if (!d.success) throw new Error(d.message || 'Could not save.');
+    showToast(`Q${Number(qi) + 1}: ${marks} mark${marks === 1 ? '' : 's'} saved.`, 'success');
+    /* refresh this student's row in place */
+    const row = S.data.submissions.find(x => x.userId === S.gradingUserId);
+    if (row && d.result) {
+      row.subjectiveEvaluations = d.result.subjectiveEvaluations || {};
+      row.subjectiveMarksAwarded = Number(d.result.subjectiveMarksAwarded) || 0;
+      row.subjectiveGraded = Object.keys(row.subjectiveEvaluations).length;
+      row.pendingEvaluation = row.subjectiveGraded < row.subjectiveTotal;
+      row.finalMarksEarned = row.marksEarned + row.subjectiveMarksAwarded;
+    }
+    _renderQuizGrading();
+  } catch (e) {
+    showToast(e.message, 'error');
+    btn.disabled = false;
+    btn.innerHTML = orig;
+  }
+}
+function exportQuizSubmissionsCsv() {
+  const S = _quizSubs; if (!S || !S.data) return;
+  const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const lines = [['Name', 'Username', 'Email', 'Attempts', 'Auto marks', 'Auto max', 'Written marks', 'Written max', 'Total', 'Max', 'Percent', 'Warnings', 'Ended', 'Time spent (s)', 'Submitted at'].map(q).join(',')];
+  S.data.submissions.forEach(r => {
+    lines.push([r.fullName, r.username, r.email, r.attempts, r.marksEarned, r.marksPossible, r.subjectiveMarksAwarded, r.subjectiveMaxTotal,
+      r.finalMarksEarned, r.finalMarksPossible, r.finalMarksPossible ? Math.round(r.finalMarksEarned / r.finalMarksPossible * 100) : 0,
+      (r.proctor && r.proctor.strikes) || 0, r.finalizedBy === 'server' ? 'time ran out' : r.autoSubmitted ? 'auto-submitted' : 'submitted',
+      r.timeSpentTotalSeconds, r.lastAttemptAt ? new Date(r.lastAttemptAt).toISOString() : ''].map(q).join(','));
+  });
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(S.data.title || 'test').replace(/[^\w\- ]+/g, '').trim() || 'test'} - submissions.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
 async function publishQuizResultsNow() {
   if (!quizEditingCourseId || !quizEditingMaterialId) {
     return showToast('No quiz is open.', 'error');
   }
-  if (!confirm(
-    'Release every submitted result NOW and notify every student?\n\n' +
-    'This also switches this paper back to "Immediate" mode, so any ' +
-    'student who submits later sees their score straight away.'
-  )) return;
+  if (!(await quizConfirm({
+    title: 'Publish results now?',
+    text: 'Every submitted result is released and every student is notified. The paper also switches to "Immediate" mode, so anyone who submits later sees their score straight away.',
+    ok: 'Publish now', icon: 'fa-bullhorn'
+  }))) return;
 
   const btn = document.querySelector('button[onclick="publishQuizResultsNow()"]');
   const orig = btn ? btn.innerHTML : '';
@@ -11883,6 +12306,7 @@ async function renderQuizEditor() {
     const saved = getSavedQuizDraft(quizEditingMaterialId);
     if (saved && Array.isArray(saved.quiz) && saved.quiz.length > 0) {
       quizDraft = saved.quiz.map(q => normalizeQuestion(q));
+      _quizDraftSavedJSON = '';
       const sc = saved.config || {};
       quizPaperConfig = {
         subject:    sc.subject    || '',
@@ -11899,6 +12323,7 @@ async function renderQuizEditor() {
       };
     } else {
       quizDraft = (mat.quiz || []).map(q => normalizeQuestion(q));
+      _quizDraftSavedJSON = JSON.stringify(quizDraft);
       const cfg = mat.examConfig || {};
       quizPaperConfig = {
         subject:    cfg.subject    || course.name || '',
@@ -11931,6 +12356,9 @@ async function renderQuizEditor() {
         </button>
         <button class="btn btn-outline" onclick="previewQuizPaper()">
           <i class="fas fa-eye"></i> Preview as Student
+        </button>
+        <button class="btn btn-outline" onclick="openQuizSubmissions()">
+          <i class="fas fa-inbox"></i> Submissions &amp; Grading
         </button>
         <button class="btn btn-primary" onclick="saveQuizPaper()" id="quizSaveBtn">
           <i class="fas fa-save"></i> Save Paper
@@ -12289,6 +12717,7 @@ function renderAnswerArea(q, qi) {
   }
 
   if (q.type === 'matrix') {
+    _syncMatrixRows(q);
     const leftItems  = q.matrixLeftItems  || [];
     const rightItems = q.matrixRightItems || [];
     const rows       = q.matrixRows       || [];
@@ -12349,28 +12778,19 @@ function renderAnswerArea(q, qi) {
             Correct Matching (for each List-I item, choose the List-II match)
           </label>
           ${rows.map((r, ri) => `
-            <div class="quiz-option-row" style="margin-bottom:8px;">
+            <div class="quiz-option-row matrix-key-row" style="margin-bottom:8px;">
               <span class="quiz-play-letter">${String.fromCharCode(65 + ri)}</span>
-              <input type="text" style="flex:1;" class="latex-source" data-preview-id="q${qi}-row${ri}"
-                     placeholder="Row ${String.fromCharCode(65 + ri)} text (LaTeX ok)"
-                     value="${escapeHtml(r.text)}"
-                     oninput="updateMatrixRow(${qi}, ${ri}, 'text', this.value)">
+              <span class="matrix-key-item">${escapeHtml(leftItems[ri] || '') || '<em>empty item</em>'}</span>
               <span style="font-size:12px;color:var(--text-tertiary);padding:0 8px;">→</span>
-              <select style="min-width:120px;" onchange="updateMatrixRow(${qi}, ${ri}, 'correctIndex', parseInt(this.value,10) || 0)">
-                ${(rightItems.length ? rightItems : ['P','Q','R','S']).map((_, x) => {
+              <select style="min-width:140px;" aria-label="Correct match for ${String.fromCharCode(65 + ri)}" onchange="updateMatrixRow(${qi}, ${ri}, 'correctIndex', parseInt(this.value,10) || 0)">
+                ${(rightItems.length ? rightItems : ['P','Q','R','S']).map((item, x) => {
                   const label = ['P','Q','R','S','T','U','V','W'][x] || (x + 1);
-                  return `<option value="${x}" ${Number(r.correctIndex) === x ? 'selected' : ''}>${label}</option>`;
+                  return `<option value="${x}" ${Number(r.correctIndex) === x ? 'selected' : ''}>${label}${item ? '. ' + escapeHtml(String(item)).slice(0, 40) : ''}</option>`;
                 }).join('')}
               </select>
-              <button type="button" class="quiz-remove" style="width:24px;height:24px;"
-                      onclick="removeMatrixRow(${qi}, ${ri})" title="Remove row">
-                <i class="fas fa-times" style="font-size:10px;"></i>
-              </button>
             </div>
           `).join('')}
-          <button type="button" class="btn btn-outline btn-sm" onclick="addMatrixRow(${qi})">
-            <i class="fas fa-plus"></i> Add Row
-          </button>
+          <p class="hint" style="margin:6px 0 0;font-size:12px;color:var(--text-tertiary);">One correct match per List-I item — add or remove items above.</p>
         </div>
       </div>`;
   }
@@ -12471,8 +12891,8 @@ function addQuizQuestion(type = 'single') {
   renderQuizDraft();
 }
 
-function removeQuizQuestion(qi) {
-  if (!confirm(`Delete Question ${qi + 1}?`)) return;
+async function removeQuizQuestion(qi) {
+  if (!(await quizConfirm({ title: `Delete question ${qi + 1}?`, text: 'It is removed from this paper when you save.', ok: 'Delete', danger: true, icon: 'fa-trash' }))) return;
   quizDraft.splice(qi, 1);
   renderQuizDraft();
 }
@@ -12591,6 +13011,44 @@ function updateMatrixItem(qi, side, idx, value) {
   const key = side === 'left' ? 'matrixLeftItems' : 'matrixRightItems';
   if (!Array.isArray(q[key])) q[key] = [];
   q[key][idx] = value;
+  _syncMatrixRows(q);
+}
+/* ⭐ 2026-10-10: the answer key has exactly one row per List-I item. (Rows
+   used to be added/removed separately — an extra row could never be
+   answered, so the question could never be scored correct.) */
+function _syncMatrixRows(q) {
+  const left = Array.isArray(q.matrixLeftItems) ? q.matrixLeftItems : [];
+  const nRight = Math.max(1, (q.matrixRightItems || []).length);
+  const old = Array.isArray(q.matrixRows) ? q.matrixRows : [];
+  q.matrixRows = left.map((txt, i) => {
+    const ci = old[i] ? Number(old[i].correctIndex) : i;
+    return { text: txt || '', correctIndex: Number.isFinite(ci) ? Math.min(Math.max(0, ci), nRight - 1) : 0 };
+  });
+}
+/* ⭐ blank options / list items are dropped on save (students used to see
+   empty choices); the answer key is re-pointed to the same items */
+function _cleanQuestionForSave(q) {
+  const c = JSON.parse(JSON.stringify(q));
+  if ((c.type === 'single' || c.type === 'multiple') && Array.isArray(c.options)) {
+    const keep = [], map = {};
+    c.options.forEach((o, i) => { if (String(o || '').trim()) { map[i] = keep.length; keep.push(o); } });
+    c.correctIndexes = (c.correctIndexes || []).filter(i => map[i] !== undefined).map(i => map[i]);
+    c.options = keep;
+  }
+  if (c.type === 'matrix') {
+    _syncMatrixRows(c);
+    const rmap = {}, right = [];
+    (c.matrixRightItems || []).forEach((o, i) => { if (String(o || '').trim()) { rmap[i] = right.length; right.push(o); } });
+    const left = [], rows = [];
+    (c.matrixLeftItems || []).forEach((o, i) => {
+      if (!String(o || '').trim()) return;
+      left.push(o);
+      const ci = c.matrixRows[i] ? c.matrixRows[i].correctIndex : 0;
+      rows.push({ text: o, correctIndex: rmap[ci] !== undefined ? rmap[ci] : -1 });
+    });
+    c.matrixLeftItems = left; c.matrixRightItems = right; c.matrixRows = rows;
+  }
+  return c;
 }
 
 function addMatrixItem(qi, side) {
@@ -12600,10 +13058,7 @@ function addMatrixItem(qi, side) {
   if (!Array.isArray(q[key])) q[key] = [];
   if (q[key].length >= 8) return showToast('Max 8 items per column.', 'info');
   q[key].push('');
-  if (side === 'left') {
-    if (!Array.isArray(q.matrixRows)) q.matrixRows = [];
-    q.matrixRows.push({ text: '', correctIndex: 0 });
-  }
+  _syncMatrixRows(q);
   renderQuizDraft();
 }
 
@@ -12712,9 +13167,10 @@ async function saveQuizPaper() {
     resultPublishDelayHours
   };
 
-  /* ---------- Per-question validation (unchanged) ---------- */
-  for (let i = 0; i < quizDraft.length; i++) {
-    const q = quizDraft[i];
+  /* ---------- clean blanks, then validate exactly what will be saved ---------- */
+  const cleaned = quizDraft.map(_cleanQuestionForSave);
+  for (let i = 0; i < cleaned.length; i++) {
+    const q = cleaned[i];
     if (!q.question || !q.question.trim()) {
       return showToast(`Question ${i + 1} has no text.`, 'error');
     }
@@ -12758,7 +13214,7 @@ async function saveQuizPaper() {
       const right = (q.matrixRightItems || []).filter(x => x && x.trim());
       if (left.length  < 2) return showToast(`Question ${i + 1}: at least 2 List-I items required.`, 'error');
       if (right.length < 2) return showToast(`Question ${i + 1}: at least 2 List-II items required.`, 'error');
-      if ((q.matrixRows || []).length < 2) return showToast(`Question ${i + 1}: at least 2 rows required.`, 'error');
+      if ((q.matrixRows || []).some(r => r.correctIndex < 0)) return showToast(`Question ${i + 1}: a correct match points to an empty List-II item.`, 'error');
     }
   }
 
@@ -12766,7 +13222,7 @@ async function saveQuizPaper() {
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'; }
 
   if (!quizPaperConfig.totalMarks) {
-    quizPaperConfig.totalMarks = quizDraft.reduce((s, q) => s + (Number(q.marks) || 0), 0);
+    quizPaperConfig.totalMarks = cleaned.reduce((s, q) => s + (Number(q.marks) || 0), 0);
   }
 
   try {
@@ -12775,12 +13231,15 @@ async function saveQuizPaper() {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quiz: quizDraft, examConfig: quizPaperConfig })
+        body: JSON.stringify({ quiz: cleaned, examConfig: quizPaperConfig })
       }
     );
     const data = await res.json();
     if (data.success) {
       showToast('✅ Paper saved!', 'success');
+      quizDraft = cleaned;                 // the editor now shows exactly what was saved
+      _quizDraftSavedJSON = JSON.stringify(quizDraft);
+      renderQuizDraft();
       await fetchCoursesFromDB();
     } else {
       showToast(data.message || 'Failed to save.', 'error');
@@ -12834,12 +13293,12 @@ async function openQuizPlayer(courseId, materialId) {
   const course = findCourse(courseId); if (!course) return;
   const mat = (course.materials || []).find(m => m.id === materialId); if (!mat) return;
 
-  // Quiz data is not in the cached list — fetch it on demand
-  let quiz = mat.quiz;
-  if (!quiz || quiz.length === 0) {
+  /* ⭐ always the CURRENT paper (a cached copy kept students on an old
+     version after the instructor edited it) */
+  let quiz = null;
+  {
     try {
-      showToast('Loading quiz…', 'info');
-      const res = await fetch(`/api/courses/${courseId}/materials/${materialId}/full-quiz`);
+      const res = await fetch(`/api/courses/${courseId}/materials/${materialId}/full-quiz?_t=${Date.now()}`, { cache: 'no-store' });
       const data = await res.json();
       if (!data.success) return showToast(data.message || 'Could not load quiz.', 'error');
       quiz = data.quiz || [];
@@ -12857,7 +13316,8 @@ async function openQuizPlayer(courseId, materialId) {
      unreachable we fall back to a local shuffle so the exam still
      runs — the client is not the enforcer anyway. */
   let sessionInfo = null;
-  try {
+  const previewRole = isAdmin(currentUser) || String(currentUser.role || '').toLowerCase() === 'professor';
+  if (!previewRole) try {     // a preview records nothing, so it needs no server attempt
     const sres = await fetchJSON(
       `/api/user/quiz/${courseId}/${materialId}/start`,
       {
@@ -12871,6 +13331,16 @@ async function openQuizPlayer(courseId, materialId) {
       _examClockOffsetMs = (Number(sres.serverNow) || Date.now()) - Date.now();
     } else if (sres && sres.code === 'ALREADY_SUBMITTED') {
       return showToast('You have already submitted this test. Use Retake to start again.', 'info');
+    } else if (sres && sres.code === 'EXPIRED_AUTO_SUBMITTED') {
+      /* ⭐ time ran out last time without a submit — the server graded the
+         answers saved before the deadline (the attempt was not lost) */
+      clearQuizAnswers(materialId);
+      try { await fetchCoursesFromDB(true); } catch (_) {}
+      try { renderCourseDetail(courseId); } catch (_) {}
+      return quizConfirm({
+        title: 'Your last attempt was submitted', icon: 'fa-clock', ok: 'OK', cancel: false,
+        text: 'Time ran out before it was submitted, so the answers saved before the deadline were submitted for you. Open the test again if you want to start a new attempt.'
+      });
     } else if (sres && sres.code === 'ATTEMPT_LIMIT_REACHED') {
       /* ⭐ Student has used every attempt the admin allowed.
          Show them their own result status instead of a wall. */
@@ -12899,16 +13369,28 @@ async function openQuizPlayer(courseId, materialId) {
       );
     }
   } catch (err) {
-    console.warn('[openQuizPlayer] session start failed, running offline:', err.message);
+    console.warn('[openQuizPlayer] session start failed:', err.message);
+  }
+  /* ⭐ The server runs the clock and records the attempt — an "offline"
+     attempt could never be submitted, so it is not started at all. */
+  if (!previewRole && !sessionInfo) {
+    return showToast('Could not start the test — check your internet connection and try again.', 'error');
   }
 
   const normalized = quiz.map(q => normalizeQuestion(q));
   const emptyAnswer = q => q.type === 'integer' || q.type === 'numerical' ? '' : [];
+  const fits = (a) => Array.isArray(a) && a.length === normalized.length;
 
+  if (sessionInfo && sessionInfo.resumed === false) clearQuizAnswers(materialId);   // a fresh attempt starts blank
   const saved = restoreQuizAnswers(materialId);
-  const initialAnswers = (saved && Array.isArray(saved) && saved.length === normalized.length)
-    ? saved
+  /* resuming: this device's copy, else the server's (refresh on another
+     device / cleared storage) — uploads still in flight are dropped */
+  const serverSaved = sessionInfo && sessionInfo.resumed && fits(sessionInfo.savedAnswers) ? sessionInfo.savedAnswers : null;
+  const pickedSaved = fits(saved) ? saved : serverSaved;
+  const initialAnswers = pickedSaved
+    ? pickedSaved.map((a, i) => normalized[i].type === 'subjective' && Array.isArray(a) ? a.filter(u => u && u.url && !u.uploading) : a)
     : normalized.map(emptyAnswer);
+  const resumedProctor = (sessionInfo && sessionInfo.resumed && sessionInfo.proctor) || null;
 
   /* Read the admin's proctoring config (defaults if fetch failed) */
   let cfg = { maxStrikes: 3, forwardOnly: true, shuffleQuestions: true, shuffleOptions: true };
@@ -12978,11 +13460,13 @@ async function openQuizPlayer(courseId, materialId) {
     paperConfig: mat.examConfig || {},
     previewMode: false,
     examStarted: false,
-    strikes: 0,
-    violations: [],
+    /* ⭐ strikes survive a reload (the server keeps the log) */
+    strikes: resumedProctor ? Number(resumedProctor.strikes) || 0 : 0,
+    violations: resumedProctor && Array.isArray(resumedProctor.events) ? resumedProctor.events.slice() : [],
     startTime: null,
     violationHandling: false,
     fullscreenArmed: false,
+    serverSession: !!sessionInfo,
 
     /* ⭐ NEW fields */
     forwardOnly: !allowBackNavigation,          // strict when back-nav is OFF
@@ -13036,7 +13520,7 @@ async function openQuizPlayer(courseId, materialId) {
      "Preview mode" note. Students proceed to the normal consent
      modal exactly as before.
      ============================================================ */
-  if (isAdmin(currentUser)) {
+  if (previewRole) {
     // Force preview semantics — this is the single source of truth
     // that renderQuizExamShell() and submitQuiz() already read.
     quizPlayerState.previewMode = true;
@@ -13270,6 +13754,7 @@ function renderQuizExamShell() {
       <div class="quiz-exam-timer-wrap">
         <div class="quiz-exam-timer" id="quizTimerDisplay">--:--</div>
         ${st.previewMode ? '' : '<div class="quiz-proctor-pill"><i class="fas fa-shield-halved"></i> Proctored</div>'}
+        ${st.previewMode || st.submitted ? '' : '<div class="quiz-save-state" id="quizSaveState"></div>'}
       </div>
 
       <div class="quiz-exam-progress">
@@ -13291,9 +13776,9 @@ function renderQuizExamShell() {
 
   if (!st.submitted) {
     /* ⭐ FORWARD-ONLY: render exactly ONE question at a time. */
-    const qHtml = st.forwardOnly
-      ? _renderSingleExamQuestion(st)
-      : _renderAllExamQuestions(st);
+    /* ⭐ both modes show one question at a time (free navigation used to put
+       every question on one page — unshuffled, with no Submit button) */
+    const qHtml = _renderSingleExamQuestion(st);
     bodyHtml = `<div class="quiz-exam-body-inner">${qHtml}</div>`;
   } else {
     /* ---------- SUBMITTED ---------- */
@@ -13413,9 +13898,14 @@ function renderQuizExamShell() {
                  <i class="fas fa-arrow-left"></i> Previous
                </button>`
             : ''}
-          ${st.forwardOnly && !isLast
+          ${!st.forwardOnly && !isLast
+            ? `<button type="button" class="btn btn-outline btn-lg" onclick="submitQuiz()">
+                 <i class="fas fa-paper-plane"></i> Submit
+               </button>`
+            : ''}
+          ${!isLast
             ? `<button type="button" class="btn btn-primary btn-lg" onclick="nextExamQuestion()">
-                 <i class="fas fa-arrow-right"></i> Next Question
+                 Next Question <i class="fas fa-arrow-right"></i>
                </button>`
             : ''}
           ${isLast
@@ -13450,6 +13940,7 @@ function renderQuizExamShell() {
 
   shell.innerHTML = headerHtml + `<div class="quiz-exam-body">${bodyHtml}</div>` + footerHtml;
   renderMathIn(shell.querySelector('.quiz-exam-body'));
+  if (!st.previewMode && !st.submitted) _setQuizSaveState(st._saveState || 'idle');
 
   /* Re-arm the timer's countdown display after a fresh render */
   if (!st.submitted && st.durationSeconds) {
@@ -13480,7 +13971,7 @@ function _renderSingleExamQuestion(st) {
     <div class="quiz-play-qnum">
       Question ${displayIdx + 1} of ${st.questionOrder.length}
       <span class="quiz-qtype-tag">${questionTypeLabel(qType)}</span>
-      <span class="quiz-qmark-tag">+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}</span>
+      <span class="quiz-qmark-tag">${q.type === 'subjective' ? `+${q.subjectiveMaxMarks || q.marks || 10}` : `+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}`}</span>
       ${isAnswered ? '<span class="quiz-answered-tag"><i class="fas fa-check-circle"></i> Answered</span>' : ''}
       ${locked ? '<span class="quiz-answered-tag" style="color:var(--rose-500);"><i class="fas fa-lock"></i> Locked</span>' : ''}
     </div>
@@ -13501,7 +13992,7 @@ function _renderAllExamQuestions(st) {
       <div class="quiz-play-qnum">
         Question ${qi + 1} of ${st.quiz.length}
         <span class="quiz-qtype-tag">${questionTypeLabel(qType)}</span>
-        <span class="quiz-qmark-tag">+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}</span>
+        <span class="quiz-qmark-tag">${q.type === 'subjective' ? `+${q.subjectiveMaxMarks || q.marks || 10}` : `+${q.marks || 4}${q.negativeMarks ? ' / ' + q.negativeMarks : ''}`}</span>
         ${isAnswered ? '<span class="quiz-answered-tag"><i class="fas fa-check-circle"></i> Answered</span>' : ''}
       </div>
       <h4 class="quiz-play-question latex-content">${escapeHtml(q.question)}</h4>
@@ -13547,7 +14038,8 @@ function renderStudentAnswerAreaShuffled(q, qi, st) {
 /* ---- Advance to the next question (forward-only) ---- */
 function nextExamQuestion() {
   const st = quizPlayerState;
-  if (!st || !st.forwardOnly || st.submitted) return;
+  if (!st || st.submitted) return;
+  if (!st.forwardOnly) return jumpToExamQuestion(Math.min(st.displayIndex + 1, st.questionOrder.length - 1));
 
   const currentOriginalIdx = st.questionOrder[st.displayIndex];
 
@@ -13586,33 +14078,110 @@ function _recordQuestionTime(originalIdx) {
    ============================================================ */
 function _onExamVisibilityChange() {
   if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
-  if (document.hidden) _handleExamViolation('You left the exam tab.');
+  if (_examPicker) {                                   // the phone's file picker / camera covers the page
+    if (!document.hidden) _examPickerReturned();
+    return;
+  }
+  if (document.hidden) { flushQuizServerSave(true); _handleExamViolation('You left the exam tab.'); }
 }
 
 function _onExamWindowBlur() {
   if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
-  if (document.querySelector('.modal-overlay.active')) return;
-  if (window.__examAllowBlur) return;   // file picker grace period
+  if (_examPicker) return;                             // file picker open — not leaving the exam
+  if (document.querySelector('.modal-overlay.active, .aero-confirm-ov, .exam-fs-prompt')) return;
   _handleExamViolation('The exam window lost focus.');
 }
 
-/* Allow a brief window-blur without triggering a proctoring violation.
-   Used when the student opens the OS file picker for subjective uploads.
-   The flag auto-clears after 8 s — this is CRITICAL: if the student
-   cancels the file dialog, the input's onchange never fires, and
-   without this timer the proctoring would stay disabled for the rest
-   of the exam. */
-function allowExamBlurBriefly() {
-  window.__examAllowBlur = true;
-  clearTimeout(window.__examBlurTimer);
-  window.__examBlurTimer = setTimeout(() => {
-    window.__examAllowBlur = false;
-  }, 8000);
+/* ============================================================
+   ⭐ FILE-PICKER GUARD (2026-10-10)
+   ------------------------------------------------------------
+   Attaching a PDF / photo opens the system file picker or the
+   camera. To the browser that looks exactly like leaving the
+   exam: the window blurs, on phones the page is hidden, and full
+   screen ends. Before, students got a strike — or were auto-
+   submitted — just for attaching their answer sheet (the old
+   8-second blur grace was never even switched on: it listened on
+   the hidden <input>, which gets no mousedown/focus).
+
+   Now, while a picker the student opened from an upload button is
+   up, none of those count. It ends when the student is back
+   (focus / page visible / a file chosen / cancel / a tap on the
+   page). Full screen lost on the way is restored with a prompt,
+   not a strike. A picker kept open unusually long (> 3 min) is
+   recorded as time away.
+   ============================================================ */
+const EXAM_PICKER_MAX_MS = 3 * 60 * 1000;
+let _examPicker = null;          // { since, wasFullscreen, closing }
+
+function examPickerOpening() {
+  const st = quizPlayerState;
+  if (!st || !st.examStarted || st.submitted || st.previewMode) return;
+  if (_examPicker && !_examPicker.closing) return;
+  _examPicker = { since: Date.now(), wasFullscreen: !!(document.fullscreenElement || document.webkitFullscreenElement) };
+  /* the student is back on the page — however the picker closed */
+  const back = () => _examPickerReturned();
+  setTimeout(() => {                     // after the click that opened it
+    window.addEventListener('focus', back, { once: true });
+    document.addEventListener('pointerdown', back, { once: true, capture: true });
+    document.addEventListener('keydown', back, { once: true, capture: true });
+  }, 350);
+}
+/* kept for old markup / cached pages */
+function allowExamBlurBriefly() { examPickerOpening(); }
+
+function _examPickerReturned() {
+  const p = _examPicker;
+  if (!p || p.closing) return;
+  p.closing = true;
+  /* blur / fullscreen events can trail the picker closing by a moment */
+  setTimeout(() => {
+    if (_examPicker !== p) return;
+    _examPicker = null;
+    const st = quizPlayerState;
+    if (!st || !st.examStarted || st.submitted) return;
+    const away = Date.now() - p.since;
+    st.violations.push({ reason: `File picker (${Math.round(away / 1000)} s)`, at: p.since, strike: false });
+    if (away > EXAM_PICKER_MAX_MS) {
+      _handleExamViolation(`You were away from the exam for ${Math.round(away / 60000)} minutes while choosing a file.`);
+      return;
+    }
+    const fsNow = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (p.wasFullscreen && !fsNow) _showExamFullscreenPrompt();
+  }, 700);
+}
+
+/* Full screen can only be re-entered from a tap, so ask for one.
+   This is not a strike — the student did nothing wrong. */
+function _showExamFullscreenPrompt() {
+  if (document.querySelector('.exam-fs-prompt')) return;
+  const ov = document.createElement('div');
+  ov.className = 'exam-fs-prompt';
+  ov.setAttribute('role', 'dialog');
+  ov.innerHTML = `
+    <div class="exam-fs-prompt-card">
+      <div class="exam-fs-prompt-icon"><i class="fas fa-expand"></i></div>
+      <h3>File attached — back to the exam</h3>
+      <p>Choosing a file closed full screen. This is <strong>not</strong> counted as a warning.</p>
+      <button type="button" class="btn btn-primary btn-block"><i class="fas fa-expand"></i> Continue in full screen</button>
+    </div>`;
+  ov.querySelector('button').onclick = () => {
+    const st = quizPlayerState;
+    if (st) st.fullscreenArmed = false;               // the switch itself must not count
+    try {
+      const el = document.documentElement;
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (req) { const pr = req.call(el); if (pr && pr.catch) pr.catch(() => {}); }
+    } catch (_) {}
+    ov.remove();
+    setTimeout(() => { if (quizPlayerState) quizPlayerState.fullscreenArmed = true; }, 900);
+  };
+  document.body.appendChild(ov);
 }
 
 function _onExamFullscreenChange() {
   if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
   if (!quizPlayerState.fullscreenArmed) return;
+  if (_examPicker) return;                             // handled when the picker closes
   const stillFs = document.fullscreenElement || document.webkitFullscreenElement;
   if (!stillFs) _handleExamViolation('You exited full-screen mode.');
 }
@@ -13620,6 +14189,7 @@ function _onExamFullscreenChange() {
 function _onExamBeforeUnload(e) {
   if (!quizPlayerState || !quizPlayerState.examStarted || quizPlayerState.submitted) return;
   persistQuizAnswers();
+  flushQuizServerSave(true);
   e.preventDefault();
   e.returnValue = '';
   return '';
@@ -13631,7 +14201,8 @@ function _handleExamViolation(reason) {
 
   st.violationHandling = true;
   st.strikes = (st.strikes || 0) + 1;
-  st.violations.push({ reason, at: Date.now() });
+  st.violations.push({ reason, at: Date.now(), strike: true });
+  flushQuizServerSave(true);                          // the server keeps the record (a reload no longer clears it)
 
   if (st.strikes > QUIZ_PROCTOR_MAX_STRIKES) {
     _autoSubmitForViolation(reason);
@@ -13656,8 +14227,10 @@ function _showViolationWarning(reason, strikeNumber) {
   const box  = document.getElementById('quizViolationBox');
 
   if (text) {
-    text.textContent =
-      `${reason} This is your final warning — one more violation will instantly auto-submit your exam.`;
+    const left = QUIZ_PROCTOR_MAX_STRIKES - strikeNumber;
+    text.textContent = left <= 0
+      ? `${reason} This is your final warning — one more violation will instantly auto-submit your exam.`
+      : `${reason} ${left} more warning${left === 1 ? '' : 's'} allowed — after that your exam is submitted automatically.`;
   }
   if (box) {
     box.innerHTML = `
@@ -13692,18 +14265,18 @@ async function _autoSubmitForViolation(reason) {
   st.autoSubmitted = true;
   showToast('⚠️ Auto-submitting due to proctoring violation…', 'error');
   await new Promise(r => setTimeout(r, 400));
-  await submitQuiz({ auto: true });
+  await submitQuiz({ auto: true, reason: 'violation', detail: reason });
 }
 
-function requestQuitExam() {
+async function requestQuitExam() {
   const st = quizPlayerState;
   if (!st) return;
 
   st.examStarted = false;
-  const ok = confirm(
-    'Quit the exam?\n\n' +
-    'Your answers will be saved locally, but no score will be recorded.'
-  );
+  const ok = await quizConfirm({
+    title: 'Leave the exam?', icon: 'fa-door-open', danger: true, ok: 'Leave exam', cancel: 'Continue exam',
+    text: 'Your answers stay saved on this device and the timer keeps running. Come back before time is up and submit to get a score.'
+  });
   if (ok) {
     persistQuizAnswers();
     exitQuizSession();
@@ -13780,55 +14353,50 @@ async function submitQuiz(opts = {}) {
      ALREADY_SUBMITTED. A 30 s timestamp guard blocks the duplicate
      without needing try/finally plumbing (30 s is far longer than
      any real submit round trip). */
-  const _now = Date.now();
-  if (st._submitGuardUntil && _now < st._submitGuardUntil) return;
-  st._submitGuardUntil = _now + 30000;
+  if (st._submitGuardUntil && Date.now() < st._submitGuardUntil) return;
 
   const auto = !!opts.auto;
+  /* the number the student sees for an original question (questions may be shuffled) */
+  const shown = (i) => (st.questionOrder ? st.questionOrder.indexOf(i) : i) + 1;
 
   if (!auto) {
-    /* Validate that every question has an answer */
+    /* uploads still in flight must finish first */
     for (let i = 0; i < st.quiz.length; i++) {
-      const q = st.quiz[i];
       const a = st.answers[i];
-      if (q.type === 'integer' || q.type === 'numerical') {
-        if (a === '' || a === null || a === undefined || isNaN(Number(a))) {
-          return showToast(`Please answer Q${i + 1}.`, 'error');
-        }
-      } else if (q.type === 'subjective') {
-        if (!Array.isArray(a) || a.length === 0) {
-          return showToast(`Please upload at least one photo for Q${i + 1}.`, 'error');
-        }
-        if (a.some(u => u && u.uploading)) {
-          return showToast(`Please wait for Q${i + 1} uploads to finish.`, 'error');
-        }
-        if (a.some(u => !u || !u.url)) {
-          return showToast(`Q${i + 1}: some photos failed to upload. Remove and retry.`, 'error');
-        }
-      } else if (q.type === 'matrix') {
-        const rows = q.matrixRows || [];
-        if (!Array.isArray(a) ||
-            a.filter(x => x !== undefined && x !== null && x !== '').length < rows.length) {
-          return showToast(`Please match all items in Q${i + 1}.`, 'error');
-        }
-      } else {
-        if (Array.isArray(a) ? a.length === 0 : (a === null || a === undefined || a === -1)) {
-          return showToast(`Please answer Q${i + 1}.`, 'error');
-        }
+      if (st.quiz[i].type === 'subjective' && Array.isArray(a)) {
+        if (a.some(u => u && u.uploading)) return showToast(`Please wait for the uploads in question ${shown(i)} to finish.`, 'error');
+        if (a.some(u => !u || !u.url)) return showToast(`Question ${shown(i)}: a photo failed to upload — remove it and try again.`, 'error');
       }
     }
+    /* ⭐ unanswered questions no longer block submitting (in forward-only mode a
+       skipped question could never be answered, so the test could never be
+       submitted) — the student confirms instead */
+    const blank = st.quiz.map((q, i) => _isQuestionAnswered(q, st.answers[i]) ? 0 : shown(i)).filter(Boolean).sort((x, y) => x - y);
+    const examWasOn = st.examStarted;
+    st.examStarted = false;                                    // the dialog must not count as leaving the exam
+    const answer = await quizConfirm({
+      title: blank.length ? `${blank.length} question${blank.length === 1 ? '' : 's'} not answered` : 'Submit your test?',
+      icon: blank.length ? 'fa-circle-exclamation' : 'fa-paper-plane',
+      html: blank.length
+        ? `<p class="modal-sub">Unanswered: <strong>${blank.slice(0, 15).join(', ')}${blank.length > 15 ? '…' : ''}</strong>. They will score zero (no negative marks).</p>`
+        : `<p class="modal-sub">You have answered every question. Once submitted, answers cannot be changed.</p>`,
+      ok: blank.length ? 'Submit anyway' : 'Submit',
+      cancel: 'Keep working',
+      extra: blank.length && !st.forwardOnly ? `Go to question ${blank[0]}` : ''
+    });
+    st.examStarted = examWasOn;
+    if (st.submitted || quizPlayerState !== st) return;         // time ran out while the dialog was open — already submitted
+    if (answer !== true) {
+      if (answer === 'extra') jumpToExamQuestion(blank[0] - 1);
+      return;
+    }
   }
+  /* in-flight guard (set only now: an open confirmation must never block the time-up submit) */
+  if (st._submitGuardUntil && Date.now() < st._submitGuardUntil) return;
+  st._submitGuardUntil = Date.now() + 30000;
 
-  /* ⭐ Record time on the final question before submitting */
-  if (st.forwardOnly && st.questionOrder && st.questionOrder.length > 0) {
-    const lastOrigIdx = st.questionOrder[st.displayIndex];
-    _recordQuestionTime(lastOrigIdx);
-  } else {
-    /* Non forward-only: credit remaining time to the question that was
-       being viewed when the user clicked submit. We approximate by
-       crediting _examQuestionEnteredAt to the currently-visible card. */
-    _recordQuestionTime(0);
-  }
+  /* ⭐ Record time on the question on screen */
+  if (st.questionOrder && st.questionOrder.length > 0) _recordQuestionTime(st.questionOrder[st.displayIndex]);
 
   st.examStarted = false;
 
@@ -13842,7 +14410,8 @@ async function submitQuiz(opts = {}) {
           userId: currentUser._id,
           answers: st.answers,
           timeSpentPerQuestion: st.timeSpentPerQuestion,
-          autoSubmitted: auto
+          autoSubmitted: auto,
+          proctor: _quizProctorLog(st)          // ⭐ the instructor sees warnings + how the attempt ended
         })
       }
     );
@@ -13851,6 +14420,9 @@ async function submitQuiz(opts = {}) {
     if (data.success) {
       st.submitted = true;
       st.response = data;
+      clearTimeout(_quizServerSaveTimer);
+      _examPicker = null;
+      document.querySelectorAll('.aero-confirm-ov, .exam-fs-prompt').forEach(o => o.remove());
 
       // ⭐ XP + level-up feedback
       if (data.xpResult && data.xpResult.gained > 0) {
@@ -13881,8 +14453,10 @@ async function submitQuiz(opts = {}) {
 
       renderQuizExamShell();
 
-      if (auto) {
-        showToast('⚠️ Exam auto-submitted (time up or proctoring violation).', 'error');
+      if (data.lateSubmission) {
+        showToast('⏰ ' + (data.message || 'Time was up — the answers saved before the deadline were submitted.'), 'error');
+      } else if (auto) {
+        showToast(opts.reason === 'time' ? '⏰ Time is up — your answers were submitted.' : '⚠️ Exam auto-submitted after repeated proctoring violations.', 'error');
       } else if (data.pendingEvaluation) {
         showToast('✅ Submitted. Subjective answers are pending instructor review.', 'success');
       } else {
@@ -13893,6 +14467,17 @@ async function submitQuiz(opts = {}) {
       }
     } else {
       st.examStarted = true;
+      if (data.code === 'ALREADY_SUBMITTED' || data.code === 'NO_SESSION') {
+        /* finished elsewhere (another tab / device, or the server after time-up) */
+        stopQuizTimer();
+        _detachAllProctorListeners();
+        exitFullscreenNow();
+        clearQuizAnswers(st.materialId);
+        st.submitted = true;
+        showToast(data.code === 'NO_SESSION' ? data.message : 'This attempt was already submitted — open the course to see your result.', 'info');
+        exitQuizSession();
+        return;
+      }
       if (data.code === 'TIME_EXPIRED') {
         stopQuizTimer();
         _detachAllProctorListeners();
@@ -13910,9 +14495,16 @@ async function submitQuiz(opts = {}) {
   } catch (err) {
     console.error('[submitQuiz]', err);
     st.examStarted = true;
-    showToast('Server error.', 'error');
     /* ⭐ FIX: release the in-flight guard so the student can retry. */
     st._submitGuardUntil = 0;
+    if (auto) {
+      /* time-up / violation submit hit a network error: keep trying — the
+         server also grades the autosaved answers if this never gets through */
+      showToast('No connection — retrying the submission…', 'error');
+      setTimeout(() => { if (quizPlayerState === st && !st.submitted) submitQuiz(opts); }, 5000);
+    } else {
+      showToast('Could not reach the server — your answers are saved. Try Submit again.', 'error');
+    }
   }
 }
 
@@ -14122,37 +14714,42 @@ function renderStudentAnswerArea(q, qi) {
           <span class="subjective-max-badge"><i class="fas fa-star"></i> ${maxM} marks · Admin evaluated</span>
         </div>
 
-        <!-- ⭐ Two buttons so mobile users can either shoot a photo or attach a PDF -->
+        <!-- ⭐ Camera · Gallery · PDF. The camera button opens the camera
+             directly; Gallery lets a phone pick photos already taken (with
+             capture= set, Android only ever offered the camera). Opening any
+             of them is NOT counted as leaving the exam (examPickerOpening). -->
         <div class="subjective-upload-row">
           <label class="subjective-upload-btn">
-            <input type="file"
-                   accept="image/*,.heic,.heif"
-                   capture="environment"
-                   multiple
-                   style="display:none;"
-                   onmousedown="allowExamBlurBriefly();"
-                   onfocus="allowExamBlurBriefly();"
-                   onchange="handleSubjectiveUpload(${qi}, this, 'image');">
+            <input type="file" accept="image/*" capture="environment" style="display:none;"
+                   onclick="examPickerOpening();"
+                   onchange="handleSubjectiveUpload(${qi}, this, 'image');"
+                   oncancel="_examPickerReturned();">
             <i class="fas fa-camera"></i>
-            <span>Take / Choose Photo</span>
+            <span>Camera</span>
+          </label>
+
+          <label class="subjective-upload-btn">
+            <input type="file" accept="image/*,.heic,.heif" multiple style="display:none;"
+                   onclick="examPickerOpening();"
+                   onchange="handleSubjectiveUpload(${qi}, this, 'image');"
+                   oncancel="_examPickerReturned();">
+            <i class="fas fa-images"></i>
+            <span>Photos</span>
           </label>
 
           <label class="subjective-upload-btn subjective-upload-btn--pdf">
-            <input type="file"
-                   accept="application/pdf,.pdf"
-                   multiple
-                   style="display:none;"
-                   onmousedown="allowExamBlurBriefly();"
-                   onfocus="allowExamBlurBriefly();"
-                   onchange="handleSubjectiveUpload(${qi}, this, 'pdf');">
+            <input type="file" accept="application/pdf,.pdf" multiple style="display:none;"
+                   onclick="examPickerOpening();"
+                   onchange="handleSubjectiveUpload(${qi}, this, 'pdf');"
+                   oncancel="_examPickerReturned();">
             <i class="fas fa-file-pdf"></i>
-            <span>Attach PDF Scan</span>
+            <span>PDF</span>
           </label>
         </div>
 
         <p class="subjective-upload-hint">
           <i class="fas fa-info-circle"></i>
-          Images (<strong>JPG · PNG · HEIC</strong>) or <strong>PDF</strong> · max <strong>25 MB</strong> per file · up to <strong>10 files</strong>
+          <span>Images (<strong>JPG · PNG · HEIC</strong>) or <strong>PDF</strong> · max <strong>25 MB</strong> per file · up to <strong>10 files</strong></span>
         </p>
 
         <div class="subjective-uploads" id="subjectiveUploads-${qi}">
@@ -14273,7 +14870,7 @@ function renderResultDetail(q, r) {
           ${rows.map((row, ri) => {
             const ok = Number(chosen[ri]) === Number(row.correctIndex);
             return `<tr class="${ok ? 'ok-row' : 'bad-row'}">
-              <td class="latex-content">${String.fromCharCode(65 + ri)}. ${escapeHtml(row.text)}</td>
+              <td class="latex-content">${String.fromCharCode(65 + ri)}. ${escapeHtml(((q.matrixLeftItems || [])[ri]) || row.text || '')}</td>
               <td>${chosen[ri] != null && chosen[ri] !== '' ? (rightLabels[chosen[ri]] || '—') : '—'}</td>
               <td>${rightLabels[row.correctIndex] || '—'}</td>
             </tr>`;
@@ -14331,7 +14928,7 @@ function previewQuizPaper() {
   const course = findCourse(quizEditingCourseId);
   const mat = (course.materials || []).find(m => m.id === quizEditingMaterialId);
 
-  const emptyAnswer = q => q.type === 'integer' ? '' : [];
+  const emptyAnswer = q => (q.type === 'integer' || q.type === 'numerical') ? '' : [];
   const _previewOrder = Array.from({ length: quizDraft.length }, (_, i) => i);
 
   quizPlayerState = {
@@ -14683,7 +15280,11 @@ function aeroOpenPdfUrl(event, url, title) {
   url = String(url || '');
   if (!/^\/uploads\/[^?#]+\.pdf(\?|#|$)/i.test(url)) return true;
   if (event) { event.preventDefault(); event.stopPropagation(); }
-  const fallback = () => { try { window.open(withAuthToken(url), '_blank', 'noopener'); } catch (_) {} };
+  const fallback = () => {
+    /* in a proctored exam a new tab counts as leaving it — don't open one */
+    if (typeof _inExam === 'function' && _inExam()) return showToast('The PDF is attached. It cannot be previewed during the exam on this device.', 'info');
+    try { window.open(withAuthToken(url), '_blank', 'noopener'); } catch (_) {}
+  };
   AeroOpening.run('pdf:' + url, async () => {
     try { await window.loadPDFJS(); } catch (_) { return fallback(); }
     if (!window.PDFViewer || typeof window.PDFViewer.open !== 'function') return fallback();
@@ -21337,12 +21938,8 @@ async function handleSubjectiveUpload(qi, input, kind) {
 
   const files = Array.from(input.files || []);
 
-  if (files.length === 0) {
-    /* User cancelled the picker — release the blur grace immediately. */
-    clearTimeout(window.__examBlurTimer);
-    window.__examAllowBlur = false;
-    return;
-  }
+  _examPickerReturned();                     // a file was chosen (or the picker was cancelled) — the student is back
+  if (files.length === 0) return;
 
   if (!Array.isArray(st.answers[qi])) st.answers[qi] = [];
 
@@ -21443,12 +22040,6 @@ async function handleSubjectiveUpload(qi, input, kind) {
 
   /* Reset the input so the same file can be re-picked if needed */
   input.value = '';
-
-  /* Release the blur grace so a cancelled dialog can't disable proctoring */
-  clearTimeout(window.__examBlurTimer);
-  window.__examBlurTimer = setTimeout(() => {
-    window.__examAllowBlur = false;
-  }, 1500);
 }
 
 function renderSubjectiveUpload(u, qi, idx) {
@@ -21527,12 +22118,18 @@ function updateSubjectiveUploadProgress(qi, placeholder) {
   if (bar) bar.style.width = (placeholder.progress || 0) + '%';
 }
 
-function removeSubjectiveUpload(qi, idx) {
+async function removeSubjectiveUpload(qi, idx) {
   const st = quizPlayerState;
   if (!st || st.submitted) return;
   if (!Array.isArray(st.answers[qi])) return;
-  if (!confirm('Remove this uploaded photo?')) return;
-  st.answers[qi].splice(idx, 1);
+  const u = st.answers[qi][idx];
+  if (!u) return;
+  /* in-page dialog: the browser's confirm() fails in the Android app and drops full screen */
+  if (!(await quizConfirm({ title: 'Remove this file?', text: u.fileName || 'Uploaded answer', ok: 'Remove', danger: true, icon: 'fa-trash' }))) return;
+  if (quizPlayerState !== st || st.submitted) return;
+  const at = st.answers[qi].indexOf(u);
+  if (at < 0) return;
+  st.answers[qi].splice(at, 1);
   persistQuizAnswers();
   renderSubjectiveUploads(qi);
   updateQuizQuestionCard(qi);

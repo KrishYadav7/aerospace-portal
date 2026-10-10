@@ -3554,7 +3554,15 @@ const quizSessionSchema = new mongoose.Schema({
   autoSubmitted:   { type: Boolean, default: false },
 
   /* Time spent (seconds) on each ORIGINAL question index */
-  timeSpentPerQuestion: { type: mongoose.Schema.Types.Mixed, default: {} }
+  timeSpentPerQuestion: { type: mongoose.Schema.Types.Mixed, default: {} },
+
+  /* ⭐ 2026-10-10: answers autosaved during the attempt. If the final
+     submit arrives late (network down at time-up) or never arrives (tab
+     closed), the attempt is graded from these instead of being lost. */
+  savedAnswers:    { type: mongoose.Schema.Types.Mixed, default: null },
+  savedAt:         { type: Date, default: null },
+  /* proctoring log — survives a refresh, so reloading no longer resets strikes */
+  proctor:         { type: mongoose.Schema.Types.Mixed, default: null }
 }, { timestamps: true });
 
 quizSessionSchema.index({ userId: 1, courseId: 1, materialId: 1 }, { unique: true });
@@ -7220,10 +7228,29 @@ app.get('/api/courses/:courseId/materials/:materialId/full-quiz',
         });
       }
 
+      /* ⭐ 2026-10-10: the answer key goes ONLY to the people who write the
+         paper (admins, professors assigned to this course). Students used
+         to receive every correct option, integer answer, range and matrix
+         key here — readable in the browser's network tab before starting.
+         They get the answers after submitting, from the graded result. */
+      const u = req.authUser;
+      const role = String((u && u.role) || '').toLowerCase();
+      const isEditor = role === 'admin' || (role === 'professor' && u.professor && u.professor.status === 'approved' &&
+        (u.professor.courses || []).map(String).includes(String(req.params.courseId)));
+      const quiz = (mat.quiz || []).map(q => {
+        if (isEditor) return q;
+        const c = Object.assign({}, q);
+        delete c.correctIndexes; delete c.correctIndex; delete c.integerAnswer; delete c.integerTolerance;
+        delete c.rangeMin; delete c.rangeMax; delete c.explanation;
+        if (Array.isArray(c.matrixRows)) c.matrixRows = c.matrixRows.map(r => ({ text: (r && r.text) || '' }));
+        return c;
+      });
+      res.setHeader('Cache-Control', 'private, no-store');
       res.json({
         success: true,
-        quiz: mat.quiz || [],
-        examConfig: mat.examConfig || {}
+        quiz,
+        examConfig: mat.examConfig || {},
+        answerKey: isEditor
       });
     } catch (e) {
       res.status(500).json({ success: false, message: 'Server error: ' + e.message });
@@ -7880,7 +7907,26 @@ app.post('/api/user/quiz/:courseId/:materialId/start', requireUser, requireSelfO
       materialId: String(req.params.materialId)
     });
 
-    const isResuming = !!(session && session.status === 'in-progress');
+    /* ⭐ 2026-10-10: the last attempt ran out of time without a submit.
+       It used to be deleted below and replaced by a FRESH attempt with a
+       full timer (not even counted) — now it is graded from its autosaved
+       answers and counts as an attempt. */
+    if (session && session.status !== 'submitted' && _quizSessionOverdue(session, await _quizGraceMs())) {
+      const out = await finalizeExpiredQuizSession(session);
+      if (out && out.code === 200) {
+        return res.status(409).json({
+          success: false,
+          code: 'EXPIRED_AUTO_SUBMITTED',
+          message: 'Time ran out on your last attempt — the answers saved before the deadline were submitted.',
+          result: out.body
+        });
+      }
+      session = await QuizSession.findOne({ _id: session._id });
+    }
+
+    /* 'expired' = the heartbeat saw time reach zero; still inside the grace
+       window it is the SAME attempt (a refresh must not start a new one) */
+    const isResuming = !!(session && (session.status === 'in-progress' || session.status === 'expired'));
 
     /* Refuse a fresh attempt once the cap is reached, unless we are
        literally resuming an already-open in-progress session. */
@@ -7996,6 +8042,12 @@ app.post('/api/user/quiz/:courseId/:materialId/start', requireUser, requireSelfO
       questionOrder: session.questionOrder,
       optionOrders: session.optionOrders,
       questionCount: quiz.length,
+      resumed: isResuming,              // ⭐ false = a fresh attempt (stale saved answers must not carry over)
+      /* ⭐ resuming (refresh / other device): the server's copy of the answers
+         and the proctoring strikes so far — a reload no longer clears strikes */
+      savedAnswers: isResuming && Array.isArray(session.savedAnswers) ? session.savedAnswers : null,
+      savedAt:      isResuming && session.savedAt ? session.savedAt.getTime() : null,
+      proctor:      isResuming ? (session.proctor || null) : null,
       allowBackNavigation,
       showQuestionPalette,
 
@@ -8170,6 +8222,110 @@ app.get('/api/user/quiz/:courseId/:materialId/heartbeat', requireUser, requireSe
 });
 
 /* ============================================================
+   ⭐ QUIZ — MY RESULT (student, 2026-10-10)
+   GET /api/user/quiz/:courseId/:materialId/my-result?userId=…
+   The student's latest attempt: totals, the grading of every uploaded
+   answer and the grader's feedback — only once results are visible.
+   ============================================================ */
+app.get('/api/user/quiz/:courseId/:materialId/my-result', requireUser, requireSelfOrAdmin('query'), async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const mid = String(req.params.materialId);
+    if (!/^[a-f0-9]{24}$/i.test(userId) || !/^[a-f0-9]{24}$/i.test(mid)) return res.status(400).json({ success: false, message: 'Invalid request.' });
+    const course = await Course.findById(req.params.courseId).select('materials').lean();
+    const mat = course && (course.materials || []).find(m => String(m._id) === mid);
+    if (!mat) return res.status(404).json({ success: false, message: 'Test not found.' });
+    const u = await User.findById(userId).select(`quizResults.${mid}`).lean();
+    const r = u && (u.quizResults || {})[mid];
+    if (!r || !r.attempts) return res.status(404).json({ success: false, message: 'You have not submitted this test yet.' });
+
+    const cfg = mat.examConfig || {};
+    const mode = cfg.resultPublishMode || 'immediate';
+    let visible = mode === 'immediate' || !!r.publishedAt;
+    let publishAt = null;
+    if (!visible && mode === 'scheduled') {
+      const abs = cfg.resultPublishAt ? new Date(cfg.resultPublishAt).getTime() : null;
+      const rel = !abs && Number(cfg.resultPublishDelayHours) > 0 && r.lastAttemptAt ? new Date(r.lastAttemptAt).getTime() + Number(cfg.resultPublishDelayHours) * 3600e3 : null;
+      publishAt = abs || rel;
+      if (publishAt && Date.now() >= publishAt) visible = true;
+    }
+    res.set('Cache-Control', 'private, no-store');
+    if (!visible) return res.json({ success: true, visible: false, attempts: r.attempts, publishAt });
+
+    const quiz = Array.isArray(mat.quiz) ? mat.quiz : [];
+    const evals = r.subjectiveEvaluations || {};
+    const written = Object.keys(r.subjectiveQuestionMeta || {}).sort((a, b) => a - b).map(qi => {
+      const ev = evals[qi];
+      return {
+        number: Number(qi) + 1,
+        question: String((quiz[qi] && quiz[qi].question) || '').slice(0, 400),
+        maxMarks: Number((r.subjectiveQuestionMeta[qi] || {}).maxMarks) || 0,
+        awardedMarks: ev ? Number(ev.awardedMarks) || 0 : null,
+        feedback: ev ? String(ev.feedback || '') : ''
+      };
+    });
+    const autoMarks = Number(r.marksEarned) || 0, autoMax = Number(r.marksPossible) || 0;
+    const writtenMarks = Number(r.subjectiveMarksAwarded) || 0, writtenMax = Number(r.subjectiveMaxTotal) || 0;
+    res.json({
+      success: true, visible: true, attempts: r.attempts,
+      autoMarks, autoMax, writtenMarks, writtenMax,
+      finalMarks: Math.round((autoMarks + writtenMarks) * 100) / 100, finalMax: autoMax + writtenMax,
+      pendingEvaluation: written.some(w => w.awardedMarks === null),
+      endedNote: r.finalizedBy === 'server' ? 'Time ran out before this attempt was submitted — the answers saved before the deadline were graded.' : '',
+      written
+    });
+  } catch (e) {
+    console.error('[quiz/my-result]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
+   QUIZ — AUTOSAVE  (⭐ 2026-10-10)
+   ------------------------------------------------------------
+   POST /api/user/quiz/:courseId/:materialId/autosave
+   Body: { userId, answers, timeSpentPerQuestion?, proctor? }
+
+   The player sends the answers a few seconds after every change.
+   Accepted only while the attempt can still be submitted (deadline
+   + grace), so it can never be used to change answers afterwards.
+   ============================================================ */
+const quizAutosaveLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 40, standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => String((req.body && req.body.userId) || '') + ':' + req.params.materialId,
+  message: { success: false, code: 'RATE_LIMITED', message: 'Saving too often — slowing down.' }
+});
+app.post('/api/user/quiz/:courseId/:materialId/autosave', quizAutosaveLimiter, requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+  try {
+    const { userId, answers, timeSpentPerQuestion, proctor } = req.body || {};
+    if (!userId || !Array.isArray(answers)) return res.status(400).json({ success: false, message: 'userId and answers required.' });
+    if (answers.length > 500 || JSON.stringify(answers).length > 200000) {
+      return res.status(413).json({ success: false, message: 'Answer sheet too large.' });
+    }
+    const session = await QuizSession.findOne({
+      userId: String(userId), courseId: String(req.params.courseId), materialId: String(req.params.materialId)
+    });
+    if (!session) return res.status(404).json({ success: false, code: 'NO_SESSION', message: 'No running attempt.' });
+    if (session.status === 'submitted') return res.status(409).json({ success: false, code: 'ALREADY_SUBMITTED', message: 'Already submitted.' });
+    if (_quizSessionOverdue(session, await _quizGraceMs())) {
+      return res.status(410).json({ success: false, code: 'TIME_EXPIRED', message: 'Time is up.' });
+    }
+    const set = { savedAnswers: answers, savedAt: new Date(), lastHeartbeat: new Date() };
+    if (timeSpentPerQuestion && typeof timeSpentPerQuestion === 'object') set.timeSpentPerQuestion = timeSpentPerQuestion;
+    const p = _cleanProctorLog(proctor);
+    /* strikes only ever go up — a client cannot wipe its own record */
+    if (p && (!session.proctor || p.strikes >= (Number(session.proctor.strikes) || 0))) set.proctor = p;
+    await QuizSession.updateOne({ _id: session._id, status: { $ne: 'submitted' } }, { $set: set });
+    const now = Date.now();
+    const endsAt = session.durationSeconds > 0 ? session.startedAt.getTime() + session.durationSeconds * 1000 : null;
+    res.json({ success: true, savedAt: set.savedAt.getTime(), serverNow: now, remainingSeconds: endsAt ? Math.max(0, Math.floor((endsAt - now) / 1000)) : null });
+  } catch (e) {
+    console.error('[quiz/autosave]', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/* ============================================================
    QUIZ — RESET SESSION  (fresh attempt on retake)
    ------------------------------------------------------------
    POST /api/user/quiz/:courseId/:materialId/reset
@@ -8183,6 +8339,20 @@ app.post('/api/user/quiz/:courseId/:materialId/reset', requireUser, requireSelfO
     const { userId } = req.body || {};
     if (!userId) return res.status(400).json({ success: false, message: 'userId required.' });
 
+    /* ⭐ 2026-10-10: a running attempt cannot be "reset" — that used to hand
+       the student a brand-new full timer in the middle of the exam. Only a
+       finished (submitted / expired / time-over) session is cleared. */
+    const cur = await QuizSession.findOne({
+      userId: String(userId), courseId: String(req.params.courseId), materialId: String(req.params.materialId)
+    });
+    if (cur && cur.status !== 'submitted') {
+      /* still submittable (running, or inside the grace window) → no reset */
+      if (!_quizSessionOverdue(cur, await _quizGraceMs())) {
+        return res.status(409).json({ success: false, code: 'IN_PROGRESS', message: 'This attempt is still running — submit it first.' });
+      }
+      /* ran out without a submit → it counts, graded from its autosave */
+      await finalizeExpiredQuizSession(cur);
+    }
     const result = await QuizSession.deleteOne({
       userId: String(userId),
       courseId: String(req.params.courseId),
@@ -8199,71 +8369,93 @@ app.post('/api/user/quiz/:courseId/:materialId/reset', requireUser, requireSelfO
   }
 });
 
-/* ============================================================
-   QUIZ — Grade submission (student)
-   Supports: single, multiple, integer, matrix
-   ============================================================ */
-app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+/* ⭐ 2026-10-10: grading lives in one place so a normal submit, a late
+   submit and the server finalising an abandoned attempt (time ran out,
+   tab closed) all grade the same way. Returns { code, body }. */
+const _gr = (code, body) => ({ code, body });
+
+/* proctoring log as the client reports it → a small, trusted shape */
+function _cleanProctorLog(p) {
+  if (!p || typeof p !== 'object') return null;
+  const events = (Array.isArray(p.events) ? p.events : []).slice(-50).map(e => ({
+    reason: String((e && e.reason) || '').slice(0, 160),
+    at:     Number(e && e.at) || 0,
+    strike: !(e && e.strike === false)
+  }));
+  return { strikes: Math.max(0, Math.min(99, Number(p.strikes) || 0)), events };
+}
+
+async function _quizGraceMs() {
+  try { return (Number((await getGlobalSettings()).examServerTimerGraceSec) || 30) * 1000; }
+  catch (_) { return 30000; }
+}
+
+/* past deadline + grace? (untimed tests never are) */
+function _quizSessionOverdue(session, graceMs) {
+  if (!session || !(session.durationSeconds > 0)) return false;
+  return Date.now() > new Date(session.startedAt).getTime() + session.durationSeconds * 1000 + graceMs;
+}
+
+/* Atomically take the right to grade this session — two submits racing
+   (time-up + a click, or two tabs) can no longer record two attempts. */
+async function _claimQuizSession(session) {
+  const prevStatus = session.status;
+  const won = await QuizSession.findOneAndUpdate(
+    { _id: session._id, status: { $ne: 'submitted' } },
+    { $set: { status: 'submitted', submittedAt: new Date() } },
+    { new: true }
+  );
+  return won ? { session: won, prevStatus } : null;
+}
+
+/* ⭐ The attempt ran out without a submit (tab closed, phone off, network
+   down at time-up). Grade the answers that were autosaved before the
+   deadline as an auto-submitted attempt instead of throwing it away —
+   and instead of handing out a fresh attempt with a full timer. */
+async function finalizeExpiredQuizSession(session) {
+  const claim = await _claimQuizSession(session);
+  if (!claim) return null;                                 // someone else already submitted it
   try {
-    const { userId, answers, timeSpentPerQuestion, autoSubmitted } = req.body || {};
-    if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
-    if (!Array.isArray(answers)) {
-      return res.status(400).json({ success: false, message: 'answers must be an array' });
-    }
+    const out = await gradeQuizAttempt({
+      userId: session.userId, courseId: session.courseId, materialId: session.materialId,
+      answers: Array.isArray(claim.session.savedAnswers) ? claim.session.savedAnswers : [],
+      timeSpentPerQuestion: claim.session.timeSpentPerQuestion,
+      autoSubmitted: true, _session: claim.session, proctor: claim.session.proctor, finalizedBy: 'server'
+    });
+    if (out.code !== 200) await QuizSession.updateOne({ _id: session._id }, { $set: { status: claim.prevStatus } });
+    console.log(`[quiz] ⏰ finalised expired attempt user=${session.userId} mat=${session.materialId} → ${out.code}`);
+    return out;
+  } catch (e) {
+    await QuizSession.updateOne({ _id: session._id }, { $set: { status: claim.prevStatus } }).catch(() => {});
+    throw e;
+  }
+}
 
-    /* ---- Server-side deadline enforcement ----
-       Load the session (if one exists) and refuse submissions that
-       arrived after the server-recorded deadline + grace. This
-       catches the case where a student disables JS, edits the
-       client clock, or replays a stale request. */
-    let _session = null;
-    try {
-      _session = await QuizSession.findOne({
-        userId: String(userId),
-        courseId: String(req.params.courseId),
-        materialId: String(req.params.materialId)
-      });
-    } catch (_) { /* non-fatal — session may not exist for legacy flows */ }
-
-    if (_session && _session.status === 'submitted') {
-      return res.status(409).json({
-        success: false,
-        code: 'ALREADY_SUBMITTED',
-        message: 'This test has already been submitted.'
-      });
-    }
-
-    if (_session && _session.durationSeconds > 0) {
-      let graceSec = 30;
-      try {
-        const _gs = await getGlobalSettings();
-        graceSec = Number(_gs.examServerTimerGraceSec) || 30;
-      } catch (_) {}
-      const endsAt = _session.startedAt.getTime() + _session.durationSeconds * 1000;
-      const overdueMs = Date.now() - endsAt;
-      if (overdueMs > graceSec * 1000) {
-        _session.status = 'expired';
-        _session.autoSubmitted = true;
-        _session.submittedAt = new Date();
-        try { await _session.save(); } catch (_) {}
-        console.warn(
-          `[quiz/submit] ⏰ rejected late submission user=${userId} overdue=${Math.round(overdueMs/1000)}s`
-        );
-        return res.status(410).json({
-          success: false,
-          code: 'TIME_EXPIRED',
-          message: 'Your attempt has expired. Answers must be submitted before the deadline.'
-        });
-      }
-    }
-
-    const course = await Course.findById(req.params.courseId);
-    if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
-    const mat = course.materials.id(req.params.materialId);
-    if (!mat) return res.status(404).json({ success: false, message: 'Material not found' });
+async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpentPerQuestion, autoSubmitted, _session, proctor, finalizedBy }) {
+  if (!Array.isArray(answers)) answers = [];
+  proctor = _cleanProctorLog(proctor);
+  {
+    const course = await Course.findById(courseId);
+    if (!course) return _gr(404, { success: false, message: 'Course not found' });
+    const mat = course.materials.id(materialId);
+    if (!mat) return _gr(404, { success: false, message: 'Material not found' });
 
     const quiz = mat.quiz || [];
-    if (quiz.length === 0) return res.status(400).json({ success: false, message: 'This material has no questions' });
+    if (quiz.length === 0) return _gr(400, { success: false, message: 'This material has no questions' });
+
+    /* ⭐ 2026-10-10: the attempt limit is enforced here too — before, only
+       /start checked it, so a direct submit (after /reset) could add
+       attempts beyond the cap and overwrite the recorded result. */
+    {
+      const capN = Math.max(0, Number((mat.examConfig || {}).maxAttempts) || 0);
+      if (capN > 0) {
+        const u0 = await User.findById(userId).select('quizResults').lean();
+        const used0 = Number((((u0 && u0.quizResults) || {})[String(materialId)] || {}).attempts) || 0;
+        if (used0 >= capN) {
+          return _gr(403, { success: false, code: 'ATTEMPT_LIMIT_REACHED', message: `You have used all ${capN} attempt${capN === 1 ? '' : 's'} for this test.` });
+        }
+      }
+    }
 
     let score = 0;                    // auto-graded correct count (excludes subjective)
     let totalMarksPossible = 0;       // marks from AUTO-GRADED questions only
@@ -8285,7 +8477,11 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
         const subMax = Number(q.subjectiveMaxMarks) || qMarks || 10;
         subjectiveMaxTotal += subMax;
         subjectiveCount++;
-        subjectiveAnswers[i] = Array.isArray(ans) ? ans.filter(x => x && x.url) : [];
+        /* only files on this server, in a fixed shape (the client sends whatever it likes) */
+        subjectiveAnswers[i] = (Array.isArray(ans) ? ans : [])
+          .filter(x => x && typeof x.url === 'string' && /^\/uploads\/[^\s?#]+$/.test(x.url) && !x.url.includes('..'))
+          .slice(0, 10)
+          .map(x => ({ url: x.url, fileName: String(x.fileName || '').slice(0, 200), isPdf: /\.pdf$/i.test(x.url) || x.isPdf === true }));
         subjectiveQuestionMeta[i] = {
           maxMarks: subMax,
           instructions: q.subjectiveInstructions || ''
@@ -8393,11 +8589,11 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
       : 0;
 
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (!user) return _gr(404, { success: false, message: 'User not found' });
     if (!user.quizResults) user.quizResults = new Map();
-    const prev = user.quizResults.get(req.params.materialId) || { attempts: 0 };
+    const prev = user.quizResults.get(materialId) || { attempts: 0 };
 
-    user.quizResults.set(req.params.materialId, {
+    user.quizResults.set(materialId, {
       score,                                  // auto-graded correct count
       total: autoGradedCount,                 // auto-graded total
       percent: pct,
@@ -8411,15 +8607,20 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
       subjectiveQuestionMeta,
       subjectiveMaxTotal,
       subjectiveCount,
-      subjectiveEvaluations: prev.subjectiveEvaluations || {},
+      subjectiveEvaluations: {},              // a new attempt is a new answer sheet — old grades must not carry over
       pendingEvaluation: subjectiveCount > 0,
-      manuallyEvaluated: false
+      manuallyEvaluated: false,
+
+      /* ⭐ proctoring + how the attempt ended, for the instructor */
+      proctor:      proctor || null,
+      autoSubmitted: autoSubmitted === true,
+      finalizedBy:  finalizedBy || 'student'   // 'server' = time ran out, graded from the autosave
     });
 
     logActivity(user, {
       type: 'quiz',
-      courseId: req.params.courseId,
-      materialId: req.params.materialId,
+      courseId: courseId,
+      materialId: materialId,
       score, total: autoGradedCount
     });
 
@@ -8483,11 +8684,11 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
           { _id: user._id },
           {
             $set: {
-              [`quizResults.${req.params.materialId}.publishedAt`]:        new Date(submittedAtMs),
-              [`quizResults.${req.params.materialId}.manuallyEvaluated`]:  true,
-              [`quizResults.${req.params.materialId}.finalMarksEarned`]:   normalizedMarks,
-              [`quizResults.${req.params.materialId}.finalMarksPossible`]: totalMarksPossible,
-              [`quizResults.${req.params.materialId}.finalPercent`]:       pct
+              [`quizResults.${materialId}.publishedAt`]:        new Date(submittedAtMs),
+              [`quizResults.${materialId}.manuallyEvaluated`]:  true,
+              [`quizResults.${materialId}.finalMarksEarned`]:   normalizedMarks,
+              [`quizResults.${materialId}.finalMarksPossible`]: totalMarksPossible,
+              [`quizResults.${materialId}.finalPercent`]:       pct
             }
           }
         );
@@ -8517,6 +8718,7 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
         _session.status = 'submitted';
         _session.submittedAt = new Date();
         if (autoSubmitted === true) _session.autoSubmitted = true;
+        if (proctor) _session.proctor = proctor;
         await _session.save();
       } catch (sessErr) {
         console.warn('[quiz/submit] session close failed:', sessErr.message);
@@ -8526,14 +8728,13 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
     /* ---- Store per-question time on the result record too ---- */
     if (timeSpentPerQuestion && typeof timeSpentPerQuestion === 'object') {
       try {
-        const r = user.quizResults.get(String(req.params.materialId));
-        if (r) {
-          r.timeSpentPerQuestion = timeSpentPerQuestion;
-          r.timeSpentTotalSeconds = Object.values(timeSpentPerQuestion)
-            .reduce((s, v) => s + (Number(v) || 0), 0);
-          user.quizResults.set(String(req.params.materialId), r);
-          await user.save();
-        }
+        /* ⭐ a targeted $set — re-saving the whole in-memory result here
+           used to wipe the publishedAt / final marks written just above,
+           so "immediate" results lost their published state */
+        await User.updateOne({ _id: user._id }, { $set: {
+          [`quizResults.${materialId}.timeSpentPerQuestion`]: timeSpentPerQuestion,
+          [`quizResults.${materialId}.timeSpentTotalSeconds`]: Object.values(timeSpentPerQuestion).reduce((s, v) => s + (Number(v) || 0), 0)
+        } });
       } catch (tErr) {
         console.warn('[quiz/submit] time analytics persist failed:', tErr.message);
       }
@@ -8557,7 +8758,7 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
     if (!resultsVisible) {
       /* Score is hidden. Send enough info for the UI to render an
          informative "Results Pending" card, but no numbers. */
-      return res.json({
+      return _gr(200, {
         success: true,
         pendingPublication: true,
         pendingEvaluation: subjectiveCount > 0 && !resultsVisible,
@@ -8572,7 +8773,7 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
       });
     }
 
-    res.json({
+    return _gr(200, {
       success: true,
       score,
       total: autoGradedCount,
@@ -8593,6 +8794,64 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
 
       ...baseMeta
     });
+  }
+}
+/* ============================================================
+   QUIZ — Grade submission (student)
+   Supports: single, multiple, integer, matrix
+   ============================================================ */
+app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin('body'), async (req, res) => {
+  try {
+    const { userId, answers, timeSpentPerQuestion, autoSubmitted, proctor } = req.body || {};
+    if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+    if (!Array.isArray(answers)) {
+      return res.status(400).json({ success: false, message: 'answers must be an array' });
+    }
+
+    /* ---- Server-side deadline enforcement ----
+       Every attempt runs on a server session (created by /start). A
+       submit without one used to skip the timer completely. */
+    const _session = await QuizSession.findOne({
+      userId: String(userId),
+      courseId: String(req.params.courseId),
+      materialId: String(req.params.materialId)
+    });
+    if (!_session) {
+      return res.status(409).json({ success: false, code: 'NO_SESSION', message: 'This attempt was not started on the server. Please open the test again.' });
+    }
+    if (_session.status === 'submitted') {
+      return res.status(409).json({
+        success: false,
+        code: 'ALREADY_SUBMITTED',
+        message: 'This test has already been submitted.'
+      });
+    }
+
+    /* ⭐ Too late (deadline + grace passed): the answers sent now are not
+       accepted, but the attempt is not lost either — it is graded from the
+       answers autosaved before the deadline. */
+    if (_quizSessionOverdue(_session, await _quizGraceMs())) {
+      console.warn(`[quiz/submit] ⏰ late submission user=${userId} — grading the autosaved answers`);
+      const out = await finalizeExpiredQuizSession(_session);
+      if (!out) return res.status(409).json({ success: false, code: 'ALREADY_SUBMITTED', message: 'This test has already been submitted.' });
+      if (out.code === 200) {
+        out.body.lateSubmission = true;
+        out.body.message = 'Time was up before your answers reached the server — the answers saved before the deadline were submitted.';
+      }
+      return res.status(out.code).json(out.body);
+    }
+
+    const claim = await _claimQuizSession(_session);
+    if (!claim) return res.status(409).json({ success: false, code: 'ALREADY_SUBMITTED', message: 'This test has already been submitted.' });
+    let out;
+    try {
+      out = await gradeQuizAttempt({ userId, courseId: String(req.params.courseId), materialId: String(req.params.materialId), answers, timeSpentPerQuestion, autoSubmitted, _session: claim.session, proctor });
+    } catch (gradeErr) {
+      await QuizSession.updateOne({ _id: _session._id }, { $set: { status: claim.prevStatus } }).catch(() => {});
+      throw gradeErr;
+    }
+    if (out.code !== 200) await QuizSession.updateOne({ _id: _session._id }, { $set: { status: claim.prevStatus } });   // e.g. attempt limit — nothing was recorded
+    return res.status(out.code).json(out.body);
   } catch (e) {
     console.error('[quiz/grade]', e);
     res.status(500).json({ success: false, message: 'Error grading quiz: ' + e.message });
@@ -8605,77 +8864,156 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
    Recomputes total marks and marks the submission as evaluated
    when all subjective questions have been graded.
    ============================================================ */
+/* ============================================================
+   ⭐ 2026-10-10 — SUBMISSIONS for one paper (admin, or the professor
+   of the course): every student's latest attempt with marks, the
+   uploaded answer sheets still to grade, proctoring strikes and how
+   the attempt ended — plus the attempts running right now.
+   ============================================================ */
+app.get('/api/admin/quiz/:courseId/:materialId/submissions', requireCourseEditor, async (req, res) => {
+  try {
+    const mid = String(req.params.materialId);
+    if (!/^[a-f0-9]{24}$/i.test(mid)) return res.status(400).json({ success: false, message: 'Invalid material id.' });
+    const course = await Course.findById(req.params.courseId).select('materials').lean();
+    const mat = course && (course.materials || []).find(m => String(m._id) === mid);
+    if (!mat) return res.status(404).json({ success: false, message: 'Test not found.' });
+
+    const users = await User.find({ [`quizResults.${mid}`]: { $exists: true } })
+      .select(`username fullName email quizResults.${mid}`).lean();
+    const rows = users.map(u => {
+      const r = (u.quizResults || {})[mid] || {};
+      const subjTotal = Object.keys(r.subjectiveQuestionMeta || {}).length;
+      const graded = Object.keys(r.subjectiveEvaluations || {}).length;
+      return {
+        userId: String(u._id), username: u.username, fullName: u.fullName || '', email: u.email || '',
+        attempts: r.attempts || 0, lastAttemptAt: r.lastAttemptAt || null,
+        score: r.score || 0, total: r.total || 0,
+        marksEarned: Number(r.marksEarned) || 0, marksPossible: Number(r.marksPossible) || 0,
+        subjectiveMarksAwarded: Number(r.subjectiveMarksAwarded) || 0, subjectiveMaxTotal: Number(r.subjectiveMaxTotal) || 0,
+        finalMarksEarned: (Number(r.marksEarned) || 0) + (Number(r.subjectiveMarksAwarded) || 0),
+        finalMarksPossible: (Number(r.marksPossible) || 0) + (Number(r.subjectiveMaxTotal) || 0),
+        subjectiveTotal: subjTotal, subjectiveGraded: graded, pendingEvaluation: subjTotal > graded,
+        subjectiveAnswers: r.subjectiveAnswers || {}, subjectiveQuestionMeta: r.subjectiveQuestionMeta || {},
+        subjectiveEvaluations: r.subjectiveEvaluations || {},
+        publishedAt: r.publishedAt || null,
+        proctor: r.proctor || null, autoSubmitted: !!r.autoSubmitted, finalizedBy: r.finalizedBy || 'student',
+        timeSpentTotalSeconds: Number(r.timeSpentTotalSeconds) || 0
+      };
+    }).sort((a, b) => (b.pendingEvaluation - a.pendingEvaluation) || (new Date(b.lastAttemptAt || 0) - new Date(a.lastAttemptAt || 0)));
+
+    /* attempts running now */
+    const live = await QuizSession.find({ courseId: String(req.params.courseId), materialId: mid, status: { $ne: 'submitted' } })
+      .select('userId startedAt durationSeconds lastHeartbeat savedAt savedAnswers proctor status').lean();
+    const liveUsers = live.length ? await User.find({ _id: { $in: live.map(s => s.userId).filter(id => /^[a-f0-9]{24}$/i.test(id)) } }).select('username fullName').lean() : [];
+    const nameOf = Object.fromEntries(liveUsers.map(u => [String(u._id), u.fullName || u.username]));
+    const now = Date.now();
+    const running = live.map(s => {
+      const endsAt = s.durationSeconds > 0 ? new Date(s.startedAt).getTime() + s.durationSeconds * 1000 : null;
+      return {
+        userId: s.userId, name: nameOf[s.userId] || 'Student', startedAt: s.startedAt,
+        remainingSeconds: endsAt ? Math.max(0, Math.floor((endsAt - now) / 1000)) : null,
+        lastSeenAt: s.lastHeartbeat, savedAt: s.savedAt,
+        answered: Array.isArray(s.savedAnswers) ? s.savedAnswers.filter(a => Array.isArray(a) ? a.length > 0 : (a !== '' && a !== null && a !== undefined)).length : 0,
+        strikes: (s.proctor && Number(s.proctor.strikes)) || 0
+      };
+    });
+
+    const quiz = Array.isArray(mat.quiz) ? mat.quiz : [];
+    res.set('Cache-Control', 'private, no-store');
+    res.json({
+      success: true,
+      title: mat.title || 'Test',
+      questions: quiz.map((q, i) => ({ index: i, type: q.type || 'single', question: String(q.question || '').slice(0, 300) })),
+      resultPublishMode: (mat.examConfig || {}).resultPublishMode || 'immediate',
+      submissions: rows,
+      running
+    });
+  } catch (e) {
+    console.error('[admin/quiz/submissions]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+/* Grade one uploaded answer — admin or the course's professor */
+app.post('/api/admin/quiz/:courseId/:materialId/evaluate', requireCourseEditor, async (req, res) => {
+  try {
+    const { userId, questionIndex, awardedMarks, feedback } = req.body || {};
+    const out = await _applySubjectiveEvaluation({
+      userId, materialId: String(req.params.materialId), courseId: String(req.params.courseId),
+      questionIndex, awardedMarks, feedback, evaluatorId: String(req.authUser._id)
+    });
+    res.status(out.code).json(out.body);
+  } catch (e) {
+    console.error('[admin/quiz/evaluate]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
+async function _applySubjectiveEvaluation({ userId, materialId, courseId, questionIndex, awardedMarks, feedback, evaluatorId }) {
+  if (!userId || !/^[a-f0-9]{24}$/i.test(String(userId)) || questionIndex === undefined || questionIndex === null) {
+    return _gr(400, { success: false, message: 'userId and questionIndex are required.' });
+  }
+  const marks = Number(awardedMarks);
+  if (!isFinite(marks) || marks < 0) return _gr(400, { success: false, message: 'Invalid marks value.' });
+
+  const user = await User.findById(userId);
+  if (!user) return _gr(404, { success: false, message: 'User not found.' });
+  const result = user.quizResults && user.quizResults.get(String(materialId));
+  if (!result) return _gr(404, { success: false, message: 'No submission found for this test.' });
+
+  const qi = String(questionIndex);
+  const meta = (result.subjectiveQuestionMeta || {})[qi];
+  if (!meta) return _gr(400, { success: false, message: 'That question has no uploaded answer to grade.' });
+  const maxAllowed = Number(meta.maxMarks) || 0;
+  if (marks > maxAllowed) return _gr(400, { success: false, message: `Marks cannot exceed ${maxAllowed} for this question.` });
+
+  if (!result.subjectiveEvaluations) result.subjectiveEvaluations = {};
+  result.subjectiveEvaluations[qi] = {
+    awardedMarks: Math.round(marks * 100) / 100,
+    feedback: String(feedback || '').slice(0, 1000),
+    evaluatedAt: new Date(),
+    evaluatedBy: String(evaluatorId || '')
+  };
+  const subjectiveMarksAwarded = Object.values(result.subjectiveEvaluations).reduce((s, ev) => s + (Number(ev.awardedMarks) || 0), 0);
+  result.subjectiveMarksAwarded = subjectiveMarksAwarded;
+  const totalSubjective = Object.keys(result.subjectiveQuestionMeta || {}).length;
+  const gradedSubjective = Object.keys(result.subjectiveEvaluations).length;
+  const wasPending = result.pendingEvaluation === true;
+  result.pendingEvaluation = gradedSubjective < totalSubjective;
+  result.manuallyEvaluated = gradedSubjective >= totalSubjective;
+  result.evaluatedAt = new Date();
+  result.finalMarksEarned = (Number(result.marksEarned) || 0) + subjectiveMarksAwarded;
+  result.finalMarksPossible = (Number(result.marksPossible) || 0) + (Number(result.subjectiveMaxTotal) || 0);
+  result.finalPercent = result.finalMarksPossible > 0 ? Math.round((result.finalMarksEarned / result.finalMarksPossible) * 100) : (Number(result.percent) || 0);
+
+  user.quizResults.set(String(materialId), result);
+  user.markModified('quizResults');           // nested edits in a Mixed map must be flagged or they are not saved
+
+  /* every answer sheet graded and the result is already visible → tell the student */
+  if (wasPending && !result.pendingEvaluation && result.publishedAt) {
+    if (!Array.isArray(user.notifications)) user.notifications = [];
+    user.notifications.push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      type: 'quiz-result', read: false, createdAt: new Date(),
+      title: '📝 Your answer sheet has been graded',
+      body: `Final score: ${result.finalMarksEarned} / ${result.finalMarksPossible} (${result.finalPercent}%).`,
+      link: courseId ? `#/course/${courseId}` : ''
+    });
+    if (user.notifications.length > 50) user.notifications = user.notifications.slice(-50);
+  }
+  await user.save();
+  console.log(`[quiz/evaluate] ✅ user=${user.username} material=${materialId} Q${qi} → ${marks}`);
+  return _gr(200, { success: true, message: 'Marks saved.', result });
+}
+
 app.post('/api/admin/quiz/evaluate-subjective', requireAdminAuth, async (req, res) => {
   try {
     const { userId, materialId, questionIndex, awardedMarks, feedback } = req.body || {};
-
-    if (!userId || materialId === undefined || questionIndex === undefined) {
-      return res.status(400).json({
-        success: false,
-        message: 'userId, materialId and questionIndex are required.'
-      });
-    }
-
-    const marks = Number(awardedMarks);
-    if (isNaN(marks) || marks < 0) {
-      return res.status(400).json({ success: false, message: 'Invalid marks value.' });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
-
-    if (!user.quizResults) user.quizResults = new Map();
-    const result = user.quizResults.get(String(materialId));
-    if (!result) {
-      return res.status(404).json({ success: false, message: 'No quiz result found for this material.' });
-    }
-
-    const meta = (result.subjectiveQuestionMeta || {})[questionIndex];
-    const maxAllowed = meta ? Number(meta.maxMarks) : 100;
-    if (marks > maxAllowed) {
-      return res.status(400).json({
-        success: false,
-        message: `Marks cannot exceed ${maxAllowed} for this question.`
-      });
-    }
-
-    if (!result.subjectiveEvaluations) result.subjectiveEvaluations = {};
-    result.subjectiveEvaluations[questionIndex] = {
-      awardedMarks: marks,
-      feedback: String(feedback || '').slice(0, 500),
-      evaluatedAt: new Date(),
-      evaluatedBy: String(req.adminUser._id)
-    };
-
-    // Recompute total subjective marks awarded
-    let subjectiveMarksAwarded = 0;
-    Object.values(result.subjectiveEvaluations).forEach(ev => {
-      subjectiveMarksAwarded += Number(ev.awardedMarks) || 0;
+    const out = await _applySubjectiveEvaluation({
+      userId, materialId: String(materialId || ''), courseId: String((req.body || {}).courseId || ''),
+      questionIndex, awardedMarks, feedback, evaluatorId: String(req.adminUser._id)
     });
-    result.subjectiveMarksAwarded = subjectiveMarksAwarded;
-
-    // If all subjective questions have been graded → mark as fully evaluated
-    const totalSubjective = Object.keys(result.subjectiveQuestionMeta || {}).length;
-    const gradedSubjective = Object.keys(result.subjectiveEvaluations).length;
-    result.pendingEvaluation = gradedSubjective < totalSubjective;
-    result.manuallyEvaluated = gradedSubjective >= totalSubjective;
-    result.evaluatedAt = new Date();
-
-    // Final marks = auto-graded marks + subjective marks awarded
-    result.finalMarksEarned = (Number(result.marksEarned) || 0) + subjectiveMarksAwarded;
-    result.finalMarksPossible = (Number(result.marksPossible) || 0) +
-                                (Number(result.subjectiveMaxTotal) || 0);
-
-    user.quizResults.set(String(materialId), result);
-    await user.save();
-
-    console.log(`[admin/quiz/evaluate] ✅ user=${user.username} material=${materialId} Q${questionIndex} → ${marks} marks`);
-
-    res.json({
-      success: true,
-      message: 'Marks awarded successfully.',
-      result
-    });
+    res.status(out.code).json(out.body);
   } catch (e) {
     console.error('[admin/quiz/evaluate-subjective]', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
