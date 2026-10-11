@@ -3019,6 +3019,8 @@ function syncHashToState() {
     studentNav = 'saved';
   } else if (parts[0] === 'analytics') {
     studentNav = 'analytics';
+  } else if (parts[0] === 'practice') {
+    studentNav = 'practice';         // #/practice or #/practice/<tab>
   } else if (parts[0] === 'ai') {
     studentNav = 'ai';
   } else if (parts[0] === 'notes') {
@@ -5077,7 +5079,7 @@ function navigateStudent(dest) {
   window.currentSelectedCourseId = null;
   editingCourseId = null;
   currentMaterialFilter = 'all';
-  const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home', ai: '#/ai', notes: '#/notes' };
+  const pathMap = { courses: '#/courses', saved: '#/saved', analytics: '#/analytics', home: '#/home', ai: '#/ai', notes: '#/notes', practice: '#/practice' };
   pushHash(pathMap[dest] || '#/home');
   studentNav = dest;
 
@@ -5143,6 +5145,17 @@ function goBackFromDetail() {
 function setMaterialFilter(type) {
   currentMaterialFilter = type;
   if (window.currentSelectedCourseId) renderCourseDetail(window.currentSelectedCourseId);
+  /* ⭐ the course list carries no doubts — load them when Q&A opens */
+  if (type === 'qa' && window.currentSelectedCourseId) refreshCourseDoubts(window.currentSelectedCourseId, 30000);
+}
+
+/* ⭐ 2026-10-11 — fresh doubts for one course (list data has none) */
+async function refreshCourseDoubts(courseId, maxAgeMs) {
+  const c = findCourse(courseId);
+  if (c && maxAgeMs && c._doubtsAt && Date.now() - c._doubtsAt < maxAgeMs) return;
+  const fresh = await fetchSingleCourse(courseId);
+  if (fresh) fresh._doubtsAt = Date.now();
+  if (currentCourseId === courseId && currentMaterialFilter === 'qa') renderCourseDetail(courseId);
 }
 
 /* ============================================================
@@ -5266,7 +5279,7 @@ function _renderAppNow() {
     _notesMounted = false;
     try { if (window.AeroNotes) window.AeroNotes.suspend(); } catch (_) {}
   }
-  ['loginView', 'adminView', 'adminEditView', 'professorView', 'studentAIHomeView', 'studentNotesView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
+  ['loginView', 'adminView', 'adminEditView', 'professorView', 'studentAIHomeView', 'studentNotesView', 'studentHomeView', 'studentCoursesView', 'studentSavedView', 'studentAnalyticsView', 'studentPracticeView', 'courseDetailView', 'adminAddCourseView', 'adminAddProfessorView', 'adminAddMaterialView', 'adminAddStudentView', 'adminQuizEditorView']
     .forEach(id => { const el = $(id); if (el) el.classList.remove('active'); });
   $('appHeader').style.display = 'none';
   $('appFooter').style.display = 'none';
@@ -5392,6 +5405,12 @@ function _renderAppNow() {
     if (analyticsView) analyticsView.classList.add('active');
     renderStudentAnalytics();
   }
+  else if (studentNav === 'practice') {
+    /* ⭐ Practice — learning.js */
+    const practiceView = $('studentPracticeView');
+    if (practiceView) practiceView.classList.add('active');
+    if (typeof window.renderPractice === 'function') window.renderPractice();
+  }
   else {
     const coursesView = $('studentCoursesView');
     if (coursesView) coursesView.classList.add('active');
@@ -5469,11 +5488,14 @@ function buildNav() {
   const savedActive     = (studentNav === 'saved'     && !currentCourseId) ? 'active' : '';
   const analyticsActive = (studentNav === 'analytics' && !currentCourseId) ? 'active' : '';
   const notesActive     = (studentNav === 'notes'     && !currentCourseId) ? 'active' : '';
+  const practiceActive  = (studentNav === 'practice'  && !currentCourseId) ? 'active' : '';
+  const practiceDot     = window._learnSummary && (!window._learnSummary.dailyDone || window._learnSummary.assignmentsDue) ? ' <span class="nav-dot" aria-hidden="true"></span>' : '';
   const savedCount = (currentUser.bookmarks || []).length;
   $('mainNav').innerHTML = `
     <a href="#" class="${homeActive}" title="Home" aria-label="Home" onclick="event.preventDefault();navigateStudent('home')"><i class="fas fa-house"></i> <span class="nav-label">Home</span></a>
     <a href="#" class="${coursesActive}" title="Courses" aria-label="Courses" onclick="event.preventDefault();navigateStudent('courses')"><i class="fas fa-graduation-cap"></i> <span class="nav-label">Courses</span></a>
     <a href="#" class="${savedActive}" title="Saved" aria-label="Saved" onclick="event.preventDefault();navigateStudent('saved')"><i class="fas fa-bookmark"></i> <span class="nav-label">Saved</span>${savedCount > 0 ? ' <span class="nav-count">' + savedCount + '</span>' : ''}</a>
+    <a href="#" class="${practiceActive}" title="Practice" aria-label="Practice" onclick="event.preventDefault();navigateStudent('practice')"><i class="fas fa-bullseye"></i> <span class="nav-label">Practice</span>${practiceDot}</a>
     <a href="#" class="${analyticsActive}" title="Analytics" aria-label="Analytics" onclick="event.preventDefault();navigateStudent('analytics')"><i class="fas fa-chart-line"></i> <span class="nav-label">Analytics</span></a>
     <a href="#" class="${notesActive}" title="Notes" aria-label="Notes" onclick="event.preventDefault();navigateStudent('notes')"><i class="fas fa-book-open"></i> <span class="nav-label">Notes</span></a>
     <a href="#" class="nav-ai-btn ${aiActive}" title="AI Solver" aria-label="AI Solver" onclick="event.preventDefault();navigateStudent('ai')"><i class="fas fa-robot"></i> <span class="nav-label">AI Solver</span></a>
@@ -10783,8 +10805,10 @@ function renderCourseDetail(courseId) {
     .sort()
     .forEach(t => types.push(t));
 
-  /* Q&A always shown last (uses doubts, not materials) */
-  if ((course.doubts || []).length > 0) types.push('qa');
+  /* Q&A always shown last (uses doubts, not materials).
+     ⭐ 2026-10-11 — shown even before the first doubt, otherwise nobody
+     could ever ask the first one */
+  if (currentUser) types.push('qa');
 
   /* Labels */
   const typeLabels = {
@@ -10829,6 +10853,7 @@ function renderCourseDetail(courseId) {
   if (currentMaterialFilter === 'qa') {
     html += renderQASection(course);
     $('courseDetailContent').innerHTML = html;
+    try { renderMathIn($('courseDetailContent').querySelector('.qa-section')); } catch (_) {}
     return;
   }
 
@@ -11032,6 +11057,18 @@ function renderMaterialCard(course, m, isPurchased) {
       } else {
         quizLabel = `<i class="fas fa-question-circle"></i> Take Quiz (${quizCount})${attemptBadge}`;
       }
+      /* ⭐ 2026-10-11 — assignments read as homework, with their due date */
+      if (cfg.kind === 'assignment' && !quizDisabled) {
+        const dueMs = cfg.dueAt ? new Date(cfg.dueAt).getTime() : null;
+        const dueTxt = dueMs ? new Date(dueMs).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '';
+        if (dueMs && Date.now() > dueMs && cfg.allowLate === false && !(attempts > 0)) {
+          quizLabel = `<i class="fas fa-lock"></i> Assignment closed`; quizDisabled = true; quizTitle = 'The due date has passed.';
+        } else if (attempts > 0) {
+          quizLabel = `<i class="fas fa-book-open-reader"></i> Resubmit assignment${attemptBadge}`;
+        } else {
+          quizLabel = `<i class="fas fa-book-open-reader"></i> Open assignment${dueTxt ? ` · due ${dueTxt}` : ''}${dueMs && Date.now() > dueMs ? ' (late)' : ''}`;
+        }
+      }
 
       if (quizDisabled) {
         progressBtnHtml += ` <button class="btn btn-outline btn-sm" disabled
@@ -11106,23 +11143,36 @@ function renderMaterialCard(course, m, isPurchased) {
       <h4>${escapeHtml(m.title)}</h4>
       <div class="mat-desc">${escapeHtml(m.description) || ''}</div>
       ${(m.type === 'video' && canAccess && (currentUser && currentUser.role) === 'student') ? videoProgressStripHtml(m.id) : ''}
-      <div class="mat-actions">${fileActionHtml}${progressBtnHtml}${isAdminUser ? `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openMaterialViewers('${course.id}', '${m.id}', ${jsStr(m.title || '')})" title="Who opened this material (invisible access log)"><i class="fas fa-users-viewfinder"></i> Viewers</button>` : ''}</div>
+      <div class="mat-actions">${fileActionHtml}${progressBtnHtml}${(currentUser && currentUser.role) === 'student' && canAccess ? `<button class="btn btn-outline btn-sm mat-ask-btn" onclick="event.stopPropagation();askAboutMaterial('${course.id}', '${m.id}')" title="Ask a doubt about this"><i class="fas fa-circle-question"></i> <span>Ask doubt</span></button>` : ''}${isAdminUser ? `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();openMaterialViewers('${course.id}', '${m.id}', ${jsStr(m.title || '')})" title="Who opened this material (invisible access log)"><i class="fas fa-users-viewfinder"></i> Viewers</button>` : ''}</div>
     </div>
   `;
 }
 
 function renderQASection(course) {
-  const doubts = [...(course.doubts || [])];
+  /* ⭐ 2026-10-11 — votes, material links, sort / filter, professors answer too */
+  const me = currentUser ? currentUser.username : '';
+  const role = String((currentUser && currentUser.role) || '').toLowerCase();
+  const sortKey = (window._qaSort && window._qaSort[course.id]) || 'top';
+  const all = [...(course.doubts || [])];
+  const mats = (course.materials || []).filter(m => m && m.title);
+  const pre = (window._qaAskMaterial && window._qaAskMaterial.courseId === course.id) ? window._qaAskMaterial.materialId : '';
+
   let html = `<div class="qa-section"><h3><i class="fas fa-comments"></i> Course Q&A / Doubts</h3>`;
 
-  if ((currentUser && currentUser.role) === 'student') {
+  if (role === 'student') {
     html += `<div class="qa-ask-box">
-      <label>Ask a New Doubt</label>
-      <textarea id="newDoubtText" placeholder="Type your doubt here..."></textarea>
+      <label for="newDoubtText">Ask a new doubt</label>
+      <div class="qa-ask-about">
+        <span><i class="fas fa-link"></i> About</span>
+        <select id="newDoubtMaterial">
+          <option value="">The course in general</option>
+          ${mats.map(m => `<option value="${escapeHtml(m.id)}" ${pre === m.id ? 'selected' : ''}>${escapeHtml(m.title)}</option>`).join('')}
+        </select>
+      </div>
+      <textarea id="newDoubtText" placeholder="Type your doubt here… LaTeX works: $v = \\sqrt{2gh}$"></textarea>
       <button class="btn btn-primary" onclick="askDoubt('${course.id}')"><i class="fas fa-paper-plane"></i> Submit Doubt</button>
     </div>`;
 
-    // ====== AI DOUBT SOLVER BOX ======
     html += `<div class="ai-doubt-box">
       <div class="ai-doubt-header">
         <div class="ai-doubt-icon"><i class="fas fa-robot"></i></div>
@@ -11131,7 +11181,7 @@ function renderQASection(course) {
           <p>Get an instant answer while you wait for a human reply</p>
         </div>
       </div>
-      <textarea id="aiDoubtInput-${course.id}" 
+      <textarea id="aiDoubtInput-${course.id}"
                 placeholder="e.g. Explain Bernoulli's equation with an example…"
                 rows="3"></textarea>
       <div class="ai-doubt-actions">
@@ -11144,79 +11194,125 @@ function renderQASection(course) {
       </div>
       <div class="ai-doubt-answer" id="aiDoubtAnswer-${course.id}" style="display:none;"></div>
     </div>`;
-    // ====== END AI BOX ======
-}
-
-  if (doubts.length === 0) {
-    html += `<div class="empty-state" style="padding:20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet.</p></div>`;
-  } else {
-    doubts.sort((a, b) => {
-      const aHas = hasAnyAnswer(a); const bHas = hasAnyAnswer(b);
-      if (!aHas && bHas) return -1;
-      if (aHas && !bHas) return 1;
-      return new Date(b.date) - new Date(a.date);
-    });
-
-    doubts.forEach(d => {
-      const answered = hasAnyAnswer(d);
-      const statusBadge = answered ? `<span class="qa-status solved">ANSWERED</span>` : `<span class="qa-status pending">OPEN</span>`;
-      const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
-      const emailText = d.studentEmail ? escapeHtml(d.studentEmail) : '';
-      const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
-      const isAsker = d.studentUsername === (currentUser && currentUser.username);
-      const isAdminUser = isAdmin(currentUser);
-      const canReply = isAdminUser || (currentUser && currentUser.role) === 'student';
-
-      const replies = d.replies || [];
-      let repliesHtml = '';
-      if (replies.length > 0) {
-        repliesHtml = `<div class="qa-replies">`;
-        replies.forEach(r => {
-          const rDate = r.date ? new Date(r.date).toLocaleDateString() : '';
-          const isAdminReply = r.authorRole === 'admin';
-          const canAccept = (isAsker || isAdmin) && !r.isAccepted;
-          repliesHtml += `<div class="qa-reply ${isAdminReply ? 'admin-reply' : ''} ${r.isAccepted ? 'accepted' : ''}">
-            <div class="qa-reply-head">
-              <strong><i class="fas ${isAdminReply ? 'fa-user-shield' : 'fa-user-circle'}"></i> ${escapeHtml(r.authorName || r.authorUsername)}</strong>
-              ${isAdminReply ? '<span class="qa-reply-tag">Instructor</span>' : ''}
-              ${r.isAccepted ? '<span class="qa-reply-tag accepted-tag"><i class="fas fa-check-circle"></i> Accepted</span>' : ''}
-              <span class="qa-reply-date">${rDate}</span>
-            </div>
-            <div class="qa-reply-text">${escapeHtml(r.text)}</div>
-            ${canAccept ? `<button class="qa-accept-btn" onclick="acceptReply('${course.id}', '${d._id}', '${r._id}')"><i class="fas fa-check"></i> Accept</button>` : ''}
-          </div>`;
-        });
-        repliesHtml += `</div>`;
-      }
-
-      const legacyAnswerHtml = (!replies.length && d.answer)
-        ? `<div class="qa-answer"><i class="fas fa-chalkboard-teacher"></i> <strong>Admin:</strong> ${escapeHtml(d.answer)}</div>` : '';
-
-      const replyFormHtml = canReply ? `
-        <div class="qa-reply-form" id="replyForm-${d._id}">
-          <textarea id="replyText-${d._id}" placeholder="${isAdmin ? 'Write an official answer...' : 'Share what you know...'}"></textarea>
-          <button class="btn ${isAdmin ? 'btn-success' : 'btn-primary'} btn-sm" onclick="postReply('${course.id}', '${d._id}')">
-            <i class="fas fa-reply"></i> ${isAdmin ? 'Post Answer' : 'Post Reply'}
-          </button>
-        </div>` : '';
-
-      html += `<div class="qa-item ${answered ? 'solved' : 'pending'}">
-        <div class="qa-head">
-          <div>
-            <strong><i class="fas fa-user-circle"></i> ${escapeHtml(d.studentName)} <span class="qa-username">${usernameText}</span></strong>
-            ${(isAdminUser && emailText) ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${emailText}</div>` : ''}
-          </div>
-          <div>${statusBadge} <span class="qa-date">${dateText}</span></div>
-        </div>
-        <p class="qa-question"><strong>Q:</strong> ${escapeHtml(d.question)}</p>
-        ${legacyAnswerHtml}
-        ${repliesHtml}
-        ${replyFormHtml}
-      </div>`;
-    });
   }
+
+  if (all.length === 0) {
+    html += `<div class="empty-state" style="padding:20px;"><i class="fas fa-check-circle"></i><p>No doubts asked yet${role === 'student' ? ' — be the first.' : '.'}</p></div></div>`;
+    return html;
+  }
+
+  const open = all.filter(d => !hasAnyAnswer(d)).length;
+  const mine = all.filter(d => d.studentUsername === me).length;
+  let doubts = all;
+  if (sortKey === 'open') doubts = all.filter(d => !hasAnyAnswer(d));
+  if (sortKey === 'mine') doubts = all.filter(d => d.studentUsername === me);
+  const votes = (d) => (d.upvotes || []).length;
+  doubts = doubts.slice().sort((a, b) => sortKey === 'new'
+    ? new Date(b.date) - new Date(a.date)
+    : (sortKey === 'top' ? (votes(b) - votes(a)) || (hasAnyAnswer(a) - hasAnyAnswer(b)) || (new Date(b.date) - new Date(a.date))
+                         : new Date(b.date) - new Date(a.date)));
+
+  html += `<div class="qa-toolbar">
+    ${[['top', `<i class="fas fa-fire"></i> Top`], ['new', `<i class="fas fa-clock"></i> Newest`], ['open', `<i class="fas fa-circle-question"></i> Unanswered (${open})`]]
+      .concat(role === 'student' ? [['mine', `<i class="fas fa-user"></i> Mine (${mine})`]] : [])
+      .map(([k, l]) => `<button class="qs-filter ${sortKey === k ? 'on' : ''}" onclick="setQaSort('${course.id}','${k}')">${l}</button>`).join('')}
+  </div>`;
+  if (!doubts.length) html += `<div class="empty-state" style="padding:18px;"><p>Nothing here.</p></div>`;
+
+  doubts.forEach(d => {
+    const answered = hasAnyAnswer(d);
+    const statusBadge = answered ? `<span class="qa-status solved">ANSWERED</span>` : `<span class="qa-status pending">OPEN</span>`;
+    const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
+    const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
+    const isAsker = d.studentUsername === me;
+    const isAdminUser = isAdmin(currentUser);
+    const canReply = !!currentUser;
+    const voted = (d.upvotes || []).includes(me);
+
+    const replies = d.replies || [];
+    let repliesHtml = '';
+    if (replies.length > 0) {
+      repliesHtml = `<div class="qa-replies">`;
+      replies.forEach(r => {
+        const rDate = r.date ? new Date(r.date).toLocaleDateString() : '';
+        const isStaffReply = r.authorRole === 'admin' || r.authorRole === 'professor';
+        const canAccept = (isAsker || isAdminUser) && !r.isAccepted;
+        repliesHtml += `<div class="qa-reply ${isStaffReply ? 'admin-reply' : ''} ${r.isAccepted ? 'accepted' : ''}">
+          <div class="qa-reply-head">
+            <strong><i class="fas ${isStaffReply ? 'fa-user-shield' : 'fa-user-circle'}"></i> ${escapeHtml(r.authorName || r.authorUsername)}</strong>
+            ${isStaffReply ? `<span class="qa-reply-tag">${r.authorRole === 'professor' ? 'Professor' : 'Instructor'}</span>` : ''}
+            ${r.isAccepted ? '<span class="qa-reply-tag accepted-tag"><i class="fas fa-check-circle"></i> Accepted</span>' : ''}
+            <span class="qa-reply-date">${rDate}</span>
+          </div>
+          <div class="qa-reply-text latex-content">${escapeHtml(r.text)}</div>
+          ${canAccept ? `<button class="qa-accept-btn" onclick="acceptReply('${course.id}', '${d._id}', '${r._id}')"><i class="fas fa-check"></i> Accept</button>` : ''}
+        </div>`;
+      });
+      repliesHtml += `</div>`;
+    }
+
+    const legacyAnswerHtml = (!replies.length && d.answer)
+      ? `<div class="qa-answer"><i class="fas fa-chalkboard-teacher"></i> <strong>${escapeHtml(d.answeredBy || 'Instructor')}:</strong> <span class="latex-content">${escapeHtml(d.answer)}</span></div>` : '';
+
+    const staff = isAdminUser || role === 'professor';
+    const replyFormHtml = canReply ? `
+      <div class="qa-reply-form" id="replyForm-${d._id}">
+        <textarea id="replyText-${d._id}" placeholder="${staff ? 'Write an answer as the instructor…' : 'Share what you know…'}"></textarea>
+        <button class="btn ${staff ? 'btn-success' : 'btn-primary'} btn-sm" onclick="postReply('${course.id}', '${d._id}')">
+          <i class="fas fa-reply"></i> ${staff ? 'Post Answer' : 'Post Reply'}
+        </button>
+      </div>` : '';
+
+    html += `<div class="qa-item ${answered ? 'solved' : 'pending'}">
+      <div class="qa-head">
+        <div>
+          <strong><i class="fas fa-user-circle"></i> ${escapeHtml(d.studentName || d.studentUsername || 'Student')} <span class="qa-username">${usernameText}</span></strong>
+          ${(isAdminUser && d.studentEmail) ? `<div class="qa-email"><i class="fas fa-envelope"></i> ${escapeHtml(d.studentEmail)}</div>` : ''}
+        </div>
+        <div>${statusBadge} <span class="qa-date">${dateText}</span></div>
+      </div>
+      ${d.materialTitle ? `<div class="qa-about"><i class="fas fa-link"></i> ${escapeHtml(d.materialTitle)}</div>` : ''}
+      <div class="qa-body">
+        <button type="button" class="qa-vote ${voted ? 'on' : ''}" ${role === 'student' && !isAsker ? `onclick="voteDoubt('${course.id}','${d._id}')"` : 'disabled'} title="${isAsker ? 'Your own doubt' : 'I have the same doubt'}">
+          <i class="fas fa-arrow-up"></i><b>${votes(d)}</b>
+        </button>
+        <p class="qa-question latex-content"><strong>Q:</strong> ${escapeHtml(d.question)}</p>
+      </div>
+      ${legacyAnswerHtml}
+      ${repliesHtml}
+      ${replyFormHtml}
+    </div>`;
+  });
   html += `</div>`;
   return html;
+}
+function setQaSort(courseId, key) {
+  window._qaSort = Object.assign({}, window._qaSort, { [courseId]: key });
+  const c = findCourse(courseId);
+  if (c) renderCourseDetail(courseId);
+}
+async function voteDoubt(courseId, doubtId) {
+  try {
+    const d = await fetchJSON(`/api/courses/${courseId}/doubts/${doubtId}/upvote`, { method: 'POST' });
+    if (!d || !d.success) return showToast((d && d.message) || 'Could not vote.', 'error');
+    const c = findCourse(courseId);
+    const dt = c && (c.doubts || []).find(x => String(x._id) === String(doubtId));
+    if (dt) {
+      dt.upvotes = (dt.upvotes || []).filter(u => u !== currentUser.username);
+      if (d.voted) dt.upvotes.push(currentUser.username);
+      renderCourseDetail(courseId);
+    }
+  } catch (e) { showToast('Network error.', 'error'); }
+}
+/* "Ask a doubt" on a material card → the Q&A tab with that material picked */
+function askAboutMaterial(courseId, materialId) {
+  window._qaAskMaterial = { courseId, materialId };
+  currentMaterialFilter = 'qa';
+  if (typeof setMaterialFilter === 'function') setMaterialFilter('qa'); else renderCourseDetail(courseId);
+  setTimeout(() => {
+    const t = document.getElementById('newDoubtText');
+    if (t) { t.scrollIntoView({ behavior: 'smooth', block: 'center' }); t.focus(); }
+  }, 120);
 }
 
 /* ============================================================
@@ -11792,7 +11888,9 @@ async function openQuizEditor(courseId, materialId) {
       resultPublishMode:       sc.resultPublishMode   || 'immediate',
       resultPublishAt:         sc.resultPublishAt     || null,
       resultPublishDelayHours: Number(sc.resultPublishDelayHours) || 0,
-      resultsPublished:        sc.resultsPublished === true
+      resultsPublished:        sc.resultsPublished === true,
+      kind: sc.kind === 'assignment' ? 'assignment' : 'test', dueAt: sc.dueAt || null,
+      allowLate: sc.allowLate !== false, showLeaderboard: sc.showLeaderboard === true
     };
   } else {
     const rawQuiz = Array.isArray(mat.quiz) ? mat.quiz : [];
@@ -11810,7 +11908,9 @@ async function openQuizEditor(courseId, materialId) {
       resultPublishMode:       cfg.resultPublishMode   || 'immediate',
       resultPublishAt:         cfg.resultPublishAt     || null,
       resultPublishDelayHours: Number(cfg.resultPublishDelayHours) || 0,
-      resultsPublished:        cfg.resultsPublished === true
+      resultsPublished:        cfg.resultsPublished === true,
+      kind: cfg.kind === 'assignment' ? 'assignment' : 'test', dueAt: cfg.dueAt || null,
+      allowLate: cfg.allowLate !== false, showLeaderboard: cfg.showLeaderboard === true
     };
   }
 
@@ -11823,6 +11923,17 @@ async function openQuizEditor(courseId, materialId) {
 
   pushHash(`#/admin/quiz/${courseId}/${materialId}`);
   renderApp();
+}
+
+/* Test ⇄ Assignment in the paper editor */
+function onQuizKindChange() {
+  const kind = (document.querySelector('input[name="qpKind"]:checked') || {}).value;
+  const box = document.getElementById('qpAssignmentBox');
+  if (box) box.style.display = kind === 'assignment' ? 'grid' : 'none';
+  if (kind === 'assignment') {
+    const t = document.getElementById('qpTime');
+    if (t && t.value) showToast('Assignments have no timer — the time limit is ignored.', 'info');
+  }
 }
 
 async function closeQuizEditor() {
@@ -11881,7 +11992,11 @@ function normalizeQuestion(q) {
           { text: '', correctIndex: 2 }, { text: '', correctIndex: 3 } ],
 
     marks:         typeof q.marks === 'number' ? q.marks : 4,
-    negativeMarks: typeof q.negativeMarks === 'number' ? q.negativeMarks : -1
+    negativeMarks: typeof q.negativeMarks === 'number' ? q.negativeMarks : -1,
+
+    /* ⭐ 2026-10-11 — topic-wise analytics, practice, question bank */
+    topic:      q.topic || '',
+    difficulty: q.difficulty || ''
   };
 }
 
@@ -11961,6 +12076,14 @@ async function openMyQuizResult(courseId, materialId) {
         ${d.writtenMax ? `<span>Written <b>${d.writtenMarks} / ${d.writtenMax}</b></span>` : ''}
         <span>Attempt <b>${d.attempts}</b></span>
       </div>
+      ${d.standing && d.standing.rank ? `<div class="myres-standing">
+        <div><b>#${d.standing.rank}</b><span>rank of ${d.standing.of}</span></div>
+        <div><b>${d.standing.percentile === null ? '—' : d.standing.percentile}</b><span>percentile</span></div>
+        <div><b>${d.standing.classAvg}%</b><span>class average</span></div>
+      </div>` : ''}
+      ${Array.isArray(d.leaderboard) && d.leaderboard.length ? `<div class="myres-board"><div class="myres-board-h"><i class="fas fa-trophy"></i> Top ${d.leaderboard.length}</div>
+        ${d.leaderboard.map(x => `<div class="myres-board-row ${x.me ? 'me' : ''}"><span class="myres-medal r${x.rank}">${x.rank}</span><span>${escapeHtml(x.name)}${x.me ? ' <em>(you)</em>' : ''}</span><b>${x.pct}%</b></div>`).join('')}
+      </div>` : ''}
       ${d.pendingEvaluation ? '<p class="modal-sub"><i class="fas fa-hourglass-half"></i> Some written answers are still being graded — the total will change.</p>' : ''}
       ${d.endedNote ? `<p class="modal-sub"><i class="fas fa-clock"></i> ${escapeHtml(d.endedNote)}</p>` : ''}
       ${written ? `<div class="myres-written">${written}</div>` : ''}`
@@ -12221,9 +12344,11 @@ function exportQuizSubmissionsCsv() {
       r.timeSpentTotalSeconds, r.lastAttemptAt ? new Date(r.lastAttemptAt).toISOString() : ''].map(q).join(','));
   });
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const fname = `${(S.data.title || 'test').replace(/[^\w\- ]+/g, '').trim() || 'test'} - submissions.csv`;
+  if (window.__aeroSaveBlob) return window.__aeroSaveBlob(blob, fname);     // Android app
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `${(S.data.title || 'test').replace(/[^\w\- ]+/g, '').trim() || 'test'} - submissions.csv`;
+  a.download = fname;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
@@ -12426,7 +12551,9 @@ function grRenderHome() {
           `<button class="qs-filter ${GR.show === k ? 'on' : ''}" onclick="GR.show='${k}';grRenderHome()">${l}</button>`).join('')}</div>
       </div>
       ${groups || `<div class="qs-empty"><i class="fas fa-folder-open"></i><p>${d.tests.length ? 'No test matches.' : 'No tests yet — add a Quiz / Test material to a course.'}</p></div>`}
-    </section>`;
+    </section>
+    <div id="grSeriesBox"></div>`;
+  if (typeof window.renderSeriesManager === 'function') window.renderSeriesManager();
   const inp = host.querySelector('.gr-search input');
   if (inp && GR._refocus) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); GR._refocus = false; }
 }
@@ -12490,7 +12617,7 @@ function grRenderTest() {
       <td data-label="Marks"><b>${_grN(r.finalMarksEarned)}</b><span class="qs-muted"> / ${_grN(r.finalMarksPossible)}</span>
         <div class="gr-mini"><span class="gr-bar"><span class="gr-bar-fill ${_grPctTone(pct)}" style="width:${Math.min(100, pct)}%"></span></span><span class="qs-muted">${pct}%</span></div></td>
       <td data-label="Status">${r.pendingEvaluation ? `<span class="qs-chip warn">${r.subjectiveTotal - r.subjectiveGraded} to grade</span>` : '<span class="qs-chip ok">Done</span>'}
-        ${r.finalizedBy === 'server' ? '<span class="qs-chip bad">Time ran out</span>' : r.autoSubmitted ? '<span class="qs-chip bad">Auto-submitted</span>' : ''}</td>
+        ${r.finalizedBy === 'server' ? '<span class="qs-chip bad">Time ran out</span>' : r.autoSubmitted ? '<span class="qs-chip bad">Auto-submitted</span>' : ''}${r.late ? '<span class="qs-chip warn">Late</span>' : ''}</td>
       <td data-label="Warnings">${strikes ? `<span class="qs-chip bad"><i class="fas fa-shield-halved"></i> ${strikes}</span>` : '<span class="qs-muted">0</span>'}</td>
       <td data-label="Attempts" class="qs-muted">${r.attempts}${cap ? ' / ' + cap : ''}${r.extraAttempts ? ` <span title="extra granted">(+${r.extraAttempts})</span>` : ''}</td>
       <td data-label="Time" class="qs-muted">${r.timeSpentTotalSeconds ? _qsFmtSecs(r.timeSpentTotalSeconds) : '—'}</td>
@@ -12721,11 +12848,13 @@ function grRenderAttempt() {
             ${responses ? `<li><i class="fas fa-list-check"></i><span class="ok-t">${nRight} right</span> · <span class="bad-t">${nWrong} wrong</span> · ${nSkip} skipped</li>` : ''}
             <li><i class="fas fa-stopwatch"></i>Time taken <b>${timeTaken ? _qsFmtSecs(timeTaken) : '—'}</b>${r.durationSeconds ? ` of ${_qsFmtSecs(r.durationSeconds)}` : ''}</li>
             <li><i class="fas fa-calendar-check"></i>Submitted ${_qsFmtDate(r.lastAttemptAt)}</li>
+            ${r.kind === 'assignment' ? `<li><i class="fas fa-book-open-reader"></i>Assignment${r.late ? ' — <span class="bad-t">submitted late</span>' : ' — on time'}</li>` : ''}
             <li><i class="fas fa-flag-checkered"></i>${r.finalizedBy === 'server' ? '<span class="bad-t">Time ran out — graded from autosave</span>' : r.autoSubmitted ? '<span class="bad-t">Auto-submitted</span>' : 'Submitted by the student'}</li>
             <li><i class="fas fa-shield-halved"></i>${strikes ? `<span class="bad-t">${strikes} proctoring warning${strikes === 1 ? '' : 's'}</span>` : 'No warnings'}</li>
             <li><i class="fas fa-rotate-right"></i>Attempt <b>${r.attempts}</b>${cap ? ` of ${cap}` : ''}${r.extraAttempts ? ` <span class="qs-muted">(+${r.extraAttempts} granted)</span>` : ''}</li>
           </ul>
           ${cap ? `<button class="btn btn-outline btn-sm btn-block" onclick="grGrantAttempt()"><i class="fas fa-plus"></i> Grant another attempt</button>` : ''}
+          <button class="btn btn-outline btn-sm btn-block" onclick="downloadReportCard('${escapeHtml(st.id)}')"><i class="fas fa-file-pdf"></i> Report card (PDF)</button>
         </section>
         ${timeline ? `<section class="gr-card"><h3 class="gr-h3"><i class="fas fa-shield-halved"></i> Proctoring timeline</h3><ul class="qs-log">${timeline}</ul></section>` : ''}
         ${history ? `<section class="gr-card"><h3 class="gr-h3"><i class="fas fa-clock-rotate-left"></i> Earlier attempts</h3>
@@ -12928,7 +13057,9 @@ async function renderQuizEditor() {
         resultPublishMode:       sc.resultPublishMode   || 'immediate',
         resultPublishAt:         sc.resultPublishAt     || null,
         resultPublishDelayHours: Number(sc.resultPublishDelayHours) || 0,
-        resultsPublished:        sc.resultsPublished === true
+        resultsPublished:        sc.resultsPublished === true,
+      kind: sc.kind === 'assignment' ? 'assignment' : 'test', dueAt: sc.dueAt || null,
+      allowLate: sc.allowLate !== false, showLeaderboard: sc.showLeaderboard === true
       };
     } else {
       quizDraft = (mat.quiz || []).map(q => normalizeQuestion(q));
@@ -12945,7 +13076,9 @@ async function renderQuizEditor() {
         resultPublishMode:       cfg.resultPublishMode   || 'immediate',
         resultPublishAt:         cfg.resultPublishAt     || null,
         resultPublishDelayHours: Number(cfg.resultPublishDelayHours) || 0,
-        resultsPublished:        cfg.resultsPublished === true
+        resultsPublished:        cfg.resultsPublished === true,
+      kind: cfg.kind === 'assignment' ? 'assignment' : 'test', dueAt: cfg.dueAt || null,
+      allowLate: cfg.allowLate !== false, showLeaderboard: cfg.showLeaderboard === true
       };
     }
   }
@@ -13003,6 +13136,37 @@ async function renderQuizEditor() {
           <span class="hint">Auto-computed from questions: <strong id="qpAutoHint">${autoTotal}</strong></span>
         </div>
       </div>
+    </div>
+
+    <!-- ⭐ 2026-10-11 — test or assignment, leaderboard -->
+    <div class="editor-section">
+      <div class="editor-section-title"><i class="fas fa-shapes"></i> Paper Type</div>
+      <div class="qe-kind">
+        <label class="qe-kind-opt">
+          <input type="radio" name="qpKind" value="test" ${quizPaperConfig.kind !== 'assignment' ? 'checked' : ''} onchange="onQuizKindChange()">
+          <span><b><i class="fas fa-stopwatch"></i> Test</b><small>Timed, full screen, proctored</small></span>
+        </label>
+        <label class="qe-kind-opt">
+          <input type="radio" name="qpKind" value="assignment" ${quizPaperConfig.kind === 'assignment' ? 'checked' : ''} onchange="onQuizKindChange()">
+          <span><b><i class="fas fa-book-open-reader"></i> Assignment</b><small>Homework with a due date — no timer, no proctoring</small></span>
+        </label>
+      </div>
+      <div class="editor-grid-2" id="qpAssignmentBox" style="margin-top:12px;display:${quizPaperConfig.kind === 'assignment' ? 'grid' : 'none'};">
+        <div class="form-group">
+          <label>Due date &amp; time</label>
+          <input type="datetime-local" id="qpDueAt" value="${toDateTimeLocalValue(quizPaperConfig.dueAt)}">
+          <span class="hint">Students see a countdown to this time. Leave empty for no deadline.</span>
+        </div>
+        <div class="form-group">
+          <label>After the due date</label>
+          <label class="qe-check"><input type="checkbox" id="qpAllowLate" ${quizPaperConfig.allowLate !== false ? 'checked' : ''}>
+            <span>Accept late submissions (marked <b>Late</b>)</span></label>
+        </div>
+      </div>
+      <label class="qe-check" style="margin-top:12px;">
+        <input type="checkbox" id="qpShowLeaderboard" ${quizPaperConfig.showLeaderboard ? 'checked' : ''}>
+        <span><b>Show a leaderboard</b> — students see the top 10 of this paper (first name + initial) with their result</span>
+      </label>
     </div>
 
     <!-- ⭐ ATTEMPT LIMITS & SCHEDULED RESULT PUBLICATION -->
@@ -13146,6 +13310,16 @@ async function renderQuizEditor() {
         </div>
       </div>
 
+      <!-- ⭐ 2026-10-11 — build the paper from the Question Bank -->
+      <div class="qe-bank-bar">
+        <span><i class="fas fa-box-archive"></i> <b>Question Bank</b> <span class="qs-muted">reuse saved questions</span></span>
+        <span class="qe-bank-actions">
+          <button class="btn btn-outline btn-sm" onclick="openBankPicker()"><i class="fas fa-magnifying-glass-plus"></i> Add from bank</button>
+          <button class="btn btn-outline btn-sm" onclick="openAutoPaper()"><i class="fas fa-wand-magic-sparkles"></i> Auto-generate</button>
+          <button class="btn btn-outline btn-sm" onclick="saveAllQuestionsToBank()" ${quizDraft.length ? '' : 'disabled'}><i class="fas fa-cloud-arrow-up"></i> Save all to bank</button>
+        </span>
+      </div>
+
       <p class="editor-hint">
         <strong>Overleaf-standard LaTeX is supported.</strong>
         Inline math: <code>$E = mc^2$</code> · Display math: <code>$$\\int_0^1 x^2\\,dx$$</code> ·
@@ -13187,6 +13361,8 @@ function renderQuizDraft() {
           <strong>Question ${qi + 1}</strong>
           <span class="mat-type">${questionTypeLabel(q.type)}</span>
           <span class="quiz-question-marks-badge">+${q.marks} / ${q.negativeMarks}</span>
+          ${q.topic ? `<span class="qe-topic-chip"><i class="fas fa-tag"></i> ${escapeHtml(q.topic)}</span>` : ''}
+          ${q.difficulty ? `<span class="qe-diff-chip qe-diff-${escapeHtml(q.difficulty)}">${escapeHtml(q.difficulty)}</span>` : ''}
         </div>
         <div class="quiz-question-controls">
           <button type="button" class="quiz-icon-btn" onclick="moveQuizQuestion(${qi}, -1)" title="Move up" ${qi === 0 ? 'disabled' : ''}>
@@ -13197,6 +13373,9 @@ function renderQuizDraft() {
           </button>
           <button type="button" class="quiz-icon-btn" onclick="duplicateQuizQuestion(${qi})" title="Duplicate">
             <i class="fas fa-copy"></i>
+          </button>
+          <button type="button" class="quiz-icon-btn" onclick="saveQuestionToBank(${qi})" title="Save to Question Bank">
+            <i class="fas fa-box-archive"></i>
           </button>
           <button type="button" class="quiz-icon-btn danger" onclick="removeQuizQuestion(${qi})" title="Delete">
             <i class="fas fa-trash-alt"></i>
@@ -13228,6 +13407,24 @@ function renderQuizDraft() {
         </div>
       </div>
 
+      <!-- ⭐ topic + difficulty: power students' topic-wise analysis and practice -->
+      <div class="editor-grid-2 qe-tags" style="margin-bottom:12px;">
+        <div class="form-group">
+          <label>Topic <span class="hint" style="display:inline;">· e.g. Bernoulli, Drag, Stability</span></label>
+          <input type="text" list="qeTopicList" maxlength="80" value="${escapeHtml(q.topic || '')}" placeholder="Topic of this question"
+                 onchange="updateQuizField(${qi}, 'topic', this.value.trim()); renderQuizDraft();">
+        </div>
+        <div class="form-group">
+          <label>Difficulty</label>
+          <select onchange="updateQuizField(${qi}, 'difficulty', this.value); renderQuizDraft();">
+            <option value="" ${!q.difficulty ? 'selected' : ''}>— Not set —</option>
+            <option value="easy" ${q.difficulty === 'easy' ? 'selected' : ''}>Easy</option>
+            <option value="medium" ${q.difficulty === 'medium' ? 'selected' : ''}>Medium</option>
+            <option value="hard" ${q.difficulty === 'hard' ? 'selected' : ''}>Hard</option>
+          </select>
+        </div>
+      </div>
+
       <div class="form-group" style="margin-bottom:14px;">
         <label>Question Text <span class="hint" style="display:inline;">· LaTeX supported</span></label>
         <textarea rows="3" class="latex-source" data-preview-id="q${qi}-question"
@@ -13251,6 +13448,23 @@ function renderQuizDraft() {
   list.innerHTML = html;
   renderMathIn(list);
   updateQuizTotals();
+  _qeRefreshTopicList();
+}
+
+/* topic suggestions in the editor: this paper's topics + the bank's */
+let _qeBankTopics = null;
+function _qeRefreshTopicList() {
+  let dl = document.getElementById('qeTopicList');
+  if (!dl) { dl = document.createElement('datalist'); dl.id = 'qeTopicList'; document.body.appendChild(dl); }
+  const set = new Set(quizDraft.map(q => (q.topic || '').trim()).filter(Boolean));
+  (_qeBankTopics || []).forEach(t => t && set.add(t));
+  dl.innerHTML = [...set].sort().map(t => `<option value="${escapeHtml(t)}"></option>`).join('');
+  if (_qeBankTopics === null) {
+    _qeBankTopics = [];
+    fetchJSON(`${API_BASE}/qbank/topics?_t=${Date.now()}`, { cache: 'no-store' })
+      .then(d => { if (d && d.success) { _qeBankTopics = d.topics.map(t => t.topic).filter(Boolean); _qeRefreshTopicList(); } })
+      .catch(() => {});
+  }
 }
 
 function questionTypeLabel(t) {
@@ -13739,6 +13953,7 @@ async function saveQuizPaper() {
     : 0;
 
   const resultMode = $('qpResultMode')?.value || 'immediate';
+  const _qpKind = (document.querySelector('input[name="qpKind"]:checked') || {}).value === 'assignment' ? 'assignment' : 'test';
 
   /* Absolute publish time — only meaningful in "scheduled" mode */
   let resultPublishAt = null;
@@ -13773,7 +13988,13 @@ async function saveQuizPaper() {
     maxAttempts,
     resultPublishMode:       resultMode,
     resultPublishAt,
-    resultPublishDelayHours
+    resultPublishDelayHours,
+
+    /* ⭐ 2026-10-11 — test / assignment, due date, leaderboard */
+    kind:            _qpKind,
+    dueAt:           _qpKind === 'assignment' && $('qpDueAt') && $('qpDueAt').value ? new Date($('qpDueAt').value).toISOString() : null,
+    allowLate:       $('qpAllowLate') ? $('qpAllowLate').checked : true,
+    showLeaderboard: $('qpShowLeaderboard') ? $('qpShowLeaderboard').checked : false
   };
 
   /* ---------- clean blanks, then validate exactly what will be saved ---------- */
@@ -13940,6 +14161,8 @@ async function openQuizPlayer(courseId, materialId) {
       _examClockOffsetMs = (Number(sres.serverNow) || Date.now()) - Date.now();
     } else if (sres && sres.code === 'ALREADY_SUBMITTED') {
       return showToast('You have already submitted this test. Use Retake to start again.', 'info');
+    } else if (sres && sres.code === 'DEADLINE_PASSED') {
+      return showToast('The due date for this assignment has passed — it no longer takes submissions.', 'info');
     } else if (sres && sres.code === 'EXPIRED_AUTO_SUBMITTED') {
       /* ⭐ time ran out last time without a submit — the server graded the
          answers saved before the deadline (the attempt was not lost) */
@@ -14076,6 +14299,9 @@ async function openQuizPlayer(courseId, materialId) {
     violationHandling: false,
     fullscreenArmed: false,
     serverSession: !!sessionInfo,
+    /* ⭐ 2026-10-11 — homework: no timer, no full screen, no proctoring */
+    assignment: !!(sessionInfo && sessionInfo.kind === 'assignment'),
+    dueAt: sessionInfo && sessionInfo.dueAt ? new Date(sessionInfo.dueAt).getTime() : null,
 
     /* ⭐ NEW fields */
     forwardOnly: !allowBackNavigation,          // strict when back-nav is OFF
@@ -14161,7 +14387,44 @@ async function openQuizPlayer(courseId, materialId) {
     return;                         // short-circuit the student path
   }
 
+  if (quizPlayerState.assignment) return beginAssignmentSession();
   openModal('preExamWarningModal');
+}
+
+/* ⭐ Assignment: open straight away — answers autosave, nothing is proctored */
+function beginAssignmentSession() {
+  const st = quizPlayerState; if (!st) return;
+  const shell = document.getElementById('quizExamShell');
+  if (!shell) return;
+  shell.style.display = 'flex';
+  shell.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+  st.examStarted = true;
+  st.startTime = Date.now();
+  st.forwardOnly = false; st.allowBackNavigation = true;   // homework: move freely
+  _examQuestionEnteredAt = Date.now();
+  renderQuizExamShell();
+  _tickAssignmentDue();
+  clearInterval(window._assignDueTimer);
+  window._assignDueTimer = setInterval(_tickAssignmentDue, 30000);
+  showToast(st.dueAt ? `Assignment open — due ${new Date(st.dueAt).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}.` : 'Assignment open — your answers save automatically.', 'success');
+}
+function _assignDueText(dueAt) {
+  if (!dueAt) return 'No deadline';
+  const ms = dueAt - (Date.now() + _examClockOffsetMs);
+  if (ms <= 0) return 'Past due';
+  const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  return d >= 1 ? `Due in ${d}d ${h % 24}h` : h >= 1 ? `Due in ${h}h ${m % 60}m` : `Due in ${m}m`;
+}
+function _tickAssignmentDue() {
+  const st = quizPlayerState;
+  if (!st || !st.assignment || st.submitted) { clearInterval(window._assignDueTimer); return; }
+  const el = document.getElementById('quizTimerDisplay');
+  if (el) {
+    el.textContent = _assignDueText(st.dueAt);
+    el.classList.add('assign-due');
+    el.classList.toggle('warning', !!st.dueAt && st.dueAt - Date.now() < 3600e3);
+  }
 }
 
 function togglePreExamConsent() {
@@ -14362,7 +14625,7 @@ function renderQuizExamShell() {
 
       <div class="quiz-exam-timer-wrap">
         <div class="quiz-exam-timer" id="quizTimerDisplay">--:--</div>
-        ${st.previewMode ? '' : '<div class="quiz-proctor-pill"><i class="fas fa-shield-halved"></i> Proctored</div>'}
+        ${st.previewMode ? '' : st.assignment ? '<div class="quiz-proctor-pill assign"><i class="fas fa-book-open-reader"></i> Assignment</div>' : '<div class="quiz-proctor-pill"><i class="fas fa-shield-halved"></i> Proctored</div>'}
         ${st.previewMode || st.submitted ? '' : '<div class="quiz-save-state" id="quizSaveState"></div>'}
       </div>
 
@@ -14491,7 +14754,7 @@ function renderQuizExamShell() {
       <footer class="quiz-exam-footer">
         <div class="quiz-exam-footer-left">
           <button type="button" class="btn btn-outline" onclick="requestQuitExam()">
-            <i class="fas fa-times"></i> Quit Exam
+            <i class="fas fa-times"></i> ${st.assignment ? 'Leave' : 'Quit Exam'}
           </button>
           ${st.forwardOnly
             ? `<span class="quiz-exam-warning-note" style="background:rgba(239,68,68,.1);color:var(--rose-600);border-color:rgba(239,68,68,.3);">
@@ -14550,6 +14813,7 @@ function renderQuizExamShell() {
   shell.innerHTML = headerHtml + `<div class="quiz-exam-body">${bodyHtml}</div>` + footerHtml;
   renderMathIn(shell.querySelector('.quiz-exam-body'));
   if (!st.previewMode && !st.submitted) _setQuizSaveState(st._saveState || 'idle');
+  if (st.assignment && !st.submitted) _tickAssignmentDue();
 
   /* Re-arm the timer's countdown display after a fresh render */
   if (!st.submitted && st.durationSeconds) {
@@ -14883,14 +15147,19 @@ async function requestQuitExam() {
 
   st.examStarted = false;
   const ok = await quizConfirm({
-    title: 'Leave the exam?', icon: 'fa-door-open', danger: true, ok: 'Leave exam', cancel: 'Continue exam',
-    text: 'Your answers stay saved on this device and the timer keeps running. Come back before time is up and submit to get a score.'
+    title: st.assignment ? 'Leave the assignment?' : 'Leave the exam?', icon: 'fa-door-open', danger: !st.assignment,
+    ok: st.assignment ? 'Leave' : 'Leave exam', cancel: st.assignment ? 'Keep working' : 'Continue exam',
+    text: st.assignment
+      ? 'Your answers are saved. Come back any time before the due date and press Submit when you are done.'
+      : 'Your answers stay saved on this device and the timer keeps running. Come back before time is up and submit to get a score.'
   });
   if (ok) {
     persistQuizAnswers();
+    flushQuizServerSave(true);          // the server copy is current too
     exitQuizSession();
     return;
   }
+  if (st.assignment) { st.examStarted = true; return; }
   try {
     if (!document.fullscreenElement && !document.webkitFullscreenElement) {
       const el = document.documentElement;
@@ -15062,7 +15331,10 @@ async function submitQuiz(opts = {}) {
 
       renderQuizExamShell();
 
-      if (data.lateSubmission) {
+      clearInterval(window._assignDueTimer);
+      if (data.kind === 'assignment' && !data.lateSubmission) {
+        showToast(data.late ? '📮 Assignment submitted — marked late (after the due date).' : '✅ Assignment submitted.', data.late ? 'info' : 'success');
+      } else if (data.lateSubmission) {
         showToast('⏰ ' + (data.message || 'Time was up — the answers saved before the deadline were submitted.'), 'error');
       } else if (auto) {
         showToast(opts.reason === 'time' ? '⏰ Time is up — your answers were submitted.' : '⚠️ Exam auto-submitted after repeated proctoring violations.', 'error');
@@ -16827,14 +17099,12 @@ async function askDoubt(courseId) {
     const response = await fetch(`/api/courses/${courseId}/doubts`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        studentName: currentUser.fullName || currentUser.username,
-        studentUsername: currentUser.username,
-        studentEmail: currentUser.email || '',
-        question
+        question,
+        materialId: ($('newDoubtMaterial') && $('newDoubtMaterial').value) || ''
       })
     });
     const data = await response.json();
-    if (data.success) { showToast('❓ Submitted!', 'success'); textarea.value = ''; fetchCoursesFromDB(); }
+    if (data.success) { showToast('❓ Submitted!', 'success'); textarea.value = ''; window._qaAskMaterial = null; window._qaSort = Object.assign({}, window._qaSort, { [courseId]: 'new' }); refreshCourseDoubts(courseId); }
     else showToast(data.message || 'Error.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
@@ -16854,7 +17124,7 @@ async function postReply(courseId, doubtId) {
       })
     });
     const data = await res.json();
-    if (data.success) { showToast('💬 Posted!', 'success'); ta.value = ''; fetchCoursesFromDB(); }
+    if (data.success) { showToast('💬 Posted!', 'success'); ta.value = ''; refreshCourseDoubts(courseId); }
     else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
@@ -16866,7 +17136,7 @@ async function acceptReply(courseId, doubtId, replyId) {
       body: JSON.stringify({ acceptedBy: currentUser.username })
     });
     const data = await res.json();
-    if (data.success) { showToast('✅ Accepted!', 'success'); fetchCoursesFromDB(); }
+    if (data.success) { showToast('✅ Accepted!', 'success'); refreshCourseDoubts(courseId); }
     else showToast(data.message || 'Failed.', 'error');
   } catch { showToast('Server error.', 'error'); }
 }
@@ -27700,7 +27970,7 @@ async function adminRemoveProfessorCourse(profId, courseId, label) {
    blocks inject later), so every onclick / badge keeps working.
    ============================================================ */
 const ADM_NAV_GROUPS = [
-  { id: 'main',     label: 'Main',          icon: 'fa-star',             tabs: ['overview', 'courses', 'students', 'grading', 'profaccess', 'live'] },
+  { id: 'main',     label: 'Main',          icon: 'fa-star',             tabs: ['overview', 'courses', 'students', 'grading', 'qbank', 'profaccess', 'live'] },
   { id: 'insights', label: 'Insights',      icon: 'fa-chart-line',       tabs: ['traffic'] },
   { id: 'people',   label: 'People',        icon: 'fa-users',            tabs: ['professors', 'community', 'feedback', 'contributions'] },
   { id: 'revenue',  label: 'Revenue',       icon: 'fa-indian-rupee-sign', tabs: ['subscriptions', 'plans', 'coupons', 'referrals'] },
@@ -27711,6 +27981,7 @@ const ADM_NAV_GROUPS = [
 const ADM_NAV_DESC = {
   overview: 'Stats & quick actions', courses: 'Add & edit courses', students: 'Accounts, access & progress',
   grading: 'Tests, answer sheets & results',
+  qbank: 'Reusable questions & auto papers',
   profaccess: 'Approve professors & courses', live: 'Who is online now', traffic: 'Visitors & page views',
   professors: 'Faculty profiles', community: 'Alumni & friends', feedback: 'Reviews to moderate',
   contributions: 'Notes sent by students', subscriptions: 'Auto-pay & members', plans: 'Prices & durations',

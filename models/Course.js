@@ -34,7 +34,11 @@ const quizQuestionSchema = new mongoose.Schema({
   matrixRows:       { type: [matrixRowSchema], default: [] },
 
   marks:         { type: Number, default: 4 },
-  negativeMarks: { type: Number, default: -1 }
+  negativeMarks: { type: Number, default: -1 },
+
+  /* ⭐ 2026-10-11 — for topic-wise analytics, practice and the question bank */
+  topic:      { type: String, default: '' },
+  difficulty: { type: String, default: '' }      // '' | easy | medium | hard
 }, { _id: true });
 
 /* ---------- Material ---------- */
@@ -111,7 +115,15 @@ const materialSchema = new mongoose.Schema({
     /* Flag flipped by the publisher (cron or admin) so a course is
        never published twice. */
     resultsPublished:   { type: Boolean, default: false },
-    resultsPublishedAt: { type: Date,    default: null }
+    resultsPublishedAt: { type: Date,    default: null },
+
+    /* ⭐ 2026-10-11 — 'assignment' = homework: no timer, no proctoring,
+       a due date (late submissions allowed or not) */
+    kind:      { type: String, enum: ['test', 'assignment'], default: 'test' },
+    dueAt:     { type: Date, default: null },
+    allowLate: { type: Boolean, default: true },
+    /* show students the top 10 of this test (first name + initial) */
+    showLeaderboard: { type: Boolean, default: false }
   },
 
   quiz: [quizQuestionSchema]
@@ -134,7 +146,13 @@ const doubtSchema = new mongoose.Schema({
   question: String,
   answer: String,
   date: { type: Date, default: Date.now },
-  replies: [replySchema]
+  replies: [replySchema],
+  /* ⭐ 2026-10-11 — doubt about a specific material, votes, who answered */
+  materialId:    { type: String, default: '' },
+  materialTitle: { type: String, default: '' },
+  upvotes:       { type: [String], default: [] },     // usernames
+  answeredBy:    { type: String, default: '' },
+  answeredAt:    { type: Date, default: null }
 });
 
 /* ---------- Announcements ---------- */

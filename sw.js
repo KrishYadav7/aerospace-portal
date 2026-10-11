@@ -33,6 +33,7 @@ const NEVER_CACHE_PATTERNS = [
   /\/login-popup\.js$/,
   /\/notes\.js$/,
   /\/tex-render\.js$/,
+  /\/learning\.js$/,
   /\/notes\.css$/,
   /\/sw\.js$/
 ];

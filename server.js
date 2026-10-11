@@ -1771,7 +1771,7 @@ app.use((err, req, res, next) => {
    the background) instead of gzip-on-every-request: ~20 % fewer
    bytes on slow connections and no per-request CPU.
    ============================================================ */
-const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css', 'tex-render.js'];
+const VERSIONED_ASSETS = ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css', 'tex-render.js', 'learning.js'];
 const _assetHashCache = new Map();   // file → { key, hash }
 function assetHash(file) {
   try {
@@ -1899,7 +1899,7 @@ function sendImmutableAsset(res, filename) {
 }
 /* Warm the compressed copies right after boot so the first visitor is fast too. */
 setTimeout(() => {
-  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css', 'tex-render.js',
+  ['app.js', 'styles.css', 'media-viewer.js', 'document-viewer.js', 'content-shield.js', 'login-popup.js', 'notes.js', 'notes.css', 'tex-render.js', 'learning.js',
    'vendor/pdfjs/pdf.min.js', 'vendor/pdfjs/pdf.worker.min.js'].forEach(f => {
     try {
       const fp = path.join(__dirname, f);
@@ -1919,6 +1919,8 @@ app.get('/notes.js',          (req, res) => sendImmutableAsset(res, 'notes.js'))
 app.get('/notes.css',         (req, res) => sendImmutableAsset(res, 'notes.css'));
 /* ⭐ LaTeX renderer for quizzes (2026-10-10) */
 app.get('/tex-render.js',     (req, res) => sendImmutableAsset(res, 'tex-render.js'));
+/* ⭐ Practice, question bank, test series… (2026-10-11) */
+app.get('/learning.js',       (req, res) => sendImmutableAsset(res, 'learning.js'));
 app.get('/passport.jpg',    (req, res) => sendCached(res, 'passport.jpg', 604800));
 
 /* ⭐ PDF.js — self-hosted so campus / corporate proxies that
@@ -7294,7 +7296,8 @@ app.get('/api/courses/:id', async (req, res) => {
               as: 'd',
               in: {
                 _id: '$$d._id', studentName: '$$d.studentName', studentUsername: '$$d.studentUsername',
-                question: '$$d.question', answer: '$$d.answer', date: '$$d.date', replies: '$$d.replies'
+                question: '$$d.question', answer: '$$d.answer', date: '$$d.date', replies: '$$d.replies',
+                materialId: '$$d.materialId', materialTitle: '$$d.materialTitle', upvotes: '$$d.upvotes', answeredBy: '$$d.answeredBy', answeredAt: '$$d.answeredAt'
               }
             }
           },
@@ -7650,21 +7653,31 @@ app.post('/api/courses/:id/doubts', requireUser, async (req, res) => {
     const studentName     = req.authUser.fullName || req.authUser.username;
     const studentUsername = req.authUser.username;
     const studentEmail    = req.authUser.email || '';
+    /* ⭐ 2026-10-11 — optional: the material this doubt is about */
+    let materialId = '', materialTitle = '';
+    const wantMat = String((req.body && req.body.materialId) || '');
+    if (/^[a-f0-9]{24}$/i.test(wantMat)) {
+      const c = await Course.findOne({ _id: req.params.id, 'materials._id': wantMat }, { 'materials.$': 1 }).lean();
+      if (c && c.materials && c.materials[0]) { materialId = wantMat; materialTitle = String(c.materials[0].title || '').slice(0, 200); }
+    }
     await Course.findByIdAndUpdate(req.params.id, {
-      $push: { doubts: { studentName, studentUsername, studentEmail, question, date: new Date() } }
+      $push: { doubts: { studentName, studentUsername, studentEmail, question, date: new Date(), materialId, materialTitle } }
     });
     cacheClear('courses:');
     res.json({ success: true, message: 'Doubt submitted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error submitting doubt' }); }
 });
 
-app.put('/api/courses/:courseId/doubts/:doubtId', requireAdminAuth, async (req, res) => {
+/* ⭐ the instructor's answer — admin, or (2026-10-11) the course's professor */
+app.put('/api/courses/:courseId/doubts/:doubtId', requireCourseEditor, async (req, res) => {
   try {
-    const { answer } = req.body;
+    const answer = String((req.body && req.body.answer) || '').trim().slice(0, 8000);
+    if (!answer) return res.status(400).json({ success: false, message: 'Type an answer first.' });
     await Course.updateOne(
       { _id: req.params.courseId, "doubts._id": req.params.doubtId },
-      { $set: { "doubts.$.answer": answer } }
+      { $set: { "doubts.$.answer": answer, "doubts.$.answeredBy": req.authUser.fullName || req.authUser.username, "doubts.$.answeredAt": new Date() } }
     );
+    cacheClear('courses:');
     const course = await Course.findById(req.params.courseId);
     const doubt = course?.doubts?.id(req.params.doubtId);
     if (doubt && doubt.studentUsername) {
@@ -7693,7 +7706,7 @@ app.post('/api/courses/:courseId/doubts/:doubtId/replies', requireUser, async (r
     /* ⭐ Author + role come from the session (a student could previously post as "admin"). */
     const authorName     = req.authUser.fullName || req.authUser.username;
     const authorUsername = req.authUser.username;
-    const authorRole     = _isAdminUser(req.authUser) ? 'admin' : 'student';
+    const authorRole     = _isAdminUser(req.authUser) ? 'admin' : _isProfessorUser(req.authUser) ? 'professor' : 'student';
     await Course.updateOne(
       { _id: req.params.courseId, "doubts._id": req.params.doubtId },
       { $push: { "doubts.$.replies": {
@@ -7721,6 +7734,21 @@ app.post('/api/courses/:courseId/doubts/:doubtId/replies', requireUser, async (r
     cacheClear('courses:');
     res.json({ success: true, message: 'Reply posted!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Error posting reply: ' + e.message }); }
+});
+
+/* ⭐ 2026-10-11 — "me too" vote (toggle) so the most useful doubts rise */
+app.post('/api/courses/:courseId/doubts/:doubtId/upvote', requireUser, async (req, res) => {
+  try {
+    const me = req.authUser.username;
+    const c = await Course.findOne({ _id: req.params.courseId, 'doubts._id': req.params.doubtId }, { 'doubts.$': 1 }).lean();
+    const d = c && c.doubts && c.doubts[0];
+    if (!d) return res.status(404).json({ success: false, message: 'Doubt not found' });
+    const has = (d.upvotes || []).includes(me);
+    await Course.updateOne({ _id: req.params.courseId, 'doubts._id': req.params.doubtId },
+      has ? { $pull: { 'doubts.$.upvotes': me } } : { $addToSet: { 'doubts.$.upvotes': me } });
+    cacheClear('courses:');
+    res.json({ success: true, voted: !has, count: (d.upvotes || []).length + (has ? -1 : 1) });
+  } catch (e) { res.status(500).json({ success: false, message: 'Error: ' + e.message }); }
 });
 
 app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', requireUser, async (req, res) => {
@@ -7805,6 +7833,18 @@ app.post('/api/courses/:courseId/materials/:materialId/quiz', requireCourseEdito
         ? Math.max(0, Math.min(8760, parseInt(examConfig.resultPublishDelayHours, 10) || 0))
         : 0;
       update[P + '.resultPublishDelayHours'] = delayH;
+
+      /* ⭐ 2026-10-11 — assignment mode, due date, leaderboard */
+      const kind = examConfig.kind === 'assignment' ? 'assignment' : 'test';
+      update[P + '.kind'] = kind;
+      let dueAt = null;
+      if (kind === 'assignment' && examConfig.dueAt) {
+        const d = new Date(examConfig.dueAt);
+        if (!isNaN(d.getTime())) dueAt = d;
+      }
+      update[P + '.dueAt'] = dueAt;
+      update[P + '.allowLate'] = examConfig.allowLate !== false;
+      update[P + '.showLeaderboard'] = examConfig.showLeaderboard === true;
 
       /* ⚠️ `resultsPublished` / `resultsPublishedAt` are deliberately
          NOT touched here — they persist so re-saving a quiz that has
@@ -7967,8 +8007,13 @@ app.post('/api/user/quiz/:courseId/:materialId/start', requireUser, requireSelfO
         );
       }
 
+      /* ⭐ assignments: past the due date with late submissions off → closed */
+      if (cfg.kind === 'assignment' && cfg.dueAt && cfg.allowLate === false && Date.now() > new Date(cfg.dueAt).getTime()) {
+        return res.status(403).json({ success: false, code: 'DEADLINE_PASSED', message: 'The due date for this assignment has passed.' });
+      }
+
       const settings        = await getGlobalSettings();
-      const durationSeconds = parseQuizTimeServer(cfg.totalTime);
+      const durationSeconds = cfg.kind === 'assignment' ? 0 : parseQuizTimeServer(cfg.totalTime);   // assignments have no timer
 
       const shuffleSeed = crypto
         .createHash('sha256')
@@ -8046,6 +8091,9 @@ app.post('/api/user/quiz/:courseId/:materialId/start', requireUser, requireSelfO
       optionOrders: session.optionOrders,
       questionCount: quiz.length,
       resumed: isResuming,              // ⭐ false = a fresh attempt (stale saved answers must not carry over)
+      kind:      cfg.kind === 'assignment' ? 'assignment' : 'test',
+      dueAt:     cfg.dueAt || null,
+      allowLate: cfg.allowLate !== false,
       /* ⭐ resuming (refresh / other device): the server's copy of the answers
          and the proctoring strikes so far — a reload no longer clears strikes */
       savedAnswers: isResuming && Array.isArray(session.savedAnswers) ? session.savedAnswers : null,
@@ -8269,8 +8317,24 @@ app.get('/api/user/quiz/:courseId/:materialId/my-result', requireUser, requireSe
     });
     const autoMarks = Number(r.marksEarned) || 0, autoMax = Number(r.marksPossible) || 0;
     const writtenMarks = Number(r.subjectiveMarksAwarded) || 0, writtenMax = Number(r.subjectiveMaxTotal) || 0;
+
+    /* ⭐ 2026-10-11 — rank, percentile and (when the instructor turned it on) the top 10 */
+    let standing = null, leaderboard = null;
+    if (learningApi) {
+      try {
+        const all = (await learningApi.resultsFor([mid]))[mid] || [];
+        standing = learningApi.rankOf(all, userId);
+        standing.classAvg = all.length ? Math.round(all.reduce((s, x) => s + x.pct, 0) / all.length * 10) / 10 : 0;
+        if (cfg.showLeaderboard) {
+          const nm = (n) => { const p = String(n || 'Student').trim().split(/\s+/); return p.length > 1 ? `${p[0]} ${p[p.length - 1][0]}.` : p[0]; };
+          leaderboard = all.slice().sort((a, b) => b.pct - a.pct).slice(0, 10)
+            .map((x, i) => ({ rank: i + 1, name: nm(x.name), pct: x.pct, me: x.userId === userId }));
+        }
+      } catch (_) {}
+    }
     res.json({
       success: true, visible: true, attempts: r.attempts,
+      standing, leaderboard,
       autoMarks, autoMax, writtenMarks, writtenMax,
       finalMarks: Math.round((autoMarks + writtenMarks) * 100) / 100, finalMax: autoMax + writtenMax,
       pendingEvaluation: written.some(w => w.awardedMarks === null),
@@ -8310,7 +8374,8 @@ app.post('/api/user/quiz/:courseId/:materialId/autosave', quizAutosaveLimiter, r
     });
     if (!session) return res.status(404).json({ success: false, code: 'NO_SESSION', message: 'No running attempt.' });
     if (session.status === 'submitted') return res.status(409).json({ success: false, code: 'ALREADY_SUBMITTED', message: 'Already submitted.' });
-    if (_quizSessionOverdue(session, await _quizGraceMs())) {
+    const _gMs = await _quizGraceMs();
+    if (_quizSessionOverdue(session, _gMs) || await _assignmentClosed(String(req.params.courseId), String(req.params.materialId), _gMs)) {
       return res.status(410).json({ success: false, code: 'TIME_EXPIRED', message: 'Time is up.' });
     }
     const set = { savedAnswers: answers, savedAt: new Date(), lastHeartbeat: new Date() };
@@ -8395,6 +8460,15 @@ function _cleanProctorLog(p) {
     strike: !(e && e.strike === false)
   }));
   return { strikes: Math.max(0, Math.min(99, Number(p.strikes) || 0)), events };
+}
+
+/* ⭐ an assignment whose due date passed and that takes no late work */
+async function _assignmentClosed(courseId, materialId, graceMs) {
+  try {
+    const c = await Course.findOne({ _id: courseId, 'materials._id': materialId }, { 'materials.$': 1 }).lean();
+    const cfg = (c && c.materials && c.materials[0] && c.materials[0].examConfig) || {};
+    return cfg.kind === 'assignment' && !!cfg.dueAt && cfg.allowLate === false && Date.now() > new Date(cfg.dueAt).getTime() + (graceMs || 0);
+  } catch (_) { return false; }
 }
 
 async function _quizGraceMs() {
@@ -8646,6 +8720,9 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
       proctor:      proctor || null,
       autoSubmitted: autoSubmitted === true,
       finalizedBy:  finalizedBy || 'student',  // 'server' = time ran out, graded from the autosave
+      /* ⭐ assignments: submitted after the due date */
+      kind: (mat.examConfig || {}).kind === 'assignment' ? 'assignment' : 'test',
+      late: !!((mat.examConfig || {}).kind === 'assignment' && (mat.examConfig || {}).dueAt && Date.now() > new Date(mat.examConfig.dueAt).getTime()),
 
       /* ⭐ 2026-10-10 — what the student actually answered, question by
          question (original question order), for the Grading section */
@@ -8797,7 +8874,10 @@ async function gradeQuizAttempt({ userId, courseId, materialId, answers, timeSpe
        result is visible; a small, additive `pendingPublication`
        block is returned when it isn't.
        ============================================================ */
+    const _cfgK = mat.examConfig || {};
     const baseMeta = {
+      kind:              _cfgK.kind === 'assignment' ? 'assignment' : 'test',
+      late:              !!(_cfgK.kind === 'assignment' && _cfgK.dueAt && Date.now() > new Date(_cfgK.dueAt).getTime()),
       attempts:          (prev.attempts || 0) + 1,
       attemptsUsed:      (prev.attempts || 0) + 1,
       maxAttempts:       Math.max(0, Number(cfg.maxAttempts) || 0),
@@ -8881,7 +8961,8 @@ app.post('/api/user/quiz/:courseId/:materialId', requireUser, requireSelfOrAdmin
     /* ⭐ Too late (deadline + grace passed): the answers sent now are not
        accepted, but the attempt is not lost either — it is graded from the
        answers autosaved before the deadline. */
-    if (_quizSessionOverdue(_session, await _quizGraceMs())) {
+    const _graceMs = await _quizGraceMs();
+    if (_quizSessionOverdue(_session, _graceMs) || await _assignmentClosed(String(req.params.courseId), String(req.params.materialId), _graceMs)) {
       console.warn(`[quiz/submit] ⏰ late submission user=${userId} — grading the autosaved answers`);
       const out = await finalizeExpiredQuizSession(_session);
       if (!out) return res.status(409).json({ success: false, code: 'ALREADY_SUBMITTED', message: 'This test has already been submitted.' });
@@ -9144,6 +9225,7 @@ app.get('/api/admin/quiz/:courseId/:materialId/submissions', requireCourseEditor
         proctor: r.proctor || null, autoSubmitted: !!r.autoSubmitted, finalizedBy: r.finalizedBy || 'student',
         timeSpentTotalSeconds: Number(r.timeSpentTotalSeconds) || 0,
         extraAttempts: Number(r.extraAttempts) || 0,
+        late: !!r.late,
         hasDetail: Array.isArray(r.responses)
       };
     }).sort((a, b) => (b.pendingEvaluation - a.pendingEvaluation) || (new Date(b.lastAttemptAt || 0) - new Date(a.lastAttemptAt || 0)));
@@ -14689,6 +14771,22 @@ try {
   console.log('[help] ✅ premium help desk ready');
 } catch (e) {
   console.error('❌ [help] help desk not loaded:', e.message);
+}
+
+/* ⭐ Learning features (2026-10-11) — practice, mistakes, daily challenge,
+   performance, assignments, test series, question bank, report card.
+   See learning-api.js. Guarded: a problem there never takes the site down. */
+let learningApi = null;
+try {
+  const QBankItem = require('./models/QBankItem');
+  const TestSeries = require('./models/TestSeries');
+  learningApi = require('./learning-api')(app, {
+    requireUser, requireGrader, rateLimit, mongoose, Course, User, QBankItem, TestSeries,
+    evaluateMaterialAccess, istDateKey, awardXP, getAI: () => aiEngine, pickModel: _aiPickedModel, logger: console
+  });
+  console.log('[learn] ✅ learning features ready');
+} catch (e) {
+  console.error('❌ [learn] learning features not loaded:', e.message);
 }
 
 /* ⭐ AI engine v3 (2026-10-08) — Gemini + Groq, model picker, fallbacks.

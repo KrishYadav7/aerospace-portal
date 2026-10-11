@@ -44,6 +44,8 @@ const userSchema = new mongoose.Schema({
   }],
 
   quizResults: { type: Map, of: Object, default: {} },
+  /* ⭐ 2026-10-11 — practice: mastered mistakes, daily challenge, streak */
+  learning: { type: mongoose.Schema.Types.Mixed, default: {} },
   // ↑ Each value now may contain:
   //   {
   //     score, total, percent, marksEarned, marksPossible, attempts, lastAttemptAt,
