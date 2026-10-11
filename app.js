@@ -26044,6 +26044,10 @@ window.addEventListener('beforeunload', () => {
     e.btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     e.btn.setAttribute('aria-label', open ? 'Close navigation menu' : 'Open navigation menu');
     document.body.classList.toggle('aero-nav-open', open);
+    /* ⭐ dim the page behind the open menu */
+    var scrim = document.getElementById('aeroNavScrim');
+    if (!scrim) { scrim = document.createElement('div'); scrim.id = 'aeroNavScrim'; scrim.setAttribute('aria-hidden', 'true'); document.body.appendChild(scrim); }
+    scrim.classList.toggle('show', open);
   }
 
   function boot() {

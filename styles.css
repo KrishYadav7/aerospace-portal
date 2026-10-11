@@ -18470,3 +18470,38 @@ button.lp-tag { cursor: pointer; }
    size animation made the header "vibrate" while it re-fitted itself) */
 .main-nav a { transition: color .2s var(--ease), background-color .2s var(--ease), box-shadow .2s var(--ease), opacity .2s var(--ease) !important; }
 #appHeader.hdr-measuring, #appHeader.hdr-measuring * { transition: none !important; }
+
+/* ============================================================
+   ⭐ 2026-10-11 — phone / tablet menu (☰) must be solid
+   The Space and Aurora skins make #mainNav transparent so the desktop
+   header shows through behind the links — but on phones #mainNav is the
+   drop-down panel, so the page underneath showed through it and the
+   links were hard to read. The panel now gets a solid background in
+   every skin, and the page behind it is dimmed while it is open.
+   ============================================================ */
+@media (max-width: 860px) {
+  html[data-skin="space"] #appHeader #mainNav {
+    background: linear-gradient(180deg, #0a0d2a 0%, #070920 100%) !important;
+    border-bottom: 1px solid rgba(157, 140, 255, .28);
+  }
+  html[data-skin="aurora"] #appHeader #mainNav {
+    background: linear-gradient(160deg, #0b1030 0%, #111a4c 55%, #0d2c46 100%) !important;
+    border-bottom: 1px solid rgba(99, 214, 198, .35);
+  }
+  /* readable links in every skin */
+  #appHeader #mainNav a { color: rgba(255,255,255,.9) !important; }
+  #appHeader #mainNav a:not(.active) { background: rgba(255,255,255,.08) !important; }
+  #appHeader #mainNav a:not(.active):hover { background: rgba(255,255,255,.14) !important; }
+  #appHeader #mainNav a.active { color: #fff !important; }
+
+  /* dim the page behind the open menu (a tap on it closes the menu — app.js).
+     A real element, not body::before — the Space / Aurora skins draw their
+     sky on body::before / ::after. */
+  #aeroNavScrim.show {
+    display: block; position: fixed; inset: 0; z-index: 199;
+    background: rgba(2, 6, 23, .55);
+    animation: aeroNavScrim .2s ease both;
+  }
+}
+#aeroNavScrim { display: none; }
+@keyframes aeroNavScrim { from { opacity: 0; } to { opacity: 1; } }
