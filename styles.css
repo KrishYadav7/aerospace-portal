@@ -18465,3 +18465,8 @@ button.lp-tag { cursor: pointer; }
 }
 .quiz-exam-timer.assign-due { font-family: inherit !important; font-variant-numeric: normal; }
 .qa-ask-about select { padding: 7px 10px; border-radius: 10px; border: 1px solid var(--border-default); background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 13.5px; }
+
+/* ⭐ 2026-10-11 — header links animate colour only, never their size (the
+   size animation made the header "vibrate" while it re-fitted itself) */
+.main-nav a { transition: color .2s var(--ease), background-color .2s var(--ease), box-shadow .2s var(--ease), opacity .2s var(--ease) !important; }
+#appHeader.hdr-measuring, #appHeader.hdr-measuring * { transition: none !important; }

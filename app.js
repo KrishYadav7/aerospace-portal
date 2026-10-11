@@ -5432,13 +5432,30 @@ function _renderAppNow() {
    ============================================================ */
 const HEADER_FIT_LEVELS = ['hdr-fit-1', 'hdr-fit-2', 'hdr-fit-3', 'hdr-fit-4'];
 let _headerFitRaf = 0;
-function fitHeaderNav() {
+/* ⭐ 2026-10-11 — the header used to "vibrate" when a nav link was
+   clicked: links animated their padding/width (transition: .2s), the fit
+   measured them half-way through the animation, picked a level, which
+   changed the widths again, the ResizeObserver fired, and so on.
+   Now: measuring happens with animations off, and the header is only
+   re-fitted when something real changed (window width, the nav links or
+   the text in the right-hand cluster) — never because of its own class
+   changes. */
+let _headerFitKey = '';
+function fitHeaderNav(force) {
   const h = document.getElementById('appHeader'), nav = document.getElementById('mainNav');
   if (!h || !nav) return;
-  h.classList.remove(...HEADER_FIT_LEVELS);
-  if (getComputedStyle(h).display === 'none') return;
-  if (getComputedStyle(nav).position === 'absolute') return;          // phone menu mode
   const ui = h.querySelector('.user-info');
+  const key = window.innerWidth + '|' + nav.innerHTML.length + '|' + nav.textContent + '|' +
+              (nav.querySelector('a.active') ? nav.querySelector('a.active').textContent : '') + '|' + (ui ? ui.textContent : '');
+  if (!force && key === _headerFitKey) return;          // nothing that matters changed
+  _headerFitKey = key;
+  const before = h.className;
+  h.classList.add('hdr-measuring');                      // transitions off while measuring
+  h.classList.remove(...HEADER_FIT_LEVELS);
+  if (getComputedStyle(h).display === 'none' || getComputedStyle(nav).position === 'absolute') {   // hidden / phone menu mode
+    h.classList.remove('hdr-measuring');
+    return;
+  }
   const tooWide = () => {
     if (nav.scrollWidth > nav.clientWidth + 1) return true;
     const hr = h.getBoundingClientRect();
@@ -5449,16 +5466,25 @@ function fitHeaderNav() {
     return false;
   };
   for (const c of HEADER_FIT_LEVELS) { if (!tooWide()) break; h.classList.add(c); }
+  void h.offsetWidth;                                    // apply the final level with transitions still off
+  h.classList.remove('hdr-measuring');
+  if (h.className !== before) _headerFitKey = key;       // our own change must not trigger another fit
 }
-function scheduleHeaderFit() {
+let _headerFitForce = false;
+function scheduleHeaderFit(force) {
+  if (force === true) _headerFitForce = true;
   if (_headerFitRaf) return;
-  _headerFitRaf = requestAnimationFrame(() => { _headerFitRaf = 0; try { fitHeaderNav(); } catch (_) {} });
+  _headerFitRaf = requestAnimationFrame(() => {
+    _headerFitRaf = 0;
+    const f = _headerFitForce; _headerFitForce = false;
+    try { fitHeaderNav(f); } catch (_) {}
+  });
 }
 (function wireHeaderFit() {
   try {
     window.addEventListener('resize', scheduleHeaderFit, { passive: true });
     window.addEventListener('orientationchange', scheduleHeaderFit);
-    if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleHeaderFit).catch(() => {});
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => scheduleHeaderFit(true)).catch(() => {});
     if (typeof ResizeObserver === 'function') {
       const ro = new ResizeObserver(scheduleHeaderFit);
       const hook = () => { const ui = document.querySelector('#appHeader .user-info'); if (ui) ro.observe(ui); };
