@@ -17058,7 +17058,7 @@ app.post('/api/admin/quiz/:courseId/:materialId/publish',
    so subsequent submissions are visible without any delay.
    ============================================================ */
 app.post('/api/admin/quiz/:courseId/:materialId/publish-now',
-  requireAdminAuth,
+  requireCourseEditor,          // ⭐ 2026-10-11 — admin, or the professor of this course
   async (req, res) => {
     try {
       /* 1. Flip the mode so any later submission is immediate too */

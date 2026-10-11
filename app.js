@@ -3012,7 +3012,7 @@ function syncHashToState() {
   if (parts[0] === 'admin') {
     adminTab = parts[1] || 'overview';
   } else if (parts[0] === 'professor') {
-    professorNav = parts[1] === 'requests' ? 'requests' : parts[1] === 'profile' ? 'profile' : 'courses';
+    professorNav = ['requests', 'profile', 'grading'].includes(parts[1]) ? parts[1] : 'courses';
   } else if (parts[0] === 'courses') {
     studentNav = 'courses';
   } else if (parts[0] === 'saved') {
@@ -5503,6 +5503,7 @@ function buildNav() {
     const onDash = !currentCourseId && !editingCourseId && !quizEditingCourseId;
     $('mainNav').innerHTML = `
       <a href="#" class="${onDash && professorNav === 'courses' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> <span class="nav-label">My Courses</span></a>
+      <a href="#" class="${onDash && professorNav === 'grading' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('grading')"><i class="fas fa-marker"></i> <span class="nav-label">Grading</span>${window._profToGrade ? ` <span class="nav-count">${window._profToGrade}</span>` : ''}</a>
       <a href="#" class="${onDash && professorNav === 'requests' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> <span class="nav-label">Course Requests</span></a>
       <a href="#" class="${onDash && professorNav === 'profile' ? 'active' : ''}" onclick="event.preventDefault();navigateProfessor('profile')"><i class="fas fa-id-badge"></i> <span class="nav-label">My Profile</span></a>`;
     scheduleHeaderFit();
@@ -12463,6 +12464,21 @@ function _grCrumbs(items) {
     : `<span>${escapeHtml(it.label)}</span>`).join('')}</nav>`;
 }
 
+/* professor: "to grade" count on the nav link and the dashboard tab */
+function _grSetProfBadge(n) {
+  n = Number(n) || 0;
+  if (window._profToGrade === n) return;
+  window._profToGrade = n;
+  try { buildNav(); } catch (_) {}
+  document.querySelectorAll('.pw-tabs button').forEach(b => {
+    if (!/navigateProfessor\('grading'\)/.test(b.getAttribute('onclick') || '')) return;
+    let c = b.querySelector('.nav-count');
+    if (!n) { if (c) c.remove(); return; }
+    if (!c) { c = document.createElement('span'); c.className = 'nav-count'; b.appendChild(document.createTextNode(' ')); b.appendChild(c); }
+    c.textContent = n;
+  });
+}
+
 async function grRefresh() {
   if (GR.view === 'attempt' && GR.attemptKey) return grOpenAttempt(...GR.attemptKey, true);
   if (GR.view === 'test' && GR.testKey) return grOpenTest(...GR.testKey, true);
@@ -12482,6 +12498,7 @@ async function grRender() {
     if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.');
     GR.home = d;
     const b = document.getElementById('grBadge'); if (b) { b.textContent = d.totals.toGrade; b.hidden = !d.totals.toGrade; }
+    if (d.role === 'professor') _grSetProfBadge(d.totals.toGrade);
   } catch (e) {
     if (!GR.home) { host.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${escapeHtml(e.message)}</div>`; return; }
   }
@@ -12677,7 +12694,7 @@ function grRenderTest() {
         <button class="btn btn-outline btn-sm" onclick="grOpenTest('${d.courseId}','${d.materialId}',true)" title="Refresh"><i class="fas fa-rotate"></i></button>
         <button class="btn btn-outline btn-sm" onclick="grExportCsv()" ${subs.length ? '' : 'disabled'}><i class="fas fa-file-csv"></i> CSV</button>
         <button class="btn btn-outline btn-sm" onclick="${GR.host && GR.host.id === 'grOverlayContent' ? 'closeGradingPanel();' : ''}openQuizEditor('${d.courseId}','${d.materialId}')"><i class="fas fa-pen-ruler"></i> Edit paper</button>
-        ${isAdminUser && C.resultPublishMode !== 'immediate' ? `<button class="btn btn-primary btn-sm" onclick="grPublishNow()"><i class="fas fa-bullhorn"></i> Publish results</button>` : ''}
+        ${C.resultPublishMode !== 'immediate' ? `<button class="btn btn-primary btn-sm" onclick="grPublishNow()"><i class="fas fa-bullhorn"></i> Publish results</button>` : ''}
       </div>
     </div>
 
@@ -12961,7 +12978,7 @@ async function grSaveGrade(el) {
     try { (document.querySelector('.gr-overlay') || document.scrollingElement || document.documentElement).scrollTop = scrollY; } catch (_) {}
     /* refresh the lists in the background (counts, queue) */
     fetchJSON(`${API_BASE}/admin/grading/overview?_t=${Date.now()}`, { cache: 'no-store' }).then(h => {
-      if (h && h.success) { GR.home = h; const b = document.getElementById('grBadge'); if (b) { b.textContent = h.totals.toGrade; b.hidden = !h.totals.toGrade; } if (GR.view === 'attempt') grRenderAttempt(); }
+      if (h && h.success) { GR.home = h; const b = document.getElementById('grBadge'); if (b) { b.textContent = h.totals.toGrade; b.hidden = !h.totals.toGrade; } if (h.role === 'professor') _grSetProfBadge(h.totals.toGrade); if (GR.view === 'attempt') grRenderAttempt(); }
     }).catch(() => {});
     if (GR.test && GR.test.materialId === d.materialId) {
       fetch(`/api/admin/quiz/${d.courseId}/${d.materialId}/submissions?_t=${Date.now()}`, { cache: 'no-store' }).then(r => r.json()).then(t => {
@@ -27440,7 +27457,7 @@ function profCanEdit(courseId) {
   return mine.includes(String(courseId));
 }
 function navigateProfessor(tab) {
-  professorNav = (tab === 'requests' || tab === 'profile') ? tab : 'courses';
+  professorNav = ['requests', 'profile', 'grading'].includes(tab) ? tab : 'courses';
   editingCourseId = null; currentCourseId = null; window.currentSelectedCourseId = null;
   quizEditingCourseId = null; quizEditingMaterialId = null; addingMaterialCourseId = null;
   pushHash(professorNav === 'courses' ? '#/professor' : '#/professor/' + professorNav);
@@ -27628,7 +27645,7 @@ function renderProfessorDashboard() {
         </div>
       </div>
       <div class="pw-hero-actions">
-        ${myCourses.length ? `<button class="btn pw-btn-light" onclick="openGradingPanel()"><i class="fas fa-marker"></i> Grading & results</button>` : ''}
+        ${myCourses.length && professorNav !== 'grading' ? `<button class="btn pw-btn-light" onclick="navigateProfessor('grading')"><i class="fas fa-marker"></i> Grading & results</button>` : ''}
         <button class="btn pw-btn-light" onclick="navigateProfessor('requests')"><i class="fas fa-plus"></i> Request a course</button>
       </div>
     </section>
@@ -27642,11 +27659,20 @@ function renderProfessorDashboard() {
 
     <div class="pw-tabs" role="tablist">
       <button role="tab" aria-selected="${professorNav === 'courses'}" class="${professorNav === 'courses' ? 'active' : ''}" onclick="navigateProfessor('courses')"><i class="fas fa-chalkboard"></i> My Courses</button>
+      <button role="tab" aria-selected="${professorNav === 'grading'}" class="${professorNav === 'grading' ? 'active' : ''}" onclick="navigateProfessor('grading')"><i class="fas fa-marker"></i> Grading${window._profToGrade ? ` <span class="nav-count">${window._profToGrade}</span>` : ''}</button>
       <button role="tab" aria-selected="${professorNav === 'requests'}" class="${professorNav === 'requests' ? 'active' : ''}" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Course Requests${pendingReqs ? ` <span class="nav-count">${pendingReqs}</span>` : ''}</button>
       <button role="tab" aria-selected="${professorNav === 'profile'}" class="${professorNav === 'profile' ? 'active' : ''}" onclick="navigateProfessor('profile')"><i class="fas fa-id-badge"></i> Profile</button>
     </div>`;
 
-  if (professorNav === 'requests') {
+  if (professorNav === 'grading') {
+    /* ⭐ 2026-10-11 — the Grading section for the professor's own courses.
+       The same screens as the admin's Grading tab; the server limits every
+       list and action to the courses this professor was approved for. */
+    html += myCourses.length
+      ? `<div id="profGradingSlot"></div>`
+      : `<div class="pw-card pw-empty"><i class="fas fa-marker"></i><h3>No courses yet</h3><p>Grading opens once the admin approves you for a course.</p>
+           <button class="btn btn-primary" onclick="navigateProfessor('requests')"><i class="fas fa-paper-plane"></i> Request course access</button></div>`;
+  } else if (professorNav === 'requests') {
     html += `
       <div class="pw-grid-2">
         <div class="pw-card">
@@ -27762,7 +27788,33 @@ function renderProfessorDashboard() {
         <div class="pw-rule lock"><i class="fas fa-lock"></i><div><strong>Admin only</strong><span>Deleting content, prices and course settings — ask the admin if something needs to be removed.</span></div></div>
       </div>`;
   }
+  /* the grading area survives the dashboard's background refreshes (every
+     15 s) — rebuilding it would reload and flicker; it is moved back in */
+  const keepGrading = professorNav === 'grading' ? document.getElementById('profGradingContent') : null;
   root.innerHTML = html;
+  const slot = document.getElementById('profGradingSlot');
+  if (slot) {
+    if (keepGrading) { slot.appendChild(keepGrading); GR.host = keepGrading; }
+    else {
+      const g = document.createElement('div');
+      g.id = 'profGradingContent'; g.className = 'gr-root';
+      slot.appendChild(g);
+      GR.host = g; GR.view = 'home';
+      grRender();
+    }
+  } else if (GR.host && GR.host.id === 'profGradingContent') {
+    GR.host = null;
+  }
+  /* "to grade" badge on the Grading tab, refreshed quietly every 2 min */
+  if (myCourses.length && professorNav !== 'grading' && Date.now() - (window._profGradeAt || 0) > 120000) {
+    window._profGradeAt = Date.now();
+    fetchJSON(`${API_BASE}/admin/grading/overview?_t=${Date.now()}`, { cache: 'no-store' }).then(d => {
+      if (!d || !d.success || window._profToGrade === d.totals.toGrade) return;
+      window._profToGrade = d.totals.toGrade;
+      try { buildNav(); } catch (_) {}
+      if (isProfessor(currentUser) && professorNav !== 'grading') renderProfessorDashboard();
+    }).catch(() => {});
+  }
 }
 
 function filterProfessorCourses(q) {
