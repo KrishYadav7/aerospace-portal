@@ -100,11 +100,23 @@
     navigateStudent('practice');
   };
 
-  window.renderPractice = async function () {
+  /* ⭐ renderApp() runs often (sync events, streak, notifications…). The
+     Practice page must not throw away what is on screen and show
+     "Loading…" again every time — that made it flicker / oscillate.
+     It rebuilds only when the tab changes or the data is old. */
+  const PRACTICE_FRESH_MS = 120000;
+  window.renderPractice = async function (force) {
     const host = $id('practiceContent');
     if (!host) return;
     const sub = (location.hash.split('/')[2] || '').trim();
     if (['today', 'mistakes', 'assignments', 'series'].includes(sub)) P.tab = sub;
+    if (force !== true && P.shownTab === P.tab && $id('lpBody') && host.contains($id('lpBody')) &&
+        Date.now() - (P.shownAt || 0) < PRACTICE_FRESH_MS) {
+      paintPracticeHeader();              // counts only — the body stays as it is
+      return;
+    }
+    P.shownTab = P.tab;
+    P.shownAt = Date.now();
     const s = window._learnSummary || {};
     const st = s.streak || {};
     host.innerHTML = `
@@ -123,14 +135,32 @@
           .map(([k, ic, l, b]) => `<button role="tab" class="lp-tab ${P.tab === k ? 'on' : ''}" onclick="lpTab('${k}')"><i class="fas ${ic}"></i><span>${l}</span>${b !== '' ? `<em>${b}</em>` : ''}</button>`).join('')}
       </div>
       <div id="lpBody" class="lp-body"><div class="gr-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div></div>`;
-    refreshSummary(false).then(() => { const n = $id('lpStreakN'); const ss = window._learnSummary; if (n && ss) n.textContent = (ss.streak || {}).count || 0; });
+    refreshSummary(false).then(paintPracticeHeader);
     await lpRenderTab();
   };
+  /* streak + tab badges, without touching the body */
+  function paintPracticeHeader() {
+    const ss = window._learnSummary; if (!ss) return;
+    const n = $id('lpStreakN'); if (n) n.textContent = (ss.streak || {}).count || 0;
+    const badges = { today: ss.dailyDone ? '' : '•', mistakes: ss.mistakes || '', assignments: ss.assignmentsDue || '' };
+    document.querySelectorAll('.lp-tab').forEach(t => {
+      const k = (t.getAttribute('onclick') || '').match(/lpTab\('(\w+)'\)/);
+      if (!k || !(k[1] in badges)) return;
+      let em = t.querySelector('em');
+      const v = badges[k[1]];
+      if (v === '' && em) em.remove();
+      else if (v !== '') { if (!em) { em = document.createElement('em'); t.appendChild(em); } em.textContent = v; }
+    });
+  }
   window.lpTab = function (k) {
     P.tab = k;
     try { history.replaceState(null, '', '#/practice/' + k); } catch (_) {}
-    window.renderPractice();
+    window.renderPractice(true);
   };
+  /* one load per tab at a time; a slower, older answer never overwrites a newer one */
+  let _lpSeq = 0;
+  const _lpTicket = () => ++_lpSeq;
+  const _lpCurrent = (t) => t === _lpSeq;
   async function lpRenderTab() {
     if (P.tab === 'mistakes') return renderMistakes();
     if (P.tab === 'assignments') return renderAssignments();
@@ -206,8 +236,10 @@
   /* ---------- DAILY CHALLENGE ---------- */
   async function renderDaily() {
     const body = $id('lpBody'); if (!body) return;
+    const tk = _lpTicket();
     try {
       const d = await api(`/learn/daily?_t=${Date.now()}`);
+      if (!_lpCurrent(tk)) return;
       if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.');
       P.daily = d;
     } catch (e) { body.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${esc(e.message)}</div>`; return; }
@@ -302,8 +334,10 @@
   /* ---------- MY MISTAKES ---------- */
   async function renderMistakes() {
     const body = $id('lpBody'); if (!body) return;
+    const tk = _lpTicket();
     try {
       const d = await api(`/learn/mistakes?_t=${Date.now()}`);
+      if (!_lpCurrent(tk)) return;
       if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.');
       P.mistakes = d;
     } catch (e) { body.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${esc(e.message)}</div>`; return; }
@@ -399,7 +433,8 @@
   async function renderAssignments() {
     const body = $id('lpBody'); if (!body) return;
     let d;
-    try { d = await api(`/learn/assignments?_t=${Date.now()}`); if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.'); }
+    const tk = _lpTicket();
+    try { d = await api(`/learn/assignments?_t=${Date.now()}`); if (!_lpCurrent(tk)) return; if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.'); }
     catch (e) { body.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${esc(e.message)}</div>`; return; }
     if (!d.items.length) {
       body.innerHTML = `<div class="lp-empty"><i class="fas fa-book-open-reader"></i><h3>No assignments</h3><p>When your instructors give homework, it shows up here with its due date.</p></div>`;
@@ -441,7 +476,8 @@
   async function renderSeries() {
     const body = $id('lpBody'); if (!body) return;
     let d;
-    try { d = await api(`/learn/series?_t=${Date.now()}`); if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.'); }
+    const tk = _lpTicket();
+    try { d = await api(`/learn/series?_t=${Date.now()}`); if (!_lpCurrent(tk)) return; if (!d || !d.success) throw new Error((d && d.message) || 'Could not load.'); }
     catch (e) { body.innerHTML = `<div class="gr-loading"><i class="fas fa-triangle-exclamation"></i> ${esc(e.message)}</div>`; return; }
     if (!d.series.length) {
       body.innerHTML = `<div class="lp-empty"><i class="fas fa-trophy"></i><h3>No test series yet</h3><p>A test series ranks you across several tests together. Your instructors will add them here.</p></div>`;
@@ -487,10 +523,19 @@
     if (!host || !isStudent()) return;
     let box = $id('lpPerf');
     if (!box) { box = document.createElement('section'); box.id = 'lpPerf'; box.className = 'lp-perf'; host.prepend(box); }
-    box.innerHTML = `<div class="gr-loading"><i class="fas fa-spinner fa-spin"></i> Analysing your tests…</div>`;
     let d;
-    try { d = await api(`/learn/performance?_t=${Date.now()}`); if (!d || !d.success) throw new Error('x'); }
-    catch (_) { box.remove(); return; }
+    /* re-renders of the Analytics page reuse the last answer for 2 min (no flicker) */
+    if (P.perf && Date.now() - P.perf.at < 120000) d = P.perf.d;
+    else {
+      if (!box.innerHTML) box.innerHTML = `<div class="gr-loading"><i class="fas fa-spinner fa-spin"></i> Analysing your tests…</div>`;
+      if (P.perfLoading) return;
+      P.perfLoading = true;
+      try { d = await api(`/learn/performance?_t=${Date.now()}`); if (!d || !d.success) throw new Error('x'); P.perf = { at: Date.now(), d }; }
+      catch (_) { box.remove(); return; }
+      finally { P.perfLoading = false; }
+      box = $id('lpPerf') || box;
+      if (!box.isConnected) { const h2 = $id('analyticsContent'); if (!h2) return; h2.prepend(box); }
+    }
     const S = d.summary;
     const card = (cls, b, l) => `<div class="gr-kpi ${cls}"><b>${b}</b><span>${l}</span></div>`;
     const bar = (x) => `<div class="lp-topic"><span class="lp-topic-n" title="${esc(x.name)}">${esc(x.name)}</span>
