@@ -18505,3 +18505,16 @@ button.lp-tag { cursor: pointer; }
 }
 #aeroNavScrim { display: none; }
 @keyframes aeroNavScrim { from { opacity: 0; } to { opacity: 1; } }
+
+/* ============================================================
+   Google Play build of the Android app (2026-10-12): Play policy
+   allows no buying inside the app — hide every price, Buy /
+   Unlock / Subscribe button and plan banner (app.js also blocks
+   the checkout functions themselves).
+   ============================================================ */
+html.aero-play-store [onclick*="showPaymentModal"],
+html.aero-play-store [onclick*="startSubscriptionCheckout"],
+html.aero-play-store [onclick*="openPlansShowcaseModal"],
+html.aero-play-store [onclick*="startCheckoutForPlan"],
+html.aero-play-store .subscribe-cta,
+html.aero-play-store .subscribe-banner { display: none !important; }

@@ -36,6 +36,20 @@ GitHub builds the APK for you:
 4. On the website: **Admin → Mobile App → Upload new version** → choose that APK.
    From then on the Android "Get App" button downloads it, and installed apps offer the update.
 
+## Two versions: website APK and Google Play
+The same project builds two versions of the app (same package `tech.aerogyan.app`, same signing key):
+
+| | `direct` — website APK | `play` — Google Play |
+|---|---|---|
+| File | `AeroGyan-1.0.N.apk` | `AeroGyan-1.0.N-play.aab` |
+| Where | Admin → Apps on the website | Play Console → Create release |
+| Updates | offers new APKs itself | only through Google Play |
+| Buying courses | as on the website | hidden (Play policy) — students buy on the website |
+
+GitHub builds both on every push (workflow `android-app/ci/android-apk.yml`, which must be copied to
+`.github/workflows/android-apk.yml`). The app targets Android 16 (API 36), as Google Play requires.
+Everything for the Play listing (icon, feature graphic, texts, Data safety answers) is in `play-store/`.
+
 ## Settings
 `app.properties`:
 - `START_URL` — the first page when the app opens: the landing page (`https://aerogyan.tech/`).

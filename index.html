@@ -120,6 +120,7 @@
       try { window.dispatchEvent(new Event('aerogyan:pwa-ready')); } catch (_) {}
     });
     if (/AeroGyanApp\//.test(navigator.userAgent || '')) document.documentElement.classList.add('aero-in-app');
+    if (/AeroGyanApp\/\S+ Store\/Play/.test(navigator.userAgent || '')) document.documentElement.classList.add('aero-play-store');
   </script>
 </head>
 <body>
@@ -978,7 +979,7 @@
     </main>
 
     <footer class="app-footer" id="appFooter" style="display:none;">
-      <span>&copy; 2026 AeroGyan Education</span><span class="app-footer-sep" aria-hidden="true">·</span><span class="mii mii-footer" title="Made in India"><span class="mii-text">Made in India</span><svg class="mii-flag" viewBox="0 0 30 20" role="img" aria-label="Flag of India"><use href="#aeroFlagIN"/></svg></span>
+      <span>&copy; 2026 AeroGyan Education</span><span class="app-footer-sep" aria-hidden="true">·</span><a href="/privacy" target="_blank" rel="noopener" style="color:inherit;">Privacy</a><span class="app-footer-sep" aria-hidden="true">·</span><span class="mii mii-footer" title="Made in India"><span class="mii-text">Made in India</span><svg class="mii-flag" viewBox="0 0 30 20" role="img" aria-label="Flag of India"><use href="#aeroFlagIN"/></svg></span>
     </footer>
   </div>
 
@@ -1276,6 +1277,25 @@
                   onclick="toggleExpandBios()">
             <span class="switch-track"><span class="switch-thumb"></span></span>
           </button>
+        </div>
+      </div>
+
+      <!-- ⭐ 2026-10-12 — privacy + account deletion (Google Play requirement) -->
+      <div class="settings-section" id="settingsAccountSection" hidden>
+        <h4><i class="fas fa-user-shield"></i> Account</h4>
+        <div class="settings-row">
+          <div class="settings-row-text">
+            <strong>Privacy policy</strong>
+            <span>What AeroGyan collects, why, and your choices.</span>
+          </div>
+          <a class="btn btn-outline btn-sm" href="/privacy" target="_blank" rel="noopener">Open</a>
+        </div>
+        <div class="settings-row" id="settingsDeleteRow">
+          <div class="settings-row-text">
+            <strong>Delete my account</strong>
+            <span>Permanently removes your account, progress, notes and purchases.</span>
+          </div>
+          <button type="button" class="btn btn-danger btn-sm" onclick="openDeleteAccountDialog()">Delete</button>
         </div>
       </div>
 

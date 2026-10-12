@@ -14783,6 +14783,94 @@ try {
   console.error('❌ [tex] LaTeX engine not loaded:', e.message);
 }
 
+/* ============================================================
+   ⭐ PRIVACY POLICY + ACCOUNT DELETION (2026-10-12)
+   ------------------------------------------------------------
+   Google Play requires both for apps with sign-up:
+     GET  /privacy          → privacy.html
+     GET  /delete-account   → delete-account.html (works without the app)
+     POST /api/account/delete
+          signed in (Settings › Account):  { password, confirm: "DELETE" }
+          from the web page:               { username, password, confirm: "DELETE" }
+   Students can delete their own account. Admin and professor
+   accounts are refused here (they hold site content; the admin
+   team handles those).
+   Deleted at once: the user record (profile, progress, quiz
+   results, purchases list, sessions), handwritten notebooks and
+   pages, help-desk tickets, reviews and contributions they wrote.
+   Security logs and daily usage counters expire on their own
+   (12 and 6 months).
+   ============================================================ */
+app.get('/privacy', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.sendFile(path.join(__dirname, 'privacy.html'));
+});
+app.get('/delete-account', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=300');
+  res.sendFile(path.join(__dirname, 'delete-account.html'));
+});
+
+const accountDeleteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 6,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many attempts. Please wait 15 minutes and try again.' }
+});
+
+app.post('/api/account/delete', accountDeleteLimiter, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (String(b.confirm || '').trim().toUpperCase() !== 'DELETE') {
+      return res.status(400).json({ success: false, message: 'Type DELETE to confirm.' });
+    }
+    const password = String(b.password || '');
+    if (!password) return res.status(400).json({ success: false, message: 'Enter your password.' });
+
+    /* who: the signed-in user, else the username typed on the web page */
+    let user = null;
+    const token = _extractToken(req, false);
+    if (token) {
+      const r = await resolveSessionUser(token);
+      if (r && r.user) user = await User.findById(r.user._id);
+    }
+    if (!user) {
+      const raw = String(b.username || '').trim();
+      if (!raw) return res.status(400).json({ success: false, message: 'Enter your username.' });
+      const clean = raw.toLowerCase();
+      user = await User.findOne({ username: clean }) || await User.findOne({ username: raw });
+      if (!user) {
+        const esc = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        user = await User.findOne({ username: new RegExp('^' + esc + '$', 'i') });
+      }
+    }
+    const ok = user && user.password ? await bcrypt.compare(password, user.password).catch(() => false) : false;
+    if (!ok) return res.status(400).json({ success: false, message: 'Username or password is incorrect.' });
+
+    const role = String(user.role || 'student').trim().toLowerCase();
+    if (role !== 'student') {
+      return res.status(403).json({ success: false, message: 'Admin and professor accounts can only be removed by the AeroGyan team. Please contact them.' });
+    }
+
+    const uid = user._id;
+    const uname = String(user.username || '');
+    const tidy = async (label, fn) => { try { return await fn(); } catch (e) { console.warn(`[account-delete] ${label}:`, e.message); return null; } };
+    await tidy('notebooks', () => require('./models/Notebook').deleteMany({ userId: uid }));
+    await tidy('note pages', () => require('./models/NotePage').deleteMany({ userId: uid }));
+    await tidy('help desk', () => require('./models/SupportTicket').deleteMany({ userId: uid }));
+    if (uname) {
+      await tidy('reviews', () => Feedback.deleteMany({ studentUsername: uname }));
+      await tidy('contributions', () => Contribution.deleteMany({ studentUsername: uname }));
+    }
+    await User.findByIdAndDelete(uid);
+    _clearAuthUserCache();
+    try { cacheClear('feedback:'); } catch (_) {}
+    console.log(`[account-delete] 🗑️ student "${uname}" deleted their account (ip ${_clientIp(req)})`);
+    res.json({ success: true, message: 'Your AeroGyan account and its data have been deleted.' });
+  } catch (e) {
+    console.error('[account-delete]', e);
+    res.status(500).json({ success: false, message: 'Could not delete the account right now. Please try again later.' });
+  }
+});
+
 /* ⭐ Premium Help Desk (2026-10-10) — see help-api.js */
 try {
   const SupportTicket = require('./models/SupportTicket');

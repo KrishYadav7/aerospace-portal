@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -27,8 +28,11 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.window.OnBackInvokedDispatcher;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.PermissionRequest;
@@ -144,13 +148,45 @@ public class MainActivity extends Activity {
         root.addView(progress, lp);
 
         setContentView(root);
+        setupEdgeToEdge();
+
+        /* Android 13+: the back gesture / button comes here (onBackPressed is not called
+           on Android 16 for apps that target it) */
+        if (Build.VERSION.SDK_INT >= 33) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::handleBack);
+        }
 
         if (savedInstanceState != null && web.restoreState(savedInstanceState) != null) {
             // history restored after Android closed the app in the background
         } else {
             web.loadUrl(startUrl(getIntent()));
         }
-        maybeCheckForUpdate();
+        /* The Play Store version updates through Google Play only (Play policy). */
+        if (!IS_PLAY_BUILD) maybeCheckForUpdate();
+    }
+
+    /** true in the Google Play build (flavor "play"); false in the APK from the website */
+    private static final boolean IS_PLAY_BUILD = "play".equals(BuildConfig.STORE);
+
+    /** Android 15+ draws the app behind the status and navigation bars: keep the website
+        clear of them (and of the keyboard), with the bars in the brand colour. */
+    private void setupEdgeToEdge() {
+        if (Build.VERSION.SDK_INT < 35) return;          // older Android: the theme handles the bars
+        root.setBackgroundColor(getColor(R.color.brand_dark));
+        web.setBackgroundColor(Color.WHITE);
+        WindowInsetsController c = getWindow().getInsetsController();
+        if (c != null) {
+            c.setSystemBarsAppearance(0, WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS);
+        }
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            v.setPadding(bars.left, bars.top, bars.right, Math.max(bars.bottom, ime.bottom));
+            return WindowInsets.CONSUMED;
+        });
+        root.requestApplyInsets();
     }
 
     @Override
@@ -193,7 +229,11 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onBackPressed() {
+    public void onBackPressed() {                         // Android 12 and older
+        handleBack();
+    }
+
+    private void handleBack() {
         if (fullscreenView != null) {
             exitFullscreen();
             return;
@@ -259,7 +299,10 @@ public class MainActivity extends Activity {
         s.setBuiltInZoomControls(true);
         s.setDisplayZoomControls(false);
         /* lets the website know it runs inside the app (hides "Get App" etc.) */
-        s.setUserAgentString(s.getUserAgentString() + " AeroGyanApp/" + BuildConfig.VERSION_NAME);
+        /* The website reads this: it hides "Get App" inside the app, and in the Google Play
+           build ("Store/Play") it also hides buying, which Play policy requires. */
+        s.setUserAgentString(s.getUserAgentString() + " AeroGyanApp/" + BuildConfig.VERSION_NAME
+                + (IS_PLAY_BUILD ? " Store/Play" : ""));
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);

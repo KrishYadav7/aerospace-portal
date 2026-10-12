@@ -24,12 +24,12 @@ def vName = System.getenv('VERSION_NAME') ?: "1.0.${vCode}"
 
 android {
     namespace 'tech.aerogyan.app'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId 'tech.aerogyan.app'
         minSdk 24
-        targetSdk 34
+        targetSdk 36
         versionCode vCode
         versionName vName
         buildConfigField 'String', 'APP_URL', "\"${appUrl}\""
@@ -39,6 +39,21 @@ android {
 
     buildFeatures {
         buildConfig true
+    }
+
+    /* Two versions of the same app (same package and signing key):
+       • direct — the APK students download from aerogyan.tech (offers its own updates)
+       • play   — the Google Play build (.aab): updates only through Play, no buying in the app */
+    flavorDimensions 'store'
+    productFlavors {
+        direct {
+            dimension 'store'
+            buildConfigField 'String', 'STORE', '"direct"'
+        }
+        play {
+            dimension 'store'
+            buildConfigField 'String', 'STORE', '"play"'
+        }
     }
 
     signingConfigs {

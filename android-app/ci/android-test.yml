@@ -31,11 +31,11 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: '8.13'
 
       - name: Build a debug copy (same code, page inspectable)
         working-directory: android-app
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: gradle assembleDirectDebug --no-daemon --stacktrace
 
       - name: Download the latest released APK
         env:
@@ -44,7 +44,7 @@ jobs:
           TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" --jq '[.[] | select(.tag_name | startswith("android-v"))][0].tag_name')
           echo "Latest release: $TAG"
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.apk' -O release.apk
-          cp android-app/app/build/outputs/apk/debug/app-debug.apk debug.apk
+          cp android-app/app/build/outputs/apk/direct/debug/app-direct-debug.apk debug.apk
           ls -l release.apk debug.apk
           echo "REL_TAG=$TAG" >> "$GITHUB_ENV"
           pip install --quiet websocket-client

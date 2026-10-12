@@ -1,3 +1,6 @@
+/* Google Play build of the Android app → no in-app buying (see aeroPlayBlocksPurchase) */
+const AERO_PLAY_STORE = /AeroGyanApp\/\S+ Store\/Play/.test((typeof navigator !== 'undefined' && navigator.userAgent) || '');
+if (AERO_PLAY_STORE) { try { document.documentElement.classList.add('aero-play-store'); } catch (_) {} }
 /* ============================================================
    API CONFIGURATION
    ============================================================ */
@@ -3310,7 +3313,64 @@ function renderSettingsThemeUI() {
 function openSettingsModal() {
   renderSettingsThemeUI();
   renderExpandBiosUI();
+  /* Account section: privacy policy for everyone signed in; self-delete for students */
+  const acct = document.getElementById('settingsAccountSection');
+  if (acct) acct.hidden = !currentUser;
+  const delRow = document.getElementById('settingsDeleteRow');
+  if (delRow) delRow.hidden = !(currentUser && String(currentUser.role || 'student') === 'student');
   openModal('settingsModal');
+}
+
+/* ⭐ 2026-10-12 — students delete their own account (Google Play requirement).
+   Server: POST /api/account/delete { password, confirm: "DELETE" } */
+function openDeleteAccountDialog() {
+  closeModal('settingsModal');
+  const old = document.getElementById('deleteAccountModal'); if (old) old.remove();
+  const m = document.createElement('div');
+  m.className = 'modal-overlay active';
+  m.id = 'deleteAccountModal';
+  m.innerHTML = `
+    <div class="modal-box" style="max-width:460px;" role="dialog" aria-modal="true" aria-labelledby="delAccTitle">
+      <h3 id="delAccTitle"><i class="fas fa-triangle-exclamation" style="color:var(--rose-600)"></i> Delete your account?</h3>
+      <p class="modal-sub">This permanently deletes your account, progress, quiz results, notes and access to anything you bought. It cannot be undone.</p>
+      <div class="form-group">
+        <label for="delAccPw">Your password</label>
+        <input type="password" id="delAccPw" autocomplete="current-password">
+      </div>
+      <div class="form-group">
+        <label for="delAccConfirm">Type <strong>DELETE</strong> to confirm</label>
+        <input type="text" id="delAccConfirm" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="document.getElementById('deleteAccountModal').remove()">Cancel</button>
+        <button type="button" class="btn btn-danger" id="delAccBtn" onclick="confirmDeleteAccount()"><i class="fas fa-trash-alt"></i> Delete permanently</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+  setTimeout(() => { const i = document.getElementById('delAccPw'); if (i) i.focus(); }, 50);
+}
+
+async function confirmDeleteAccount() {
+  const pw = (document.getElementById('delAccPw') || {}).value || '';
+  const conf = ((document.getElementById('delAccConfirm') || {}).value || '').trim();
+  if (!pw) return showToast('Enter your password.', 'error');
+  if (conf.toUpperCase() !== 'DELETE') return showToast('Type DELETE to confirm.', 'error');
+  const btn = document.getElementById('delAccBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetchJSON(`${API_BASE}/account/delete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw, confirm: 'DELETE' })
+    });
+    if (!res || !res.success) throw new Error((res && res.message) || 'Could not delete the account.');
+    const m = document.getElementById('deleteAccountModal'); if (m) m.remove();
+    showToast('Your account has been deleted.', 'success');
+    setTimeout(() => { try { logout(); } catch (_) { location.href = '/'; } }, 900);
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    showToast(e.message, 'error');
+  }
 }
 
 /* Header switch: OFF → Light, ON → the user's preferred dark style. */
@@ -10598,7 +10658,7 @@ function renderStudentCourseCard(c) {
       <div class="course-chips">
         ${c.difficulty ? `<span class="chip" style="background:${diff.bg};color:${diff.fg};"><i class="fas fa-signal"></i> ${c.difficulty}</span>` : ''}
         ${c.duration ? `<span class="chip"><i class="fas fa-clock"></i> ${escapeHtml(c.duration)}</span>` : ''}
-        ${c.isPremium ? `<span class="chip gold"><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>` : `<span class="chip green"><i class="fas fa-gift"></i> Free</span>`}
+        ${c.isPremium ? (AERO_PLAY_STORE ? `<span class="chip gold"><i class="fas fa-crown"></i> Premium</span>` : `<span class="chip gold"><i class="fas fa-rupee-sign"></i> ${c.price || 0}</span>`) : `<span class="chip green"><i class="fas fa-gift"></i> Free</span>`}
         ${plCount > 0 ? `<span class="chip"><i class="fas fa-list"></i> ${plCount} playlist${plCount === 1 ? '' : 's'}</span>` : ''}
       </div>
       <p class="course-desc">${escapeHtml(c.description) || ''}</p>
@@ -11128,7 +11188,7 @@ function renderMaterialCard(course, m, isPurchased) {
     if (isAdminUser || isSubscribed || isMatPurchased) {
       badgeHtml = `<span class="mat-badge unlocked"><i class="fas fa-unlock"></i> UNLOCKED</span>`;
     } else {
-      badgeHtml = `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO (₹${matPrice})</span>`;
+      badgeHtml = `<span class="mat-badge premium"><i class="fas fa-crown"></i> PRO${AERO_PLAY_STORE ? '' : ` (₹${matPrice})`}</span>`;
     }
   } else {
     badgeHtml = `<span class="mat-badge free">FREE</span>`;
@@ -11150,7 +11210,7 @@ function renderMaterialCard(course, m, isPurchased) {
   } else if (m.type === 'video' && hasUrl && !hasFile) cardAction = 'video';
   else cardAction = 'read';
   const cardHint = { read: 'Open', video: 'Watch', preview: 'Preview',
-                     'buy-course': 'Unlock', 'buy-material': 'Unlock', guest: 'Open' }[cardAction];
+                     'buy-course': AERO_PLAY_STORE ? 'Locked' : 'Unlock', 'buy-material': AERO_PLAY_STORE ? 'Locked' : 'Unlock', guest: 'Open' }[cardAction];
   const cardHintIcon = { read: 'fa-book-open', video: 'fa-play', preview: 'fa-eye',
                          'buy-course': 'fa-lock', 'buy-material': 'fa-lock', guest: 'fa-lock' }[cardAction];
   if (thumbHtml) {
@@ -17191,6 +17251,7 @@ async function acceptReply(courseId, doubtId, replyId) {
    PAYMENT MODAL — SECURE + ROBUST
    ============================================================ */
 async function showPaymentModal(courseId, materialId = null) {
+  if (aeroPlayBlocksPurchase()) return;
   if (!currentUser) {
     if (isGuestBrowsing()) return aeroGuestGate(courseId, materialId);
     return showToast('Please log in first.', 'error');
@@ -21054,6 +21115,7 @@ function renderSubscriptionPlansGrid(containerId) {
    CHECKOUT MODAL — plan + coupon + proceed
    ============================================================ */
 function startCheckoutForPlan(planId) {
+  if (aeroPlayBlocksPurchase()) return;
   if (!currentUser || currentUser.role !== 'student') {
     return showToast('Please log in as a student first.', 'error');
   }
@@ -21190,6 +21252,7 @@ async function applyCheckoutCoupon() {
 }
 
 async function proceedCheckout() {
+  if (aeroPlayBlocksPurchase()) return;
   if (!_activeCheckoutPlan) return;
   if (!currentUser || currentUser.role !== 'student') return;
 
@@ -21309,6 +21372,7 @@ async function _finalizeOneTimeSubscription(response, extend) {
    (keeps backward compatibility with existing buttons)
    ============================================================ */
 window.startSubscriptionCheckout = function () {
+  if (aeroPlayBlocksPurchase()) return;
   if (!currentUser || currentUser.role !== 'student') {
     return showToast('Please log in as a student first.', 'error');
   }
@@ -21588,6 +21652,7 @@ async function renderStudentSubscriptionBanner() {
 }
 
 function openPlansShowcaseModal() {
+  if (aeroPlayBlocksPurchase()) return;
   let modal = document.getElementById('plansShowcaseModal');
   if (!modal) {
     modal = document.createElement('div');
@@ -27154,6 +27219,22 @@ async function maRemoveRelease() {
    base64 chunks and land in Downloads › AeroGyan. In a normal
    browser nothing here runs.
    ============================================================ */
+/* ============================================================
+   ⭐ GOOGLE PLAY BUILD — no buying inside the app (2026-10-12)
+   ------------------------------------------------------------
+   Google Play requires Play's own billing for digital content
+   bought inside a Play Store app. The Play version of the
+   AeroGyan app (user-agent "AeroGyanApp/x Store/Play") therefore
+   shows no prices, Buy / Unlock / Subscribe buttons or plans, and
+   never opens checkout. Courses bought on the website open in the
+   app as usual. Browsers and the website APK are unchanged.
+   ============================================================ */
+function aeroPlayBlocksPurchase() {
+  if (!AERO_PLAY_STORE) return false;
+  try { showToast('Purchases aren\'t available in this app.', 'info'); } catch (_) {}
+  return true;
+}
+
 (function aeroNativeDownloads() {
   'use strict';
   const B = window.AeroGyanAndroid;
