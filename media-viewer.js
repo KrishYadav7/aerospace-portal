@@ -1383,8 +1383,8 @@ class VideoPlayer {
   const PDF_PRIORITY_PAGES    = 3;            // drawn immediately on open
   const PDF_BG_START_DELAY_MS = 600;          // let the first pages settle first
   const PDF_BG_SCROLL_QUIET_MS = 350;         // pause while the reader is scrolling
-  const PDF_SNAP_MAX_PIXELS   = 2.2e6;        // ≈ one A4 page at ~150 % zoom
-  const PDF_SNAP_QUALITY      = 0.72;
+  const PDF_SNAP_MAX_PIXELS   = 3.0e6;        // ≈ one A4 page at ~175 % zoom (was 2.2e6 — soft on laptops)
+  const PDF_SNAP_QUALITY      = 0.82;         // was 0.72 — snapshots are what a reopened PDF shows first
   function _snapBudgetBytes() {
     let mem = 0;
     try { mem = Number(navigator.deviceMemory) || 0; } catch (_) {}
@@ -2216,7 +2216,7 @@ class VideoPlayer {
         /* Render page 1 */
         await this._renderPage(1);
         if (!this.active || gen !== this._layoutGen) return;
-        page1El.dataset.rendered = '1';
+        this._markRendered(1, page1El);
       }
 
       /* ⚡ Prefetch page 2 while page 1 is still on screen.
@@ -2227,7 +2227,7 @@ class VideoPlayer {
         const page2El = this.pageEls.get(2);
         if (page2El && page2El.dataset.rendered !== '1') {
           this._renderPage(2)
-            .then(() => { page2El.dataset.rendered = '1'; })
+            .then(() => { this._markRendered(2, page2El); })
             .catch(() => {});
         }
       }
@@ -2285,6 +2285,7 @@ class VideoPlayer {
         }
 
         this._setupPageObserver();
+        this._startSharpGuard();
 
         /* ⭐ NEW: Restore the last reading position on this PDF.
            Runs AFTER every placeholder div exists so scrollIntoView
@@ -2304,7 +2305,7 @@ class VideoPlayer {
               if (!this.active || gen !== this._layoutGen) return;
               const el = this.pageEls.get(i);
               if (!el || el.dataset.rendered === '1') return;
-              return this._renderPage(i).then(() => { el.dataset.rendered = '1'; }).catch(() => {});
+              return this._renderPage(i).then(() => { this._markRendered(i, el); }).catch(() => {});
             });
           }
         }
@@ -2330,7 +2331,7 @@ class VideoPlayer {
       if (typeof IntersectionObserver !== 'function') {
         this.pageEls.forEach((el, n) => {
           if (el.dataset.rendered !== '1') {
-            this._renderPage(n).then(() => { el.dataset.rendered = '1'; });
+            this._renderPage(n).then(() => { this._markRendered(n, el); });
           }
         });
         return;
@@ -2391,8 +2392,8 @@ class VideoPlayer {
 
         this._renderPage(pageNum)
           .then(() => {
-            pageEl.dataset.rendered = '1';
-            this._renderingPages.delete(pageNum);
+            if (this._renderingPages) this._renderingPages.delete(pageNum);
+            this._markRendered(pageNum, pageEl);
           })
           .catch((err) => {
             if (!err || err.name !== 'RenderingCancelledException') {
@@ -2490,6 +2491,39 @@ class VideoPlayer {
       });
     }
 
+    /* ⭐ 2026-10-12 — a page counts as drawn only when its sharp canvas is
+       really on it. _renderPage() can finish without drawing (the reader
+       scrolled away, a re-layout started, the document changed…); before,
+       the page was still marked "rendered" and kept showing the blurry
+       JPEG snapshot (cache / poster / scroll copy) for good — most often
+       on the page a reopened PDF resumes at. */
+    _markRendered(n, el) {
+      if (!el || this.pageEls.get(n) !== el) return false;
+      if (el.querySelector('canvas.pdfv-canvas')) { el.dataset.rendered = '1'; return true; }
+      delete el.dataset.rendered;
+      if (this._pageObserver) { try { this._pageObserver.unobserve(el); this._pageObserver.observe(el); } catch (_) {} }
+      return false;
+    }
+
+    /* Safety net: while the viewer is open, a page that is on screen but
+       still shows a snapshot (or nothing) is drawn sharp once the reader
+       is not scrolling. */
+    _startSharpGuard() {
+      clearInterval(this._sharpGuard);
+      this._sharpGuard = setInterval(() => {
+        if (!this.active || !this.pdfDoc) { clearInterval(this._sharpGuard); this._sharpGuard = null; return; }
+        if (document.hidden || Date.now() - (this._lastScrollAt || 0) < 400) return;   // wait until the reader stops
+        const limit = this.previewLimit || this.totalPages || 0;
+        this.pageEls.forEach((el, n) => {
+          if (n > limit || !this._isPageOnScreen(n)) return;
+          if (el.querySelector('canvas.pdfv-canvas')) return;
+          if ((this._inflight && this._inflight.has(n)) || (this._renderingPages && this._renderingPages.has(n))) return;
+          delete el.dataset.rendered;
+          this._renderPage(n).then(() => { this._markRendered(n, el); }).catch(() => {});
+        });
+      }, 1200);
+    }
+
     _releasePage(n) {
       const el = this.pageEls.get(n);
       if (!el) return;
@@ -2542,7 +2576,7 @@ class VideoPlayer {
         if (r.bottom >= bodyRect.top - 200 && r.top <= bodyRect.bottom + 200) {
           tasks.push(
             this._renderPage(n)
-              .then(() => { pageEl.dataset.rendered = '1'; })
+              .then(() => { this._markRendered(n, pageEl); })
               .catch(() => {})
           );
         }
@@ -2962,7 +2996,7 @@ class VideoPlayer {
             const el = this.pageEls.get(n);
             bg.ownRender = true;
             try { await this._renderPage(n); } finally { bg.ownRender = false; }
-            if (el && this.pageEls.get(n) === el) el.dataset.rendered = '1';
+            if (el && this.pageEls.get(n) === el) this._markRendered(n, el);
           } else {
             await this._snapshotPage(n, bg, alive);
           }
@@ -3521,7 +3555,7 @@ class VideoPlayer {
            already kicked it off. */
         if (pageEl.dataset.rendered !== '1') {
           this._renderPage(target)
-            .then(() => { pageEl.dataset.rendered = '1'; })
+            .then(() => { this._markRendered(target, pageEl); })
             .catch(() => {});
         }
 
@@ -3892,6 +3926,7 @@ class VideoPlayer {
 
     close() {
       if (!this.active) return;
+      clearInterval(this._sharpGuard); this._sharpGuard = null;
       if (this._present) { try { this._endPresentation(true); } catch (e) {} }
 
       /* ⭐ Persist the last read page synchronously before the DOM

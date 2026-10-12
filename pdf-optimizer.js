@@ -13,7 +13,7 @@
 
    What it does:
      • every JPEG image larger than the page can ever show at
-       PX_PER_PT pixels per point (≈ 200 dpi) is scaled down and
+       PX_PER_PT pixels per point (≈ 290 dpi) is scaled down and
        re-encoded (mozjpeg); images that would not get smaller are
        left exactly as they are;
      • only plain 8-bit RGB / grayscale JPEGs are touched — CMYK,
@@ -29,8 +29,8 @@
 const fs = require('fs');
 
 const DEFAULTS = {
-  pxPerPt: 2.8,            // ≈ 200 dpi — sharp on retina phones at 120 % zoom
-  jpegQuality: 80,
+  pxPerPt: 4.0,            // ≈ 290 dpi — sharp on retina laptops up to ~170 % zoom (was 2.8 ≈ 200 dpi: soft)
+  jpegQuality: 85,         // was 80 — fine print / handwriting kept crisp
   minSavingRatio: 0.85,    // keep a re-encoded image only if ≤ 85 % of the original
   maxInputBytes: 400 * 1024 * 1024
 };

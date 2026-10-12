@@ -3407,28 +3407,45 @@ mongoose.connection.on('disconnected', () => {
    ============================================================ */
 (async () => {
   try {
-    /* Courses — matches the primary list sort exactly */
-    await Course.collection.createIndex({ featured: -1, createdAt: -1 });
-    await Course.collection.createIndex({ status: 1 });
-    /* Used by /uploads/:filename to reverse-lookup the owning course */
-    await Course.collection.createIndex({ 'materials._id': 1 });
-    /* Used by the paywall + material lookup */
-    await Course.collection.createIndex({ 'materials.url': 1 }, { sparse: true });
+    /* ⭐ 2026-10-12 — wait for the connection: with bufferCommands off,
+       createIndex() before it is up failed ("Cannot call createIndex()
+       before initial connection"), so these indexes were never made */
+    if (mongoose.connection.readyState !== 1) {
+      await new Promise((resolve) => mongoose.connection.once('connected', resolve));
+    }
+    /* each index on its own: one conflict must not stop the rest */
+    const want = [
+      /* Courses — matches the primary list sort exactly */
+      [Course, { featured: -1, createdAt: -1 }],
+      [Course, { status: 1 }],
+      /* Used by /uploads/:filename to reverse-lookup the owning course */
+      [Course, { 'materials._id': 1 }],
+      /* Used by the paywall + material lookup (same options as the existing index) */
+      [Course, { 'materials.url': 1 }],
+      /* Users — login (username lookup), forgot-password (email), referrals */
+      [User, { role: 1, createdAt: -1 }],
+      [User, { referralCode: 1 }, { sparse: true }],
+      [User, { referredBy: 1 }, { sparse: true }],
+      [User, { email: 1 }, { sparse: true }],
+      /* Activity — live admin dashboard sorts by lastSeenAt */
+      [User, { 'activeSession.lastSeenAt': -1 }, { sparse: true }],
+      /* Contributions / feedback admin lists */
+      [Contribution, { submittedAt: -1 }],
+      [Feedback, { submittedAt: -1 }]
+    ];
+    let failed = 0;
+    for (const [M, keys, opts] of want) {
+      try { await M.collection.createIndex(keys, opts || {}); }
+      catch (e) {
+        /* same keys already indexed with other options → that index serves the query */
+        if (!/same name|already exists|IndexOptionsConflict|IndexKeySpecsConflict/i.test(e.message)) {
+          failed++;
+          console.warn('[mongo] index', JSON.stringify(keys), 'not created:', e.message);
+        }
+      }
+    }
 
-    /* Users — login (username lookup), forgot-password (email), referrals */
-    await User.collection.createIndex({ role: 1, createdAt: -1 });
-    await User.collection.createIndex({ referralCode: 1 }, { sparse: true });
-    await User.collection.createIndex({ referredBy: 1 }, { sparse: true });
-    await User.collection.createIndex({ email: 1 }, { sparse: true });
-
-    /* Activity — live admin dashboard sorts by lastSeenAt */
-    await User.collection.createIndex({ 'activeSession.lastSeenAt': -1 }, { sparse: true });
-
-    /* Contributions / feedback admin lists */
-    await Contribution.collection.createIndex({ submittedAt: -1 });
-    await Feedback.collection.createIndex({ submittedAt: -1 });
-
-    console.log('[mongo] ✅ Indexes ensured');
+    console.log(failed ? `[mongo] ⚠️ Indexes ensured (${failed} failed)` : '[mongo] ✅ Indexes ensured');
   } catch (e) {
     console.warn('[mongo] Index creation warning (non-fatal):', e.message);
   }
@@ -6564,8 +6581,11 @@ const _fastViewSkip   = new Map();       // filename → original mtime that cou
 let   _fastViewBusy   = false;
 let   _fastViewNoQpdf = false;           // qpdf missing → image step only
 
-function fastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview2.pdf'); }
-function _oldFastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview.pdf'); }
+/* ⭐ 2026-10-12 — v3: page pictures are kept at ~290 dpi / quality 85 (v2 kept
+   ~200 dpi / 80, which made small handwriting and fine print soft once a
+   student zoomed in on a laptop). v2 copies are rebuilt as v3 and removed. */
+function fastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview3.pdf'); }
+function _oldFastViewNamesFor(fn) { return ['_fastview.pdf', '_fastview2.pdf'].map(sfx => String(fn).replace(/\.pdf$/i, sfx)); }
 
 /* The fast copy's filename when an up-to-date one exists; otherwise
    null (and a copy is queued so the next open is fast). */
@@ -6846,8 +6866,8 @@ async function _buildFastView(fn) {
     const tst = await fs.promises.stat(out);
     console.log(`[fastview] ⚡ ${fn} → ${path.basename(out)} · ${Math.round(st.size / 1048576 * 10) / 10} MB → ` +
                 `${Math.round(tst.size / 1048576 * 10) / 10} MB · ${note.join(', ')} · ${Date.now() - t0} ms`);
-    /* the old v1 copy is no longer used */
-    fs.promises.rm(path.join(UPLOAD_DIR, _oldFastViewNameFor(fn)), { force: true }).catch(() => {});
+    /* older copies (v1, v2) are no longer used */
+    _oldFastViewNamesFor(fn).forEach(n => fs.promises.rm(path.join(UPLOAD_DIR, n), { force: true }).catch(() => {}));
   } finally {
     fs.promises.rm(tmpOpt, { force: true }).catch(() => {});
     fs.promises.rm(tmpLin, { force: true }).catch(() => {});
