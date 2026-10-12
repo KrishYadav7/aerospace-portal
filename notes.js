@@ -390,16 +390,17 @@
      gentle curve the hulls alone already meet with no visible gap. The path is
      filled in small batches: one huge self-overlapping path is many times
      slower to fill than a few dozen small ones. */
-  function inkFill(ctx, st, from, to, fill) {
-    const b = st.b, flat = b.fl / 100, m = IX.length;
+  function inkFill(ctx, st, from, to, fill, X, Y, R) {
+    X = X || IX; Y = Y || IY; R = R || IR;              // the shared spine, or a live stroke's own
+    const b = st.b, flat = b.fl / 100, m = X.length;
     const ratio = 1 - 0.86 * flat, stretch = 1 + 0.25 * flat;
     const ang = b.an * Math.PI / 180, ca = Math.cos(ang), sa = Math.sin(ang);
-    const nib = (i) => { const A = IR[i] * stretch; ctx.moveTo(IX[i] + A * ca, IY[i] + A * sa); ctx.ellipse(IX[i], IY[i], A, IR[i] * ratio, ang, 0, TAU); };
+    const nib = (i) => { const A = R[i] * stretch; ctx.moveTo(X[i] + A * ca, Y[i] + A * sa); ctx.ellipse(X[i], Y[i], A, R[i] * ratio, ang, 0, TAU); };
     /* the nib's outermost point across a direction of travel (tx,ty) — returned in SX/SY */
     let SX = 0, SY = 0;
     const support = (i, tx, ty) => {
       const ux = -ty, uy = tx, nx = ux * ca + uy * sa, ny = -ux * sa + uy * ca;
-      const A = IR[i] * stretch, B = IR[i] * ratio, k = Math.hypot(A * nx, B * ny) || 1;
+      const A = R[i] * stretch, B = R[i] * ratio, k = Math.hypot(A * nx, B * ny) || 1;
       const qx = A * A * nx / k, qy = B * B * ny / k;
       SX = qx * ca - qy * sa; SY = qx * sa + qy * ca;
     };
@@ -408,7 +409,7 @@
     let JX = 0, JY = 0;
     const joint = (j) => {
       const a = j > 0 ? j - 1 : j, c = j < m - 1 ? j + 1 : j;
-      const dx = IX[c] - IX[a], dy = IY[c] - IY[a], len = Math.hypot(dx, dy);
+      const dx = X[c] - X[a], dy = Y[c] - Y[a], len = Math.hypot(dx, dy);
       if (len > 1e-6) { JX = dx / len; JY = dy / len; }
     };
     const quad = (px, py, sx0, sy0, x, y, sx1, sy1) => {
@@ -422,10 +423,10 @@
     ctx.fillStyle = fill;
     ctx.beginPath();
     for (let i = from; i < to; i++) {
-      const x = IX[i], y = IY[i];
+      const x = X[i], y = Y[i];
       if (i === 0 || i === from || i === to - 1) nib(i);
       if (i) {
-        const px = IX[i - 1], py = IY[i - 1], dx = x - px, dy = y - py, len = Math.hypot(dx, dy);
+        const px = X[i - 1], py = Y[i - 1], dx = x - px, dy = y - py, len = Math.hypot(dx, dy);
         if (len > 0.05) {
           const tx = dx / len, ty = dy / len, cross = pdx * ty - pdy * tx, dot = pdx * tx + pdy * ty;
           /* a sharp corner keeps its own straight hull plus the nib to round it; and every
@@ -449,6 +450,82 @@
       if (++batch >= 6) { ctx.fill(); ctx.beginPath(); batch = 0; fresh = true; }
     }
     if (batch) ctx.fill();
+  }
+  /* a pen stroke being written: its spine only ever grows, so only the newly
+     arrived piece is computed (recomputing the whole stroke on every move made
+     long strokes lag more and more). Same curve, widths and start taper as
+     inkSpine; kept on the stroke in a.sp. Returns how many samples are final. */
+  function liveSpine(a, k) {
+    const st = a.st, p = st.pts, n = p.length / 3;
+    let c = a.sp;
+    if (!c) {
+      const sharp = st.b.sh / 100, half = st.w / 2, depth = 0.94 * Math.pow(sharp, 0.8);
+      c = a.sp = { X: [], Y: [], R: [], wf: [], i: 1, sx: 0, sy: 0, sr: 0, L: 0, half, depth,
+        tl: half * (3 + 14 * sharp) + 8, taper: depth > 0 && !(st.b.nt & 1) };
+    }
+    const wf = c.wf;
+    for (let i = wf.length; i < n; i++) { const t = p[i * 3 + 2] / 50; wf.push(i ? wf[i - 1] + (t - wf[i - 1]) * 0.42 : t); }
+    const minGap = 0.3 / k;
+    const add = (x, y, r) => {
+      const m = c.X.length;
+      if (m) {
+        if (Math.abs(x - c.X[m - 1]) + Math.abs(y - c.Y[m - 1]) < minGap) { c.R[m - 1] = liveR(c, r, c.L); return; }
+        c.L += Math.hypot(x - c.X[m - 1], y - c.Y[m - 1]);
+      }
+      c.X.push(x); c.Y.push(y); c.R.push(liveR(c, r, c.L));
+    };
+    if (!c.X.length) { add(p[0], p[1], wf[0]); c.sx = p[0]; c.sy = p[1]; c.sr = wf[0]; }
+    let i = c.i;
+    for (; i < n - 1; i++) {
+      const cx = p[i * 3], cy = p[i * 3 + 1], cr = wf[i];
+      const ex = (cx + p[i * 3 + 3]) / 2, ey = (cy + p[i * 3 + 4]) / 2, er = (cr + wf[i + 1]) / 2;
+      const steps = clamp(Math.ceil((Math.hypot(cx - c.sx, cy - c.sy) + Math.hypot(ex - cx, ey - cy)) * k / 3.5), 1, 24);
+      for (let j = 1; j <= steps; j++) {
+        const t = j / steps, u = 1 - t, a1 = u * u, a2 = 2 * u * t, a3 = t * t;
+        add(a1 * c.sx + a2 * cx + a3 * ex, a1 * c.sy + a2 * cy + a3 * ey, a1 * c.sr + a2 * cr + a3 * er);
+      }
+      c.sx = ex; c.sy = ey; c.sr = er;
+    }
+    c.i = i;
+    return c.X.length;
+  }
+  function liveR(c, r, L) {                             // radius at length L along a live stroke
+    const f = c.taper ? 1 - c.depth * Math.pow(1 - Math.min(1, L / c.tl), 1.6) : 1;
+    return Math.max(0.35, c.half * r * Math.max(1 - c.depth, f));
+  }
+  /* the not-yet-final end of a live stroke — from the last final sample to the
+     newest point and on to where the pen really is (stabilisation trails it) —
+     drawn on its own layer and replaced every move, so the ink always reaches
+     the pen tip instead of lagging a segment behind */
+  function drawTip(a, k) {
+    const o = S.overlay, t = o && o.t, c = a.sp;
+    if (!t || !t.c.isConnected || !c || !c.X.length) return;
+    const ctx = t.ctx;
+    if (a.tipBox) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(a.tipBox[0], a.tipBox[1], a.tipBox[2], a.tipBox[3]); a.tipBox = null; }
+    const p = a.st.pts, n = p.length / 3, f = c.X.length - 1;
+    const X = [c.X[f]], Y = [c.Y[f]], R = [c.R[f]];
+    let L = c.L;
+    const push = (x, y) => {
+      const d = Math.hypot(x - X[X.length - 1], y - Y[Y.length - 1]);
+      if (d < 0.5) return;
+      L += d; X.push(x); Y.push(y); R.push(liveR(c, c.wf[n - 1], L));
+    };
+    push(p[(n - 1) * 3], p[(n - 1) * 3 + 1]);
+    if (a.tau) push(a.rx, a.ry);
+    if (X.length < 2) return;
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    inkFill(ctx, a.st, 0, X.length, a.st.c, X, Y, R);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < X.length; i++) {
+      const r = R[i] * 1.3;
+      x0 = Math.min(x0, X[i] - r); x1 = Math.max(x1, X[i] + r); y0 = Math.min(y0, Y[i] - r); y1 = Math.max(y1, Y[i] + r);
+    }
+    a.tipBox = [Math.floor(x0 * k) - 3, Math.floor(y0 * k) - 3, Math.ceil((x1 - x0) * k) + 6, Math.ceil((y1 - y0) * k) + 6];
+  }
+  function clearTip(a) {
+    const t = S.overlay && S.overlay.t;
+    if (t) { t.ctx.setTransform(1, 0, 0, 1, 0, 0); t.ctx.clearRect(0, 0, t.c.width, t.c.height); }
+    if (a) a.tipBox = null;
   }
   function spineBox(st) {                               // box of the current spine, in page units
     const pad = 1 + 0.25 * st.b.fl / 100;
@@ -567,7 +644,10 @@
       case 'arrow': out.push(x0, y0, 0, x1, y1, 1); arrowHead(out, x1, y1, x0, y0, w); break;
       case 'darrow': out.push(x0, y0, 0, x1, y1, 1); arrowHead(out, x1, y1, x0, y0, w); arrowHead(out, x0, y0, x1, y1, w); break;
       case 'rect': polyPts(out, [[l, t], [r, t], [r, b], [l, b]], true); break;
-      case 'circle': { const rad = Math.hypot(x1 - x0, y1 - y0); ellipsePts(out, x0, y0, rad, rad); break; }   // from the centre
+      case 'circle': {                                   // fills the square you drag out from where you started
+        const s2 = Math.max(bw, bh), qx = x1 >= x0 ? x0 : x0 - s2, qy = y1 >= y0 ? y0 : y0 - s2;
+        ellipsePts(out, qx + s2 / 2, qy + s2 / 2, s2 / 2, s2 / 2); break;
+      }
       case 'ellipse': ellipsePts(out, cx, cy, (r - l) / 2, (b - t) / 2); break;
       case 'triangle': polyPts(out, [[cx, t], [r, b], [l, b]], true); break;
       case 'rtriangle': polyPts(out, [[l, t], [l, b], [r, b]], true); break;
@@ -708,6 +788,18 @@
   function setEditing(on) {
     if (S.root) S.root.classList.toggle('nt-editing', !!on);
     document.documentElement.classList.toggle('aero-nt-full', !!on);
+    lockViewport(!!on);
+  }
+  /* while a notebook is open the browser must not zoom the whole page (pinch or
+     double-tap on the toolbar, the Android app's built-in zoom): the notebook
+     has its own zoom, and a zoomed page pushes the paper and tools off screen */
+  let vpOrig = null;
+  function lockViewport(on) {
+    const m = document.querySelector('meta[name="viewport"]'); if (!m) return;
+    if (on && vpOrig == null) {
+      vpOrig = m.getAttribute('content') || '';
+      m.setAttribute('content', vpOrig.replace(/,?\s*(maximum-scale|minimum-scale|user-scalable)\s*=\s*[^,]*/gi, '') + ', maximum-scale=1, user-scalable=no');
+    } else if (!on && vpOrig != null) { m.setAttribute('content', vpOrig); vpOrig = null; }
   }
   const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
   const fsSupported = () => !(/AeroGyanApp\//.test(navigator.userAgent || '') && /Android/i.test(navigator.userAgent || '')) && !!(document.fullscreenEnabled || document.webkitFullscreenEnabled);   // the Android app is already full screen
@@ -1076,6 +1168,7 @@
   function computeBase() {
     const w = S.scroller ? S.scroller.clientWidth : 800;
     S.base = clamp((w - (w < 640 ? 16 : 56)) / PW, 0.12, 0.46);
+    S.lastW = w; S.lastDpr = window.devicePixelRatio || 1;
   }
   function applyScale() {
     const u = scale();
@@ -1297,7 +1390,19 @@
   }
   function pageFromEvent(e) {
     const el = e.target.closest && e.target.closest('.nt-page');
-    return el ? S.byId.get(el.dataset.pid) : null;
+    if (el) return S.byId.get(el.dataset.pid);
+    /* a stroke that starts just off the paper (on the desk, by its edge) still
+       lands on the nearest on-screen page instead of being lost */
+    const slop = 32;
+    let best = null, bestD = Infinity;
+    for (const p of S.pages) {
+      if (!p.el || !p.canvas) continue;
+      const r = p.el.getBoundingClientRect();
+      const dx = Math.max(r.left - e.clientX, 0, e.clientX - r.right), dy = Math.max(r.top - e.clientY, 0, e.clientY - r.bottom);
+      const d = Math.max(dx, dy);
+      if (d <= slop && d < bestD) { best = p; bestD = d; }
+    }
+    return best;
   }
   /* ---------- stylus first: palm rejection ----------
      A resting palm or wrist touches the glass before (and while) the
@@ -1336,30 +1441,33 @@
         return;
       }
     }
-    const drawsHere = !(e.pointerType === 'touch' && (!S.fingerDraw || S.tool === 'hand')) &&
-                      !(S.tool === 'hand') && e.button !== 1;
+    if (e.pointerType === 'mouse' && e.button === 2) return;              // right click: nothing
+    /* the eraser end / eraser button of a stylus (Surface, Wacom, many Android pens) erases */
+    const tool = e.pointerType === 'pen' && (e.button === 5 || (e.buttons & 32)) ? 'eraser' : S.tool;
+    const drawsHere = !(e.pointerType === 'touch' && (!S.fingerDraw || tool === 'hand')) &&
+                      !(tool === 'hand') && e.button !== 1;
     if (!drawsHere) { startPan(e); return; }
     const p = pageFromEvent(e);
     if (!p) return;
     if (!p.d) { if (p.raw != null) { p.d = decodePage(p.raw); p.raw = null; } else { queueLoad(p); return; } }
-    if (S.editing) { commitText(); if (S.tool === 'text') return; }
+    if (S.editing) { commitText(); if (tool === 'text') return; }
     e.preventDefault();
     S.current = S.pages.indexOf(p);
-    if (S.tool === 'text') return startText(p, pagePoint(p, e), e.pointerType);
+    if (tool === 'text') return startText(p, pagePoint(p, e), e.pointerType);
     try { p.el.setPointerCapture(e.pointerId); } catch (_) {}
     const [x, y] = pagePoint(p, e);
     const base = { page: p, pointerId: e.pointerId, pointerType: e.pointerType, raf: 0 };
-    if (S.tool === 'eraser') {
+    if (tool === 'eraser') {
       S.active = Object.assign(base, { kind: 'erase', removed: [], addedSet: new Set(), last: [x, y] });
       eraseAt(p, x, y);
       return;
     }
-    if (S.tool === 'shape') {
+    if (tool === 'shape') {
       S.active = Object.assign(base, { kind: 'shape', x0: x, y0: y, x1: x, y1: y });
       showOverlay(p);
       return;
     }
-    if (S.tool === 'lasso') {
+    if (tool === 'lasso') {
       if (S.sel && S.sel.page === p && insideSel(x, y)) { startMove(Object.assign(base, { kind: 'move', sx: x, sy: y, dx: 0, dy: 0 })); return; }
       clearSelection();
       S.active = Object.assign(base, { kind: 'lasso', path: [x, y] });
@@ -1367,7 +1475,7 @@
       return;
     }
     const min = Math.max(0.8, 1.1 / (scale() * (window.devicePixelRatio || 1)));
-    if (S.tool === 'hl') {
+    if (tool === 'hl') {
       const st = { tool: TOOL_HL, c: hlInk(), w: SIZES.hl[S.size.hl], pts: [x, y, pressureOf(e)] };
       S.active = Object.assign(base, { kind: 'stroke', st, min, hx: e.clientX, hy: e.clientY });
       showOverlay(p);
@@ -1379,11 +1487,14 @@
       kind: 'stroke', cfg, min, hx: e.clientX, hy: e.clientY, done: 0, box: null,
       sx: x, sy: y, rx: x, ry: y, lt: e.timeStamp || t, lcx: e.clientX, lcy: e.clientY, vel: 0, pr: null,
       tau: cfg.st ? 6 + 110 * Math.pow(cfg.st / 100, 2) : 0,             // stabilisation time constant (ms)
-      inc: S.penType !== PENCIL                                         // drawn piece by piece (the pencil's grain needs whole-stroke passes)
+      inc: S.penType !== PENCIL,                                        // drawn piece by piece (the pencil's grain needs whole-stroke passes)
+      sp: null, tipBox: null
     });
+    a.tip = a.inc && cfg.op >= 100;                                     // a translucent tip would darken where it overlaps the ink
     a.st = { tool: TOOL_INK, c: penInk(), w: cfg.w, b: { t: S.penType, sh: cfg.sh, fl: cfg.fl, an: cfg.an, op: cfg.op, nt: 0 }, pts: [x, y, inkWidth(a, e)] };
     S.active = a;
     showOverlay(p);
+    if (a.tip) showTip(p);
     if (a.inc && cfg.op < 100 && S.overlay) S.overlay.c.style.opacity = String(cfg.op / 100);   // translucent ink: solid on the overlay, the overlay see-through
     armHold(a);
     drawLive(a);
@@ -1432,21 +1543,36 @@
     if (S.active !== a || a.snapped) return;
     const pts = recognize(a.st.pts); if (!pts) return;
     a.snapped = true;
+    a.raw = a.st; a.snapX = a.lcx; a.snapY = a.lcy;       // kept: moving on brings the handwriting back
     a.st = { tool: TOOL_SHAPE, c: a.st.c, w: a.st.w, pts };
     const o = S.overlay;                                  // the rough ink lives on the overlay — swap it for the clean shape
     if (o) {
       o.c.style.opacity = '';
       o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height);
-      o.ctx.setTransform(a.page.k, 0, 0, a.page.k, 0, 0); drawShape(o.ctx, a.st);
+      o.ctx.setTransform(o.k, 0, 0, o.k, 0, 0); drawShape(o.ctx, a.st);
     }
+    clearTip(a);
     try { if (navigator.vibrate) navigator.vibrate(10); } catch (_) {}
+  }
+  /* the pen moved on after a snap: it was a pause, not a shape — the stroke goes
+     back to the ink that was written and carries on from there */
+  function unsnap(a) {
+    a.st = a.raw; a.raw = null; a.snapped = false;
+    a.done = 0; a.sp = null; a.box = null;
+    const o = S.overlay;
+    if (o) {
+      o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height);
+      if (a.inc && a.cfg.op < 100) o.c.style.opacity = String(a.cfg.op / 100);
+    }
+    clearTip(a);
+    drawLive(a);
   }
   function onPointerMove(e) {
     if (e.pointerType === 'touch' && S.palms.has(e.pointerId)) return;
     if (e.pointerType === 'pen' && S.active && S.active.pointerType === 'pen') S.lastPenAt = performance.now();
     if (e.pointerType === 'touch' && S.touches.has(e.pointerId)) {
       S.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (S.gesture) { moveGesture(); return; }
+      if (S.gesture) { if (!S.gesture.raf) S.gesture.raf = requestAnimationFrame(moveGesture); return; }   // once per frame, both fingers together
     }
     if (S.pan && S.pan.pointerId === e.pointerId) {
       const pn = S.pan, now = performance.now(), dt = Math.max(1, now - pn.lt);
@@ -1478,7 +1604,10 @@
       }
       return;
     }
-    if (a.snapped) return;                               // already turned into a clean shape
+    if (a.snapped) {                                     // turned into a clean shape while the pen rested
+      if (!a.raw || Math.hypot(e.clientX - a.snapX, e.clientY - a.snapY) < 14) return;
+      unsnap(a);
+    }
     if (Math.abs(e.clientX - a.hx) + Math.abs(e.clientY - a.hy) > 7) { a.hx = e.clientX; a.hy = e.clientY; armHold(a); }
     const pts = a.st.pts, ink = a.st.tool === TOOL_INK;
     for (const ev of evs) {
@@ -1507,11 +1636,11 @@
     }
     if (!o) return;
     o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height);
-    o.ctx.setTransform(a.page.k, 0, 0, a.page.k, 0, 0);
+    o.ctx.setTransform(o.k, 0, 0, o.k, 0, 0);
     if (a.kind === 'shape') {
       drawShape(o.ctx, { tool: S.dashed ? TOOL_DASH : TOOL_SHAPE, c: penInk(), w: SIZES.pen[S.size.pen], pts: shapePoints(S.shape, a.x0, a.y0, a.x1, a.y1, SIZES.pen[S.size.pen]) });
     } else if (a.kind === 'lasso') {
-      const P = a.path, k = 1 / a.page.k * (window.devicePixelRatio || 1);
+      const P = a.path, k = 1 / o.k * (window.devicePixelRatio || 1);
       o.ctx.save(); o.ctx.lineWidth = 2.2 * k; o.ctx.setLineDash([8 * k, 6 * k]); o.ctx.strokeStyle = '#4f46e5'; o.ctx.fillStyle = 'rgba(99,102,241,.07)';
       o.ctx.beginPath(); o.ctx.moveTo(P[0], P[1]); for (let i = 2; i < P.length; i += 2) o.ctx.lineTo(P[i], P[i + 1]);
       o.ctx.closePath(); o.ctx.fill(); o.ctx.stroke(); o.ctx.restore();
@@ -1521,15 +1650,16 @@
     a.raf = 0;
     if (a.snapped || S.active !== a) return;
     const o = S.overlay; if (!o) return;
-    const ctx = o.ctx, k = a.page.k;
+    const ctx = o.ctx, k = o.k;                           // the overlay's own scale (a zoom may have re-sized the page meanwhile)
     if (a.st.tool === TOOL_HL) {                         // translucent: redraw on the light overlay only
       ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, o.c.width, o.c.height);
       ctx.setTransform(k, 0, 0, k, 0, 0); drawHL(ctx, a.st);
       return;
     }
     if (a.inc) {                                          // only the samples that are now final — never a redraw
-      const fixed = inkSpine(a.st, true, k);
-      if (fixed > a.done) { ctx.setTransform(k, 0, 0, k, 0, 0); inkFill(ctx, a.st, a.done, fixed, a.st.c); a.done = fixed; }
+      const fixed = liveSpine(a, k), c = a.sp;
+      if (fixed > a.done) { ctx.setTransform(k, 0, 0, k, 0, 0); inkFill(ctx, a.st, a.done, fixed, a.st.c, c.X, c.Y, c.R); a.done = fixed; }
+      if (a.tip) drawTip(a, k);
       return;
     }
     /* pencil: clear what was drawn last frame and draw the whole stroke once */
@@ -1611,13 +1741,27 @@
     clearTimeout(o.freeT);
     if (o.c.width !== p.canvas.width || o.c.height !== p.canvas.height) { o.c.width = p.canvas.width; o.c.height = p.canvas.height; }
     else { o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height); }
+    o.k = o.c.width / PW;
     p.el.appendChild(o.c);
+  }
+  /* the live pen tip's own layer, just above the overlay (see drawTip) */
+  function showTip(p) {
+    const o = S.overlay; if (!o || !o.c.isConnected) return;
+    if (!o.t) { const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay'; o.t = { c, ctx: c.getContext('2d') }; }
+    const t = o.t;
+    if (t.c.width !== o.c.width || t.c.height !== o.c.height) { t.c.width = o.c.width; t.c.height = o.c.height; }
+    else { t.ctx.setTransform(1, 0, 0, 1, 0, 0); t.ctx.clearRect(0, 0, t.c.width, t.c.height); }
+    p.el.appendChild(t.c);
   }
   function hideOverlay() {
     const o = S.overlay; if (!o) return;
     o.c.remove(); o.c.style.transform = ''; o.c.style.opacity = '';
+    if (o.t) o.t.c.remove();
     clearTimeout(o.freeT);
-    o.freeT = setTimeout(() => { if (!o.c.isConnected) { o.c.width = 0; o.c.height = 0; } }, 4000);
+    o.freeT = setTimeout(() => {
+      if (!o.c.isConnected) { o.c.width = 0; o.c.height = 0; }
+      if (o.t && !o.t.c.isConnected) { o.t.c.width = 0; o.t.c.height = 0; }
+    }, 4000);
   }
 
   /* ---------- eraser (whole strokes, like GoodNotes' stroke eraser) ---------- */
@@ -1683,8 +1827,10 @@
     }
     const mctx = measureCtx();
     for (let i = d.t.length - 1; i >= 0; i--) {
-      const t = d.t[i], h = textBox(mctx, t).h;
-      if (x >= t.x - r && x <= t.x + t.w + r && y >= t.y - r && y <= t.y + h + r) { a.removed.push({ kind: 't', idx: i, item: t }); d.t.splice(i, 1); hit = true; }
+      const t = d.t[i];
+      if (x < t.x - r || x > t.x + t.w + r || y < t.y - r) continue;     // cheap test first — wrapping the text is not
+      const h = textBox(mctx, t).h;
+      if (y <= t.y + h + r) { a.removed.push({ kind: 't', idx: i, item: t }); d.t.splice(i, 1); hit = true; }
     }
     if (hit) scheduleRender(p);
   }
@@ -1851,9 +1997,13 @@
     ta.className = 'nt-textedit';
     ta.value = t.txt;
     ta.setAttribute('aria-label', 'Text');
+    /* iPhone / iPad zoom the whole page into any text field under 16px and stay
+       zoomed — so the box is laid out at ≥16px and scaled down to the page's size */
+    const fpx = t.s * u, fs = Math.max(16, fpx), sc = fpx / fs;
     Object.assign(ta.style, {
-      left: (t.x * u) + 'px', top: (t.y * u) + 'px', width: (t.w * u) + 'px',
-      fontSize: (t.s * u) + 'px', lineHeight: '1.32', color: t.c, minHeight: (t.s * u * 1.5) + 'px'
+      left: (t.x * u) + 'px', top: (t.y * u) + 'px', width: (t.w * u / sc) + 'px',
+      fontSize: fs + 'px', lineHeight: '1.32', color: t.c, minHeight: (fs * 1.5) + 'px',
+      transform: sc < 1 ? `scale(${sc})` : '', transformOrigin: '0 0'
     });
     const grow = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
     ta.addEventListener('input', grow);
@@ -1919,27 +2069,45 @@
   }
   function startGesture() {
     S.pan = null;
+    if (S.gesture && S.gesture.raf) cancelAnimationFrame(S.gesture.raf);
     const m = touchMid();
-    S.gesture = { m, zoom: S.zoom, sl: S.scroller.scrollLeft, st: S.scroller.scrollTop };
+    S.gesture = { m, zoom: S.zoom, lastX: m.x, lastY: m.y, lt: performance.now(), vx: 0, vy: 0, zoomed: false, raf: 0 };
   }
   function moveGesture() {
-    const g = S.gesture, m = touchMid();
+    const g = S.gesture; if (!g) return;
+    g.raf = 0;
+    if (S.touches.size < 2 || !S.scroller) return;
+    const m = touchMid(), now = performance.now(), dt = Math.max(1, now - g.lt);
     const z = clamp(g.zoom * (m.d / g.m.d), 0.5, 3);
-    if (Math.abs(z - S.zoom) > 0.01) setZoom(z, m.x, m.y, true);
-    S.scroller.scrollTop -= (m.y - (g.lastY == null ? m.y : g.lastY));
-    S.scroller.scrollLeft -= (m.x - (g.lastX == null ? m.x : g.lastX));
-    g.lastX = m.x; g.lastY = m.y;
+    if (Math.abs(z - S.zoom) > 0.01) { setZoom(z, m.x, m.y, true); g.zoomed = true; }
+    const dx = m.x - g.lastX, dy = m.y - g.lastY;
+    S.scroller.scrollTop -= dy; S.scroller.scrollLeft -= dx;
+    g.vx = g.vx * 0.6 + (dx / dt) * 0.4; g.vy = g.vy * 0.6 + (dy / dt) * 0.4;
+    g.lastX = m.x; g.lastY = m.y; g.lt = now;
   }
-  function endGesture() { S.gesture = null; }
+  function endGesture() {
+    const g = S.gesture; S.gesture = null;
+    if (!g) return;
+    if (g.raf) cancelAnimationFrame(g.raf);
+    if (!g.zoomed && performance.now() - g.lt < 80) startFling(g.vx, g.vy);   // a two-finger swipe glides on like a one-finger one
+  }
   function setZoom(z, cx, cy, live) {
     z = clamp(z, 0.5, 3);
     if (!S.scroller) return;
-    const r = S.scroller.getBoundingClientRect();
-    const ax = (cx == null ? r.width / 2 : cx - r.left), ay = (cy == null ? r.height / 2 : cy - r.top);
-    const fx = (S.scroller.scrollLeft + ax) / S.zoom, fy = (S.scroller.scrollTop + ay) / S.zoom;
+    const sc = S.scroller, r = sc.getBoundingClientRect();
+    const ax = cx == null ? r.left + r.width / 2 : cx, ay = cy == null ? r.top + r.height / 2 : cy;
+    /* keep the spot of paper under the fingers / cursor exactly where it is: measured
+       on a real page, so the gaps between pages (which don't scale) can't make it drift */
+    const ref = S.pages[S.current] && S.pages[S.current].el;
+    const b = ref && ref.isConnected ? ref.getBoundingClientRect() : null;
+    const fx = b && b.width ? (ax - b.left) / b.width : 0, fy = b && b.height ? (ay - b.top) / b.height : 0;
     S.zoom = z;
     applyScale();
-    S.scroller.scrollLeft = fx * z - ax; S.scroller.scrollTop = fy * z - ay;
+    if (b) {
+      const n = ref.getBoundingClientRect();
+      sc.scrollLeft += n.left + fx * n.width - ax;
+      sc.scrollTop += n.top + fy * n.height - ay;
+    }
     clearTimeout(S.remountTimer);
     S.remountTimer = setTimeout(() => {                 // re-rasterise once the zoom settles
       S.pages.forEach(p => { if (p.canvas) { sizeCanvas(p); renderPage(p); } });
@@ -2267,7 +2435,7 @@
   function shapeMenu(anchor) {
     popup(`<div class="nt-cp-title">Shapes</div>
       <div class="nt-shape-grid">${SHAPES.map(sh => `<button type="button" class="${S.shape === sh.id ? 'on' : ''}" data-shape="${sh.id}" title="${sh.label}">${shapeSvg(sh.id)}<span>${sh.label}</span></button>`).join('')}</div>
-      <p class="nt-menu-note"><i class="fas fa-lightbulb"></i> Drag on the page to draw. Lines snap to 0°, 15°, 45°, 90°…; boxes and ellipses snap to squares and circles. Circle draws from its centre.</p>`,
+      <p class="nt-menu-note"><i class="fas fa-lightbulb"></i> Drag on the page to draw. Lines snap to 0°, 15°, 45°, 90°…; boxes and ellipses snap to squares and circles. Every shape fills the area you drag over.</p>`,
     (e) => {
       const b = e.target.closest('[data-shape]'); if (!b) return;
       S.shape = b.dataset.shape; lsSet('aero_nt_shape', S.shape); closePopup(); renderToolOptions();
@@ -2523,7 +2691,14 @@
   let resizeTimer = 0;
   function onResize() {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => { if (S.mode !== 'editor' || !S.scroller) return; fitBar(); computeBase(); setZoom(S.zoom); }, 150);
+    resizeTimer = setTimeout(() => {
+      if (S.mode !== 'editor' || !S.scroller) return;
+      fitBar();
+      /* only a new width or pixel density changes the paper — phone browser bars and
+         the on-screen keyboard change just the height, and must not re-draw every page */
+      if (S.scroller.clientWidth === S.lastW && (window.devicePixelRatio || 1) === S.lastDpr) return;
+      computeBase(); setZoom(S.zoom);
+    }, 150);
   }
   function wireEditor() {
     const sc = S.scroller;
@@ -2531,7 +2706,12 @@
     sc.addEventListener('pointerdown', onPointerDown);
     sc.addEventListener('pointermove', onPointerMove, { passive: false });
     sc.addEventListener('pointerup', onPointerUp);
-    sc.addEventListener('pointercancel', (e) => { if (S.active && S.active.pointerId === e.pointerId) cancelStroke(); onPointerUp(e); });
+    /* the system cancelled a pointer: a finger may be turning into a gesture or a
+       palm — drop it; a stylus or mouse stroke is real writing — keep it */
+    sc.addEventListener('pointercancel', (e) => {
+      if (S.active && S.active.pointerId === e.pointerId) { if (e.pointerType === 'touch') cancelStroke(); else finishActive(); }
+      onPointerUp(e);
+    });
     sc.addEventListener('wheel', onWheel, { passive: false });
     sc.addEventListener('scroll', () => { if (!S._scrollRaf) S._scrollRaf = requestAnimationFrame(() => { S._scrollRaf = 0; updateCurrent(); }); }, { passive: true });
     sc.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -2564,7 +2744,11 @@
     clearTimeout(S.thumbTimer); clearTimeout(S.thumbLoadTimer); S.thumbQueue.clear();
     S.pages.forEach(p => { unmountThumb(p); p.thumbEl = null; p.thumbRaw = null; if (p.canvas) { p.canvas.width = p.canvas.height = 0; } p.canvas = null; p.ctx = null; p.el = null; });
     S.thumbsEl = null; S.sideEl = null; S._thumbOn = null;
-    if (S.overlay) { clearTimeout(S.overlay.freeT); S.overlay.c.remove(); S.overlay.c.width = S.overlay.c.height = 0; S.overlay = null; }
+    if (S.overlay) {
+      const o = S.overlay; clearTimeout(o.freeT); o.c.remove(); o.c.width = o.c.height = 0;
+      if (o.t) { o.t.c.remove(); o.t.c.width = o.t.c.height = 0; }
+      S.overlay = null;
+    }
     if (!hasUnsaved()) { S.pages = []; S.byId = new Map(); S.nb = null; }
     S.undo = []; S.redo = [];
     S.mode = 'library';

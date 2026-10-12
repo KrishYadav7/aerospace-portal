@@ -609,3 +609,19 @@ html[data-skin="space"] .nt-scroller { background: rgba(7, 11, 26, .55); }
 }
 .nt-pp-add:hover { border-color: var(--nt-accent); color: var(--nt-accent); }
 .nt-penpanel .nt-menu-note b { font-weight: 700; color: var(--text-secondary); }
+
+/* ==========================================================================
+   ⭐ 2026-10-12 — NOTES ON EVERY DEVICE: no page zoom, no input zoom
+   ========================================================================== */
+/* the open notebook appears in place (the view's slide-in would move the paper under the pen) */
+#studentNotesView.active.nt-editing { animation: none; }
+/* toolbar, page list and menus: taps, scrolling and sliders work, but a double-tap
+   or pinch can no longer zoom the whole page (the notebook has its own zoom) */
+.nt-editor .nt-bar { touch-action: pan-x; }
+.nt-thumbs { touch-action: pan-y; }
+.nt-pop-ov { touch-action: pan-x pan-y; }
+.nt-pop button, .nt-ibtn, .nt-tool, .nt-color, .nt-size { touch-action: manipulation; }
+/* iPhone / iPad zoom into any field under 16px and stay zoomed */
+@media (pointer: coarse) {
+  .nt-field input[type="text"], .nt-field select, .nt-cp-hex, .nt-search input { font-size: 16px; }
+}
