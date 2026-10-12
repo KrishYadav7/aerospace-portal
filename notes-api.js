@@ -215,7 +215,7 @@ module.exports = function mountNotesApi(app, deps) {
       const saved = await NotePage.findOneAndUpdate(
         { notebookId: nb._id, pageId },
         { $set: set, $inc: { rev: 1 } },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
+        { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
       ).select('rev').lean();
 
       if (isNew) {

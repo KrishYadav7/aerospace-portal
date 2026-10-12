@@ -589,7 +589,8 @@ app.use((req, res, next) => {
     const duration = Date.now() - start;
     // ⚡ Only flag genuinely slow requests. 2 s is the sweet spot —
     //    anything under that is normal on a shared VPS.
-    if (duration > 2000) {
+    /* live streams (SSE) stay open for minutes by design — not slow */
+    if (duration > 2000 && !/\/stream(\?|$)/.test(req.path || '')) {
       console.warn(`[SLOW] ${req.method} ${req.url} - ${duration}ms`);
     }
   });
@@ -3321,7 +3322,8 @@ const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 
 async function sendSMS(to, body) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
-    console.warn('[sms] Twilio not configured — SMS skipped for', to);
+    /* log once, and never write students' phone numbers into the logs */
+    if (!sendSMS._warned) { sendSMS._warned = true; console.warn('[sms] Twilio not configured — SMS is off (email OTPs still work)'); }
     return { success: false, reason: 'not-configured' };
   }
   if (!to) return { success: false, reason: 'no-recipient' };
@@ -3840,7 +3842,7 @@ async function otpSet(key, data, ttlMs) {
         expiresAt: new Date(Date.now() + ttlMs),
         attempts: data.attempts || 0
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
     );
     return true;
   } catch (e) {
@@ -5590,7 +5592,7 @@ app.post('/api/send-otp', async (req, res) => {
     sendSMS(cleanPhone, `Aerospace Portal: Your registration OTP is ${otp}. Valid for 10 min. Do not share.`)
       .catch(() => {});
 
-    res.json({ success: true, message: 'OTP sent to your email and phone.' });
+    res.json({ success: true, message: (TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && TWILIO_PHONE_NUMBER) ? 'OTP sent to your email and phone.' : 'OTP sent to your email.' });
   } catch (e) {
     console.error('[send-otp] Error:', e.message);
     res.status(500).json({ success: false, message: 'Error sending OTP: ' + e.message });
@@ -6347,7 +6349,7 @@ app.put('/api/professors/:id/visibility', requireAdminAuth, async (req, res) => 
     const updated = await Professor.findByIdAndUpdate(
       req.params.id,
       { $set: { visible } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!updated) {
@@ -7393,7 +7395,7 @@ app.put('/api/courses/:id', requireCourseEditor, async (req, res) => {
       if (!Object.keys(update).length) return res.status(400).json({ success: false, message: 'Nothing to update.' });
       console.log(`[prof] ✏️  ${req.authUser.username} edited course ${req.params.id} (${Object.keys(update).join(', ')})`);
     }
-    const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { new: true });
+    const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { returnDocument: 'after' });
     if (!updated) return res.status(404).json({ success: false, message: 'Course not found' });
     cacheClear('courses:');
     res.json({ success: true, message: 'Course updated successfully!', course: updated });
@@ -8509,7 +8511,7 @@ async function _claimQuizSession(session) {
   const won = await QuizSession.findOneAndUpdate(
     { _id: session._id, status: { $ne: 'submitted' } },
     { $set: { status: 'submitted', submittedAt: new Date() } },
-    { new: true }
+    { returnDocument: 'after' }
   );
   return won ? { session: won, prevStatus } : null;
 }
@@ -12584,7 +12586,7 @@ async function _setProfessorStatus(req, res, status, verb) {
     };
     /* revoking also ends the professor's current session everywhere */
     if (status === 'revoked') { set['activeSession.sessionId'] = null; set.sessions = []; }
-    const u = await User.findOneAndUpdate({ _id: req.params.id, role: 'professor' }, { $set: set }, { new: true })
+    const u = await User.findOneAndUpdate({ _id: req.params.id, role: 'professor' }, { $set: set }, { returnDocument: 'after' })
       .select('username fullName email professor');
     if (!u) return res.status(404).json({ success: false, message: 'Professor not found.' });
     _clearAuthUserCache();
@@ -12686,7 +12688,7 @@ app.post('/api/admin/professor-requests/:profId/:reqId/reject',  requireAdminAut
 app.post('/api/admin/professors/:id/courses/:courseId/remove', requireAdminAuth, async (req, res) => {
   try {
     const u = await User.findOneAndUpdate({ _id: req.params.id, role: 'professor' },
-      { $pull: { 'professor.courses': String(req.params.courseId) } }, { new: true }).select('username professor');
+      { $pull: { 'professor.courses': String(req.params.courseId) } }, { returnDocument: 'after' }).select('username professor');
     if (!u) return res.status(404).json({ success: false, message: 'Professor not found.' });
     _clearAuthUserCache();
     console.log(`[prof] 🛂 ${req.authUser.username} removed course ${req.params.courseId} from ${u.username}`);
@@ -13240,7 +13242,7 @@ app.post('/api/user/video-progress', requireUser, async (req, res) => {
     const before = await User.findOneAndUpdate(
       { _id: req.authUserId },
       { $set: set, $max: { [key + '.pct']: pct } },
-      { new: false, projection: { [key]: 1 } }
+      { returnDocument: 'before', projection: { [key]: 1 } }
     ).lean();
 
     const prev = before && before.videoProgress && before.videoProgress[mid];
@@ -13837,7 +13839,7 @@ app.put('/api/admin/alumni/:id/approve', requireAdminAuth, async (req, res) => {
     const doc = await Alumni.findByIdAndUpdate(
       req.params.id,
       { status: 'approved', approvedAt: new Date(), approvedBy: String(req.adminUser._id) },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
     res.json({ success: true, message: 'Alumni approved.' });
@@ -13852,7 +13854,7 @@ app.put('/api/admin/alumni/:id/reject', requireAdminAuth, async (req, res) => {
     const doc = await Alumni.findByIdAndUpdate(
       req.params.id,
       { status: 'rejected', approvedAt: null },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
     res.json({ success: true, message: 'Alumni rejected.' });
@@ -13878,7 +13880,7 @@ app.put('/api/admin/friends/:id/approve', requireAdminAuth, async (req, res) => 
     const doc = await Friend.findByIdAndUpdate(
       req.params.id,
       { status: 'approved', approvedAt: new Date(), approvedBy: String(req.adminUser._id) },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
     res.json({ success: true, message: 'Friend approved.' });
@@ -13893,7 +13895,7 @@ app.put('/api/admin/friends/:id/reject', requireAdminAuth, async (req, res) => {
     const doc = await Friend.findByIdAndUpdate(
       req.params.id,
       { status: 'rejected', approvedAt: null },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
     res.json({ success: true, message: 'Friend rejected.' });
@@ -13990,7 +13992,7 @@ app.put('/api/admin/feedback/:id/approve', requireAdminAuth, async (req, res) =>
     const doc = await Feedback.findByIdAndUpdate(
       req.params.id,
       { status: 'approved', approvedAt: new Date(), approvedBy: String(req.adminUser._id) },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
     res.json({ success: true, message: 'Feedback approved.' });
@@ -14005,7 +14007,7 @@ app.put('/api/admin/feedback/:id/reject', requireAdminAuth, async (req, res) => 
     const doc = await Feedback.findByIdAndUpdate(
       req.params.id,
       { status: 'rejected', approvedAt: null },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!doc) return res.status(404).json({ success: false, message: 'Not found.' });
     res.json({ success: true, message: 'Feedback rejected.' });
@@ -15569,7 +15571,7 @@ app.put('/api/admin/login-popups/:id', requireAdminAuth, async (req, res) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ success: false, message: 'Invalid id.' });
     const doc = await LoginPopup.findByIdAndUpdate(req.params.id,
       { $set: Object.assign(_popupClean(req.body), { updatedBy: (req.authUser && req.authUser.username) || 'admin' }), $inc: { version: 1 } },
-      { new: true }).lean();
+      { returnDocument: 'after' }).lean();
     if (!doc) return res.status(404).json({ success: false, message: 'Pop-up not found.' });
     _popupInvalidate();
     res.json({ success: true, popup: doc });

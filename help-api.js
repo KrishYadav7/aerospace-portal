@@ -240,7 +240,7 @@ module.exports = function mountHelpApi(app, deps) {
       if (!isId(req.params.id)) return fail(res, 404, 'Question not found.');
       const st = String((req.body || {}).status || '');
       if (!['open', 'answered', 'closed'].includes(st)) return fail(res, 400, 'Invalid status.');
-      const t = await SupportTicket.findByIdAndUpdate(req.params.id, { $set: { status: st, lastActivityAt: new Date() } }, { new: true });
+      const t = await SupportTicket.findByIdAndUpdate(req.params.id, { $set: { status: st, lastActivityAt: new Date() } }, { returnDocument: 'after' });
       if (!t) return fail(res, 404, 'Question not found.');
       res.json({ success: true, ticket: serialize(t, true) });
     } catch (e) { fail(res, 500, 'Server error.'); }
