@@ -4557,9 +4557,13 @@ async function linearizePdf(diskPath) {
     /* FIX 1: Single-extension output name (Hostinger blocks "*.pdf.lin") */
     const outPath = diskPath.replace(/\.pdf$/i, '') + '-linearized.pdf';
 
+    /* ⚡ 2026-10-12: packed into object streams but no longer linearized —
+       PDF.js reads every page's dictionary before page 1, and linearizing
+       scatters them through the file (one round trip each on a phone).
+       Packed, they sit together near the start. See fastViewNameFor(). */
     execFile(
       'qpdf',
-      ['--linearize', '--object-streams=generate', diskPath, outPath],
+      ['--object-streams=generate', diskPath, outPath],
       { timeout: 60000, maxBuffer: 8 * 1024 * 1024 },
       (err, _stdout, stderr) => {
         /* FIX 2: Allow exit code 3 (success-with-warnings) */
@@ -4581,7 +4585,7 @@ async function linearizePdf(diskPath) {
           }
           fs.renameSync(outPath, diskPath);
           console.log(
-            '[linearize] ✅ Linearized:',
+            '[linearize] ✅ Packed for fast opening:',
             path.basename(diskPath),
             `(${Math.round(st.size / 1024)} KB)`,
             exitCode === 3 ? '(with warnings)' : ''
@@ -6577,6 +6581,7 @@ const FASTVIEW_MIN_BYTES      = 1024 * 1024;               // smaller PDFs load 
 const FASTVIEW_MAX_BYTES      = 500 * 1024 * 1024;
 const FASTVIEW_OPTIMIZE_MAX_BYTES = 150 * 1024 * 1024;     // image step: bounded memory
 const FASTVIEW_MIN_FREE_BYTES = 3 * 1024 * 1024 * 1024;    // keep ≥ 3 GB free on the disk
+const FASTVIEW_PREV_KEEP_MS   = 3 * 60 * 60 * 1000;        // a replaced v3 copy stays readable this long
 const _fastViewQueue  = [];
 const _fastViewQueued = new Set();
 const _fastViewSkip   = new Map();       // filename → original mtime that could not be improved
@@ -6586,8 +6591,16 @@ let   _fastViewNoQpdf = false;           // qpdf missing → image step only
 /* ⭐ 2026-10-12 — v3: page pictures are kept at ~290 dpi / quality 85 (v2 kept
    ~200 dpi / 80, which made small handwriting and fine print soft once a
    student zoomed in on a laptop). v2 copies are rebuilt as v3 and removed. */
-function fastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview3.pdf'); }
-function _oldFastViewNamesFor(fn) { return ['_fastview.pdf', '_fastview2.pdf'].map(sfx => String(fn).replace(/\.pdf$/i, sfx)); }
+/* ⭐ 2026-10-12 — v4: same pictures as v3, but NOT linearized. Before showing
+   anything PDF.js reads the dictionary of every page; linearizing puts each
+   page's dictionary next to that page's pictures, scattered through the file,
+   so a phone paid one round trip per page before page 1 (measured on a 6-page,
+   8 MB file at 300 ms / 3 Mbit: 12.9 s → 6.3 s to page 1). Packed into object
+   streams without linearizing, all of them sit together near the start. v4 is
+   made from an existing v3 copy with qpdf alone (the images are already done). */
+function fastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview4.pdf'); }
+function _prevFastViewNameFor(fn) { return String(fn).replace(/\.pdf$/i, '_fastview3.pdf'); }
+function _oldFastViewNamesFor(fn) { return ['_fastview.pdf', '_fastview2.pdf', '_fastview3.pdf'].map(sfx => String(fn).replace(/\.pdf$/i, sfx)); }
 
 /* The fast copy's filename when an up-to-date one exists; otherwise
    null (and a copy is queued so the next open is fast). */
@@ -6601,8 +6614,15 @@ function fastViewFor(fn) {
     const fv = fastViewNameFor(fn);
     let fst = null;
     try { fst = fs.statSync(path.join(UPLOAD_DIR, fv)); } catch (_) {}
-    if (fst && fst.isFile() && fst.size > 1024 && fst.mtimeMs >= st.mtimeMs) return fv;
+    if (fst && fst.isFile() && fst.size > 1024 && fst.mtimeMs >= st.mtimeMs) {
+      /* a v3 copy left behind by a restart before its delayed clean-up */
+      if (Date.now() - fst.mtimeMs > FASTVIEW_PREV_KEEP_MS) fs.promises.rm(path.join(UPLOAD_DIR, _prevFastViewNameFor(fn)), { force: true }).catch(() => {});
+      return fv;
+    }
     _queueFastView(fn, st.mtimeMs);
+    /* until the new copy is ready, the previous one is still far better than the original */
+    const prev = _prevFastViewNameFor(fn);
+    try { const pst = fs.statSync(path.join(UPLOAD_DIR, prev)); if (pst.isFile() && pst.size > 1024 && pst.mtimeMs >= st.mtimeMs) return prev; } catch (_) {}
     return null;
   } catch (e) {
     return null;
@@ -6842,22 +6862,28 @@ async function _buildFastView(fn) {
   const tmpLin = base + '_tmp' + crypto.randomBytes(3).toString('hex') + '.pdf';
   const t0 = Date.now();
   try {
-    /* 1) shrink oversized page images */
+    /* 1) shrink oversized page images — or start from the v3 copy, whose images are already done */
     let input = src, note = [];
-    if (st.size <= FASTVIEW_OPTIMIZE_MAX_BYTES) {
+    const prev = path.join(UPLOAD_DIR, _prevFastViewNameFor(fn));
+    let prevOk = false;
+    try { prevOk = (await fs.promises.stat(prev)).mtimeMs >= st.mtimeMs && await _isGoodPdf(prev); } catch (_) {}
+    if (prevOk && !_fastViewNoQpdf) {
+      input = prev;
+      note.push('from v3');
+    } else if (st.size <= FASTVIEW_OPTIMIZE_MAX_BYTES) {
       const r = await _runPdfOptimizer(src, tmpOpt);
       if (r && r.changed && await _isGoodPdf(tmpOpt)) {
         input = tmpOpt;
         note.push(`images ${r.resized}/${r.images} resized`);
       }
     }
-    /* 2) linearize ("page 1 first") + object streams */
+    /* 2) pack every page dictionary into object streams near the start (NOT linearized — see fastViewNameFor) */
     let result = null;
-    if (!_fastViewNoQpdf && await _runQpdf(['--linearize', '--object-streams=generate', '--stream-data=preserve', input, tmpLin]) &&
+    if (!_fastViewNoQpdf && await _runQpdf(['--object-streams=generate', '--stream-data=preserve', input, tmpLin]) &&
         await _isGoodPdf(tmpLin)) {
       result = tmpLin;
-      note.push('linearized');
-    } else if (input !== src) {
+      note.push('packed');
+    } else if (input !== src && input !== prev) {
       result = input;
     }
     if (!result) { _fastViewSkip.set(fn, st.mtimeMs); return; }
@@ -6868,8 +6894,12 @@ async function _buildFastView(fn) {
     const tst = await fs.promises.stat(out);
     console.log(`[fastview] ⚡ ${fn} → ${path.basename(out)} · ${Math.round(st.size / 1048576 * 10) / 10} MB → ` +
                 `${Math.round(tst.size / 1048576 * 10) / 10} MB · ${note.join(', ')} · ${Date.now() - t0} ms`);
-    /* older copies (v1, v2) are no longer used */
-    _oldFastViewNamesFor(fn).forEach(n => fs.promises.rm(path.join(UPLOAD_DIR, n), { force: true }).catch(() => {}));
+    /* older copies are no longer used — v3 only after a while, a student may be
+       reading it right now (its pages arrive in pieces, on demand) */
+    _oldFastViewNamesFor(fn).forEach(n => {
+      const drop = () => fs.promises.rm(path.join(UPLOAD_DIR, n), { force: true }).catch(() => {});
+      if (n === path.basename(_prevFastViewNameFor(fn))) setTimeout(drop, FASTVIEW_PREV_KEEP_MS).unref(); else drop();
+    });
   } finally {
     fs.promises.rm(tmpOpt, { force: true }).catch(() => {});
     fs.promises.rm(tmpLin, { force: true }).catch(() => {});

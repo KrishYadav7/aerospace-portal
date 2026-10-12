@@ -1357,9 +1357,16 @@ class VideoPlayer {
        and re-render when scrolled to again (long documents).
      ============================================================ */
   const PDF_RANGE_CHUNK       = 2 * 1024 * 1024;  // range size for ordinary PDFs (unchanged)
-  const PDF_FAST_RANGE_CHUNK  = 256 * 1024;   // range size for server-packed "fast view" PDFs
-  const PDF_LARGE_RANGE_CHUNK = 512 * 1024;   // range size for other large PDFs
+  /* ⚡ 2026-10-12: 128 KB (was 256 / 512 KB). Before page 1, PDF.js reads many
+     small dictionaries; each one cost a whole chunk, i.e. 0.5–1.5 s per read on
+     a phone. Big reads (page pictures) are still fetched as one request —
+     PDF.js joins neighbouring chunks. Measured page 1 at 200 ms / 8 Mbit:
+     5.9 s → 4.2 s on a scattered 8 MB file. */
+  const PDF_FAST_RANGE_CHUNK  = 128 * 1024;   // range size for server-packed "fast view" PDFs
+  const PDF_LARGE_RANGE_CHUNK = 128 * 1024;   // range size for other large PDFs
   const PDF_RANGES_ONLY_BYTES = 3 * 1024 * 1024;  // above this, load only the pieces that are needed
+  const PDF_HEAD_BYTES        = 128 * 1024;   // start of the file, fetched at open (packed page dictionaries live here)
+  const PDF_TAIL_BYTES        = 64 * 1024;    // end of the file, fetched at open in parallel (the cross-reference index)
   const PDF_MAX_DPR           = 2;            // 2× is already sharp; 3× phones paid 2.25× the work
   const PDF_MAX_CANVAS_PIXELS = 12e6;         // ≈ 48 MB of pixels per page canvas
   const PDF_KEEP_ALL_PAGES    = 12;           // documents this short keep every page
@@ -1477,6 +1484,72 @@ class VideoPlayer {
   };
   window.AeroPdfCache = AeroPdfCache;
 
+  /* ============================================================
+     ⚡ RANGE TRANSPORT (2026-10-12)
+     ------------------------------------------------------------
+     Left to itself, PDF.js spends three round trips before it reads
+     any page: a full GET only to learn that the server supports byte
+     ranges (cancelled at once), then the start of the file, then the
+     end (where the cross-reference index is). At 200–300 ms per trip
+     on a phone that is close to a second of nothing.
+     Here the start and the end are asked for together, straight away,
+     in parallel. PDF.js gets the start as its initial data and the end
+     from memory; every further piece is a normal Range request.
+     Same-origin files only; anything unexpected returns null and the
+     caller uses the plain URL source exactly as before.
+     ============================================================ */
+  async function _rangeSource(src, signal) {
+    if (!src || !src.url || typeof fetch !== 'function' || !window.pdfjsLib ||
+        typeof pdfjsLib.PDFDataRangeTransport !== 'function') return null;
+    let href;
+    try {
+      const u = new URL(src.url, location.href);
+      if (u.origin !== location.origin) return null;
+      href = u.href;
+    } catch (_) { return null; }
+    const headers = src.httpHeaders || {};
+    const get = (range) => fetch(href, {
+      headers: Object.assign({ Range: range }, headers), credentials: 'same-origin', signal
+    });
+    const totalOf = (r) => { const m = /\/(\d+)\s*$/.exec(r.headers.get('Content-Range') || ''); return m ? Number(m[1]) : 0; };
+    const drop = (r) => { try { if (r && r.body) r.body.cancel(); } catch (_) {} };
+
+    const [h, t] = await Promise.all([get('bytes=0-' + (PDF_HEAD_BYTES - 1)), get('bytes=-' + PDF_TAIL_BYTES).catch(() => null)]);
+    if (h.status !== 206) { drop(h); drop(t); return null; }           // no ranges here — let PDF.js decide
+    const len = totalOf(h);
+    const head = new Uint8Array(await h.arrayBuffer());
+    if (!len || head.length > len) { drop(t); return null; }
+    if (head.length === len) { drop(t); return { data: head }; }     // small file: that was all of it
+    let tail = null;
+    if (t && t.status === 206 && totalOf(t) === len) tail = new Uint8Array(await t.arrayBuffer());
+    else drop(t);
+    const tailStart = tail ? len - tail.length : len;
+
+    const transport = new pdfjsLib.PDFDataRangeTransport(len, head);
+    let loaded = head.length + (tail ? tail.length : 0);
+    transport.requestDataRange = (begin, end) => {
+      if (tail && begin >= tailStart && end <= len) {
+        const piece = tail.slice(begin - tailStart, end - tailStart);
+        setTimeout(() => transport.onDataRange(begin, piece), 0);
+        return;
+      }
+      /* a dropped connection must not leave the page waiting forever */
+      const attempt = (n) => get('bytes=' + begin + '-' + (end - 1))
+        .then(r => { if (r.status !== 206) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+        .then(b => {
+          loaded += b.byteLength;
+          transport.onDataRange(begin, new Uint8Array(b));
+          transport.onDataProgress(Math.min(loaded, len), len);
+        })
+        .catch(err => {
+          if (signal.aborted || n >= 3) { if (!signal.aborted) console.warn('[PDFViewer] range failed:', err && err.message); return; }
+          setTimeout(() => { if (!signal.aborted) attempt(n + 1); }, 600 * (n + 1));
+        });
+      attempt(1);
+    };
+    return { range: transport };
+  }
+
   function _getSharedPdfWorker() {
     try {
       if (!window.pdfjsLib || typeof pdfjsLib.PDFWorker !== 'function') return null;
@@ -1546,6 +1619,7 @@ class VideoPlayer {
       this._paywallObserver = null;      // ⭐ scroll-triggered paywall observer
       this._releaseObserver = null;      // ⚡ frees canvases of far-away pages
       this._loadingTask = null;          // ⚡ PDF.js loading task (destroyed on close)
+      this._rangeAbort = null;           // ⚡ aborts the range transport's requests (see _rangeSource)
       this._inflight = new Map();        // ⚡ page → in-progress render
       this._renderTasks = new Map();     // ⚡ page → PDF.js render task (cancellable)
       this._farPages = null;             // ⚡ pages outside the keep zone
@@ -1789,6 +1863,14 @@ class VideoPlayer {
         let source;
         if (opts.url) {
           source = await this._buildPdfSource(opts.url, opts.fastView === true, opts.sigInHeader === true, Number(opts.fileSize) || 0);
+          /* ranges-only files: ask for the start and the end at once (see _rangeSource) */
+          if (source.disableStream && !stale()) {
+            const ctrl = this._rangeAbort = (typeof AbortController === 'function') ? new AbortController() : null;
+            let r = null;
+            if (ctrl) { try { r = await _rangeSource(source, ctrl.signal); } catch (_) { r = null; } }
+            if (r) source = Object.assign({ rangeChunkSize: source.rangeChunkSize, disableAutoFetch: source.disableAutoFetch,
+                                            disableStream: true, urlSource: source }, r);
+          }
         } else {
           const dataURL = String(opts.data || '').indexOf('data:') === 0
             ? opts.data
@@ -1934,8 +2016,9 @@ class VideoPlayer {
     /* Open the document on the shared worker. If that worker has
        died for any reason, retry once on a fresh one. */
     async _loadDocument(source, session) {
-      const start = (useShared) => {
-        const params = Object.assign({}, source);
+      const start = (useShared, src) => {
+        const params = Object.assign({}, src);
+        delete params.urlSource;
         const worker = useShared ? _getSharedPdfWorker() : null;
         if (worker) params.worker = worker;
         const task = pdfjsLib.getDocument(params);
@@ -1957,16 +2040,18 @@ class VideoPlayer {
       };
 
       try {
-        return await start(true);
+        return await start(true, source);
       } catch (err) {
         const name = (err && err.name) || '';
         const docProblem = /Password|InvalidPDF|MissingPDF|UnexpectedResponse/.test(name);
         /* Only URL sources can be retried — a data buffer has already
-           been handed over to the worker. */
-        if (docProblem || !source.url || this._session !== session || !this.active) throw err;
+           been handed over to the worker, and a range transport is used
+           up (it is retried as the plain URL it was made from). */
+        const again = source.urlSource || source;
+        if (docProblem || !again.url || this._session !== session || !this.active) throw err;
         console.warn('[PDFViewer] retrying on a fresh worker:', err && err.message);
         _resetSharedPdfWorker();
-        return await start(false);
+        return await start(false, again);
       }
     }
     _buildUI() {
@@ -3963,6 +4048,7 @@ class VideoPlayer {
       /* ⚡ Stop any download still in progress and free the document
          in the worker (the shared worker itself stays ready for the
          next PDF). */
+      if (this._rangeAbort) { try { this._rangeAbort.abort(); } catch (_) {} }   // range requests still on their way
       const task = this._loadingTask;
       this._loadingTask = null;
       if (task) {
