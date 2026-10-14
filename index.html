@@ -319,6 +319,9 @@
               </div>
             </form>
 
+            <!-- ⭐ no connection: notes kept on this device can still be opened (filled by app.js) -->
+            <div class="lg-offline-notes" id="offlineNotesEntry" hidden></div>
+
             <div class="login-footer lg-footer">
               <div class="lg-divider"><span>New to AeroGyan?</span></div>
               <div class="lg-cta-row">
@@ -2019,7 +2022,7 @@
       // updateViaCache:'none' forces the browser to fetch the SW script
       // from the network on every update check — critical for iOS/Safari
       // which otherwise uses an HTTP-cached copy.
-      navigator.serviceWorker.register('/sw.js?v=145', { updateViaCache: 'none' })
+      navigator.serviceWorker.register('/sw.js?v=149', { updateViaCache: 'none' })
         .then(reg => {
           console.log('[SW] registered:', reg.scope);
 
@@ -2058,7 +2061,9 @@
         document.querySelector('.modal-overlay.active') ||
         document.querySelector('#quizExamShell[aria-hidden="false"]') ||
         document.querySelector('#videoPlayerModal.active') ||
-        document.querySelector('#pdfViewerModal.active');
+        document.querySelector('#pdfViewerModal.active') ||
+        document.documentElement.classList.contains('aero-nt-full') ||     // writing in a notebook
+        document.getElementById('aeroOfflineNotes');
       if (busy) {
         console.log('[SW] new version ready — will reload when you finish');
         return;

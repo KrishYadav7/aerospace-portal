@@ -4017,6 +4017,7 @@ async function handleLogin(e) {
         return attemptLogin(retries - 1, 30000); // longer timeout on retry
       }
 
+      if (isNetworkish) { window.__aeroNetDown = true; try { aeroPaintOfflineNotesEntry(); } catch (e) {} }   // offer the notes on this device
       if (err.name === 'AbortError') {
         showToast('Request timed out. Please try again.', 'error');
       } else if (isNetworkish) {
@@ -4048,6 +4049,13 @@ function logout() {
   _sessionKilled = false;
   /* ⚡ pages kept on this device for instant re-opening belong to this student */
   try { if (window.AeroPdfCache) window.AeroPdfCache.clearAll(); } catch (e) {}
+  /* ⭐ notebooks on this device: kept only where the student allowed offline notes
+     (notes.js decides; ink the server hasn't got yet is never deleted) */
+  try {
+    const uid = currentUser ? String(currentUser._id || currentUser.id || currentUser.username) : '';
+    if (window.AeroNotes && window.AeroNotes.signedOut) window.AeroNotes.signedOut(uid);
+    else if (uid && localStorage.getItem('aero_nt_list_' + uid)) loadNotesModule().then(() => window.AeroNotes.signedOut(uid)).catch(() => {});
+  } catch (e) {}
 
   _courseCacheAt = 0;
   liveCourses = [];
@@ -4070,6 +4078,7 @@ function logout() {
   stopQuizAutosave();
   stopQuizTimer();
   pushHash('#/home'); renderApp(); showToast('Logged out.', 'info');
+  try { aeroPaintOfflineNotesEntry(); } catch (e) {}
 }
 
 function showRegisterModal() {
@@ -17801,6 +17810,7 @@ function initApp() {
 
   /* ---- INSTANT FIRST PAINT — no network wait ---- */
   renderApp();
+  try { aeroPaintOfflineNotesEntry(); } catch (e) {}
 
   /* ⭐ Skip the boot fetches when there is no session to resume.
      ------------------------------------------------------------
@@ -19862,6 +19872,43 @@ function prefetchNotesModule() {
   });
   if ('requestIdleCallback' in window) requestIdleCallback(go, { timeout: 6000 }); else setTimeout(go, 3000);
 }
+/* ⭐ OFFLINE NOTES FROM THE SIGN-IN SCREEN (2026-10-14)
+   Signing in needs the server, but notebooks kept on this device can
+   be opened without a connection — for the students who allowed it on
+   this device (notes.js keeps that list in aero_nt_profiles). */
+function aeroOfflineProfiles() {
+  try { const a = JSON.parse(localStorage.getItem('aero_nt_profiles') || '[]'); return Array.isArray(a) ? a.filter(p => p && p.uid) : []; }
+  catch (_) { return []; }
+}
+function aeroPaintOfflineNotesEntry() {
+  const box = document.getElementById('offlineNotesEntry'); if (!box) return;
+  const list = aeroOfflineProfiles();
+  const show = !currentUser && list.length > 0 && (navigator.onLine === false || window.__aeroNetDown === true);
+  box.hidden = !show;
+  if (!show) { box.innerHTML = ''; return; }
+  box.innerHTML = `
+    <div class="lg-offline-head"><i class="fas fa-wifi"></i> No internet connection</div>
+    <p>Signing in needs a connection — but the notes on this device open without one, and sync the next time you sign in.</p>
+    ${list.map(p => `<button type="button" class="btn btn-outline btn-block lg-offline-btn" onclick="aeroOpenOfflineNotes('${escapeHtml(String(p.uid))}')">
+      <i class="fas fa-book-open"></i> Open ${escapeHtml(p.name || 'my')}'s notes</button>`).join('')}`;
+}
+async function aeroOpenOfflineNotes(uid) {
+  try { await loadNotesModule(); }
+  catch (e) { return showToast('Notes have not been opened on this device while online yet.', 'error'); }
+  let host = document.getElementById('aeroOfflineNotes');
+  if (!host) { host = document.createElement('section'); host.id = 'aeroOfflineNotes'; document.body.appendChild(host); }
+  document.documentElement.classList.add('aero-offline-notes');
+  const ok = await window.AeroNotes.showOffline(host, uid);
+  if (ok === false) window.__aeroLeaveOfflineNotes();
+}
+window.__aeroLeaveOfflineNotes = function () {
+  const host = document.getElementById('aeroOfflineNotes'); if (host) host.remove();
+  document.documentElement.classList.remove('aero-offline-notes');
+  aeroPaintOfflineNotesEntry();
+};
+window.addEventListener('online', () => { window.__aeroNetDown = false; aeroPaintOfflineNotesEntry(); });
+window.addEventListener('offline', () => aeroPaintOfflineNotesEntry());
+
 function renderStudentNotes(view) {
   if (window.AeroNotes) { window.AeroNotes.show(view, _notesIdFromHash()); return; }
   if (!view.firstElementChild) {

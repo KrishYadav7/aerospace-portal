@@ -122,6 +122,8 @@
     return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
   };
   async function api(method, url, body) {
+    /* opened offline without a session (see AeroNotes.showOffline): nothing can reach the server yet */
+    if (S.offlineUser) { const err = new Error('offline'); err.offline = true; err.noSession = true; throw err; }
     let res;
     try {
       res = await fetch(url, {
@@ -133,16 +135,323 @@
     let j = null;
     try { j = await res.json(); } catch (_) {}
     if (!res.ok || !j || j.success === false) {
-      const err = new Error((j && j.message) || ('HTTP ' + res.status)); err.status = res.status; throw err;
+      const err = new Error((j && j.message) || ('HTTP ' + res.status)); err.status = res.status;
+      /* a proxy error page or a server restart: same as no connection — use this device's copy */
+      if (!j || res.status >= 500) err.unreachable = true;
+      throw err;
     }
     return j;
   }
+  const unreachable = (e) => !!(e && (e.offline || e.unreachable));
   function courses() {
     try { return (typeof liveCourses !== 'undefined' && Array.isArray(liveCourses)) ? liveCourses : []; } catch (_) { return []; }
   }
   function courseName(id) {
     const c = courses().find(x => String(x.id || x._id) === String(id));
     return c ? (c.code ? c.code + ' · ' : '') + c.name : '';
+  }
+
+  /* =========================================================
+     ⭐ OFFLINE NOTES (2026-10-14)
+     ---------------------------------------------------------
+     Every notebook can live on this device, in IndexedDB — on disk, not
+     in memory (pages are still read into memory only when they are near
+     the screen), and without localStorage's 5 MB limit. Per student:
+       nb   one record per notebook: its details and page list
+       pg   one record per page: its ink; `dirty` until the server has it
+       q    changes that are not one page's ink, made while offline
+            (new / renamed / deleted notebooks, deleted pages, page order)
+       meta the notebook list, for opening "My Notes" with no connection
+     The server stays the master copy. Ink is written here first and sent
+     when there is a connection: when it comes back, when a notebook is
+     opened, and every minute while something is waiting. While online,
+     notebooks are copied here in the background (within a size budget),
+     so they open later even with no connection at all.
+     ========================================================= */
+  const LOCAL_BUDGET = 80 * 1048576;                     // background copies stop here (pages you open are always kept)
+  const LDB = (() => {
+    let dbp = null;
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise((resolve) => {
+        let req;
+        try { req = indexedDB.open('aero-notes', 1); } catch (_) { resolve(null); return; }
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          ['nb', 'pg', 'meta'].forEach(n => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: 'k' }); });
+          if (!db.objectStoreNames.contains('q')) db.createObjectStore('q', { keyPath: 'id', autoIncrement: true });
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          db.onversionchange = () => { try { db.close(); } catch (_) {} dbp = null; };
+          resolve(db);
+        };
+        req.onerror = req.onblocked = () => { dbp = null; resolve(null); };
+      });
+      return dbp;
+    }
+    /* one transaction; fn(stores) issues requests and returns a getter for the result */
+    async function run(names, mode, fn) {
+      const db = await open(); if (!db) return null;
+      return new Promise((resolve) => {
+        let t, get;
+        try { t = db.transaction(names, mode); } catch (_) { resolve(null); return; }
+        const st = {}; names.forEach(n => { st[n] = t.objectStore(n); });
+        try { get = fn(st); } catch (_) { try { t.abort(); } catch (__) {} resolve(null); return; }
+        t.oncomplete = () => resolve(typeof get === 'function' ? get() : true);
+        t.onerror = t.onabort = (e) => { if (e && e.preventDefault) e.preventDefault(); resolve(null); };
+      });
+    }
+    const range = (prefix) => IDBKeyRange.bound(prefix, prefix + '￿');
+    const all = (store, prefix, out, filter) => {
+      store.openCursor(range(prefix)).onsuccess = (e) => {
+        const c = e.target.result; if (!c) return;
+        if (!filter || filter(c.value)) out.push(c.value);
+        c.continue();
+      };
+    };
+    return {
+      ok: () => open().then(Boolean),
+      getMeta: (uid) => run(['meta'], 'readonly', s => { let v = null; s.meta.get(uid).onsuccess = e => { v = e.target.result || null; }; return () => v; }),
+      putMeta: (rec) => run(['meta'], 'readwrite', s => { s.meta.put(rec); }),
+      getNb: (uid, id) => run(['nb'], 'readonly', s => { let v = null; s.nb.get(uid + '|' + id).onsuccess = e => { v = e.target.result || null; }; return () => v; }),
+      allNbs: (uid) => run(['nb'], 'readonly', s => { const out = []; all(s.nb, uid + '|', out); return () => out; }),
+      putNb: (rec) => run(['nb'], 'readwrite', s => { rec.k = rec.uid + '|' + rec.id; s.nb.put(rec); }),
+      /* a notebook and every page of it */
+      delNb: (uid, id) => run(['nb', 'pg'], 'readwrite', s => { s.nb.delete(uid + '|' + id); s.pg.delete(range(uid + '|' + id + '|')); }),
+      getPages: (uid, nbId, ids) => run(['pg'], 'readonly', s => {
+        const out = new Map();
+        ids.forEach(id => { s.pg.get(uid + '|' + nbId + '|' + id).onsuccess = e => { if (e.target.result) out.set(id, e.target.result); }; });
+        return () => out;
+      }),
+      nbPages: (uid, nbId) => run(['pg'], 'readonly', s => { const out = []; all(s.pg, uid + '|' + nbId + '|', out); return () => out; }),
+      putPages: (recs) => run(['pg'], 'readwrite', s => { recs.forEach(r => { r.k = r.uid + '|' + r.nb + '|' + r.id; s.pg.put(r); }); }),
+      /* the server's copy of pages — never over ink that is still waiting to be sent (checked inside the transaction) */
+      putClean: (recs) => run(['pg'], 'readwrite', s => {
+        recs.forEach(r => {
+          r.k = r.uid + '|' + r.nb + '|' + r.id;
+          s.pg.get(r.k).onsuccess = (e) => { const cur = e.target.result; if (!cur || !cur.dirty) s.pg.put(r); };
+        });
+      }),
+      delPage: (uid, nbId, id) => run(['pg'], 'readwrite', s => { s.pg.delete(uid + '|' + nbId + '|' + id); }),
+      dirtyPages: (uid) => run(['pg'], 'readonly', s => { const out = []; all(s.pg, uid + '|', out, r => r.dirty); return () => out; }),
+      /* bytes of ink kept for this student, and how many pages wait for the server */
+      usage: (uid) => run(['pg'], 'readonly', s => {
+        let bytes = 0, dirty = 0;
+        s.pg.openCursor(range(uid + '|')).onsuccess = (e) => { const c = e.target.result; if (!c) return; bytes += (c.value.data || '').length; if (c.value.dirty) dirty++; c.continue(); };
+        return () => ({ bytes, dirty });
+      }),
+      ops: (uid) => run(['q'], 'readonly', s => { const out = []; s.q.openCursor().onsuccess = (e) => { const c = e.target.result; if (!c) return; if (c.value.uid === uid) out.push(c.value); c.continue(); }; return () => out; }),
+      addOp: (op) => run(['q'], 'readwrite', s => { s.q.add(op); }),
+      delOps: (ids) => run(['q'], 'readwrite', s => { ids.forEach(id => s.q.delete(id)); }),
+      putOp: (op) => run(['q'], 'readwrite', s => { s.q.put(op); }),
+      /* forget a student's notes on this device — never the pages the server hasn't got yet */
+      wipe: (uid) => run(['nb', 'pg', 'meta'], 'readwrite', s => {
+        let kept = 0;
+        s.pg.openCursor(range(uid + '|')).onsuccess = (e) => { const c = e.target.result; if (!c) return; if (c.value.dirty) kept++; else c.delete(); c.continue(); };
+        s.nb.openCursor(range(uid + '|')).onsuccess = (e) => { const c = e.target.result; if (!c) return; if (!c.value.local) c.delete(); c.continue(); };
+        s.meta.delete(uid);
+        return () => kept;
+      })
+    };
+  })();
+  /* ask the browser not to clear these notes under storage pressure (Chromium decides silently;
+     Firefox would ask with a pop-up, so it is not asked there) */
+  function keepStorage() {
+    try { if (!/Firefox\//.test(navigator.userAgent || '') && navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (_) {}
+  }
+
+  /* who the notes belong to: the signed-in student, or the one who opened them offline */
+  function uidNow() {
+    try {
+      if (S.offlineUser) return S.offlineUser.uid;
+      const u = (typeof currentUser !== 'undefined' && currentUser) || null;
+      return u ? String(u._id || u.id || u.username) : null;
+    } catch (_) { return null; }
+  }
+  /* client-made notebook id — the same shape as the server's (24 hex), so it is kept when synced */
+  function newNotebookId() {
+    const t = Math.floor(Date.now() / 1000).toString(16).padStart(8, '0');
+    let r = '';
+    try { const b = new Uint8Array(8); crypto.getRandomValues(b); b.forEach(x => { r += x.toString(16).padStart(2, '0'); }); }
+    catch (_) { for (let i = 0; i < 16; i++) r += Math.floor(Math.random() * 16).toString(16); }
+    return t + r;
+  }
+
+  /* ---------- "use my notes offline on this device" ----------
+     Pages are always kept while a student is signed in. Opening them
+     later with no connection AND no sign-in (from the login screen) is
+     allowed only when this is on: on by default in the AeroGyan app (a
+     personal phone / tablet / PC), off in a browser (a lab PC, a
+     classroom smartboard) — each student can change it in Notes → ⋯ */
+  const inNativeApp = () => /AeroGyanApp\//.test(navigator.userAgent || '');
+  function offlinePref() { const v = lsGet('aero_nt_offline'); return v == null ? inNativeApp() : v === '1'; }
+  function profiles() { try { const a = JSON.parse(lsGet('aero_nt_profiles') || '[]'); return Array.isArray(a) ? a.filter(p => p && p.uid) : []; } catch (_) { return []; } }
+  function rememberProfile() {
+    let u = null; try { u = (typeof currentUser !== 'undefined' && currentUser) || null; } catch (_) {}
+    const uid = uidNow(); if (!u || !uid) return;
+    const list = profiles().filter(p => p.uid !== uid);
+    if (offlinePref()) { list.unshift({ uid, name: String(u.fullName || u.username || 'Student').slice(0, 80), at: Date.now() }); keepStorage(); }
+    lsSet('aero_nt_profiles', JSON.stringify(list.slice(0, 5)));
+  }
+
+  /* ---------- sync: everything waiting on this device → the server ---------- */
+  let syncing = null, syncTimer = 0;
+  function requestSync(delay) {
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { syncAll().catch(() => {}); }, delay == null ? 400 : delay);
+  }
+  function syncAll() {
+    if (syncing) return syncing;
+    syncing = (async () => {
+      const uid = uidNow(); if (!uid || S.offlineUser) return false;
+      try {
+        let ops = await LDB.ops(uid) || [];
+        /* 1) notebooks made offline must exist before their pages are sent */
+        for (const op of ops.filter(o => o.t === 'create')) {
+          const j = await api('POST', API, op.body);
+          const rec = await LDB.getNb(uid, op.nb);
+          if (rec) { rec.local = false; rec.nb = Object.assign({}, rec.nb, j.notebook, { title: rec.nb.title, cover: rec.nb.cover, paper: rec.nb.paper, paperColor: rec.nb.paperColor }); await LDB.putNb(rec); }
+          await LDB.delOps([op.id]);
+          if (S.nb && S.nb.id === op.nb) S.nb.local = false;
+          const li = (S.list || []).find(x => x.id === op.nb); if (li) li.local = false;
+        }
+        /* 2) ink written offline — pages of the open notebook are sent by saveNow() */
+        const open = S.nb && S.nb.id;
+        for (const r of await LDB.dirtyPages(uid) || []) {
+          if (r.nb === open && S.byId.has(r.id)) continue;
+          if ((ops.find(o => o.t === 'delnb' && o.nb === r.nb))) continue;
+          const body = { data: r.data };
+          if (r.isNew) { body.after = r.after || ''; body.paper = r.paper || ''; }
+          if (r.paperChanged) body.paper = r.paper || '';
+          let j;
+          try { j = await api('PUT', `${API}/${r.nb}/pages/${r.id}`, body); }
+          catch (e) { if (unreachable(e) || e.status === 401) throw e; console.warn('[notes] page not synced:', e.message); continue; }
+          r.rev = j.rev; r.dirty = false; r.isNew = false; r.paperChanged = false;
+          await LDB.putPages([r]);
+        }
+        if (open && hasUnsaved()) scheduleSave(0);
+        /* 3) everything else: renames, then deleted pages, then page order (it lists only the
+           pages that are left), then deleted notebooks — oldest first within each */
+        const rank = { meta: 0, delpg: 1, order: 2, delnb: 3 };
+        ops = (await LDB.ops(uid) || []).sort((x, y) => (rank[x.t] - rank[y.t]) || (x.id - y.id));
+        for (const op of ops) {
+          if (op.t === 'create') continue;
+          try {
+            if (op.t === 'meta') await api('PUT', `${API}/${op.nb}`, op.body);
+            else if (op.t === 'order') await api('PUT', `${API}/${op.nb}`, { order: op.body.order });
+            else if (op.t === 'delpg') await api('DELETE', `${API}/${op.nb}/pages/${op.body.pageId}`);
+            else if (op.t === 'delnb') await api('DELETE', `${API}/${op.nb}`);
+          } catch (e) {
+            if (unreachable(e) || e.status === 401) throw e;
+            /* 404: already gone · 409: the page list changed on another device */
+            if (e.status !== 404) toast(op.t === 'order' ? 'Page order changed on another device — kept the server\'s order.' : (e.message || 'A change could not be synced.'), 'info');
+          }
+          await LDB.delOps([op.id]);
+        }
+        if (S.mode === 'editor' && S.status === 'offline' && !hasUnsaved()) setStatus('saved');
+        paintSyncState();
+        return true;
+      } catch (e) {
+        if (!unreachable(e) && e.status !== 401) console.warn('[notes] sync stopped:', e.message);
+        requestSync(60000);                               // try again in a minute
+        paintSyncState();
+        return false;
+      } finally { syncing = null; }
+    })();
+    return syncing;
+  }
+  /* queue one change; page-order and rename changes replace the previous one for that notebook */
+  async function queueOp(t, nb, body) {
+    const uid = uidNow(); if (!uid) return;
+    const ops = await LDB.ops(uid) || [];
+    if (t === 'meta') {
+      const prev = ops.find(o => o.t === 'meta' && o.nb === nb);
+      if (prev) { prev.body = Object.assign({}, prev.body, body); await LDB.putOp(prev); requestSync(); return; }
+      const cr = ops.find(o => o.t === 'create' && o.nb === nb);          // not on the server yet: update the create instead
+      if (cr) { cr.body = Object.assign({}, cr.body, body); await LDB.putOp(cr); requestSync(); return; }
+    }
+    if (t === 'order') { const prev = ops.filter(o => o.t === 'order' && o.nb === nb); if (prev.length) await LDB.delOps(prev.map(o => o.id)); }
+    if (t === 'delpg') {
+      for (const o of ops.filter(x => x.t === 'order' && x.nb === nb)) { o.body.order = o.body.order.filter(id => id !== body.pageId); await LDB.putOp(o); }
+    }
+    if (t === 'delnb') {
+      const mine = ops.filter(o => o.nb === nb);
+      if (mine.length) await LDB.delOps(mine.map(o => o.id));
+      if (mine.some(o => o.t === 'create')) { requestSync(); return; }     // never reached the server — nothing to delete there
+    }
+    await LDB.addOp({ uid, t, nb, body: body || {}, at: Date.now() });
+    requestSync();
+  }
+  window.addEventListener('online', () => {
+    S.offline = false;
+    requestSync(300);
+    if (S.mode === 'editor' && S.nb) {
+      S.pages.forEach(p => { if (p.missing && p.canvas) { p.missing = false; queueLoad(p); } });   // pages that weren't on this device
+      if (hasUnsaved()) scheduleSave(600);
+    } else if (S.mode === 'library' && S.root && S.root.isConnected) refreshList();
+  });
+  window.addEventListener('offline', () => {
+    S.offline = true;
+    if (S.mode === 'editor' && S.status === 'saved') setStatus('offline');
+    else if (S.mode === 'library' && S.root && S.root.isConnected) renderLibrary();
+  });
+
+  /* ---------- copy notebooks to this device while online (idle, one at a time) ---------- */
+  let mirrorRunning = false;
+  async function mirrorAll() {
+    if (mirrorRunning || S.offlineUser) return;
+    const uid = uidNow(); if (!uid || !S.list || !S.list.length) return;
+    try { const c = navigator.connection; if (c && (c.saveData || /2g/.test(c.effectiveType || ''))) return; } catch (_) {}
+    if (!(await LDB.ok())) return;
+    mirrorRunning = true;
+    try {
+      let used = ((await LDB.usage(uid)) || { bytes: 0 }).bytes;
+      const busy = new Set(((await LDB.dirtyPages(uid)) || []).map(r => r.nb));
+      ((await LDB.ops(uid)) || []).forEach(o => busy.add(o.nb));      // its offline changes go up first
+      for (const n of S.list.slice()) {
+        if (used > LOCAL_BUDGET || n.local || busy.has(n.id)) continue;
+        if (S.active || (S.mode === 'editor' && S.nb && S.nb.id === n.id)) continue;   // the open notebook keeps itself up to date
+        const rec = await LDB.getNb(uid, n.id);
+        if (rec && rec.full && rec.nb && rec.nb.updatedAt === n.updatedAt) continue;
+        used += await mirrorNotebook(uid, n.id);
+        await new Promise(r => setTimeout(r, 250));
+      }
+    } catch (_) { /* offline again — next time */ }
+    finally { mirrorRunning = false; }
+  }
+  /* keepList: the notebook is open — only its pages are copied; its page list is the editor's */
+  async function mirrorNotebook(uid, id, keepList) {
+    const j = await api('GET', `${API}/${id}`);
+    const pages = j.pages || [];
+    const have = await LDB.getPages(uid, id, pages.map(p => p.id)) || new Map();
+    const need = pages.filter(p => { const h = have.get(p.id); return !h || (!h.dirty && (h.rev || 0) < (p.rev || 0)); }).map(p => p.id);
+    let bytes = 0;
+    for (let i = 0; i < need.length; i += 12) {
+      const r = await api('GET', `${API}/${id}/pages?ids=${encodeURIComponent(need.slice(i, i + 12).join(','))}`);
+      const recs = (r.pages || []).map(x => ({ uid, nb: id, id: x.id, data: x.data || '', rev: x.rev || 0, paper: x.paper || '', dirty: false, at: Date.now() }));
+      recs.forEach(x => { bytes += x.data.length; });
+      await LDB.putClean(recs);
+    }
+    if (keepList) { const old = await LDB.getNb(uid, id); if (old) { old.full = true; await LDB.putNb(old); } }
+    else await LDB.putNb({ uid, id, nb: slimNb(j.notebook), pages: pages.map(p => ({ id: p.id, rev: p.rev, paper: p.paper || '' })), full: true, at: Date.now() });
+    return bytes;
+  }
+  /* a little cloud on each notebook: on this device · waiting to sync */
+  async function paintSyncState() {
+    const uid = uidNow(); if (!uid || !S.root || S.mode !== 'library') return;
+    const recs = await LDB.allNbs(uid) || [];
+    const ops = await LDB.ops(uid) || [];
+    const dirty = new Set(((await LDB.dirtyPages(uid)) || []).map(r => r.nb));
+    ops.forEach(o => dirty.add(o.nb));
+    const byId = new Map(recs.map(r => [r.id, r]));
+    S.root.querySelectorAll('.nt-card[data-open]').forEach(card => {
+      const id = card.dataset.open, r = byId.get(id);
+      let el = card.querySelector('.nt-offline'); if (!el) { el = document.createElement('span'); el.className = 'nt-offline'; card.querySelector('.nt-cover').appendChild(el); }
+      if (dirty.has(id)) { el.innerHTML = '<i class="fas fa-cloud-arrow-up"></i>'; el.title = 'Saved on this device — syncs when you are online'; el.hidden = false; }
+      else if (r && r.full) { el.innerHTML = '<i class="fas fa-circle-check"></i>'; el.title = 'Available offline'; el.hidden = false; }
+      else el.hidden = true;
+    });
   }
 
   /* ---------- ink encoding (what is stored) ----------
@@ -512,6 +821,12 @@
     };
     push(p[(n - 1) * 3], p[(n - 1) * 3 + 1]);
     if (a.tau) push(a.rx, a.ry);
+    if (a.pred) {                                       // predicted, at most ~20 screen px ahead (no overshoot on a sudden stop)
+      const lx = X[X.length - 1], ly = Y[Y.length - 1], max = 20 / Math.max(0.05, scale());
+      let dx = a.pred[0] - lx, dy = a.pred[1] - ly; const d = Math.hypot(dx, dy);
+      if (d > max) { dx *= max / d; dy *= max / d; }
+      push(lx + dx, ly + dy);
+    }
     if (X.length < 2) return;
     ctx.setTransform(k, 0, 0, k, 0, 0);
     inkFill(ctx, a.st, 0, X.length, a.st.c, X, Y, R);
@@ -833,26 +1148,56 @@
   /* ⚡ the shelf is kept on this device (per student) so "My Notes" opens
      instantly; the server copy replaces it a moment later */
   function listKey() {
-    try { const u = (typeof currentUser !== 'undefined' && currentUser) || null; return u ? 'aero_nt_list_' + (u._id || u.id || u.username) : null; } catch (_) { return null; }
+    const uid = uidNow(); return uid ? 'aero_nt_list_' + uid : null;
   }
   function cachedList() {
     const k = listKey(); if (!k) return null;
     try { const o = JSON.parse(lsGet(k) || 'null'); return o && Array.isArray(o.list) ? o : null; } catch (_) { return null; }
   }
+  const slimNb = (n) => ({ id: n.id, title: n.title, cover: n.cover, paper: n.paper, paperColor: n.paperColor, courseId: n.courseId, pageCount: n.pageCount, updatedAt: n.updatedAt, bytes: n.bytes, local: !!n.local });
   function saveListCache() {
     const k = listKey(); if (!k || !S.list) return;
-    lsSet(k, JSON.stringify({ list: S.list.slice(0, 200).map(n => ({ id: n.id, title: n.title, cover: n.cover, paper: n.paper, paperColor: n.paperColor, courseId: n.courseId, pageCount: n.pageCount, updatedAt: n.updatedAt, bytes: n.bytes })), usage: S.usage }));
+    const list = S.list.slice(0, 200).map(slimNb);
+    lsSet(k, JSON.stringify({ list, usage: S.usage }));
+    LDB.putMeta({ k: uidNow(), list, usage: S.usage, at: Date.now() });
+  }
+  /* changes made offline and not yet on the server, laid over a notebook list */
+  async function mergeLocal(list) {
+    const uid = uidNow(); if (!uid) return list;
+    const ops = await LDB.ops(uid) || [];
+    if (!ops.length) return list;
+    const byId = new Map(list.map(n => [n.id, n]));
+    for (const o of ops) {
+      if (o.t === 'create' && !byId.has(o.nb)) {
+        const rec = await LDB.getNb(uid, o.nb);
+        if (rec) { const n = Object.assign({}, rec.nb, { local: true }); list.unshift(n); byId.set(n.id, n); }
+      } else if (o.t === 'meta' && byId.has(o.nb)) Object.assign(byId.get(o.nb), o.body);
+      else if (o.t === 'delnb') { list = list.filter(n => n.id !== o.nb); byId.delete(o.nb); }
+    }
+    return list;
   }
   async function loadList(force) {
     if (S.list && !force) return S.list;
     S.loadingList = true;
     try {
       const j = await api('GET', API);
-      S.list = j.notebooks || []; S.usage = j.usage || null; S.listAt = Date.now();
+      S.list = await mergeLocal(j.notebooks || []); S.usage = j.usage || null; S.listAt = Date.now();
+      S.offline = false;
       saveListCache();
+      rememberProfile();
+      requestSync(1500);
+      const idle = window.requestIdleCallback || ((f) => setTimeout(f, 3000));
+      idle(() => mirrorAll(), { timeout: 8000 });
     } catch (e) {
-      if (!S.list) S.list = null;
-      throw e;
+      if (!unreachable(e)) { if (!S.list) S.list = null; throw e; }
+      /* no connection: the list as this device last saw it */
+      S.offline = true;
+      if (!S.list) {
+        const m = await LDB.getMeta(uidNow());
+        const c = m || cachedList();
+        S.list = c ? await mergeLocal(c.list.map(n => Object.assign({}, n))) : [];
+        S.usage = (c && c.usage) || null;
+      }
     } finally { S.loadingList = false; }
     return S.list;
   }
@@ -875,6 +1220,8 @@
             <h2><i class="fas fa-book-open"></i> My Notes</h2>
             <p>Handwrite or type notes for your courses. Everything saves automatically.</p>
           </div>
+          ${S.offlineUser ? `<div class="nt-offline-bar"><i class="fas fa-plane-up"></i><span><b>Offline notes — ${esc(S.offlineUser.name)}</b> Everything you write is kept on this device and syncs the next time you sign in with a connection.</span><button type="button" class="btn btn-outline btn-sm" data-nt="leave">Back to sign in</button></div>`
+            : S.offline ? `<div class="nt-offline-bar"><i class="fas fa-wifi"></i><span><b>You are offline.</b> Notebooks on this device open and save as usual — changes sync when the connection is back.</span></div>` : ''}
           <div class="nt-lib-actions">
             <div class="nt-search"><i class="fas fa-magnifying-glass"></i><input type="search" id="ntSearch" placeholder="Search notebooks" value="${esc(S.filter)}" aria-label="Search notebooks"></div>
             <button type="button" class="btn btn-primary" data-nt="new"><i class="fas fa-plus"></i> New notebook</button>
@@ -908,8 +1255,10 @@
           ${q && !shown.length ? `<div class="nt-empty"><p>No notebook matches “${esc(S.filter)}”.</p></div>` : ''}
           ${S.usage ? `<div class="nt-usage"><span style="width:${Math.min(100, usage)}%"></span></div><div class="nt-usage-txt">${(S.usage.bytes / 1048576).toFixed(1)} MB of ${(S.usage.limit / 1048576).toFixed(0)} MB used</div>` : ''}`}
       </div>`;
+    paintSyncState();
   }
   function onLibraryClick(e) {
+    if (e.target.closest('[data-nt="leave"]')) { AeroNotes.leaveOffline(); return; }
     const nw = e.target.closest('[data-nt="new"]');
     if (nw) return openNotebookDialog(null);
     const m = e.target.closest('[data-menu]');
@@ -980,20 +1329,34 @@
       a.disabled = true;
       try {
         if (editing) {
-          const j = await api('PUT', `${API}/${nb.id}`, body);
-          Object.assign(nb, j.notebook);
-          if (S.nb && S.nb.id === nb.id) { Object.assign(S.nb, j.notebook); applyPaper(); updateTitle(); }
-          const li = (S.list || []).find(x => x.id === nb.id); if (li) Object.assign(li, j.notebook);
+          let next;
+          try {
+            if (nb.local) throw Object.assign(new Error('offline'), { offline: true });   // not on the server yet
+            next = (await api('PUT', `${API}/${nb.id}`, body)).notebook;
+          } catch (err) {
+            if (!unreachable(err)) throw err;
+            next = Object.assign({}, slimNb(nb), body, { updatedAt: new Date().toISOString(), local: !!nb.local });   // offline: here now, on the server later
+            await queueOp('meta', nb.id, body);
+          }
+          Object.assign(nb, next);
+          if (S.nb && S.nb.id === nb.id) { Object.assign(S.nb, next); applyPaper(); updateTitle(); saveNbRecord(); }
+          else storeNbMeta(nb.id, next);
+          const li = (S.list || []).find(x => x.id === nb.id); if (li) Object.assign(li, next);
+          saveListCache();
           closePopup();
           if (S.mode === 'library') renderLibrary();
         } else {
           body.pageId = newId();
-          const j = await api('POST', API, body);
+          body.id = newNotebookId();                     // ours from the start, so an offline notebook keeps it when synced
+          let j;
+          try { j = await api('POST', API, body); storeOpened(j); }
+          catch (err) { if (!unreachable(err)) throw err; j = await createLocalNotebook(body); }
           (S.list = S.list || []).unshift(j.notebook);
+          saveListCache();
           closePopup();
           openNotebook(j.notebook.id, j);
         }
-      } catch (err) { a.disabled = false; toast(err.offline ? 'You are offline — try again when connected.' : err.message, 'error'); }
+      } catch (err) { a.disabled = false; toast(err.offline ? 'You are offline and this device cannot keep notebooks (private browsing?).' : err.message, 'error'); }
     }, { center: true, cls: 'nt-dialog' });
     const t = $('#ntTitle', ov);
     if (t) t.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ov.querySelector('[data-a="save"]').click(); } });
@@ -1014,8 +1377,11 @@
       else if (a.dataset.a === 'del') {
         if (!(await confirmBox('Delete notebook?', `“${esc(nb.title)}” and all its ${nb.pageCount} page(s) will be deleted. This cannot be undone.`, 'Delete', true))) return;
         try {
-          await api('DELETE', `${API}/${id}`);
+          try { if (nb.local) throw Object.assign(new Error('offline'), { offline: true }); await api('DELETE', `${API}/${id}`); }
+          catch (err) { if (!unreachable(err)) throw err; await queueOp('delnb', id); }
           S.list = S.list.filter(x => x.id !== id);
+          saveListCache();
+          if (uidNow()) await LDB.delNb(uidNow(), id);
           try { Object.keys(localStorage).filter(k => k.indexOf('aero_nt_' + id + '_') === 0).forEach(lsDel); } catch (_) {}
           renderLibrary(); toast('Notebook deleted.', 'success');
         } catch (err) { toast(err.message, 'error'); }
@@ -1033,15 +1399,31 @@
   async function openNotebookNow(id, created) {
     await closeEditor(true);
     S.mode = 'editor';
-    try { history.pushState(null, '', '#/notes/' + id); } catch (_) {}
+    if (!S.offlineUser) { try { history.pushState(null, '', '#/notes/' + id); } catch (_) {} }
     setEditing(true);
     S.root.innerHTML = `<div class="nt-empty"><i class="fas fa-spinner fa-spin"></i><p>Opening notebook…</p></div>`;
     let j = created;
-    try { if (!j) j = await api('GET', `${API}/${id}`); }
-    catch (e) {
-      toast(e.offline ? 'You are offline — this notebook could not be opened.' : e.message, 'error');
-      try { history.replaceState(null, '', '#/notes'); } catch (_) {}
-      S.mode = 'library'; renderLibrary(); return;
+    if (!j) {
+      const uid = uidNow();
+      const rec = uid ? await LDB.getNb(uid, id) : null;
+      if (rec && rec.local) j = { notebook: Object.assign({}, rec.nb, { local: true }), pages: rec.pages };   // made offline, not on the server yet
+      else {
+        try {
+          /* changes made offline go up first, so the server's copy below includes them */
+          await Promise.race([syncAll(), new Promise(r => setTimeout(r, 5000))]);
+          j = await api('GET', `${API}/${id}`);
+          S.offline = false;
+          storeOpened(j);
+        } catch (e) {
+          if (unreachable(e) && rec) { j = { notebook: rec.nb, pages: rec.pages }; S.offline = true; }
+          else {
+            toast(unreachable(e) ? 'This notebook is not on this device yet — open it once while you are online.' : e.message, 'error');
+            if (!S.offlineUser) { try { history.replaceState(null, '', '#/notes'); } catch (_) {} }
+            S.mode = 'library'; renderLibrary(); return;
+          }
+        }
+      }
+      if (S.openingId !== id) return;                       // another notebook was opened meanwhile
     }
     S.nb = j.notebook;
     S.pages = (j.pages || []).map(p => ({ id: p.id, rev: p.rev || 0, paper: p.paper || '', d: null, dirty: false, ver: 0, isNew: false }));
@@ -1050,6 +1432,43 @@
     S.status = 'saved';
     if (created) S.pages.forEach(p => { p.d = { s: [], t: [] }; });
     buildEditor();
+    if (S.offline) setStatus('offline');
+    /* the rest of this notebook comes to this device in the background */
+    const nbId = S.nb.id, uid = uidNow();
+    if (!S.nb.local && !S.offline && uid) setTimeout(() => { if (S.nb && S.nb.id === nbId && !S.active) mirrorNotebook(uid, nbId, true).catch(() => {}); }, 2500);
+  }
+  /* ---------- this device's copy of a notebook's details and page list ---------- */
+  function storeOpened(j) {
+    const uid = uidNow(); if (!uid || !j || !j.notebook) return;
+    const id = j.notebook.id;
+    LDB.getNb(uid, id).then(old => LDB.putNb({ uid, id, nb: slimNb(j.notebook), pages: (j.pages || []).map(p => ({ id: p.id, rev: p.rev || 0, paper: p.paper || '' })),
+      full: !!(old && old.full && old.nb && old.nb.updatedAt === j.notebook.updatedAt), at: Date.now() }));
+  }
+  function storeNbMeta(id, nb) {
+    const uid = uidNow(); if (!uid) return;
+    LDB.getNb(uid, id).then(old => { if (old) { old.nb = Object.assign({}, old.nb, slimNb(nb)); LDB.putNb(old); } });
+  }
+  let nbRecTimer = 0;
+  function saveNbRecord() {
+    const uid = uidNow(); if (!uid || !S.nb) return;
+    const id = S.nb.id, nb = Object.assign(slimNb(S.nb), { pageCount: S.pages.length }), local = !!S.nb.local;
+    const pages = S.pages.map(p => ({ id: p.id, rev: p.rev || 0, paper: p.paper || '' }));
+    clearTimeout(nbRecTimer);
+    nbRecTimer = setTimeout(() => {
+      LDB.getNb(uid, id).then(old => LDB.putNb({ uid, id, nb, pages, local, full: !!(old && old.full), at: Date.now() }));
+    }, 250);
+  }
+  async function createLocalNotebook(body) {
+    const uid = uidNow();
+    if (!uid || !(await LDB.ok())) throw Object.assign(new Error('offline'), { offline: true });
+    const now = new Date().toISOString();
+    const nb = { id: body.id, title: body.title, cover: body.cover, paper: body.paper, paperColor: body.paperColor, courseId: body.courseId || null,
+                 pageCount: 1, bytes: 0, createdAt: now, updatedAt: now, local: true };
+    const pages = [{ id: body.pageId, rev: 0, paper: '' }];
+    await LDB.putNb({ uid, id: nb.id, nb, pages, local: true, full: true, at: Date.now() });
+    await queueOp('create', nb.id, body);
+    toast('You are offline — the notebook is on this device and syncs when you are back online.', 'info');
+    return { notebook: nb, pages };
   }
 
   function toolBtn(tool, icon, label) {
@@ -1172,6 +1591,7 @@
   }
   function applyScale() {
     const u = scale();
+    if (S.active) S.active.rect = null;
     S.pagesEl.style.setProperty('--u', String(u));
     S.pagesEl.style.setProperty('--nt-pw', (PW * u).toFixed(1) + 'px');
     S.pagesEl.style.setProperty('--nt-ph', (PH * u).toFixed(1) + 'px');
@@ -1299,38 +1719,71 @@
     const ids = Array.from(S.loadQueue).slice(0, 12);
     ids.forEach(id => S.loadQueue.delete(id));
     if (!ids.length || !S.nb) return;
-    const nbId = S.nb.id;
+    const nbId = S.nb.id, uid = uidNow();
     ids.forEach(id => { const p = S.byId.get(id); if (p) p.loading = true; });
-    try {
-      const j = await api('GET', `${API}/${nbId}/pages?ids=${encodeURIComponent(ids.join(','))}`);
-      if (!S.nb || S.nb.id !== nbId) return;
-      (j.pages || []).forEach(r => {
-        const p = S.byId.get(r.id); if (!p) return;
-        p.loading = false; p.rev = r.rev; if (r.paper !== undefined) p.paper = r.paper || '';
-        /* unsynced copy on this device that is newer than the server's? use it */
-        const bk = lsGet(`aero_nt_${nbId}_${p.id}`);
-        let data = r.data;
-        if (bk) {
-          try {
-            const b = JSON.parse(bk);
-            if (b && typeof b.data === 'string' && (b.rev || 0) >= (r.rev || 0)) { data = b.data; p.dirty = true; scheduleSave(); }
-            else lsDel(`aero_nt_${nbId}_${p.id}`);
-          } catch (_) { lsDel(`aero_nt_${nbId}_${p.id}`); }
-        }
-        p.d = decodePage(data);
-        paintPaperClass(p);
-        if (p.ctx) renderPage(p);
-        p.thumbRaw = null; drawThumb(p);
-      });
-    } catch (e) {
-      ids.forEach(id => { const p = S.byId.get(id); if (p) { p.loading = false; } });
-      if (e.offline) setStatus('offline');
-      setTimeout(() => ids.forEach(id => { const p = S.byId.get(id); if (p && p.canvas && !p.d) queueLoad(p); }), 5000);
+    /* this device's copy first (instant, works offline), then the server's */
+    const local = (uid && await LDB.getPages(uid, nbId, ids)) || new Map();
+    let server = null, failed = null;
+    if (!S.nb.local) {
+      try { server = new Map(((await api('GET', `${API}/${nbId}/pages?ids=${encodeURIComponent(ids.join(','))}`)).pages || []).map(r => [r.id, r])); }
+      catch (e) { failed = e; }
     }
+    if (!S.nb || S.nb.id !== nbId) return;
+    if (failed && !unreachable(failed)) {                 // a real error: try again in a moment
+      ids.forEach(id => { const p = S.byId.get(id); if (p) p.loading = false; });
+      setTimeout(() => ids.forEach(id => { const p = S.byId.get(id); if (p && p.canvas && !p.d) queueLoad(p); }), 5000);
+      if (S.loadQueue.size) flushLoads();
+      return;
+    }
+    if (failed) { S.offline = true; if (S.status === 'saved') setStatus('offline'); }
+    const toStore = [];
+    ids.forEach(id => {
+      const p = S.byId.get(id); if (!p) return;
+      p.loading = false;
+      if (p.d) return;
+      const L = local.get(id), R = server && server.get(id);
+      let data;
+      if (L && L.dirty) {
+        /* written on this device and not on the server yet — this device's ink wins */
+        data = L.data; p.rev = L.rev || 0; p.dirty = true; p.devVer = p.ver; p.isNew = !!L.isNew; p.paper = L.paper || '';
+        p.paperChanged = !!L.paperChanged;
+        scheduleSave();
+      } else if (R) {
+        data = R.data || ''; p.rev = R.rev || 0; if (R.paper !== undefined) p.paper = R.paper || '';
+        if (uid && (!L || L.rev !== R.rev || L.data !== data)) toStore.push({ uid, nb: nbId, id, data, rev: p.rev, paper: p.paper || '', dirty: false, at: Date.now() });
+      } else if (L) {
+        data = L.data || ''; p.rev = L.rev || 0; p.paper = L.paper || p.paper || '';
+      } else if (p.isNew || S.nb.local || (server && !failed)) {
+        data = '';                                        // a brand-new page
+      } else {
+        p.missing = true;                                 // offline, and never copied to this device
+        if (p.el) p.el.classList.add('nt-page-missing');
+        return;
+      }
+      /* an unsynced copy from before 2026-10-14 (kept in localStorage) */
+      const bk = lsGet(`aero_nt_${nbId}_${p.id}`);
+      if (bk) {
+        try {
+          const b = JSON.parse(bk);
+          if (b && typeof b.data === 'string' && !p.dirty && (b.rev || 0) >= (p.rev || 0)) { data = b.data; p.dirty = true; scheduleSave(); }
+        } catch (_) {}
+        lsDel(`aero_nt_${nbId}_${p.id}`);
+      }
+      p.missing = false; if (p.el) p.el.classList.remove('nt-page-missing');
+      p.d = decodePage(data);
+      paintPaperClass(p);
+      if (p.ctx) renderPage(p);
+      p.thumbRaw = null; drawThumb(p);
+    });
+    if (toStore.length) LDB.putClean(toStore);
     if (S.loadQueue.size) flushLoads();
   }
 
-  /* ---------- saving ---------- */
+  /* ---------- saving ----------
+     Every change is written to this device first (IndexedDB — safe from a
+     crash, a closed tab or no connection), then sent to the server.
+     p.dirty  = the server hasn't got this page's latest ink
+     p.devVer = the version this device has stored */
   function markDirty(p) {
     p.dirty = true; p.ver++;
     scheduleThumb(p);
@@ -1341,47 +1794,72 @@
     clearTimeout(S.saveTimer);
     S.saveTimer = setTimeout(saveNow, delay == null ? SAVE_DELAY : delay);
   }
+  const pageRec = (uid, nbId, p, data) => {
+    const idx = S.pages.indexOf(p);
+    return { uid, nb: nbId, id: p.id, data, rev: p.rev || 0, paper: p.paper || '', dirty: true, isNew: !!p.isNew,
+             after: idx > 0 ? S.pages[idx - 1].id : '', paperChanged: !!p.paperChanged, at: Date.now() };
+  };
   async function saveNow() {
     clearTimeout(S.saveTimer);
     if (S.saving || !S.nb) return;
     if (S.active) { scheduleSave(500); return; }        // never pause the main thread mid-stroke
-    const nbId = S.nb.id;
+    const nbId = S.nb.id, uid = uidNow();
     const dirty = S.pages.filter(p => p.dirty && p.d);
-    if (!dirty.length) { if (S.status !== 'saved') setStatus('saved'); return; }
+    if (!dirty.length) { if (S.status !== 'saved') setStatus(S.offline ? 'offline' : 'saved'); return; }
     S.saving = true; setStatus('saving');
+    /* 1) this device */
+    const enc = new Map(dirty.map(p => [p, { ver: p.ver, data: encodePage(p.d) }]));
+    const stored = uid ? await LDB.putPages(dirty.map(p => pageRec(uid, nbId, p, enc.get(p).data))) : null;
+    if (stored) dirty.forEach(p => { p.devVer = enc.get(p).ver; lsDel(`aero_nt_${nbId}_${p.id}`); });
+    else dirty.forEach(p => lsSet(`aero_nt_${nbId}_${p.id}`, JSON.stringify({ rev: p.rev, data: enc.get(p).data })));   // no IndexedDB here: the old way
+    saveNbRecord();
+    /* 2) the server */
     try {
+      if (S.nb.local) { await syncAll(); if (S.nb && S.nb.local) throw Object.assign(new Error('offline'), { offline: true }); }
       for (const p of dirty) {
-        const ver = p.ver;
-        const data = encodePage(p.d);
-        lsSet(`aero_nt_${nbId}_${p.id}`, JSON.stringify({ rev: p.rev, data }));     // crash-safe copy
+        const { ver, data } = enc.get(p);
         const idx = S.pages.indexOf(p);
+        if (idx < 0) continue;                            // deleted meanwhile
         const body = { data };
         if (p.isNew) { body.after = idx > 0 ? S.pages[idx - 1].id : ''; body.paper = p.paper || ''; }
         if (p.paperChanged) { body.paper = p.paper || ''; }
         const j = await api('PUT', `${API}/${nbId}/pages/${p.id}`, body);
         p.rev = j.rev; p.isNew = false; p.paperChanged = false;
         if (p.ver === ver) { p.dirty = false; lsDel(`aero_nt_${nbId}_${p.id}`); }
+        if (uid && stored) LDB.putPages([Object.assign(pageRec(uid, nbId, p, data), { dirty: p.ver !== ver })]);
         if (j.notebook && S.nb && S.nb.id === nbId) { S.nb.updatedAt = j.notebook.updatedAt; S.nb.pageCount = j.notebook.pageCount; }
       }
       S.retryMs = 4000;
-      S.saving = false;
+      S.saving = false; S.offline = false;
+      saveNbRecord();
       if (S.pages.some(p => p.dirty)) return saveNow();
       setStatus('saved');
       const li = (S.list || []).find(x => S.nb && x.id === S.nb.id);
-      if (li && S.nb) { li.updatedAt = new Date().toISOString(); li.pageCount = S.pages.length; }
+      if (li && S.nb) { li.updatedAt = S.nb.updatedAt || new Date().toISOString(); li.pageCount = S.pages.length; saveListCache(); }
     } catch (e) {
       S.saving = false;
       if (e.status === 413) { setStatus('error', e.message); toast(e.message, 'error'); return; }
-      setStatus(e.offline ? 'offline' : 'error');
+      const off = unreachable(e) || e.status === 401;
+      if (off) S.offline = true;
+      setStatus(off ? 'offline' : 'error');
       S.retryMs = Math.min(60000, S.retryMs * 1.6);
       scheduleSave(S.retryMs);
     }
   }
   function hasUnsaved() { return S.pages.some(p => p.dirty); }
+  /* ink that exists only in memory — not on this device's disk and not on the server */
+  function hasUnstored() { return S.pages.some(p => p.dirty && p.devVer !== p.ver); }
 
   /* ---------- input ---------- */
   function pagePoint(p, e) {
     const r = p.el.getBoundingClientRect();
+    return [(e.clientX - r.left) / r.width * PW, (e.clientY - r.top) / r.height * PH];
+  }
+  /* during a stroke the page's box is measured once (a layout read per sample adds up on big
+     screens); a scroll or zoom forgets it */
+  function strokePoint(a, e) {
+    let r = a.rect;
+    if (!r) { const b = a.page.el.getBoundingClientRect(); r = a.rect = { left: b.left, top: b.top, width: b.width, height: b.height }; }
     return [(e.clientX - r.left) / r.width * PW, (e.clientY - r.top) / r.height * PH];
   }
   function pressureOf(e) {
@@ -1478,6 +1956,7 @@
     if (tool === 'hl') {
       const st = { tool: TOOL_HL, c: hlInk(), w: SIZES.hl[S.size.hl], pts: [x, y, pressureOf(e)] };
       S.active = Object.assign(base, { kind: 'stroke', st, min, hx: e.clientX, hy: e.clientY });
+      rawInput(true);
       showOverlay(p);
       return;
     }
@@ -1493,6 +1972,7 @@
     a.tip = a.inc && cfg.op >= 100;                                     // a translucent tip would darken where it overlaps the ink
     a.st = { tool: TOOL_INK, c: penInk(), w: cfg.w, b: { t: S.penType, sh: cfg.sh, fl: cfg.fl, an: cfg.an, op: cfg.op, nt: 0 }, pts: [x, y, inkWidth(a, e)] };
     S.active = a;
+    rawInput(true);
     showOverlay(p);
     if (a.tip) showTip(p);
     if (a.inc && cfg.op < 100 && S.overlay) S.overlay.c.style.opacity = String(cfg.op / 100);   // translucent ink: solid on the overlay, the overlay see-through
@@ -1515,7 +1995,7 @@
     return widthCode(a.pr, a.vel, a.cfg);
   }
   function inkSample(a, ev) {
-    const [rx, ry] = pagePoint(a.page, ev);
+    const [rx, ry] = strokePoint(a, ev);
     const now = ev.timeStamp || performance.now(), dt = clamp(now - a.lt, 4, 60);
     a.lt = now;
     a.vel += (Math.min(6, Math.hypot(ev.clientX - a.lcx, ev.clientY - a.lcy) / dt) - a.vel) * 0.3;
@@ -1587,23 +2067,50 @@
     let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
     if (!evs || !evs.length) evs = [e];
     if (a.kind === 'shape' || a.kind === 'lasso' || a.kind === 'move') {
-      const [x, y] = pagePoint(a.page, evs[evs.length - 1]);
+      const [x, y] = strokePoint(a, evs[evs.length - 1]);
       if (a.kind === 'shape') { a.x1 = x; a.y1 = y; }
       else if (a.kind === 'move') { a.dx = x - a.sx; a.dy = y - a.sy; }
-      else for (const ev of evs) { const q = pagePoint(a.page, ev), L = a.path.length; if (Math.abs(q[0] - a.path[L - 2]) + Math.abs(q[1] - a.path[L - 1]) > 4) a.path.push(q[0], q[1]); }
+      else for (const ev of evs) { const q = strokePoint(a, ev), L = a.path.length; if (Math.abs(q[0] - a.path[L - 2]) + Math.abs(q[1] - a.path[L - 1]) > 4) a.path.push(q[0], q[1]); }
       if (!a.raf) a.raf = requestAnimationFrame(() => drawAux(a));
       return;
     }
     if (a.kind === 'erase') {                            // walk the path so a quick swipe can't skip a stroke
       const r = SIZES.eraser[S.size.eraser] * 0.6;
       for (const ev of evs) {
-        const [x, y] = pagePoint(a.page, ev), [lx, ly] = a.last;
+        const [x, y] = strokePoint(a, ev), [lx, ly] = a.last;
         const n = Math.min(40, Math.ceil(Math.hypot(x - lx, y - ly) / r));
         for (let i = 1; i <= n; i++) eraseAt(a.page, lx + (x - lx) * i / n, ly + (y - ly) * i / n);
         a.last = [x, y];
       }
       return;
     }
+    /* where the pen will be a moment from now (Chrome / Edge): drawn on the tip layer only,
+       replaced by the real point when it arrives — the line keeps up with the pen */
+    if (a.tip && e.getPredictedEvents) {
+      const pe = e.getPredictedEvents();
+      a.pred = pe && pe.length ? strokePoint(a, pe[pe.length - 1]) : null;
+    }
+    if (a.rawSeen) { if (a.tip && a.pred && !a.snapped) drawTip(a, S.overlay ? S.overlay.k : a.page.k); return; }   // samples came via pointerrawupdate
+    strokeSamples(a, e, evs);
+  }
+  /* ⚡ pointerrawupdate (Chrome / Edge): the pen's points as soon as the hardware sends them,
+     not batched to the next display frame — on a smartboard / big touch screen this
+     takes most of a frame off the time between the pen and the ink */
+  function onRawUpdate(e) {
+    const a = S.active;
+    if (!a || a.pointerId !== e.pointerId || a.kind !== 'stroke') return;
+    let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+    if (!evs || !evs.length) evs = [e];
+    a.rawSeen = true; a.pred = null;
+    strokeSamples(a, e, evs);
+  }
+  const RAW_EVENTS = typeof window !== 'undefined' && 'onpointerrawupdate' in window;
+  function rawInput(on) {
+    if (!RAW_EVENTS || !S.scroller) return;
+    if (on) S.scroller.addEventListener('pointerrawupdate', onRawUpdate);
+    else S.scroller.removeEventListener('pointerrawupdate', onRawUpdate);
+  }
+  function strokeSamples(a, e, evs) {
     if (a.snapped) {                                     // turned into a clean shape while the pen rested
       if (!a.raw || Math.hypot(e.clientX - a.snapX, e.clientY - a.snapY) < 14) return;
       unsnap(a);
@@ -1612,14 +2119,13 @@
     const pts = a.st.pts, ink = a.st.tool === TOOL_INK;
     for (const ev of evs) {
       let x, y;
-      if (ink) { inkSample(a, ev); x = a.sx; y = a.sy; } else [x, y] = pagePoint(a.page, ev);
+      if (ink) { inkSample(a, ev); x = a.sx; y = a.sy; } else [x, y] = strokePoint(a, ev);
       const lx = pts[pts.length - 3], ly = pts[pts.length - 2];
       if (Math.abs(x - lx) + Math.abs(y - ly) < a.min) continue;
       pts.push(x, y, ink ? inkWidth(a, ev) : pressureOf(ev));
     }
-    /* ink is drawn right here, in the event — pointer events already
-       arrive once per display frame, so waiting for the next frame only adds
-       lag. The pencil and the highlighter redraw once per frame. */
+    /* ink is drawn right here, in the event — waiting for the next frame only
+       adds lag. The pencil and the highlighter redraw once per frame. */
     if (ink && a.inc) drawLive(a);
     else if (!a.raf) a.raf = requestAnimationFrame(() => drawLive(a));
   }
@@ -1695,6 +2201,7 @@
   function finishActive() {
     const a = S.active; if (!a) return;
     S.active = null;
+    rawInput(false);
     if (a.raf) cancelAnimationFrame(a.raf);
     clearTimeout(a.hold);
     const p = a.page;
@@ -1725,7 +2232,7 @@
   }
   function cancelStroke() {
     const a = S.active; if (!a) return;
-    S.active = null; hideOverlay(); clearTimeout(a.hold);
+    S.active = null; rawInput(false); hideOverlay(); clearTimeout(a.hold);
     if (a.kind === 'erase') commitErase(a);
     else if (a.kind === 'move') { if (S.sel) S.sel.hidden = null; if (S.sel && S.sel.box) S.sel.box.style.transform = ''; renderPage(a.page); }
   }
@@ -1735,7 +2242,7 @@
     if (!p.canvas) return;
     if (!S.overlay) {
       const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay';
-      S.overlay = { c, ctx: c.getContext('2d'), freeT: 0 };
+      S.overlay = { c, ctx: liveCtx(c), freeT: 0 };
     }
     const o = S.overlay;
     clearTimeout(o.freeT);
@@ -1744,10 +2251,18 @@
     o.k = o.c.width / PW;
     p.el.appendChild(o.c);
   }
+  /* ⚡ the layers that show ink while it is being written ask for a low-latency canvas
+     (desynchronized): Chrome / Edge then put each change on screen without waiting for
+     the page's next composited frame — the main source of ink lag on big screens */
+  function liveCtx(c) {
+    let ctx = null;
+    if (lsGet('aero_nt_lowlat') !== '0') { try { ctx = c.getContext('2d', { desynchronized: true }); } catch (_) {} }   // '0' = support switch-off for one device
+    return ctx || c.getContext('2d');
+  }
   /* the live pen tip's own layer, just above the overlay (see drawTip) */
   function showTip(p) {
     const o = S.overlay; if (!o || !o.c.isConnected) return;
-    if (!o.t) { const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay'; o.t = { c, ctx: c.getContext('2d') }; }
+    if (!o.t) { const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay'; o.t = { c, ctx: liveCtx(c) }; }
     const t = o.t;
     if (t.c.width !== o.c.width || t.c.height !== o.c.height) { t.c.width = o.c.width; t.c.height = o.c.height; }
     else { t.ctx.setTransform(1, 0, 0, 1, 0, 0); t.ctx.clearRect(0, 0, t.c.width, t.c.height); }
@@ -2171,6 +2686,7 @@
     renumber();
     renderSidebar();
     markDirty(p);
+    saveNbRecord();
     saveNow();
     setTimeout(() => { S.scroller.scrollTo({ top: shell.offsetTop - 16, behavior: 'smooth' }); }, 30);
   }
@@ -2178,11 +2694,16 @@
     if (S.pages.length <= 1) return toast('A notebook needs at least one page.', 'info');
     if (!(await confirmBox('Delete this page?', `Page ${S.pages.indexOf(p) + 1} and everything on it will be deleted.`, 'Delete page', true))) return;
     try {
-      if (!p.isNew) await api('DELETE', `${API}/${S.nb.id}/pages/${p.id}`);
+      if (!p.isNew && !S.nb.local) {
+        try { await api('DELETE', `${API}/${S.nb.id}/pages/${p.id}`); }
+        catch (e) { if (!unreachable(e)) throw e; await queueOp('delpg', S.nb.id, { pageId: p.id }); }   // offline: deleted on the server later
+      }
       if (S.sel && S.sel.page === p) clearSelection();
       S.io.unobserve(p.el); unmountPage(p); p.el.remove();
       S.pages.splice(S.pages.indexOf(p), 1); S.byId.delete(p.id);
       lsDel(`aero_nt_${S.nb.id}_${p.id}`);
+      if (uidNow()) LDB.delPage(uidNow(), S.nb.id, p.id);
+      saveNbRecord();
       S.undo = S.undo.filter(o => o.pid !== p.id); S.redo = S.redo.filter(o => o.pid !== p.id);
       renumber(); renderSidebar(); updateCurrent();
     } catch (e) { toast(e.message, 'error'); }
@@ -2202,18 +2723,22 @@
     if (next && next.el) S.pagesEl.insertBefore(pg.el, next.el); else S.pagesEl.appendChild(pg.el);
     renumber(); renderSidebar(); updateCurrent();
     if (scrollTo) jumpToPage(pg.id);
+    saveNbRecord();
     clearTimeout(S.orderTimer); S.orderTries = 0;
     S.orderTimer = setTimeout(sendOrder, 700);
   }
   async function sendOrder() {
     if (!S.nb) return;
+    const nbId = S.nb.id, order = S.pages.map(p => p.id);
+    /* offline (or a notebook not on the server yet): sent by the sync, after its new pages */
+    if (S.offline || S.nb.local || navigator.onLine === false) { await queueOp('order', nbId, { order }); return; }
     if (S.pages.some(p => p.isNew) || S.saving) {
-      if (++S.orderTries > 40) { toast('Page order not saved — check your connection.', 'error'); return; }
+      if (++S.orderTries > 40) { await queueOp('order', nbId, { order }); return; }
       saveNow(); S.orderTimer = setTimeout(sendOrder, 700); return;
     }
-    try { await api('PUT', `${API}/${S.nb.id}`, { order: S.pages.map(p => p.id) }); }
+    try { await api('PUT', `${API}/${nbId}`, { order }); }
     catch (e) {
-      if (e.offline && ++S.orderTries <= 40) { S.orderTimer = setTimeout(sendOrder, 4000); return; }
+      if (unreachable(e)) { await queueOp('order', nbId, { order }); return; }
       toast(e.status === 409 ? 'Page order changed elsewhere — reopen the notebook.' : (e.message || 'Page order not saved.'), 'error');
     }
   }
@@ -2302,13 +2827,21 @@
   async function flushThumbs() {
     if (!S.nb) return;
     const nbId = S.nb.id;
-    const ids = Array.from(S.thumbQueue).filter(id => { const p = S.byId.get(id); return p && !p.d && p.raw == null && p.thumbRaw == null && !p.loading; }).slice(0, 12);
+    let ids = Array.from(S.thumbQueue).filter(id => { const p = S.byId.get(id); return p && !p.d && p.raw == null && p.thumbRaw == null && !p.loading; }).slice(0, 12);
     ids.forEach(id => S.thumbQueue.delete(id));
     if (!ids.length) { S.thumbQueue.clear(); return; }
+    /* this device's copy first — no network needed for pages already here */
+    const uid = uidNow();
+    const local = (uid && await LDB.getPages(uid, nbId, ids)) || new Map();
+    if (!S.nb || S.nb.id !== nbId) return;
+    local.forEach((r, id) => { const p = S.byId.get(id); if (p && !p.d) { p.thumbRaw = r.data || ''; drawThumb(p); } });
+    ids = ids.filter(id => !local.has(id));
     try {
-      const j = await api('GET', `${API}/${nbId}/pages?ids=${encodeURIComponent(ids.join(','))}`);
-      if (!S.nb || S.nb.id !== nbId) return;
-      (j.pages || []).forEach(r => { const p = S.byId.get(r.id); if (!p || p.d) return; p.thumbRaw = r.data || ''; drawThumb(p); });
+      if (ids.length && !S.nb.local) {
+        const j = await api('GET', `${API}/${nbId}/pages?ids=${encodeURIComponent(ids.join(','))}`);
+        if (!S.nb || S.nb.id !== nbId) return;
+        (j.pages || []).forEach(r => { const p = S.byId.get(r.id); if (!p || p.d) return; p.thumbRaw = r.data || ''; drawThumb(p); });
+      }
     } catch (_) { /* thumbnails are optional — try again when they scroll back in */ }
     if (S.thumbQueue.size) flushThumbs();
   }
@@ -2389,9 +2922,11 @@
       <button type="button" data-a="pdf"><i class="fas fa-file-pdf"></i> Export as PDF</button>
       <button type="button" data-a="png"><i class="fas fa-image"></i> Save this page as image</button>
       <label class="nt-menu-toggle"><input type="checkbox" id="ntFinger" ${S.fingerDraw ? 'checked' : ''}> <span>Draw with finger<small>Off = fingers scroll, stylus draws</small></span></label>
-      <label class="nt-menu-toggle"><input type="checkbox" id="ntSnap" ${S.snap ? 'checked' : ''}> <span>Hold to snap shapes<small>Pause at the end of a line, circle or box to make it neat</small></span></label>`,
+      <label class="nt-menu-toggle"><input type="checkbox" id="ntSnap" ${S.snap ? 'checked' : ''}> <span>Hold to snap shapes<small>Pause at the end of a line, circle or box to make it neat</small></span></label>
+      ${S.offlineUser ? '' : `<label class="nt-menu-toggle"><input type="checkbox" id="ntOffline" ${offlinePref() ? 'checked' : ''}> <span>Open my notes without internet<small>From the sign-in screen, on this device only. Leave off on a shared PC or smartboard.</small></span></label>`}`,
     (e) => {
       if (e.target.id === 'ntFinger') { S.fingerDraw = e.target.checked; lsSet('aero_nt_finger', S.fingerDraw ? '1' : '0'); return; }
+      if (e.target.id === 'ntOffline') { lsSet('aero_nt_offline', e.target.checked ? '1' : '0'); rememberProfile(); toast(e.target.checked ? 'Your notes can be opened on this device even without internet.' : 'Notes will need a sign-in on this device.', 'info'); return; }
       if (e.target.id === 'ntSnap') { S.snap = e.target.checked; lsSet('aero_nt_snap', S.snap ? '1' : '0'); return; }
       const a = e.target.closest('[data-a]'); if (!a) return;
       closePopup();
@@ -2537,7 +3072,13 @@
 
   /* ---------- export (page image / whole notebook as PDF) ---------- */
   async function ensureData(nbId, pages) {
-    const missing = pages.filter(p => !p.d && p.raw == null);
+    let missing = pages.filter(p => !p.d && p.raw == null);
+    const uid = uidNow();
+    if (uid && missing.length) {                         // this device's copy first (works offline)
+      const local = (await LDB.getPages(uid, nbId, missing.map(p => p.id))) || new Map();
+      missing.forEach(p => { const r = local.get(p.id); if (r) { p.raw = r.data || ''; if (r.paper) p.paper = r.paper; } });
+      missing = missing.filter(p => p.raw == null);
+    }
     for (let i = 0; i < missing.length; i += 12) {
       const chunk = missing.slice(i, i + 12);
       const j = await api('GET', `${API}/${nbId}/pages?ids=${encodeURIComponent(chunk.map(p => p.id).join(','))}`);
@@ -2567,11 +3108,14 @@
   async function exportPdfById(id) {
     toast('Preparing PDF…', 'info');
     try {
-      const j = await api('GET', `${API}/${id}`);
+      let j;
+      const rec = uidNow() ? await LDB.getNb(uidNow(), id) : null;
+      try { if (rec && rec.local) throw Object.assign(new Error('offline'), { offline: true }); j = await api('GET', `${API}/${id}`); }
+      catch (e) { if (!unreachable(e) || !rec) throw e; j = { notebook: rec.nb, pages: rec.pages }; }   // offline: this device's copy
       const pages = j.pages.map(p => ({ id: p.id, paper: p.paper || '', d: null, raw: null }));
       await ensureData(id, pages);
       await buildPdf(j.notebook, pages);
-    } catch (e) { toast(e.message || 'Could not export.', 'error'); }
+    } catch (e) { toast(unreachable(e) ? 'This notebook is not on this device yet — export it when you are online.' : (e.message || 'Could not export.'), 'error'); }
   }
   async function exportPdf() {
     if (S.editing) commitText();
@@ -2643,7 +3187,7 @@
     if (pm) { const p = S.byId.get(pm.dataset.pmenu); if (p) pageMenu(p, pm); return; }
     const a = e.target.closest('[data-act]'); if (!a) return;
     const act = a.dataset.act;
-    if (act === 'back') { try { history.pushState(null, '', '#/notes'); } catch (_) {} closeEditor().then(() => { renderLibrary(); refreshList(); }); }
+    if (act === 'back') { if (!S.offlineUser) { try { history.pushState(null, '', '#/notes'); } catch (_) {} } closeEditor().then(() => { renderLibrary(); refreshList(); }); }
     else if (act === 'settings') openNotebookDialog(S.nb);
     else if (act === 'undo') undo();
     else if (act === 'redo') redo();
@@ -2713,7 +3257,7 @@
       onPointerUp(e);
     });
     sc.addEventListener('wheel', onWheel, { passive: false });
-    sc.addEventListener('scroll', () => { if (!S._scrollRaf) S._scrollRaf = requestAnimationFrame(() => { S._scrollRaf = 0; updateCurrent(); }); }, { passive: true });
+    sc.addEventListener('scroll', () => { if (S.active) S.active.rect = null; if (!S._scrollRaf) S._scrollRaf = requestAnimationFrame(() => { S._scrollRaf = 0; updateCurrent(); }); }, { passive: true });
     sc.addEventListener('contextmenu', (e) => e.preventDefault());
     sc.addEventListener('lostpointercapture', (e) => { if (S.active && S.active.pointerId === e.pointerId) finishActive(); });
     /* iPad / iPhone Safari: stop the long-press loupe, text selection,
@@ -2729,7 +3273,7 @@
 
   function backupDirty() {
     if (!S.nb) return;
-    S.pages.forEach(p => { if (p.dirty && p.d) lsSet(`aero_nt_${S.nb.id}_${p.id}`, JSON.stringify({ rev: p.rev, data: encodePage(p.d) })); });
+    S.pages.forEach(p => { if (p.dirty && p.d && p.devVer !== p.ver) lsSet(`aero_nt_${S.nb.id}_${p.id}`, JSON.stringify({ rev: p.rev, data: encodePage(p.d) })); });
   }
   async function closeEditor(silent) {
     if (S.editing) commitText();
@@ -2749,7 +3293,8 @@
       if (o.t) { o.t.c.remove(); o.t.c.width = o.t.c.height = 0; }
       S.overlay = null;
     }
-    if (!hasUnsaved()) { S.pages = []; S.byId = new Map(); S.nb = null; }
+    /* pages the server hasn't got are safe on this device — the sync sends them */
+    if (!hasUnstored()) { S.pages = []; S.byId = new Map(); S.nb = null; }
     S.undo = []; S.redo = [];
     S.mode = 'library';
     setEditing(false);
@@ -2766,7 +3311,7 @@
   window.addEventListener('resize', onResize);
   document.addEventListener('visibilitychange', () => { if (document.hidden && hasUnsaved()) saveNow(); });
   window.addEventListener('beforeunload', (e) => {
-    if (!hasUnsaved() || !S.nb) return;
+    if (!hasUnstored() || !S.nb) return;
     /* the on-device copy is written now, so nothing is lost even if the tab closes */
     backupDirty();
     e.preventDefault(); e.returnValue = '';
@@ -2775,11 +3320,13 @@
   /* =========================================================
      PUBLIC API (called by app.js)
      ========================================================= */
+  const wiredRoots = new WeakSet();
   window.AeroNotes = {
     /* show the library, or a notebook when an id is given */
     async show(container, notebookId) {
-      if (S.root !== container) {
-        S.root = container;
+      S.root = container;
+      if (!wiredRoots.has(container)) {
+        wiredRoots.add(container);
         container.addEventListener('click', (e) => { if (S.mode === 'library') onLibraryClick(e); else if (S.mode === 'editor') onBarClick(e); });
         container.addEventListener('keydown', (e) => {
           if (S.mode === 'library' && e.key === 'Enter' && e.target.matches && e.target.matches('[data-open]')) openNotebook(e.target.dataset.open);
@@ -2809,7 +3356,33 @@
       closePopup();
       if (root && S.mode === 'library' && !root.classList.contains('active')) root.innerHTML = '';   // free the DOM too
     },
-    hasUnsaved,
+    hasUnsaved: hasUnstored,
+    /* ⭐ offline, from the sign-in screen: the students whose notes this device may open */
+    offlineProfiles() { return profiles(); },
+    async showOffline(container, uid) {
+      const prof = profiles().find(p => p.uid === uid); if (!prof) return false;
+      if (S.mode === 'editor') await closeEditor();
+      S.offlineUser = prof; S.list = null; S.offline = true;
+      return this.show(container, null);
+    },
+    async leaveOffline() {
+      if (S.mode === 'editor') await closeEditor();
+      const root = S.root;
+      S.offlineUser = null; S.list = null; S.offline = false;
+      if (root) root.innerHTML = '';
+      try { if (typeof window.__aeroLeaveOfflineNotes === 'function') window.__aeroLeaveOfflineNotes(); } catch (_) {}
+    },
+    /* signing out: send what is waiting, then forget this student's notes on a device that
+       may not keep them (pages the server still hasn't got are never thrown away) */
+    async signedOut(uid) {
+      try {
+        if (S.mode === 'editor') await closeEditor(true);
+        S.list = null;
+        if (!uid) return;
+        const keep = profiles().some(p => p.uid === uid) && offlinePref();
+        if (!keep) await LDB.wipe(uid);
+      } catch (_) {}
+    },
     _test: { encodePage, decodePage, buildPdf, S, PEN_TYPES, penPanel, renderPage, inkSpine, drawInk, drawContent }
   };
 })();

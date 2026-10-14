@@ -99,10 +99,22 @@ module.exports = function mountNotesApi(app, deps) {
     try {
       noStore(res);
       const b = req.body || {};
+      /* ⭐ 2026-10-14: a notebook made offline arrives later with the id the
+         device gave it — sending it again (a retry) returns the same notebook */
+      const ownId = /^[a-f0-9]{24}$/i.test(String(b.id || '')) ? String(b.id).toLowerCase() : null;
+      if (ownId) {
+        const had = await Notebook.findById(ownId).select('userId').lean();
+        if (had && String(had.userId) !== String(req.authUserId)) return fail(res, 409, 'Please try again.');
+        if (had) {
+          const nb0 = await Notebook.findById(ownId);
+          return res.json({ success: true, existed: true, notebook: serializeNotebook(nb0), pages: (nb0.pages || []).map(id => ({ id, rev: 0, bytes: 0, paper: '' })) });
+        }
+      }
       const count = await Notebook.countDocuments({ userId: uid(req) });
       if (count >= LIMITS.notebooks) return fail(res, 400, `You can keep up to ${LIMITS.notebooks} notebooks. Delete an old one first.`);
       const firstPage = PAGE_ID.test(String(b.pageId || '')) ? String(b.pageId) : 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
       const nb = await Notebook.create({
+        ...(ownId ? { _id: new mongoose.Types.ObjectId(ownId) } : {}),
         userId: uid(req),
         title: cleanText(b.title, 120) || 'Untitled notebook',
         cover: pick(b.cover, COVERS, 'indigo'),

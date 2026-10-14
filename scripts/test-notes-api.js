@@ -6,7 +6,7 @@ const mount = require(path.join(__dirname, '..', 'notes-api.js'));
 /* ---------- tiny fake mongoose ---------- */
 let seq = 0;
 const oid = () => (++seq).toString(16).padStart(24, '0');
-class ObjectId { constructor(v) { this.v = String(v || oid()); } toString() { return this.v; } static isValid(v) { return /^[0-9a-f]{24}$/.test(String(v)); } }
+class ObjectId { constructor(v) { this.v = String(v || oid()); } toString() { return this.v; } toJSON() { return this.v; } static isValid(v) { return /^[0-9a-f]{24}$/.test(String(v)); } }
 const eq = (a, b) => String(a) === String(b);
 function match(doc, q) {
   return Object.entries(q).every(([k, v]) => {
@@ -26,6 +26,7 @@ function model(defaults) {
     rows,
     find: (q) => chain(() => rows.filter(r => match(r, q))),
     findOne: (q) => chain(() => wrap(rows.find(r => match(r, q)))),
+    findById: (id) => chain(() => wrap(rows.find(r => eq(r._id, id)))),
     countDocuments: async (q) => rows.filter(r => match(r, q)).length,
     create: async (d) => { const r = wrap(Object.assign({ _id: new ObjectId() }, JSON.parse(JSON.stringify(defaults)), d, { createdAt: new Date(), updatedAt: new Date() })); rows.push(r); return r; },
     deleteMany: async (q) => { for (let i = rows.length - 1; i >= 0; i--) if (match(rows[i], q)) rows.splice(i, 1); },
@@ -120,5 +121,19 @@ const page = (strokes) => JSON.stringify({ v: 1, s: strokes, t: [] });
   // delete notebook removes its pages
   r = await call('delete', `/api/notes/${nb.id}`); assert.ok(r.body.success);
   assert.strictEqual(Notebook.rows.length, 0); assert.strictEqual(NotePage.rows.length, 0);
+
+  // ⭐ a notebook made offline keeps the id the device gave it; sending it again changes nothing
+  const cid = 'abcdef0123456789abcdef01';
+  r = await call('post', '/api/notes', { id: cid, title: 'Offline notebook', pageId: 'pg_offline1' });
+  assert.ok(r.body.success); assert.strictEqual(r.body.notebook.id, cid, 'client id kept');
+  r = await call('put', `/api/notes/${cid}/pages/pg_offline1`, { data: page([]) }); assert.ok(r.body.success);
+  r = await call('post', '/api/notes', { id: cid, title: 'Offline notebook', pageId: 'pg_offline1' });
+  assert.ok(r.body.success && r.body.existed, 'retry returns the same notebook');
+  assert.strictEqual(Notebook.rows.length, 1, 'no duplicate on retry');
+  currentUser = 'b'.repeat(24);
+  r = await call('post', '/api/notes', { id: cid, title: 'Not mine' }); assert.strictEqual(r.code, 409, "someone else's id refused");
+  currentUser = 'a'.repeat(24);
+  r = await call('post', '/api/notes', { id: 'not-an-object-id', title: 'Bad id' });
+  assert.ok(r.body.success && r.body.notebook.id !== 'not-an-object-id', 'a malformed id is ignored');
   console.log('✅ notes API: all checks passed');
 })().catch(e => { console.error('❌', e); process.exit(1); });

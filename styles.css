@@ -18518,3 +18518,14 @@ html.aero-play-store [onclick*="openPlansShowcaseModal"],
 html.aero-play-store [onclick*="startCheckoutForPlan"],
 html.aero-play-store .subscribe-cta,
 html.aero-play-store .subscribe-banner { display: none !important; }
+
+/* ⭐ 2026-10-14 — sign-in screen with no connection: open the notes on this device */
+.lg-offline-notes {
+  margin-top: 16px; padding: 14px; border-radius: 14px;
+  background: rgba(245, 158, 11, .10); border: 1px solid rgba(245, 158, 11, .35);
+}
+.lg-offline-notes[hidden] { display: none; }
+.lg-offline-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; color: var(--text-primary); }
+.lg-offline-head i { color: #d97706; }
+.lg-offline-notes p { margin: 6px 0 10px; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+.lg-offline-btn { margin-top: 6px; justify-content: center; }
