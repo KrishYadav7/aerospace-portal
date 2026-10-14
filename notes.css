@@ -671,3 +671,6 @@ html.aero-offline-notes, html.aero-offline-notes body { overflow: hidden !import
   pointer-events: none;
 }
 .nt-page.nt-pc-night.nt-page-missing::after { color: rgba(255, 255, 255, .6); }
+
+/* ⭐ 2026-10-14 (b): writing with a pen shows only the ink, no pointer cursor on top of it */
+.nt-scroller.is-inking, .nt-scroller.is-inking * { cursor: none !important; }

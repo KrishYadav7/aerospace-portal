@@ -428,6 +428,7 @@
     const need = pages.filter(p => { const h = have.get(p.id); return !h || (!h.dirty && (h.rev || 0) < (p.rev || 0)); }).map(p => p.id);
     let bytes = 0;
     for (let i = 0; i < need.length; i += 12) {
+      while (!inkIdle(1500)) await new Promise(r => setTimeout(r, 600));   // never while you write
       const r = await api('GET', `${API}/${id}/pages?ids=${encodeURIComponent(need.slice(i, i + 12).join(','))}`);
       const recs = (r.pages || []).map(x => ({ uid, nb: id, id: x.id, data: x.data || '', rev: x.rev || 0, paper: x.paper || '', dirty: false, at: Date.now() }));
       recs.forEach(x => { bytes += x.data.length; });
@@ -1700,12 +1701,21 @@
     while (cw * ch * dpr * dpr > MAX_CANVAS_PX && dpr > 0.5) dpr *= 0.88;
     return { w: Math.round(cw * dpr), h: Math.round(ch * dpr) };
   }
+  /* a canvas whose GPU memory was lost comes back blank (or black): draw it again, and from
+     then on this device avoids the GPU extras (low-latency canvas, Delegated Ink) */
+  function watchCanvas(c, redraw) {
+    try {
+      c.addEventListener('contextlost', (e) => { try { e.preventDefault(); } catch (_) {} lsSet('aero_nt_gpu_safe', '1'); inkPresenter = null; });
+      c.addEventListener('contextrestored', () => { try { redraw(); } catch (_) {} });
+    } catch (_) {}
+  }
   function mountPage(p) {
     if (!p.canvas) {
       const c = document.createElement('canvas');
       c.className = 'nt-ink';
       p.el.insertBefore(c, p.el.firstChild);
       p.canvas = c; p.ctx = c.getContext('2d');
+      watchCanvas(c, () => { if (p.canvas === c) renderPage(p); });
     }
     sizeCanvas(p);
     if (p.d) renderPage(p); else queueLoad(p);
@@ -1829,10 +1839,18 @@
     return { uid, nb: nbId, id: p.id, data, rev: p.rev || 0, paper: p.paper || '', dirty: true, isNew: !!p.isNew,
              after: idx > 0 ? S.pages[idx - 1].id : '', paperChanged: !!p.paperChanged, at: Date.now() };
   };
-  async function saveNow() {
+  /* the pen has been still for a moment (heavy work never runs between two quick strokes) */
+  const inkIdle = (ms) => !S.active && performance.now() - (S.lastInkAt || 0) > (ms || 900);
+  async function saveNow(force) {
     clearTimeout(S.saveTimer);
     if (S.saving || !S.nb) return;
-    if (S.active) { scheduleSave(500); return; }        // never pause the main thread mid-stroke
+    if (S.active && !force) { scheduleSave(500); return; }        // never pause the main thread mid-stroke
+    /* while you keep writing, saving waits for a pause — but never more than 8 s */
+    if (!force && !inkIdle(900)) {
+      if (!S.saveWaitFrom) S.saveWaitFrom = performance.now();
+      if (performance.now() - S.saveWaitFrom < 8000) { scheduleSave(400); return; }
+    }
+    S.saveWaitFrom = 0;
     const nbId = S.nb.id, uid = uidNow();
     const dirty = S.pages.filter(p => p.dirty && p.d);
     if (!dirty.length) { if (S.status !== 'saved') setStatus(S.offline ? 'offline' : 'saved'); return; }
@@ -1963,6 +1981,8 @@
     S.current = S.pages.indexOf(p);
     if (tool === 'text') return startText(p, pagePoint(p, e), e.pointerType);
     try { p.el.setPointerCapture(e.pointerId); } catch (_) {}
+    S.lastInkAt = performance.now();
+    if (e.pointerType === 'pen' && S.scroller) S.scroller.classList.add('is-inking');   // no mouse cursor over the ink
     const [x, y] = pagePoint(p, e);
     const base = { page: p, pointerId: e.pointerId, pointerType: e.pointerType, raf: 0, lastT: e.timeStamp || 0 };
     if (tool === 'eraser') {
@@ -2142,13 +2162,13 @@
   function askInkPresenter() {
     inkPresenter = null; inkFor = S.scroller;
     try {
-      if (!S.scroller || !navigator.ink || !navigator.ink.requestPresenter || lsGet('aero_nt_lowlat') === '0') return;
+      if (!S.scroller || !navigator.ink || !navigator.ink.requestPresenter || lsGet('aero_nt_lowlat') === '0' || gpuSafe()) return;
       const area = S.scroller;
       navigator.ink.requestPresenter({ presentationArea: area }).then(p => { if (inkFor === area) inkPresenter = p; }).catch(() => {});
     } catch (_) {}
   }
   function inkTrail(a, e) {
-    if (!inkPresenter || inkFor !== S.scroller || !a.tip || a.snapped || !a.sp || !a.sp.R.length) return;
+    if (!inkPresenter || inkFor !== S.scroller || !a.tip || a.snapped || !a.sp || !a.sp.R.length || a.st.b.fl > 40) return;
     try {
       const r = a.sp.R[a.sp.R.length - 1];
       inkPresenter.updateInkTrailStartPoint(e, { color: a.st.c, diameter: Math.max(1, 2 * r * scale()) });
@@ -2160,6 +2180,7 @@
     else S.scroller.removeEventListener('pointerrawupdate', onRawUpdate);
   }
   function strokeSamples(a, e, evs) {
+    S.lastInkAt = performance.now();
     if (a.snapped) {                                     // turned into a clean shape while the pen rested
       if (!a.raw || Math.hypot(e.clientX - a.snapX, e.clientY - a.snapY) < 14) return;
       unsnap(a);
@@ -2267,6 +2288,8 @@
   function finishActive() {
     const a = S.active; if (!a) return;
     S.active = null;
+    S.lastInkAt = performance.now();
+    if (S.scroller) S.scroller.classList.remove('is-inking');
     rawInput(false);
     if (a.raf) cancelAnimationFrame(a.raf);
     clearTimeout(a.hold);
@@ -2299,6 +2322,7 @@
   function cancelStroke() {
     const a = S.active; if (!a) return;
     S.active = null; rawInput(false); hideOverlay(); clearTimeout(a.hold);
+    if (S.scroller) S.scroller.classList.remove('is-inking');
     if (a.kind === 'erase') commitErase(a);
     else if (a.kind === 'move') { if (S.sel) S.sel.hidden = null; if (S.sel && S.sel.box) S.sel.box.style.transform = ''; renderPage(a.page); }
   }
@@ -2313,6 +2337,7 @@
     if (!S.overlay) {
       const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay';
       S.overlay = { c, ctx: liveCtx(c), freeT: 0, buf: null, bctx: null, pending: false };
+      watchCanvas(c, () => {});                          // nothing to restore: it holds only the stroke in progress
     }
     const o = S.overlay;
     clearTimeout(o.freeT); o.pending = false;
@@ -2325,9 +2350,15 @@
   /* ⚡ the layers that show ink while it is being written ask for a low-latency canvas
      (desynchronized): Chrome / Edge then put each change on screen without waiting for
      the page's next composited frame — the main source of ink lag on big screens */
+  /* ⭐ 2026-10-14 (b): off unless switched on for a device (aero_nt_lowlat = '1'). On many
+     smartboard / classroom PCs (Intel graphics, older drivers) such a canvas becomes a
+     hardware overlay that can flash black, and it runs a frame ahead of the Delegated Ink
+     trail, which then draws from a stale point (an extra stroke piece). Windows gets its
+     no-lag tip from Delegated Ink instead (askInkPresenter). */
+  const gpuSafe = () => lsGet('aero_nt_gpu_safe') === '1';
   function liveCtx(c) {
     let ctx = null;
-    if (lsGet('aero_nt_lowlat') !== '0') { try { ctx = c.getContext('2d', { desynchronized: true }); } catch (_) {} }   // '0' = support switch-off for one device
+    if (lsGet('aero_nt_lowlat') === '1' && !gpuSafe()) { try { ctx = c.getContext('2d', { desynchronized: true }); } catch (_) {} }
     return ctx || c.getContext('2d');
   }
   /* the hidden copy of the stroke's finished ink, which the moving tip is erased back to (see drawTip) */
@@ -2893,7 +2924,11 @@
   function scheduleThumb(p) {
     (S.thumbDirty = S.thumbDirty || new Set()).add(p);
     clearTimeout(S.thumbTimer);
-    S.thumbTimer = setTimeout(() => { const set = S.thumbDirty; S.thumbDirty = new Set(); set.forEach(drawThumb); }, 700);
+    const run = () => {
+      if (!inkIdle(900)) { S.thumbTimer = setTimeout(run, 700); return; }      // redrawing a whole page waits for a pause in writing
+      const set = S.thumbDirty; S.thumbDirty = new Set(); set.forEach(drawThumb);
+    };
+    S.thumbTimer = setTimeout(run, 700);
   }
   function queueThumb(p) {
     S.thumbQueue.add(p.id);
@@ -3357,7 +3392,7 @@
     stopFling();
     S.palms.clear(); S.touches.clear(); S.gesture = null; S.pan = null;
     backupDirty();
-    if (hasUnsaved()) { try { await saveNow(); } catch (_) {} }
+    if (hasUnsaved()) { try { await saveNow(true); } catch (_) {} }
     clearSelection();
     if (S.io) { S.io.disconnect(); S.io = null; }
     if (S.thumbIo) { S.thumbIo.disconnect(); S.thumbIo = null; }
@@ -3385,7 +3420,7 @@
   document.addEventListener('keydown', onKey);
   document.addEventListener('keyup', onKeyUp);
   window.addEventListener('resize', onResize);
-  document.addEventListener('visibilitychange', () => { if (document.hidden && hasUnsaved()) saveNow(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && hasUnsaved()) saveNow(true); });
   window.addEventListener('beforeunload', (e) => {
     if (!hasUnstored() || !S.nb) return;
     /* the on-device copy is written now, so nothing is lost even if the tab closes */

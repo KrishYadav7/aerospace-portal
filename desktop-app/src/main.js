@@ -36,6 +36,15 @@ const IS_MAC = process.platform === 'darwin';
 const OS_NAME = IS_MAC ? 'macOS' : (process.platform === 'win32' ? 'Windows' : 'Linux');
 const BG = '#0b1226';
 
+/* ⭐ 2026-10-14 — classroom smartboards. Their vendor software (floating toolbars,
+   annotation layers) keeps a transparent, always-on-top window over the screen; Chromium's
+   native-occlusion check then decides our window is hidden and stops painting it — a black
+   or frozen page and stuttering ink. Our window is never truly hidden behind those, so the
+   check is switched off. Must run before the app is ready. */
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+}
+
 /* --aero-selftest=<folder> : used only by the GitHub build to test the app, then it quits */
 const SELFTEST_DIR = (() => {
   const a = process.argv.find((x) => x.startsWith('--aero-selftest='));
