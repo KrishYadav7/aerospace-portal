@@ -806,11 +806,40 @@
      newest point and on to where the pen really is (stabilisation trails it) —
      drawn on its own layer and replaced every move, so the ink always reaches
      the pen tip instead of lagging a segment behind */
-  function drawTip(a, k) {
-    const o = S.overlay, t = o && o.t, c = a.sp;
-    if (!t || !t.c.isConnected || !c || !c.X.length) return;
-    const ctx = t.ctx;
-    if (a.tipBox) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(a.tipBox[0], a.tipBox[1], a.tipBox[2], a.tipBox[3]); a.tipBox = null; }
+  /* device-pixel box of spine samples [from, to) of a live stroke */
+  function sampleBox(a, from, to, k) {
+    const c = a.sp, pad = (1 + 0.25 * a.st.b.fl / 100) * 1.3;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = from; i < to; i++) {
+      const r = c.R[i] * pad;
+      if (c.X[i] - r < x0) x0 = c.X[i] - r; if (c.X[i] + r > x1) x1 = c.X[i] + r;
+      if (c.Y[i] - r < y0) y0 = c.Y[i] - r; if (c.Y[i] + r > y1) y1 = c.Y[i] + r;
+    }
+    return x0 === Infinity ? null : [Math.floor(x0 * k) - 3, Math.floor(y0 * k) - 3, Math.ceil((x1 - x0) * k) + 6, Math.ceil((y1 - y0) * k) + 6];
+  }
+  const unionBox = (p, q) => !p ? q : !q ? p : (() => {
+    const x = Math.min(p[0], q[0]), y = Math.min(p[1], q[1]);
+    return [x, y, Math.max(p[0] + p[2], q[0] + q[2]) - x, Math.max(p[1] + p[3], q[1] + q[3]) - y];
+  })();
+  function drawTip(a, k, fresh) {
+    const o = S.overlay, c = a.sp;
+    if (!o || !o.buf || !o.c.isConnected) return;
+    const ctx = o.ctx;
+    /* the last tip comes off and the new finished ink comes on — both copied from the hidden
+       buffer, in the same canvas and the same task, so the screen never shows a gap */
+    const box = unionBox(a.tipBox, fresh);
+    a.tipBox = null;
+    if (box) {
+      const W = o.c.width, H = o.c.height;
+      const x = Math.max(0, box[0]), y = Math.max(0, box[1]);
+      const w = Math.min(W, box[0] + box[2]) - x, h = Math.min(H, box[1] + box[3]) - y;
+      if (w > 0 && h > 0) {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(x, y, w, h);
+        ctx.drawImage(o.buf, x, y, w, h, x, y, w, h);
+      }
+    }
+    if (!c || !c.X.length) return;
     const p = a.st.pts, n = p.length / 3, f = c.X.length - 1;
     const X = [c.X[f]], Y = [c.Y[f]], R = [c.R[f]];
     let L = c.L;
@@ -838,8 +867,8 @@
     a.tipBox = [Math.floor(x0 * k) - 3, Math.floor(y0 * k) - 3, Math.ceil((x1 - x0) * k) + 6, Math.ceil((y1 - y0) * k) + 6];
   }
   function clearTip(a) {
-    const t = S.overlay && S.overlay.t;
-    if (t) { t.ctx.setTransform(1, 0, 0, 1, 0, 0); t.ctx.clearRect(0, 0, t.c.width, t.c.height); }
+    const o = S.overlay;
+    if (o && o.bctx) { o.bctx.setTransform(1, 0, 0, 1, 0, 0); o.bctx.clearRect(0, 0, o.buf.width, o.buf.height); }
     if (a) a.tipBox = null;
   }
   function spineBox(st) {                               // box of the current spine, in page units
@@ -1540,6 +1569,7 @@
     setupObserver();
     renderSidebar();
     wireEditor();
+    askInkPresenter();
   }
   function pageShell(p) {
     const el = document.createElement('div');
@@ -1934,7 +1964,7 @@
     if (tool === 'text') return startText(p, pagePoint(p, e), e.pointerType);
     try { p.el.setPointerCapture(e.pointerId); } catch (_) {}
     const [x, y] = pagePoint(p, e);
-    const base = { page: p, pointerId: e.pointerId, pointerType: e.pointerType, raf: 0 };
+    const base = { page: p, pointerId: e.pointerId, pointerType: e.pointerType, raf: 0, lastT: e.timeStamp || 0 };
     if (tool === 'eraser') {
       S.active = Object.assign(base, { kind: 'erase', removed: [], addedSet: new Set(), last: [x, y] });
       eraseAt(p, x, y);
@@ -2086,12 +2116,11 @@
     }
     /* where the pen will be a moment from now (Chrome / Edge): drawn on the tip layer only,
        replaced by the real point when it arrives — the line keeps up with the pen */
-    if (a.tip && e.getPredictedEvents) {
+    if (a.tip && e.getPredictedEvents && !inkPresenter) {
       const pe = e.getPredictedEvents();
       a.pred = pe && pe.length ? strokePoint(a, pe[pe.length - 1]) : null;
     }
-    if (a.rawSeen) { if (a.tip && a.pred && !a.snapped) drawTip(a, S.overlay ? S.overlay.k : a.page.k); return; }   // samples came via pointerrawupdate
-    strokeSamples(a, e, evs);
+    strokeSamples(a, e, evs);                            // samples pointerrawupdate already brought are skipped
   }
   /* ⚡ pointerrawupdate (Chrome / Edge): the pen's points as soon as the hardware sends them,
      not batched to the next display frame — on a smartboard / big touch screen this
@@ -2101,10 +2130,30 @@
     if (!a || a.pointerId !== e.pointerId || a.kind !== 'stroke') return;
     let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
     if (!evs || !evs.length) evs = [e];
-    a.rawSeen = true; a.pred = null;
+    a.pred = null;                                       // this point is newer than the last prediction
     strokeSamples(a, e, evs);
   }
   const RAW_EVENTS = typeof window !== 'undefined' && 'onpointerrawupdate' in window;
+  /* ⚡ Delegated ink (Chrome / Edge / the AeroGyan app on Windows and ChromeOS): after each
+     drawn sample the system compositor itself draws a short trail from there to where the pen
+     is NOW, at the screen's own rate — the gap between the pen and the ink all but disappears.
+     It replaces the predicted tip wherever it is available. */
+  let inkPresenter = null, inkFor = null;
+  function askInkPresenter() {
+    inkPresenter = null; inkFor = S.scroller;
+    try {
+      if (!S.scroller || !navigator.ink || !navigator.ink.requestPresenter || lsGet('aero_nt_lowlat') === '0') return;
+      const area = S.scroller;
+      navigator.ink.requestPresenter({ presentationArea: area }).then(p => { if (inkFor === area) inkPresenter = p; }).catch(() => {});
+    } catch (_) {}
+  }
+  function inkTrail(a, e) {
+    if (!inkPresenter || inkFor !== S.scroller || !a.tip || a.snapped || !a.sp || !a.sp.R.length) return;
+    try {
+      const r = a.sp.R[a.sp.R.length - 1];
+      inkPresenter.updateInkTrailStartPoint(e, { color: a.st.c, diameter: Math.max(1, 2 * r * scale()) });
+    } catch (_) {}
+  }
   function rawInput(on) {
     if (!RAW_EVENTS || !S.scroller) return;
     if (on) S.scroller.addEventListener('pointerrawupdate', onRawUpdate);
@@ -2118,6 +2167,14 @@
     if (Math.abs(e.clientX - a.hx) + Math.abs(e.clientY - a.hy) > 7) { a.hx = e.clientX; a.hy = e.clientY; armHold(a); }
     const pts = a.st.pts, ink = a.st.tool === TOOL_INK;
     for (const ev of evs) {
+      /* pointerrawupdate and pointermove carry the same samples (same timestamps): each is
+         used once, whichever event brings it first — none is dropped if one kind stops */
+      const ts = ev.timeStamp;
+      if (ts && a.lastT) {
+        if (ts < a.lastT) continue;                       // older than what was drawn
+        if (ts === a.lastT && ev.clientX === a.lastX && ev.clientY === a.lastY) continue;   // the very same sample again
+      }
+      if (ts) { a.lastT = ts; a.lastX = ev.clientX; a.lastY = ev.clientY; }
       let x, y;
       if (ink) { inkSample(a, ev); x = a.sx; y = a.sy; } else [x, y] = strokePoint(a, ev);
       const lx = pts[pts.length - 3], ly = pts[pts.length - 2];
@@ -2126,7 +2183,7 @@
     }
     /* ink is drawn right here, in the event — waiting for the next frame only
        adds lag. The pencil and the highlighter redraw once per frame. */
-    if (ink && a.inc) drawLive(a);
+    if (ink && a.inc) { drawLive(a); inkTrail(a, e); }
     else if (!a.raf) a.raf = requestAnimationFrame(() => drawLive(a));
   }
   /* previews that live on the overlay: shape being dragged, lasso path, moving selection */
@@ -2164,8 +2221,17 @@
     }
     if (a.inc) {                                          // only the samples that are now final — never a redraw
       const fixed = liveSpine(a, k), c = a.sp;
-      if (fixed > a.done) { ctx.setTransform(k, 0, 0, k, 0, 0); inkFill(ctx, a.st, a.done, fixed, a.st.c, c.X, c.Y, c.R); a.done = fixed; }
-      if (a.tip) drawTip(a, k);
+      let fresh = null;
+      if (fixed > a.done) {
+        if (a.tip && o.bctx) {
+          /* finished ink goes into the hidden buffer only; the screen gets that box copied from
+             it (below) — every pixel has one source, so no seam where the tip was erased */
+          o.bctx.setTransform(k, 0, 0, k, 0, 0); inkFill(o.bctx, a.st, a.done, fixed, a.st.c, c.X, c.Y, c.R);
+          fresh = sampleBox(a, Math.max(0, a.done - 1), fixed, k);
+        } else { ctx.setTransform(k, 0, 0, k, 0, 0); inkFill(ctx, a.st, a.done, fixed, a.st.c, c.X, c.Y, c.R); }
+        a.done = fixed;
+      }
+      if (a.tip) drawTip(a, k, fresh);
       return;
     }
     /* pencil: clear what was drawn last frame and draw the whole stroke once */
@@ -2209,8 +2275,8 @@
     if (a.kind === 'lasso') { hideOverlay(); finishLasso(p, a.path); return; }
     if (a.kind === 'move') { finishMove(a); return; }
     if (a.kind === 'shape') {
-      hideOverlay();
-      if (Math.hypot(a.x1 - a.x0, a.y1 - a.y0) < 12) return;          // a tap, not a shape
+      if (Math.hypot(a.x1 - a.x0, a.y1 - a.y0) < 12) { hideOverlay(); return; }          // a tap, not a shape
+      hideOverlay(true);
       const w = SIZES.pen[S.size.pen];
       const st = withBox({ tool: S.dashed ? TOOL_DASH : TOOL_SHAPE, c: penInk(), w, pts: shapePoints(S.shape, a.x0, a.y0, a.x1, a.y1, w).map((v, i) => i % 3 === 2 ? v : Math.round(v)) });
       p.d.s.push(st);
@@ -2224,7 +2290,7 @@
     st.pts = st.pts.map((v, i) => i % 3 === 2 ? v : Math.round(v));   // integers, as stored
     withBox(st);
     p.d.s.push(st);
-    hideOverlay();
+    hideOverlay(true);
     if (st.tool === TOOL_HL) renderPage(p);               // highlighter goes under the ink
     else if (p.ctx) { p.ctx.setTransform(p.k, 0, 0, p.k, 0, 0); drawStroke(p.ctx, st); }   // the finished stroke, tapered at both ends
     pushUndo({ k: 'add', pid: p.id, kind: 's', item: st });
@@ -2238,18 +2304,23 @@
   }
   /* the overlay is kept between strokes (re-allocating a page-sized canvas
      for every stroke is slow on phones) and handed back after a few idle seconds */
+  /* The live-ink canvas stays on the page between strokes: putting a canvas into the
+     page makes the browser build a new layer, and the first frames of the next stroke
+     could be lost while it does (a cut at the start of every letter). It moves only
+     when you write on another page, and leaves after a few idle seconds. */
   function showOverlay(p) {
     if (!p.canvas) return;
     if (!S.overlay) {
       const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay';
-      S.overlay = { c, ctx: liveCtx(c), freeT: 0 };
+      S.overlay = { c, ctx: liveCtx(c), freeT: 0, buf: null, bctx: null, pending: false };
     }
     const o = S.overlay;
-    clearTimeout(o.freeT);
+    clearTimeout(o.freeT); o.pending = false;
+    o.c.style.transform = ''; o.c.style.opacity = '';
     if (o.c.width !== p.canvas.width || o.c.height !== p.canvas.height) { o.c.width = p.canvas.width; o.c.height = p.canvas.height; }
     else { o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height); }
     o.k = o.c.width / PW;
-    p.el.appendChild(o.c);
+    if (o.c.parentNode !== p.el) p.el.appendChild(o.c);
   }
   /* ⚡ the layers that show ink while it is being written ask for a low-latency canvas
      (desynchronized): Chrome / Edge then put each change on screen without waiting for
@@ -2259,23 +2330,28 @@
     if (lsGet('aero_nt_lowlat') !== '0') { try { ctx = c.getContext('2d', { desynchronized: true }); } catch (_) {} }   // '0' = support switch-off for one device
     return ctx || c.getContext('2d');
   }
-  /* the live pen tip's own layer, just above the overlay (see drawTip) */
+  /* the hidden copy of the stroke's finished ink, which the moving tip is erased back to (see drawTip) */
   function showTip(p) {
     const o = S.overlay; if (!o || !o.c.isConnected) return;
-    if (!o.t) { const c = document.createElement('canvas'); c.className = 'nt-ink nt-overlay'; o.t = { c, ctx: liveCtx(c) }; }
-    const t = o.t;
-    if (t.c.width !== o.c.width || t.c.height !== o.c.height) { t.c.width = o.c.width; t.c.height = o.c.height; }
-    else { t.ctx.setTransform(1, 0, 0, 1, 0, 0); t.ctx.clearRect(0, 0, t.c.width, t.c.height); }
-    p.el.appendChild(t.c);
+    if (!o.buf) { o.buf = document.createElement('canvas'); o.bctx = o.buf.getContext('2d'); }
+    if (o.buf.width !== o.c.width || o.buf.height !== o.c.height) { o.buf.width = o.c.width; o.buf.height = o.c.height; }
+    else { o.bctx.setTransform(1, 0, 0, 1, 0, 0); o.bctx.clearRect(0, 0, o.buf.width, o.buf.height); }
   }
-  function hideOverlay() {
+  /* soft: the finished stroke has just been drawn on the page canvas, which reaches the
+     screen with the next frame — the live copy is cleared only after that, so a stroke
+     never blinks out when the pen lifts */
+  function hideOverlay(soft) {
     const o = S.overlay; if (!o) return;
-    o.c.remove(); o.c.style.transform = ''; o.c.style.opacity = '';
-    if (o.t) o.t.c.remove();
+    const clear = () => { o.pending = false; o.c.style.transform = ''; o.c.style.opacity = ''; o.ctx.setTransform(1, 0, 0, 1, 0, 0); o.ctx.clearRect(0, 0, o.c.width, o.c.height); };
+    if (soft) {
+      o.pending = true;
+      requestAnimationFrame(() => requestAnimationFrame(() => { if (o.pending && S.overlay === o) clear(); }));
+    } else clear();
     clearTimeout(o.freeT);
     o.freeT = setTimeout(() => {
-      if (!o.c.isConnected) { o.c.width = 0; o.c.height = 0; }
-      if (o.t && !o.t.c.isConnected) { o.t.c.width = 0; o.t.c.height = 0; }
+      if (S.active || S.overlay !== o) return;
+      clear(); o.c.remove(); o.c.width = 0; o.c.height = 0;
+      if (o.buf) { o.buf.width = 0; o.buf.height = 0; }
     }, 4000);
   }
 
@@ -3290,7 +3366,7 @@
     S.thumbsEl = null; S.sideEl = null; S._thumbOn = null;
     if (S.overlay) {
       const o = S.overlay; clearTimeout(o.freeT); o.c.remove(); o.c.width = o.c.height = 0;
-      if (o.t) { o.t.c.remove(); o.t.c.width = o.t.c.height = 0; }
+      if (o.buf) { o.buf.width = o.buf.height = 0; }
       S.overlay = null;
     }
     /* pages the server hasn't got are safe on this device — the sync sends them */
