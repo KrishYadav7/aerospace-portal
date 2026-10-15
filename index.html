@@ -724,7 +724,7 @@
               <input type="text"
                      id="studentSearchInput"
                      class="student-search-input"
-                     placeholder="Search by name, username, email, phone or student ID…"
+                     placeholder="Search by name, username, roll no., email, phone or student ID…"
                      autocomplete="off"
                      spellcheck="false"
                      title="Press Enter to open the profile when one student matches"
@@ -995,6 +995,12 @@
       <p class="modal-sub">Create a new student account with OTP verification.</p>
       <form id="registerForm" onsubmit="registerStudent(event)">
         <div class="form-group"><label>Full Name *</label><input type="text" id="regFullName" placeholder="e.g. John Doe" required></div>
+        <div class="form-group">
+          <label for="regRollNumber">Roll Number</label>
+          <input type="text" id="regRollNumber" placeholder="e.g. 21AE10001"
+                 maxlength="40" autocapitalize="characters" spellcheck="false" autocomplete="off">
+          <span class="hint">Optional — your university register / roll number.</span>
+        </div>
         <div class="form-group"><label>Username *</label><input type="text" id="regUsername" placeholder="Choose a username" required></div>
         <div class="form-group"><label>Email *</label><input type="email" id="regEmail" placeholder="your@email.com" required></div>
         <div class="form-group">

@@ -4094,6 +4094,7 @@ async function registerStudent(e) {
   const email    = $('regEmail').value.trim();
   const phone    = $('regPhone').value.trim();
   const password = $('regPassword').value.trim();
+  const rollNumber = (($('regRollNumber') || {}).value || '').trim();
 
   if (!fullName || !username || !password || !email || !phone) {
     return showToast('Please fill all fields.', 'error');
@@ -4111,7 +4112,7 @@ async function registerStudent(e) {
     });
     const data = await response.json();
     if (data.success) {
-      tempRegisterData = { fullName, username, email, phone, password };
+      tempRegisterData = { fullName, username, email, phone, password, rollNumber };
       closeModal('registerModal');
       openOtpModal({
         title: 'Verify Email & Phone',
@@ -4618,6 +4619,7 @@ function renderAdminAddStudent() {
       <div class="editor-grid-2">
         <div class="form-group"><label>Full Name *</label><input type="text" id="newStuFullName" placeholder="e.g. Rohan Verma" required autocomplete="off"></div>
         <div class="form-group"><label>Username *</label><input type="text" id="newStuUsername" placeholder="e.g. rohan.v" required autocomplete="off"></div>
+        <div class="form-group"><label>Roll Number (optional)</label><input type="text" id="newStuRollNumber" placeholder="e.g. 21AE10001" maxlength="40" autocapitalize="characters" spellcheck="false" autocomplete="off"></div>
         <div class="form-group"><label>Email (optional)</label><input type="email" id="newStuEmail" placeholder="rohan@example.com" autocomplete="off"></div>
         <div class="form-group"><label>Password *</label>
           <div class="password-field-row">
@@ -4636,6 +4638,7 @@ async function saveNewStudentPage() {
   const username = $('newStuUsername').value.trim().toLowerCase();
   const email = $('newStuEmail').value.trim();
   const password = $('newStuPassword').value.trim();
+  const rollNumber = (($('newStuRollNumber') || {}).value || '').trim();
 
   if (!fullName || !username || !password) return showToast('Fill all required fields.', 'error');
   if (username.length < 3) return showToast('Username must be at least 3 characters.', 'error');
@@ -4645,7 +4648,7 @@ async function saveNewStudentPage() {
   try {
     const res = await fetch('/api/admin/create-student', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fullName, username, email, password })
+      body: JSON.stringify({ fullName, username, email, password, rollNumber })
     });
     const data = await res.json();
 
@@ -6736,7 +6739,7 @@ function _studentMatchesSearch(s, q) {
   /* Student ID — the full id or any 6+ character piece of it (2026-10-05) */
   const idq = q.replace(/^#|^id[:\s]*/, '').trim();
   if (/^[a-f0-9]{6,24}$/.test(idq) && String(s._id || '').toLowerCase().includes(idq)) return true;
-  const hay = `${s.fullName || ''} ${s.username || ''} ${s.email || ''} ${s.phone || ''}`.toLowerCase();
+  const hay = `${s.fullName || ''} ${s.username || ''} ${s.email || ''} ${s.phone || ''} ${s.rollNumber || ''}`.toLowerCase();
   // Every whitespace-separated token must match → "rahul sharma" also finds "Sharma Rahul"
   return q.split(/\s+/).filter(Boolean).every(tok => hay.includes(tok));
 }
@@ -6872,7 +6875,7 @@ function renderStudentListFromCache() {
       <div class="empty-state">
         <i class="fas fa-magnifying-glass"></i>
         <p>No students match your search.</p>
-        <p style="margin-top:6px;font-size:13px;color:var(--text-tertiary);">Try a different name, username, email, phone or student ID.</p>
+        <p style="margin-top:6px;font-size:13px;color:var(--text-tertiary);">Try a different name, username, roll no., email, phone or student ID.</p>
         <button class="btn btn-outline" style="margin-top:16px;" onclick="clearStudentFilters()">
           <i class="fas fa-filter-circle-xmark"></i> Clear Filters
         </button>
@@ -6929,6 +6932,10 @@ function renderStudentListFromCache() {
           </div>
         </div>
         <div class="student-card-body">
+          ${s.rollNumber ? `<div class="student-meta-row">
+            <i class="fas fa-id-badge"></i>
+            <span>Roll No: ${escapeHtml(s.rollNumber)}</span>
+          </div>` : ''}
           <div class="student-meta-row">
             <i class="fas fa-envelope"></i>
             <span>${hasEmail
@@ -22445,6 +22452,7 @@ window.registerStudent = function (e) {
     const email    = document.getElementById('regEmail')?.value.trim();
     const phone    = document.getElementById('regPhone')?.value.trim();
     const password = document.getElementById('regPassword')?.value.trim();
+    const rollNumber = (document.getElementById('regRollNumber')?.value || '').trim();
 
     if (!fullName || !username || !password || !email || !phone) {
       return showToast('Please fill all fields.', 'error');
@@ -22456,7 +22464,7 @@ window.registerStudent = function (e) {
       body: JSON.stringify({ email, username, phone })
     }).then(r => r.json()).then(data => {
       if (data.success) {
-        tempRegisterData = { fullName, username, email, phone, password, referralCode: code };
+        tempRegisterData = { fullName, username, email, phone, password, referralCode: code, rollNumber };
         closeModal('registerModal');
         openOtpModal({
           title: 'Verify Email & Phone',

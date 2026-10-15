@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema({
   fullName: String,
   email:    String,
   phone:    { type: String, default: '' },
+  rollNumber: { type: String, default: '', trim: true, index: true },
 
   purchases: { type: [String], default: [] },
 

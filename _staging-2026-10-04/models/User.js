@@ -6,8 +6,10 @@ const userSchema = new mongoose.Schema({
   role:     { type: String, default: 'student' },
   fullName: String,
   email:    String,
-  phone:    { type: String, default: '' },
-
+      phone: { type: String, default: '' },
+    /* ⭐ Optional roll number (university register number).
+       Blank for every account created before this field existed. */
+    rollNumber: { type: String, default: '', trim: true, maxlength: 40 },
   purchases: { type: [String], default: [] },
 
   bookmarks: { type: [String], default: [] },
@@ -173,5 +175,10 @@ userSchema.index({ role: 1, createdAt: -1 });
 userSchema.index({ 'subscription.status': 1 });
 userSchema.index({ role: 1, email: 1 });
 userSchema.index({ 'suspended.active': 1 });
+
+/* ⭐ Fast lookup when the admin searches students by roll number.
+   `sparse: true` → only indexed when the field is present, so the
+   thousands of legacy students with no roll number cost nothing. */
+userSchema.index({ rollNumber: 1 }, { sparse: true });
 
 module.exports = mongoose.model('User', userSchema);

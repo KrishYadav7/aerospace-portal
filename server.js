@@ -5605,10 +5605,13 @@ app.post('/api/send-otp', async (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   try {
-    const { fullName, username, email, phone, password, otp, referralCode } = req.body || {};
+    const { fullName, username, email, phone, password, otp, referralCode, rollNumber } = req.body || {};
     const cleanEmail    = String(email || '').trim().toLowerCase();
     const cleanUsername = String(username || '').trim().toLowerCase();
     const cleanPhone    = normalizePhone(phone);
+    /* ⭐ Optional roll number — new field, safely defaults to '' for
+       any client that does not send it yet. */
+    const cleanRoll = String(rollNumber || '').trim().slice(0, 40).toUpperCase();
 
     if (!fullName || !cleanUsername || !cleanEmail || !cleanPhone || !password) {
       return res.status(400).json({ success: false, message: 'All fields are required.' });
@@ -5667,6 +5670,7 @@ app.post('/api/register', async (req, res) => {
       phone:    cleanPhone,
       password: hashedPassword,
       role: 'student',
+      rollNumber: cleanRoll,
       referredBy: referrerUser ? referrerUser.referralCode : null
     });
     newUser.referralCode = generateReferralCode(cleanUsername, fullName);
@@ -6025,7 +6029,8 @@ app.post('/api/forgot-password/reset', async (req, res) => {
    ============================================================ */
 app.post('/api/admin/create-student', requireAdminAuth, async (req, res) => {
   try {
-    const { fullName, username, email, password } = req.body;
+    const { fullName, username, email, password, rollNumber } = req.body;
+    const cleanRoll = String(rollNumber || '').trim().slice(0, 40).toUpperCase();
     if (!fullName || !username || !password) {
       return res.status(400).json({ success: false, message: 'Full name, username, and password are required.' });
     }
@@ -6047,7 +6052,8 @@ app.post('/api/admin/create-student', requireAdminAuth, async (req, res) => {
       username: cleanUsername,
       email: email ? String(email).trim() : '',
       password: hashedPassword,
-      role: 'student'
+      role: 'student',
+      rollNumber: cleanRoll
     });
     await newStudent.save();
 
@@ -6060,6 +6066,7 @@ app.post('/api/admin/create-student', requireAdminAuth, async (req, res) => {
         fullName: newStudent.fullName,
         username: newStudent.username,
         email: newStudent.email || '',
+        rollNumber: newStudent.rollNumber || '',
         password: password,
         createdAt: newStudent.createdAt || new Date()
       }
@@ -12750,7 +12757,7 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
        activityLog / quizResults / notifications cuts the payload
        from tens of MB down to a few hundred KB. */
     const students = await User.find({ role: 'student' })
-      .select('username fullName email phone role createdAt subscription suspended purchases activeSession.lastSeenAt activeSession.sessionId security.captureAttempts security.lastFlagAt')
+      .select('username fullName email phone rollNumber role createdAt subscription suspended purchases activeSession.lastSeenAt activeSession.sessionId security.captureAttempts security.lastFlagAt')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -12770,6 +12777,7 @@ app.get('/api/students', requireAdminAuth, async (req, res) => {
         fullName: s.fullName,
         email: s.email,
         phone: s.phone,
+        rollNumber: s.rollNumber || '',
         role: s.role,
         createdAt: s.createdAt,
         /* ⭐ user-management fields (2026-10-04) */
