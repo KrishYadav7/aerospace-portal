@@ -6604,7 +6604,7 @@ const COURSE_LIST_PROJECT_STAGE = {
       category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
       learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
       isPremium: 1, price: 1, announcements: 1, playlists: 1,
-      certificate: 1, sortOrder: 1,
+      certificate: 1, sortOrder: 1, department: 1,
       createdAt: 1, updatedAt: 1,
       doubtsCount: { $size: { $ifNull: ['$doubts', []] } },
       materials: {
@@ -6625,6 +6625,26 @@ const COURSE_LIST_PROJECT_STAGE = {
       }
     }
   };
+
+/* ⭐ 2026-10-16 — departments (see departments-api.js). Guarded: if it
+   fails to load, courses keep working exactly as before. */
+let deptApi = null;
+try {
+  deptApi = require('./departments-api')(app, { mongoose, Course, requireAdminAuth, cacheGet, cacheSet, cacheClear, logger: console });
+  console.log('[departments] ✅ ready');
+} catch (e) {
+  console.error('❌ [departments] not loaded:', e.message);
+}
+/* → null when fine, else an error message (unknown department) */
+async function _checkCourseDepartment(body) {
+  if (!body || body.department === undefined) return null;
+  const slug = String(body.department || '').trim();
+  if (!slug) { delete body.department; return null; }
+  if (!deptApi) return 'Departments are not available right now.';
+  if (!(await deptApi.isDepartment(slug))) return 'Unknown department.';
+  body.department = slug;
+  return null;
+}
 
 app.get('/api/courses', async (req, res) => {
   try {
@@ -6664,6 +6684,7 @@ app.get('/api/courses', async (req, res) => {
       ]),
       Course.countDocuments()
     ]);
+    if (deptApi) await deptApi.attachLinks(courses);
 
     const payload = {
       success: true,
@@ -7553,7 +7574,7 @@ app.get('/api/courses/:id', async (req, res) => {
           name: 1, code: 1, semester: 1, instructor: 1, description: 1,
           category: 1, difficulty: 1, duration: 1, credits: 1, language: 1,
           learningOutcomes: 1, thumbnail: 1, status: 1, featured: 1,
-          isPremium: 1, price: 1, announcements: 1, playlists: 1, sortOrder: 1,
+          isPremium: 1, price: 1, announcements: 1, playlists: 1, sortOrder: 1, department: 1,
           /* ⭐ Doubts are public to every student — strip askers' emails. */
           doubts: {
             $map: {
@@ -7602,6 +7623,7 @@ app.get('/api/courses/:id', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Course not found' });
     }
 
+    if (deptApi) await deptApi.attachLinks(courses);
     const payload = { success: true, course: courses[0] };
     cacheSet(cacheKey, payload, 60000);
 
@@ -7616,11 +7638,16 @@ app.get('/api/courses/:id', async (req, res) => {
 
 app.post('/api/courses', requireAdminAuth, async (req, res) => {
   try {
+    const deptErr = await _checkCourseDepartment(req.body);
+    if (deptErr) return res.status(400).json({ success: false, message: deptErr });
     const newCourse = new Course(req.body);
     await newCourse.save();
     cacheClear('courses:');
     res.json({ success: true, message: 'Course created successfully!', course: newCourse });
-  } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
+  } catch (e) {
+    console.error('[POST /api/courses]', e.message);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
 });
 
 app.put('/api/courses/:id', requireCourseEditor, async (req, res) => {
@@ -7630,7 +7657,11 @@ app.put('/api/courses/:id', requireCourseEditor, async (req, res) => {
        cannot clear the thumbnail (that would be removing content). */
     const allowed = req.editorRole === 'professor'
       ? ['description', 'learningOutcomes', 'duration', 'difficulty', 'thumbnail']
-      : ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price','certificate'];
+      : ['name','code','semester','instructor','description','category','difficulty','duration','learningOutcomes','thumbnail','status','featured','isPremium','price','certificate','department'];
+    if (req.editorRole !== 'professor') {
+      const deptErr = await _checkCourseDepartment(req.body);
+      if (deptErr) return res.status(400).json({ success: false, message: deptErr });
+    }
     const update = {};
     allowed.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
     if (req.editorRole === 'professor') {
@@ -7648,6 +7679,10 @@ app.put('/api/courses/:id', requireCourseEditor, async (req, res) => {
 app.delete('/api/courses/:id', requireAdminAuth, async (req, res) => {
   try {
     await Course.findByIdAndDelete(req.params.id);
+    /* its department links go with it (the course itself is the only thing deleted) */
+    if (deptApi && mongoose.Types.ObjectId.isValid(String(req.params.id))) {
+      try { await deptApi.DepartmentCourse.deleteMany({ courseId: req.params.id }); } catch (_) {}
+    }
     cacheClear('courses:');
     res.json({ success: true, message: 'Course deleted successfully!' });
   } catch (e) { res.status(500).json({ success: false, message: 'Server error' }); }
@@ -15292,7 +15327,7 @@ app.post('/api/ai/solve-doubt', requireUser, aiDoubtLimiter, async (req, res) =>
 
     /* ---------- 3. System instruction ---------- */
     const systemInstruction =
-      'You are an expert teaching assistant for the Aerospace Department at IIT Kharagpur. ' +
+      'You are an expert teaching assistant for students of IIT Kharagpur (all departments). ' +
       'Answer questions in a clear, student-friendly way. Use simple language and real-world analogies. ' +
       'For math/physics, show the derivation step-by-step. ' +
       'If you do not know something, say so honestly. ' +
@@ -15622,7 +15657,7 @@ app.post('/api/admin/quiz/:courseId/:materialId/ai-check', aiCheckLimiter, requi
       '"reasoning": "<short notes for the teacher: how the marks were given, step by step>", "confidence": "high" | "medium" | "low", ' +
       '"readable": <false if the answer could not be read or is not an answer to this question>}';
     const system =
-      'You are a fair, careful examiner for an aerospace engineering course at IIT Kharagpur. ' +
+      'You are a fair, careful examiner for a university course at IIT Kharagpur. ' +
       'Read the student\'s answer exactly as written — never assume work that is not on the page. ' +
       'Give partial marks for correct method and steps even when the final answer is wrong. ' +
       'Follow the teacher\'s grading instructions and model answer when given. ' +
@@ -15713,9 +15748,9 @@ function _aiCleanHistory(raw) {
 }
 
 const AI_SYSTEM_V2 =
-  'You are AeroGyan\'s AI Doubt Solver — an expert teaching assistant for aerospace engineering students ' +
-  '(IIT Kharagpur level): aerodynamics, propulsion, flight mechanics, structures, orbital mechanics, ' +
-  'and the maths and physics behind them.\n' +
+  'You are AeroGyan\'s AI Doubt Solver — an expert teaching assistant for IIT Kharagpur students of every ' +
+  'department (engineering, sciences, architecture, humanities and more), including the maths and physics ' +
+  'behind their subjects.\n' +
   '• Explain clearly and correctly. For numerical or derivation questions, list the given data, state the ' +
   'principle used, then solve step by step with units, and box or bold the final answer.\n' +
   '• When the student attaches images or documents, read them carefully — including handwriting, diagrams, ' +

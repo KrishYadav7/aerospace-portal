@@ -4691,6 +4691,9 @@ function renderAdminAddCourse() {
       <div class="editor-grid-2">
         <div class="form-group"><label>Course Name *</label><input type="text" id="newCourseName" placeholder="e.g. Aerodynamics" required></div>
         <div class="form-group"><label>Course Code *</label><input type="text" id="newCourseCode" placeholder="e.g. AE101" required></div>
+        <div class="form-group"><label>Department *</label>
+          <select id="newCourseDepartment">${_deptOptionsHtml(_adminNewCourseDept())}</select>
+        </div>
         <div class="form-group"><label>Semester</label>
   <select id="newCourseSemester">
     <option value="">Select Semester</option>
@@ -4778,6 +4781,7 @@ async function saveNewCoursePage() {
   const payload = {
     name, code,
     semester: $('newCourseSemester').value, // Changed to .value (no trim needed for select)
+    department: ($('newCourseDepartment') || {}).value || _adminNewCourseDept(),
     instructor: $('newCourseInstructor').value.trim(),
     description: $('newCourseDescription').value.trim(),
     category: $('newCourseCategory').value,
@@ -6188,6 +6192,11 @@ async function renderAdminCourses() {
      they've created. Only the filter values below narrow the list.
      ============================================================ */
   const searchTerm  = ($('adminCourseSearch')?.value     || '').toLowerCase().trim();
+  /* ⭐ department (All until the admin picks one); a search looks everywhere */
+  loadDepartments();
+  if (!adminDept) adminDept = _deptPref('aero_admin_dept', 'all');
+  renderDeptBar('adminDeptBar', adminDept, 'pickAdminDept', courses);
+  const viewDept = searchTerm ? 'all' : adminDept;
   const fSemester   = ($('adminFilterSemester')?.value   || '').trim();
   const fCategory   = ($('adminFilterCategory')?.value   || '').trim();
   const fDifficulty = ($('adminFilterDifficulty')?.value || '').trim();
@@ -6205,6 +6214,8 @@ async function renderAdminCourses() {
   const posOf = new Map(ordered.map((c, i) => [c.id, i + 1]));
 
   const filtered = ordered.filter(c => {
+    const deptSem = courseDeptSemester(c, viewDept);
+    if (deptSem === null) return false;
     if (searchTerm) {
       const hit = (c.name || '').toLowerCase().includes(searchTerm) ||
                   (c.code && c.code.toLowerCase().includes(searchTerm)) ||
@@ -6212,7 +6223,7 @@ async function renderAdminCourses() {
       if (!hit) return false;
     }
     if (fSemester) {
-      if (normalizeSemester(c.semester) !== normalizeSemester(fSemester)) return false;
+      if (normalizeSemester(deptSem) !== normalizeSemester(fSemester)) return false;
     }
     if (fCategory   && c.category   !== fCategory)   return false;
     if (fDifficulty && c.difficulty !== fDifficulty) return false;
@@ -6290,6 +6301,8 @@ async function renderAdminCourses() {
           <span><i class="fas fa-user"></i> ${escapeHtml(c.instructor) || '—'}</span>
           <span><i class="fas fa-calendar-alt"></i> ${escapeHtml(c.semester) || '—'}</span>
           ${c.category ? `<span><i class="fas fa-tag"></i> ${escapeHtml(c.category)}</span>` : ''}
+          <span title="Department"><i class="fas fa-building-columns"></i> ${escapeHtml(deptName(courseOwnDept(c)))}${viewDept !== 'all' && courseOwnDept(c) !== viewDept
+            ? ` <span class="dept-linked" title="Shown here as a link — the same course as in ${escapeHtml(deptName(courseOwnDept(c)))}">linked</span>` : ''}</span>
         </div>
         <div class="material-count"><i class="fas fa-layer-group"></i> ${matCount} materials${plCount > 0 ? ` · <i class="fas fa-list"></i> ${plCount} playlist${plCount === 1 ? '' : 's'}` : ''}</div>
         ${orderBar}
@@ -8534,6 +8547,9 @@ function renderEditorDetails(course) {
       <div class="editor-grid-2 admin-only">
         <div class="form-group"><label>Course Name *</label><input type="text" id="edName" value="${escapeHtml(course.name)}"></div>
         <div class="form-group"><label>Course Code *</label><input type="text" id="edCode" value="${escapeHtml(course.code)}"></div>
+        <div class="form-group"><label>Department</label>
+          <select id="edDepartment">${_deptOptionsHtml(courseOwnDept(course))}</select>
+        </div>
         <div class="form-group"><label>Semester</label>
   <select id="edSemester">
     <option value="">Select Semester</option>
@@ -9546,6 +9562,12 @@ async function saveCourseDetails(courseId) {
   const payload = {
     name, code,
     semester: $('edSemester').value.trim(),
+    /* only when changed — an untouched course keeps no department field (= Aerospace) */
+    ...(() => {
+      const el = $('edDepartment');
+      const cur = liveCourses.find(x => x.id === courseId || x._id === courseId);
+      return el && el.value && el.value !== courseOwnDept(cur) ? { department: el.value } : {};
+    })(),
     instructor: $('edInstructor').value.trim(),
     description: $('edDescription').value.trim(),
     category: $('edCategory').value,
@@ -9584,6 +9606,7 @@ async function saveCourseDetails(courseId) {
             name:             u.name             ?? c.name,
             code:             u.code             ?? c.code,
             semester:         u.semester         ?? c.semester,
+            department:       u.department       ?? c.department,
             instructor:       u.instructor       ?? c.instructor,
             description:      u.description      ?? c.description,
             category:         u.category         ?? c.category,
@@ -10561,6 +10584,110 @@ async function submitCancelOtp() {
   }
 }
 /* ============================================================
+   ⭐ DEPARTMENTS (2026-10-16)
+   ------------------------------------------------------------
+   A course belongs to its own department (course.department;
+   none = Aerospace Engineering) and may also be LINKED into other
+   departments (course.deptLinks: [{ d: slug, s: semester }]).
+   Students pick a department from a scrollable chip bar and see
+   only its courses; typing in the search box searches every
+   department, as before. Admins get the same bar, and new courses
+   are created in the department picked there.
+   ============================================================ */
+const DEFAULT_DEPT = 'aerospace-engineering';
+let AERO_DEPTS = ['Aerospace Engineering', 'Agricultural and Food Engineering', 'Architecture and Regional Planning',
+  'Artificial Intelligence', 'Bioscience and Biotechnology', 'Chemical Engineering', 'Chemistry', 'Civil Engineering',
+  'Computer Science and Engineering', 'Education', 'Electrical Engineering', 'Electronics and Electrical Communication Engineering',
+  'Geology and Geophysics', 'Humanities and Social Sciences', 'Industrial and Systems Engineering', 'Mathematics',
+  'Mechanical Engineering', 'Metallurgical and Materials Engineering', 'Mining Engineering',
+  'Ocean Engineering and Naval Architecture', 'Physics']
+  .map(name => ({ name, slug: name.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }));
+let _deptsLoaded = false;
+async function loadDepartments() {
+  if (_deptsLoaded) return AERO_DEPTS;
+  _deptsLoaded = true;
+  try {
+    const r = await fetch(`${API_BASE}/departments`);
+    const j = await r.json();
+    if (j && j.success && Array.isArray(j.departments) && j.departments.length) {
+      AERO_DEPTS = j.departments;
+      if (currentUser) { if (isAdmin(currentUser)) renderAdminCourses(); else if (studentNav === 'courses') renderStudentCourses(); }
+    }
+  } catch (_) { _deptsLoaded = false; }
+  return AERO_DEPTS;
+}
+function deptName(slug) {
+  const d = AERO_DEPTS.find(x => x.slug === slug);
+  return d ? d.name : (slug === 'all' ? 'All departments' : String(slug || ''));
+}
+function courseOwnDept(c) { return (c && c.department) || DEFAULT_DEPT; }
+/* → null when the course is not in that department, else the semester it sits in there */
+function courseDeptSemester(c, slug) {
+  if (!c) return null;
+  if (slug === 'all' || courseOwnDept(c) === slug) return c.semester == null ? '' : String(c.semester);
+  const l = (c.deptLinks || []).find(x => x && x.d === slug);
+  return l ? String(l.s || c.semester || '') : null;
+}
+function _deptPref(key, fallback) {
+  try { const v = localStorage.getItem(key); if (v && (v === 'all' || AERO_DEPTS.some(d => d.slug === v))) return v; } catch (_) {}
+  return fallback;
+}
+function _deptPrefSet(key, v) { try { localStorage.setItem(key, v); } catch (_) {} }
+let studentDept = null;    // set on first render
+let adminDept = null;
+/* The scrollable chip bar. `pick` is the global function to call with the slug. */
+function renderDeptBar(hostId, selected, pick, courses) {
+  const host = $(hostId);
+  if (!host) return;
+  const count = (slug) => courses.filter(c => courseDeptSemester(c, slug) !== null).length;
+  const chips = [{ slug: 'all', name: 'All departments' }].concat(AERO_DEPTS).map(d => {
+    const n = count(d.slug);
+    return `<button type="button" role="tab" class="dept-chip ${d.slug === selected ? 'on' : ''}" aria-selected="${d.slug === selected}"
+      data-dept="${escapeHtml(d.slug)}" onclick="${pick}('${escapeHtml(d.slug)}')">${escapeHtml(d.name)}<span class="dept-chip-n">${n}</span></button>`;
+  }).join('');
+  const keepScroll = host.querySelector('.dept-scroll');
+  const left = keepScroll ? keepScroll.scrollLeft : null;
+  host.innerHTML = `
+    <button type="button" class="dept-arrow" aria-label="Scroll left" onclick="this.nextElementSibling.scrollBy({left:-320,behavior:'smooth'})"><i class="fas fa-chevron-left"></i></button>
+    <div class="dept-scroll" role="tablist" aria-label="Departments">${chips}</div>
+    <button type="button" class="dept-arrow" aria-label="Scroll right" onclick="this.previousElementSibling.scrollBy({left:320,behavior:'smooth'})"><i class="fas fa-chevron-right"></i></button>`;
+  const sc = host.querySelector('.dept-scroll');
+  if (left !== null) sc.scrollTo({ left, behavior: 'instant' });
+  /* the picked chip always in view (centred when it was off-screen) */
+  const centre = () => {
+    const on = sc.querySelector('.dept-chip.on');
+    if (!on || !sc.clientWidth) return;
+    const l = on.offsetLeft - sc.offsetLeft, r = l + on.offsetWidth;
+    if (l < sc.scrollLeft || r > sc.scrollLeft + sc.clientWidth) {
+      sc.scrollTo({ left: Math.max(0, l - sc.clientWidth / 2 + on.offsetWidth / 2), behavior: 'instant' });
+    }
+  };
+  centre();
+  requestAnimationFrame(centre);      // after layout (bar was hidden / fonts loading)
+}
+function pickStudentDept(slug) {
+  studentDept = slug;
+  _deptPrefSet('aero_dept', slug);
+  renderStudentCourses();
+  const on = $('studentDeptBar') && $('studentDeptBar').querySelector('.dept-chip.on');
+  if (on) on.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+}
+function pickAdminDept(slug) {
+  adminDept = slug;
+  _deptPrefSet('aero_admin_dept', slug);
+  renderAdminCourses();
+  const on = $('adminDeptBar') && $('adminDeptBar').querySelector('.dept-chip.on');
+  if (on) on.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+}
+/* the department a new course should get (the admin's current pick) */
+function _adminNewCourseDept() {
+  return adminDept && adminDept !== 'all' ? adminDept : DEFAULT_DEPT;
+}
+function _deptOptionsHtml(selected) {
+  return AERO_DEPTS.map(d => `<option value="${escapeHtml(d.slug)}" ${d.slug === selected ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('');
+}
+
+/* ============================================================
    STUDENT COURSES
    ============================================================ */
 /* ---- Debounced renderers (used by search inputs) ---- */
@@ -10605,6 +10732,14 @@ function renderStudentCourses() {
 
   const courses = getCourses().filter(c => c.status !== 'draft' && c.status !== 'archived');
   const searchTerm  = ($('studentCourseSearch')?.value || '').toLowerCase().trim();
+  /* ⭐ department: the student's pick (Aerospace until they choose);
+     a search looks through every department */
+  loadDepartments();
+  if (!studentDept) studentDept = _deptPref('aero_dept', DEFAULT_DEPT);
+  renderDeptBar('studentDeptBar', studentDept, 'pickStudentDept', courses);
+  const viewDept = searchTerm ? 'all' : studentDept;
+  const titleEl = $('studentCoursesTitle');
+  if (titleEl) titleEl.textContent = searchTerm ? 'Search results — all departments' : (studentDept === 'all' ? 'All Courses' : deptName(studentDept));
   const fSemester   = ($('filterSemester')?.value   || '').trim();
   const fCategory   = ($('filterCategory')?.value   || '').trim();
   const fDifficulty = ($('filterDifficulty')?.value || '').trim();
@@ -10618,6 +10753,8 @@ function renderStudentCourses() {
   }
 
   const filtered = courses.filter(c => {
+    const deptSem = courseDeptSemester(c, viewDept);
+    if (deptSem === null) return false;
     if (searchTerm) {
       const hit = (c.name || '').toLowerCase().includes(searchTerm) ||
                   (c.code && c.code.toLowerCase().includes(searchTerm)) ||
@@ -10625,7 +10762,7 @@ function renderStudentCourses() {
       if (!hit) return false;
     }
     if (fSemester) {
-      const courseSem = normalizeSemester(c.semester);
+      const courseSem = normalizeSemester(deptSem);
       const filterSem = normalizeSemester(fSemester);
       if (courseSem !== filterSem) return false;
     }
@@ -10643,8 +10780,10 @@ function renderStudentCourses() {
     $('studentCourseList').innerHTML = `
       <div class="empty-state">
         <i class="fas fa-graduation-cap"></i>
-        <p>No courses match your filters.</p>
+        <p>${viewDept !== 'all' && !courses.some(c => courseDeptSemester(c, viewDept) !== null)
+          ? `No courses in ${escapeHtml(deptName(viewDept))} yet.` : 'No courses match your filters.'}</p>
         ${fSemester ? `<p style="margin-top:8px;font-size:13px;">No courses found for Semester ${fSemester}.</p>` : ''}
+        ${viewDept !== 'all' ? `<p style="margin-top:8px;font-size:13px;">Pick another department above, or search to look through every department.</p>` : ''}
       </div>`;
     return;
   }
@@ -17116,6 +17255,7 @@ async function saveCourse(e) {
     name: $('courseName').value.trim(),
     code: $('courseCode').value.trim(),
     semester: $('courseSemester').value.trim(),
+    department: _adminNewCourseDept(),
     instructor: $('courseInstructor').value.trim(),
     description: $('courseDescription').value.trim(),
     category: $('courseCategory')?.value || 'General',

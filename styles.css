@@ -18536,3 +18536,36 @@ html.aero-play-store .subscribe-banner { display: none !important; }
 .lg-offline-head i { color: #d97706; }
 .lg-offline-notes p { margin: 6px 0 10px; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
 .lg-offline-btn { margin-top: 6px; justify-content: center; }
+
+/* ============================================================
+   ⭐ DEPARTMENTS — scrollable chip bar (students + admin), 2026-10-16
+   ============================================================ */
+.dept-bar { display: flex; align-items: center; gap: 6px; margin: 4px 0 14px; min-width: 0; }
+.dept-bar:empty { display: none; }
+.dept-scroll {
+  display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x proximity; scroll-behavior: smooth;
+  padding: 4px 2px 8px; flex: 1; min-width: 0; -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin; scrollbar-color: var(--border-default) transparent;
+  mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+}
+.dept-scroll::-webkit-scrollbar { height: 6px; }
+.dept-scroll::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 6px; }
+.dept-chip {
+  flex: 0 0 auto; scroll-snap-align: center; display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 14px; border-radius: 999px; border: 1px solid var(--border-default);
+  background: var(--bg-surface-2); color: var(--text-secondary); font: inherit; font-size: 13.5px; font-weight: 600;
+  white-space: nowrap; cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+}
+.dept-chip:hover { border-color: var(--brand-500); color: var(--brand-500); }
+.dept-chip:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; }
+.dept-chip.on { background: var(--brand-500); border-color: var(--brand-500); color: #fff; }
+.dept-chip-n { font-size: 11.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(127,127,127,.16); }
+.dept-chip.on .dept-chip-n { background: rgba(255,255,255,.25); }
+.dept-arrow {
+  flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border-default);
+  background: var(--bg-surface-2); color: var(--text-secondary); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.dept-arrow:hover { border-color: var(--brand-500); color: var(--brand-500); }
+@media (max-width: 640px) { .dept-arrow { display: none; } .dept-chip { padding: 7px 12px; font-size: 13px; } }
+.dept-linked { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: rgba(99,102,241,.12); color: var(--brand-500); }

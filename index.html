@@ -648,6 +648,9 @@
             </div>
           </div>
 
+          <!-- ⭐ departments: new courses are created in the one picked here -->
+          <div class="dept-bar" id="adminDeptBar"></div>
+
           <!-- ⭐ NEW: Same filter bar as the student course view -->
           <div class="filter-bar" id="adminFilterBar">
             <select id="adminFilterSemester" onchange="renderAdminCourses()">
@@ -890,10 +893,12 @@
       <!-- STUDENT COURSES -->
       <section id="studentCoursesView" class="view">
         <div class="dash-header">
-          <h2><i class="fas fa-graduation-cap"></i> All Courses</h2>
+          <h2><i class="fas fa-graduation-cap"></i> <span id="studentCoursesTitle">All Courses</span></h2>
         </div>
+        <!-- ⭐ departments: scroll and pick one (filled by app.js) -->
+        <div class="dept-bar" id="studentDeptBar"></div>
         <div class="search-bar"><i class="fas fa-search"></i>
-          <input type="text" id="studentCourseSearch" placeholder="Search courses..." oninput="debouncedRenderStudentCourses()">
+          <input type="text" id="studentCourseSearch" placeholder="Search courses in every department..." oninput="debouncedRenderStudentCourses()">
         </div>
        <div class="filter-bar" id="studentFilterBar">
   <select id="filterSemester" onchange="renderStudentCourses()">

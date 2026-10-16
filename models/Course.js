@@ -204,6 +204,10 @@ const courseSchema = new mongoose.Schema({
      reorders, and courses created afterwards) are listed first, by the old
      rule: featured first, then name. */
   sortOrder:  { type: Number },
+  /* ⭐ 2026-10-16 — the course's department (a slug from departments-api.js).
+     No default on purpose: courses without it are Aerospace Engineering,
+     and existing documents are never rewritten to say so. */
+  department: { type: String, index: true },
 
   isPremium: { type: Boolean, default: false },
   price:     { type: Number, default: 0 },
@@ -222,7 +226,11 @@ courseSchema.index({ featured: -1, createdAt: -1 });
 courseSchema.index({ createdAt: -1 });
 courseSchema.index({ status: 1, featured: -1 });
 courseSchema.index({ sortOrder: 1 });
-courseSchema.index({ name: 'text', code: 'text', description: 'text' });
+/* ⭐ 2026-10-16 — language_override: by default MongoDB reads the course's
+   own `language` field ("English", "Hindi", "") as the text-search language
+   and REFUSES to save a course whose value it does not support (e.g. empty).
+   departments-api.js rebuilds an existing index with this option. */
+courseSchema.index({ name: 'text', code: 'text', description: 'text' }, { language_override: 'textSearchLanguage' });
 // Fast lookup by filename for the disk-miss → Cloudinary fallback path
 courseSchema.index({ 'materials.url': 1 });
 courseSchema.index({ 'materials.cloudinaryPublicId': 1 });
