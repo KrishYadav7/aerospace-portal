@@ -4291,6 +4291,8 @@ async function submitOtpVerification() {
   if (!/^\d{6}$/.test(otp)) {
     return showToast('Please enter a valid 6-digit OTP.', 'error');
   }
+  /* already verifying (auto-submit on the 6th digit + a click/Enter) */
+  if (btn && btn.disabled) return;
 
   if (btn) {
     btn.disabled = true;
@@ -4330,6 +4332,17 @@ async function _handleRegisterOtp(otp) {
     body: JSON.stringify({ ..._otpContext.data, otp })
   });
   const data = await res.json();
+  /* ⭐ 2026-10-16 — username shared with the same password / roll number
+     taken: back to the form (details kept) to fix it, then a fresh OTP */
+  if (!data.success && ['PASSWORD_CLASH', 'ROLL_TAKEN', 'USERNAME_TAKEN'].includes(data.code)) {
+    _otpContext = null;
+    closeModal('otpVerificationModal');
+    openModal('registerModal');
+    const fix = $(data.code === 'PASSWORD_CLASH' ? 'regPassword' : data.code === 'ROLL_TAKEN' ? 'regRollNumber' : 'regUsername');
+    if (fix) { if (data.code === 'PASSWORD_CLASH') fix.value = ''; setTimeout(() => fix.focus(), 120); }
+    showToast(data.message, 'error');
+    return;
+  }
   if (!data.success) throw new Error(data.message || 'Registration failed.');
 
   /* ⭐ Registered from the guest catalog → sign in right away and

@@ -3454,6 +3454,15 @@ async function _newStudentIdentityProblem(username, rollNumber, password) {
   return null;
 }
 
+/* New student accounts are checked + saved one at a time, so two
+   simultaneous sign-ups can't both pass the checks above. */
+let _studentCreateTail = Promise.resolve();
+function _serializeStudentCreate(fn) {
+  const run = _studentCreateTail.then(fn, fn);
+  _studentCreateTail = run.catch(() => {});
+  return run;
+}
+
 /* Is this username held by more than one account? Older records
    (doubts, votes, contributions) only stored the username, so they
    are matched by username only while it is still unique. */
@@ -5815,15 +5824,6 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid OTP. Please try again.' });
     }
 
-    /* ⭐ 2026-10-16 — shared usernames: never a staff name, roll number
-       unused, and a password no other student with this id uses. A
-       clash counts as an OTP attempt so it can't be retried endlessly. */
-    const identityProblem = await _newStudentIdentityProblem(cleanUsername, cleanRoll, password);
-    if (identityProblem) {
-      if (identityProblem.code === 'PASSWORD_CLASH') await otpBumpAttempts(cleanEmail);
-      return res.status(400).json({ success: false, code: identityProblem.code, message: identityProblem.message });
-    }
-
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // ---- Referral code lookup (before creating the new user) ----
@@ -5867,7 +5867,23 @@ app.post('/api/register', async (req, res) => {
       newUser.referralCode = generateReferralCode(cleanUsername, fullName);
     }
 
-    await newUser.save();
+    /* ⭐ 2026-10-16 — shared usernames: never a staff name, roll number
+       unused, and a password no other student with this id uses. Checked
+       and saved one sign-up at a time, and the OTP is spent exactly once,
+       so a double-submitted form can never create two identical accounts.
+       A password clash counts as an OTP attempt (no endless retries). */
+    const outcome = await _serializeStudentCreate(async () => {
+      const problem = await _newStudentIdentityProblem(cleanUsername, cleanRoll, password);
+      if (problem) return { problem };
+      const claimed = await OtpToken.findOneAndDelete({ key: cleanEmail, otp: record.otp });
+      if (!claimed) return { problem: { code: 'OTP_USED', message: 'This OTP was already used. Please request a new one.' } };
+      await newUser.save();
+      return {};
+    });
+    if (outcome.problem) {
+      if (outcome.problem.code === 'PASSWORD_CLASH') await otpBumpAttempts(cleanEmail);
+      return res.status(400).json({ success: false, code: outcome.problem.code, message: outcome.problem.message });
+    }
     console.log(`[register] ✅ Created ${cleanUsername} · referralCode=${newUser.referralCode}${referrerUser ? ' · referredBy=' + referrerUser.referralCode : ''}`);
 
     // ---- Referral tracking: bump referrer + grant reward if threshold met ----
@@ -6223,9 +6239,6 @@ app.post('/api/admin/create-student', requireAdminAuth, async (req, res) => {
     if (cleanUsername.length < 3) return res.status(400).json({ success: false, message: 'Username must be at least 3 characters.' });
     if (password.length < 6) return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
 
-    /* ⭐ 2026-10-16 — a username may be shared by students, but not with the same password */
-    const identityProblem = await _newStudentIdentityProblem(cleanUsername, cleanRoll, password);
-    if (identityProblem) return res.status(400).json({ success: false, code: identityProblem.code, message: identityProblem.message });
 
     if (email) {
       const existingEmail = await User.findOne({ email: String(email).trim() });
@@ -6241,7 +6254,14 @@ app.post('/api/admin/create-student', requireAdminAuth, async (req, res) => {
       role: 'student',
       rollNumber: cleanRoll
     });
-    await newStudent.save();
+    /* ⭐ 2026-10-16 — a username may be shared by students, but not with the
+       same password; checked + saved one at a time (double-clicks are safe) */
+    const identityProblem = await _serializeStudentCreate(async () => {
+      const problem = await _newStudentIdentityProblem(cleanUsername, cleanRoll, password);
+      if (!problem) await newStudent.save();
+      return problem;
+    });
+    if (identityProblem) return res.status(400).json({ success: false, code: identityProblem.code, message: identityProblem.message });
 
     console.log('[admin] ✅ Created student:', cleanUsername);
     res.json({
