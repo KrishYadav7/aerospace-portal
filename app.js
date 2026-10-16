@@ -1025,6 +1025,12 @@ function checkCertificateEligibility(course) {
        course (course editor → Materials) changed. Only the course list is
        refetched — quietly, no toast. The admin's own change is already on
        screen, so its echo is ignored. */
+    /* ⭐ a course added to / removed from / hidden in one department */
+    if (scope === 'courses:departments') {
+      if (isBusy()) { window.__aeroSyncPending = { scope, detail }; return; }
+      try { if (typeof fetchCoursesFromDB === 'function') fetchCoursesFromDB(true).catch(() => {}); } catch (e) {}
+      return;
+    }
     if (scope === 'courses:order' || scope === 'courses:material-order') {
       if (Date.now() - (window.__aeroCourseOrderSelfAt || 0) < 6000) return;
       if (isBusy()) { window.__aeroSyncPending = { scope, detail }; return; }
@@ -6198,7 +6204,7 @@ async function renderAdminCourses() {
   /* ⭐ department (All until the admin picks one); a search looks everywhere */
   loadDepartments();
   if (!adminDept) adminDept = _deptPref('aero_admin_dept', 'all');
-  renderDeptBar('adminDeptBar', adminDept, 'pickAdminDept', courses);
+  renderDeptBar('adminDeptBar', adminDept, 'pickAdminDept', courses, true);
   const viewDept = searchTerm ? 'all' : adminDept;
   const fSemester   = ($('adminFilterSemester')?.value   || '').trim();
   const fCategory   = ($('adminFilterCategory')?.value   || '').trim();
@@ -6218,7 +6224,7 @@ async function renderAdminCourses() {
   const posOf = new Map(ordered.map((c, i) => [c.id, i + 1]));
 
   const filtered = ordered.filter(c => {
-    const deptSem = courseDeptSemester(c, viewDept);
+    const deptSem = courseDeptSemester(c, viewDept, true);
     if (deptSem === null) return false;
     if (searchTerm) {
       const hit = (c.name || '').toLowerCase().includes(searchTerm) ||
@@ -6233,8 +6239,9 @@ async function renderAdminCourses() {
     if (fDifficulty && c.difficulty !== fDifficulty) return false;
     if (fPrice === 'free'    &&  c.isPremium) return false;
     if (fPrice === 'premium' && !c.isPremium) return false;
-    if (fVisible === 'visible' &&  c.status === 'draft') return false;
-    if (fVisible === 'hidden'  &&  c.status !== 'draft') return false;
+    const hiddenHere = c.status === 'draft' || (viewDept !== 'all' && courseDeptEntry(c, viewDept).hidden);
+    if (fVisible === 'visible' &&  hiddenHere) return false;
+    if (fVisible === 'hidden'  && !hiddenHere) return false;
     return true;
   });
 
@@ -6256,8 +6263,14 @@ async function renderAdminCourses() {
   filtered.forEach((c, vi) => {
     const matCount = (c.materials || []).length;
     const plCount = c.playlistCount != null ? c.playlistCount : (c.playlists || []).length;
+    /* ⭐ inside a department: actions apply to that department only */
+    const here = viewDept !== 'all' ? courseDeptEntry(c, viewDept) : null;
+    const hiddenHere = !!(here && here.hidden);
+    const deptArg = escapeHtml(viewDept);
     const statusBadge = c.status === 'draft'
       ? '<span class="status-badge draft" title="Students can\'t see this course until you publish it"><i class="fas fa-eye-slash"></i> HIDDEN FROM STUDENTS</span>'
+      : hiddenHere
+      ? `<span class="status-badge draft" title="Hidden from students in ${escapeHtml(deptName(viewDept))} only — other departments still show it"><i class="fas fa-eye-slash"></i> HIDDEN IN THIS DEPARTMENT</span>`
       : c.status === 'archived'
         ? '<span class="status-badge archived">ARCHIVED</span>'
         : '';
@@ -6299,15 +6312,16 @@ async function renderAdminCourses() {
     html += `
       <div class="course-card ${c.thumbnail ? 'has-thumb' : ''}" data-cord-id="${c.id}" style="${accentStyle(c.code || c.name)}">
         ${thumbHtml}
-        <button class="delete-course-btn" onclick="event.stopPropagation();deleteCourse('${c.id}')" title="Delete" aria-label="Delete course"><i class="fas fa-trash-alt"></i></button>
+        <button class="delete-course-btn" onclick="event.stopPropagation();adminRemoveCourse('${c.id}','${deptArg}')"
+                title="${here ? 'Remove from ' + escapeHtml(deptName(viewDept)) + ' only' : 'Delete the course from every department'}" aria-label="${here ? 'Remove from this department' : 'Delete course'}"><i class="fas fa-trash-alt"></i></button>
         <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${premiumLabel} ${statusBadge} ${featuredBadge}</div>
         <h3>${escapeHtml(c.name)}</h3>
         ${alertHtml}
         <div class="course-meta">
           <span><i class="fas fa-user"></i> ${escapeHtml(c.instructor) || '—'}</span>
-          <span><i class="fas fa-calendar-alt"></i> ${escapeHtml(c.semester) || '—'}</span>
+          <span><i class="fas fa-calendar-alt"></i> ${escapeHtml(here ? here.s : c.semester) || '—'}</span>
           ${c.category ? `<span><i class="fas fa-tag"></i> ${escapeHtml(c.category)}</span>` : ''}
-          <span title="Department"><i class="fas fa-building-columns"></i> ${escapeHtml(deptName(courseOwnDept(c)))}${viewDept !== 'all' && courseOwnDept(c) !== viewDept
+          <span title="Department"><i class="fas fa-building-columns"></i> ${escapeHtml(deptName(courseOwnDept(c)))}${c.ownState && c.ownState.removed ? ' <em class="qs-muted">(removed there)</em>' : ''}${viewDept !== 'all' && courseOwnDept(c) !== viewDept
             ? ` <span class="dept-linked" title="Shown here as a link — the same course as in ${escapeHtml(deptName(courseOwnDept(c)))}">linked</span>` : ''}</span>
         </div>
         <div class="material-count"><i class="fas fa-layer-group"></i> ${matCount} materials${plCount > 0 ? ` · <i class="fas fa-list"></i> ${plCount} playlist${plCount === 1 ? '' : 's'}` : ''}</div>
@@ -6317,7 +6331,11 @@ async function renderAdminCourses() {
           ${c.status === 'draft'
             ? `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();publishCourse('${c.id}')"><i class="fas fa-rocket"></i> Publish</button>`
             : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
-               <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();hideCourse('${c.id}')" title="Hide from students until you publish it again"><i class="fas fa-eye-slash"></i> Hide</button>`}
+               ${!here
+                 ? `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();hideCourse('${c.id}')" title="Hide from students in every department until you publish it again"><i class="fas fa-eye-slash"></i> Hide</button>`
+                 : hiddenHere
+                 ? `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();deptSetHidden('${c.id}','${deptArg}',false)" title="Show it to students in this department again"><i class="fas fa-eye"></i> Show here</button>`
+                 : `<button class="btn btn-outline btn-sm" onclick="event.stopPropagation();deptSetHidden('${c.id}','${deptArg}',true)" title="Hide from students in this department only"><i class="fas fa-eye-slash"></i> Hide here</button>`}`}
           <button class="btn btn-success btn-sm" onclick="event.stopPropagation();openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Material</button>
         </div>
       </div>
@@ -10628,12 +10646,27 @@ function deptName(slug) {
   return d ? d.name : (slug === 'all' ? 'All departments' : String(slug || ''));
 }
 function courseOwnDept(c) { return (c && c.department) || DEFAULT_DEPT; }
-/* → null when the course is not in that department, else the semester it sits in there */
-function courseDeptSemester(c, slug) {
+/* How a course sits in a department → null (not there) or { s: semester, hidden, linked }.
+   Removing / hiding inside one department only changes that department. */
+function courseDeptEntry(c, slug) {
   if (!c) return null;
-  if (slug === 'all' || courseOwnDept(c) === slug) return c.semester == null ? '' : String(c.semester);
+  const sem = c.semester == null ? '' : String(c.semester);
+  const own = c.ownState || {};
+  if (slug === 'all') {
+    const visibleSomewhere = (!own.removed && !own.hidden) || (c.deptLinks || []).some(l => l && !l.h);
+    return { s: sem, hidden: !visibleSomewhere, linked: false };
+  }
+  if (courseOwnDept(c) === slug) return own.removed ? null : { s: sem, hidden: !!own.hidden, linked: false };
   const l = (c.deptLinks || []).find(x => x && x.d === slug);
-  return l ? String(l.s || c.semester || '') : null;
+  return l ? { s: String(l.s || sem), hidden: !!l.h, linked: true } : null;
+}
+/* → null when the course is not listed there for this viewer, else the semester it sits in.
+   Students never see a course hidden in that department; admins (includeHidden) do. */
+function courseDeptSemester(c, slug, includeHidden) {
+  const e = courseDeptEntry(c, slug);
+  if (!e) return null;
+  if (e.hidden && !includeHidden) return null;
+  return e.s;
 }
 function _deptPref(key, fallback) {
   try { const v = localStorage.getItem(key); if (v && (v === 'all' || AERO_DEPTS.some(d => d.slug === v))) return v; } catch (_) {}
@@ -10674,11 +10707,11 @@ function deptIconHtml(slug, cls) {
 }
 const _deptBarState = {};    // hostId → { pick, courses } for the "All departments" grid
 /* The scrollable chip bar. `pick` is the global function to call with the slug. */
-function renderDeptBar(hostId, selected, pick, courses) {
+function renderDeptBar(hostId, selected, pick, courses, includeHidden) {
   const host = $(hostId);
   if (!host) return;
-  _deptBarState[hostId] = { pick, courses, selected };
-  const count = (slug) => courses.filter(c => courseDeptSemester(c, slug) !== null).length;
+  _deptBarState[hostId] = { pick, courses, selected, includeHidden };
+  const count = (slug) => courses.filter(c => courseDeptSemester(c, slug, includeHidden) !== null).length;
   const chips = [{ slug: 'all', name: 'All departments' }].concat(AERO_DEPTS).map(d => {
     const n = count(d.slug);
     return `<button type="button" role="tab" class="dept-chip ${d.slug === selected ? 'on' : ''} ${n ? '' : 'empty'}" aria-selected="${d.slug === selected}"
@@ -10713,7 +10746,7 @@ function openDeptPicker(hostId) {
   const st = _deptBarState[hostId];
   if (!st) return;
   closeDeptPicker();
-  const count = (slug) => st.courses.filter(c => courseDeptSemester(c, slug) !== null).length;
+  const count = (slug) => st.courses.filter(c => courseDeptSemester(c, slug, st.includeHidden) !== null).length;
   const tiles = [{ slug: 'all', name: 'All departments' }].concat(AERO_DEPTS).map(d => {
     const n = count(d.slug);
     return `<button type="button" class="dept-tile ${d.slug === st.selected ? 'on' : ''}" style="--dh:${deptLook(d.slug).hue}"
@@ -17378,8 +17411,8 @@ async function saveCourse(e) {
   } catch { showToast('Server error.', 'error'); }
 }
 
-async function deleteCourse(courseId) {
-  if (!confirm('Delete this course and all its materials?')) return;
+async function deleteCourse(courseId, confirmed) {
+  if (!confirmed && !confirm('Delete this course and all its materials?')) return;
   try {
     const response = await fetch(`/api/courses/${courseId}`, { method: 'DELETE' });
     const data = await response.json();
@@ -17392,10 +17425,48 @@ async function deleteCourse(courseId) {
   } catch { showToast('Server error.', 'error'); }
 }
 
+/* ⭐ 2026-10-16 — Admin → Courses delete button.
+   Inside a department: remove the course from THAT department only (the
+   course and the other departments are untouched). In "All departments"
+   (or a search): delete the whole course, after saying so plainly. */
+async function adminRemoveCourse(courseId, dept) {
+  const c = liveCourses.find(x => x.id === courseId);
+  const name = (c && c.name) || 'this course';
+  if (!dept || dept === 'all' || !courseDeptEntry(c, dept)) {
+    const places = c ? AERO_DEPTS.filter(d => courseDeptEntry(c, d.slug)).length : 0;
+    if (!confirm(`Delete "${name}" COMPLETELY?\n\nIt will disappear from ${places > 1 ? 'all ' + places + ' departments' : 'every department'}, with all its materials. This cannot be undone.\n\nTo take it out of one department only, open that department first.`)) return;
+    return deleteCourse(courseId, true);
+  }
+  if (!confirm(`Remove "${name}" from ${deptName(dept)} only?\n\nThe course and its materials stay, and other departments keep showing it.`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/admin/departments/${encodeURIComponent(dept)}/courses/${courseId}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (data.code === 'LAST_DEPARTMENT') {
+      if (confirm(`${deptName(dept)} is the only department "${name}" is in.\n\nDelete the whole course, with all its materials? This cannot be undone.`)) return deleteCourse(courseId, true);
+      return;
+    }
+    if (!data.success) return showToast(data.message || 'Could not remove it.', 'error');
+    showToast(`Removed from ${deptName(dept)} — still in the other departments.`, 'success');
+    await fetchCoursesFromDB(true);
+  } catch { showToast('Server error.', 'error'); }
+}
+/* Hide / show a course in ONE department (students of other departments still see it) */
+async function deptSetHidden(courseId, dept, hidden) {
+  try {
+    const res = await fetch(`${API_BASE}/admin/departments/${encodeURIComponent(dept)}/courses/${courseId}/visibility`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ hidden: !!hidden })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!data.success) return showToast(data.message || 'Could not change it.', 'error');
+    showToast(hidden ? `🙈 Hidden from students in ${deptName(dept)} only.` : `👀 Visible in ${deptName(dept)} again.`, 'success');
+    await fetchCoursesFromDB(true);
+  } catch { showToast('Server error.', 'error'); }
+}
+
 /* ⭐ 2026-10-16 — hide a course from students (kept and editable; Publish shows it again) */
 async function hideCourse(courseId) {
   const c = liveCourses.find(x => x.id === courseId);
-  if (!confirm(`Hide "${(c && c.name) || 'this course'}" from students?\n\nIt stays saved — you can keep adding content and click Publish to show it again.`)) return;
+  if (!confirm(`Hide "${(c && c.name) || 'this course'}" from students in EVERY department?\n\nIt stays saved — you can keep adding content and click Publish to show it again.\n\nTo hide it in one department only, open that department and use "Hide here".`)) return;
   try {
     const res = await fetch(`/api/courses/${courseId}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },

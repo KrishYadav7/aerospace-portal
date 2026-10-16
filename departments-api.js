@@ -19,10 +19,19 @@
      Semester 1 or 2 is linked into the same semester of every other
      department. Recorded in `migrations` so it never runs twice.
 
+   • Per-department actions (2026-10-16): removing or hiding a course
+     INSIDE one department touches only that department —
+       – a linked department: the link is deleted / marked hidden;
+       – the course's own department: an override row (kind 'own')
+         marks it removed / hidden there.
+     The course itself, and every other department, stay as they are.
+
    GET  /api/departments                       public list
    GET  /api/admin/departments/:slug/links      admin: linked courses
-   POST /api/admin/departments/:slug/links      admin: { courseId, semester } link a course
+   POST /api/admin/departments/:slug/links      admin: { courseId, semester } add a course to a department
    DELETE /api/admin/departments/:slug/links/:courseId   admin: remove a link (the course stays)
+   DELETE /api/admin/departments/:slug/courses/:courseId        admin: remove the course from THIS department only
+   POST   /api/admin/departments/:slug/courses/:courseId/visibility { hidden }  admin: hide / show it in THIS department only
    ============================================================ */
 
 const DEPARTMENT_NAMES = [
@@ -74,7 +83,10 @@ module.exports = function departmentsApi(app, deps) {
     department: { type: String, required: true },
     courseId:   { type: mongoose.Schema.Types.ObjectId, required: true, index: true },
     semester:   { type: String, default: '' },
-    source:     { type: String, default: 'admin' }       // 'migration' | 'admin'
+    source:     { type: String, default: 'admin' },      // 'migration' | 'admin'
+    kind:       { type: String, default: 'link' },       // 'link' | 'own' (override for the course's own department)
+    hidden:     { type: Boolean, default: false },       // hidden from students in this department only
+    removed:    { type: Boolean, default: false }        // kind 'own': taken out of its own department
   }, { timestamps: true });
   linkSchema.index({ department: 1, courseId: 1 }, { unique: true });
   const DepartmentCourse = mongoose.models.DepartmentCourse || mongoose.model('DepartmentCourse', linkSchema);
@@ -101,18 +113,23 @@ module.exports = function departmentsApi(app, deps) {
     const ids = courses.map(c => c && c._id).filter(Boolean);
     let links = [];
     try {
-      links = await DepartmentCourse.find({ courseId: { $in: ids } }).select('department courseId semester').lean();
+      links = await DepartmentCourse.find({ courseId: { $in: ids } }).select('department courseId semester kind hidden removed').lean();
     } catch (e) { log.warn('[departments] links lookup failed:', e.message); return courses; }
     const by = new Map();
     for (const l of links) {
       const k = String(l.courseId);
       if (!by.has(k)) by.set(k, []);
-      by.get(k).push({ d: l.department, s: l.semester || '' });
+      by.get(k).push(l);
     }
     for (const c of courses) {
       if (!c) continue;
       c.department = c.department || DEFAULT_DEPARTMENT;
-      c.deptLinks = by.get(String(c._id)) || [];
+      const rows = by.get(String(c._id)) || [];
+      /* the own-department override (only when it is for the CURRENT own department) */
+      const own = rows.find(l => l.kind === 'own' && l.department === c.department);
+      c.ownState = own ? { hidden: !!own.hidden, removed: !!own.removed } : { hidden: false, removed: false };
+      c.deptLinks = rows.filter(l => l.kind !== 'own' && l.department !== c.department)
+        .map(l => (l.hidden ? { d: l.department, s: l.semester || '', h: 1 } : { d: l.department, s: l.semester || '' }));
     }
     return courses;
   }
@@ -203,9 +220,15 @@ module.exports = function departmentsApi(app, deps) {
       if (!mongoose.Types.ObjectId.isValid(courseId)) return res.status(400).json({ success: false, message: 'Invalid course.' });
       const course = await Course.findById(courseId).select('department semester').lean();
       if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
-      if ((course.department || DEFAULT_DEPARTMENT) === slug) return res.status(400).json({ success: false, message: 'The course already belongs to this department.' });
+      if ((course.department || DEFAULT_DEPARTMENT) === slug) {
+        /* its own department: undo an earlier "remove from this department" */
+        await DepartmentCourse.updateOne({ department: slug, courseId, kind: 'own' }, { $set: { removed: false, hidden: false } });
+        cacheClear('courses:');
+        return res.json({ success: true, message: 'Course is back in its own department.' });
+      }
       const semester = semNumber((req.body || {}).semester) || semNumber(course.semester);
-      await DepartmentCourse.updateOne({ department: slug, courseId }, { $set: { semester }, $setOnInsert: { source: 'admin' } }, { upsert: true });
+      await DepartmentCourse.updateOne({ department: slug, courseId },
+        { $set: { semester, kind: 'link', removed: false, hidden: false }, $setOnInsert: { source: 'admin' } }, { upsert: true });
       cacheClear('courses:');
       res.json({ success: true, message: 'Course added to the department.' });
     } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
@@ -217,6 +240,62 @@ module.exports = function departmentsApi(app, deps) {
       const r = await DepartmentCourse.deleteOne({ department: String(req.params.slug), courseId: req.params.courseId });
       cacheClear('courses:');
       res.json({ success: true, removed: r.deletedCount || 0, message: 'Removed from this department (the course itself is unchanged).' });
+    } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+  });
+
+  /* ---------- per-department remove / hide ---------- */
+  /* where a course is listed: { own, ownRow, links } */
+  async function membership(courseId) {
+    const course = await Course.findById(courseId).select('department semester name').lean();
+    if (!course) return null;
+    const own = course.department || DEFAULT_DEPARTMENT;
+    const rows = await DepartmentCourse.find({ courseId: course._id }).lean();
+    const ownRow = rows.find(r => r.kind === 'own' && r.department === own) || null;
+    const links = rows.filter(r => r.kind !== 'own' && r.department !== own);
+    const places = (ownRow && ownRow.removed ? [] : [own]).concat(links.map(l => l.department));
+    return { course, own, ownRow, links, places };
+  }
+
+  app.delete('/api/admin/departments/:slug/courses/:courseId', requireAdminAuth, async (req, res) => {
+    try {
+      const slug = String(req.params.slug), courseId = String(req.params.courseId);
+      if (!mongoose.Types.ObjectId.isValid(courseId)) return res.status(400).json({ success: false, message: 'Invalid course.' });
+      const m = await membership(courseId);
+      if (!m) return res.status(404).json({ success: false, message: 'Course not found.' });
+      if (!m.places.includes(slug)) return res.status(404).json({ success: false, message: 'This course is not in that department.' });
+      /* never leave a course in no department at all — the admin decides to delete it */
+      if (m.places.length === 1) {
+        return res.status(409).json({ success: false, code: 'LAST_DEPARTMENT',
+          message: 'This is the only department this course is in.' });
+      }
+      if (slug === m.own) {
+        await DepartmentCourse.updateOne({ department: slug, courseId: m.course._id },
+          { $set: { kind: 'own', removed: true, hidden: false, semester: semNumber(m.course.semester) }, $setOnInsert: { source: 'admin' } }, { upsert: true });
+      } else {
+        await DepartmentCourse.deleteOne({ department: slug, courseId: m.course._id });
+      }
+      cacheClear('courses:');
+      log.log(`[departments] removed "${m.course.name}" from ${slug} only (${m.places.length - 1} department(s) left)`);
+      res.json({ success: true, message: 'Removed from this department. The course is still in ' + (m.places.length - 1) + ' other department(s).' });
+    } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
+  });
+
+  app.post('/api/admin/departments/:slug/courses/:courseId/visibility', requireAdminAuth, async (req, res) => {
+    try {
+      const slug = String(req.params.slug), courseId = String(req.params.courseId);
+      const hidden = !!(req.body || {}).hidden;
+      if (!mongoose.Types.ObjectId.isValid(courseId)) return res.status(400).json({ success: false, message: 'Invalid course.' });
+      const m = await membership(courseId);
+      if (!m) return res.status(404).json({ success: false, message: 'Course not found.' });
+      if (!m.places.includes(slug)) return res.status(404).json({ success: false, message: 'This course is not in that department.' });
+      if (slug === m.own) {
+        await DepartmentCourse.updateOne({ department: slug, courseId: m.course._id },
+          { $set: { kind: 'own', hidden, removed: false, semester: semNumber(m.course.semester) }, $setOnInsert: { source: 'admin' } }, { upsert: true });
+      } else {
+        await DepartmentCourse.updateOne({ department: slug, courseId: m.course._id }, { $set: { hidden } });
+      }
+      cacheClear('courses:');
+      res.json({ success: true, hidden, message: hidden ? 'Hidden from students in this department only.' : 'Visible to students in this department again.' });
     } catch (e) { res.status(500).json({ success: false, message: 'Server error.' }); }
   });
 

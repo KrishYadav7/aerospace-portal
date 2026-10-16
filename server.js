@@ -2375,6 +2375,8 @@ function classifyMutation(method, path) {
   if (method === 'POST' && /^\/courses\/?$/.test(path)) return 'courses:created';
   if (method === 'PUT' && /^\/courses\/[^/]+$/.test(path)) return 'courses:updated';
   if (method === 'DELETE' && /^\/courses\/[^/]+$/.test(path)) return 'courses:deleted';
+  /* ⭐ department links / per-department remove & hide → every open page refreshes its course list */
+  if (method !== 'GET' && /^\/admin\/departments\//.test(path)) return 'courses:departments';
   if (/^\/courses\/[^/]+\/(materials|announcements|playlists|quiz)/.test(path)) return 'courses:content';
   if (/^\/professors/.test(path))      return 'professors';
   if (/^\/admin\/settings/.test(path)) return 'settings';
@@ -2422,16 +2424,22 @@ app.use('/api/', (req, res, next) => {
     return next();
   }
   const originalJson = res.json.bind(res);
+  /* ⭐ 2026-10-16 — Express 5 hands this middleware the FULL path
+     ("/api/courses/…"), not the path below the mount point that the rules
+     in classifyMutation() are written for. Strip the prefix ourselves —
+     until now no rule ever matched, so course edits / deletes / publishes
+     never reached open pages live. */
+  const relPath = String(req.path || '').replace(/^\/api(?=\/|$)/, '') || '/';
   res.json = function (body) {
     try {
       /* ⚡ any change to reviews drops the cached public review list */
-      if (/^\/(admin\/)?feedback/.test(req.path) && res.statusCode < 400) cacheClear('feedback:');
+      if (/^\/(admin\/)?feedback/.test(relPath) && res.statusCode < 400) cacheClear('feedback:');
       if (res.statusCode >= 200 && res.statusCode < 300 &&
           body && body.success !== false) {
-        const scope = classifyMutation(req.method, req.path);
+        const scope = classifyMutation(req.method, relPath);
         if (scope && String(scope).indexOf('users:') === 0) cacheClear('stats:students');
         if (scope) {
-          broadcastContentChange(scope, { path: req.path, method: req.method });
+          broadcastContentChange(scope, { path: relPath, method: req.method });
         }
       }
     } catch (e) { /* never let sync break a request */ }
