@@ -4696,7 +4696,8 @@ function renderAdminAddCourse() {
       <h3 class="editor-section-title"><i class="fas fa-info-circle"></i> Basic Information</h3>
       <div class="editor-grid-2">
         <div class="form-group"><label>Course Name *</label><input type="text" id="newCourseName" placeholder="e.g. Aerodynamics" required></div>
-        <div class="form-group"><label>Course Code *</label><input type="text" id="newCourseCode" placeholder="e.g. AE101" required></div>
+        <div class="form-group"><label>Course Code *</label><input type="text" id="newCourseCode" placeholder="e.g. AE101" required
+               oninput="checkCourseCodeInput(this)" autocomplete="off" spellcheck="false"><span class="hint code-clash" hidden></span></div>
         <div class="form-group"><label>Department *</label>
           <select id="newCourseDepartment">${_deptOptionsHtml(_adminNewCourseDept())}</select>
         </div>
@@ -4780,6 +4781,8 @@ async function saveNewCoursePage() {
   const name = $('newCourseName').value.trim();
   const code = $('newCourseCode').value.trim();
   if (!name || !code) return showToast('Course Name and Code are required.', 'error');
+  const clash = courseCodeClash(code);
+  if (clash) { checkCourseCodeInput($('newCourseCode')); $('newCourseCode').focus(); return showToast(`Course code "${code}" is already used by "${clash.name}".`, 'error'); }
 
   const outcomesRaw = $('newCourseOutcomes').value;
   const learningOutcomes = outcomesRaw.split('\n').map(l => l.trim()).filter(Boolean);
@@ -4823,6 +4826,7 @@ async function saveNewCoursePage() {
         switchAdminTab('courses');
       }
     } else {
+      if (data.code === 'COURSE_CODE_TAKEN' && $('newCourseCode')) { checkCourseCodeInput($('newCourseCode'), data.existing); $('newCourseCode').focus(); }
       showToast(data.message || 'Failed to create course.', 'error');
     }
   } catch {
@@ -6267,6 +6271,8 @@ async function renderAdminCourses() {
     const here = viewDept !== 'all' ? courseDeptEntry(c, viewDept) : null;
     const hiddenHere = !!(here && here.hidden);
     const deptArg = escapeHtml(viewDept);
+    const dupCode = _normCode(c.code) && courses.some(o => o !== c && _normCode(o.code) === _normCode(c.code));
+    const dupBadge = dupCode ? `<span class="status-badge archived" title="Another course has the same code — change one of them in Edit"><i class="fas fa-clone"></i> DUPLICATE CODE</span>` : '';
     const statusBadge = c.status === 'draft'
       ? '<span class="status-badge draft" title="Students can\'t see this course until you publish it"><i class="fas fa-eye-slash"></i> HIDDEN FROM STUDENTS</span>'
       : hiddenHere
@@ -6314,7 +6320,7 @@ async function renderAdminCourses() {
         ${thumbHtml}
         <button class="delete-course-btn" onclick="event.stopPropagation();adminRemoveCourse('${c.id}','${deptArg}')"
                 title="${here ? 'Remove from ' + escapeHtml(deptName(viewDept)) + ' only' : 'Delete the course from every department'}" aria-label="${here ? 'Remove from this department' : 'Delete course'}"><i class="fas fa-trash-alt"></i></button>
-        <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${premiumLabel} ${statusBadge} ${featuredBadge}</div>
+        <div class="course-code">${escapeHtml(c.code) || 'N/A'} ${premiumLabel} ${statusBadge} ${dupBadge} ${featuredBadge}</div>
         <h3>${escapeHtml(c.name)}</h3>
         ${alertHtml}
         <div class="course-meta">
@@ -8571,7 +8577,8 @@ function renderEditorDetails(course) {
       <h3 class="editor-section-title"><i class="fas fa-info-circle"></i> Basic Information</h3>
       <div class="editor-grid-2 admin-only">
         <div class="form-group"><label>Course Name *</label><input type="text" id="edName" value="${escapeHtml(course.name)}"></div>
-        <div class="form-group"><label>Course Code *</label><input type="text" id="edCode" value="${escapeHtml(course.code)}"></div>
+        <div class="form-group"><label>Course Code *</label><input type="text" id="edCode" value="${escapeHtml(course.code)}"
+               data-course-id="${escapeHtml(String(course.id || course._id))}" oninput="checkCourseCodeInput(this)" autocomplete="off" spellcheck="false"><span class="hint code-clash" hidden></span></div>
         <div class="form-group"><label>Department</label>
           <select id="edDepartment">${_deptOptionsHtml(courseOwnDept(course))}</select>
         </div>
@@ -9582,6 +9589,11 @@ async function saveCourseDetails(courseId) {
   const name = $('edName').value.trim();
   const code = $('edCode').value.trim();
   if (!name || !code) return showToast('Name and code required.', 'error');
+  {
+    const cur = liveCourses.find(x => x.id === courseId || x._id === courseId);
+    const clash = (!cur || _normCode(cur.code) !== _normCode(code)) ? courseCodeClash(code, courseId) : null;
+    if (clash) { checkCourseCodeInput($('edCode')); $('edCode').focus(); return showToast(`Course code "${code}" is already used by "${clash.name}".`, 'error'); }
+  }
   const outcomesRaw = $('edOutcomes').value;
   const learningOutcomes = outcomesRaw.split('\n').map(l => l.trim()).filter(Boolean);
   const payload = {
@@ -9656,6 +9668,7 @@ async function saveCourseDetails(courseId) {
         console.warn('[saveCourseDetails] background refetch failed:', err)
       );
     } else {
+      if (data.code === 'COURSE_CODE_TAKEN' && $('edCode')) { checkCourseCodeInput($('edCode'), data.existing); $('edCode').focus(); }
       showToast(data.message || 'Failed.', 'error');
     }
   } catch { showToast('Server error.', 'error'); }
@@ -10812,6 +10825,27 @@ function pickAdminDept(slug) {
 function _adminNewCourseDept() {
   return adminDept && adminDept !== 'all' ? adminDept : DEFAULT_DEPT;
 }
+/* ⭐ 2026-10-16 — one course per course code ("AE 101" = "ae-101" = "AE101").
+   The server is the authority; this only warns while typing. */
+function _normCode(v) { return String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+function courseCodeClash(code, exceptId) {
+  const key = _normCode(code);
+  if (!key) return null;
+  return liveCourses.find(c => c && c.id !== exceptId && c._id !== exceptId && _normCode(c.code) === key) || null;
+}
+function checkCourseCodeInput(el, serverHit) {
+  if (!el) return;
+  const hint = el.parentElement && el.parentElement.querySelector('.code-clash');
+  const exceptId = el.dataset.courseId || null;
+  const cur = exceptId ? liveCourses.find(c => c.id === exceptId || c._id === exceptId) : null;
+  const unchanged = cur && _normCode(cur.code) === _normCode(el.value);
+  const hit = serverHit || (unchanged ? null : courseCodeClash(el.value, exceptId));
+  el.classList.toggle('input-error', !!hit);
+  if (!hint) return;
+  hint.hidden = !hit;
+  hint.innerHTML = hit ? `<i class="fas fa-triangle-exclamation"></i> Already used by <b>${escapeHtml(hit.name)}</b>${hit.status === 'draft' ? ' (hidden)' : ''} — every course needs its own code.` : '';
+}
+
 function _deptOptionsHtml(selected) {
   return AERO_DEPTS.map(d => `<option value="${escapeHtml(d.slug)}" ${d.slug === selected ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('');
 }

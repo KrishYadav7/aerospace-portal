@@ -18633,3 +18633,8 @@ html.aero-play-store .subscribe-banner { display: none !important; }
   .dept-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .dept-tile { padding: 12px; }
 }
+
+/* ⭐ course code already used (Admin → New course / Edit), 2026-10-16 */
+input.input-error { border-color: var(--rose-500, #ef4444) !important; box-shadow: 0 0 0 3px rgba(239,68,68,.15) !important; }
+.hint.code-clash { display: block; margin-top: 6px; color: var(--rose-500, #ef4444); font-weight: 600; }
+.hint.code-clash[hidden] { display: none; }

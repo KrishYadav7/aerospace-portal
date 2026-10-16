@@ -7688,12 +7688,55 @@ app.get('/api/courses/:id', async (req, res) => {
   }
 });
 
+/* ============================================================
+   ⭐ ONE COURSE PER COURSE CODE (2026-10-16)
+   Codes are compared ignoring case, spaces and punctuation
+   ("AE 101" = "ae-101" = "AE101"), across every department and
+   including hidden courses (a course is shown in other departments
+   by linking it, never by a second copy). Checked in code, not with a
+   unique index, so courses that already share a code stay untouched.
+   Creates / code changes run one at a time (double-clicks are safe).
+   ============================================================ */
+function _normCourseCode(v) { return String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+async function _courseWithCode(code, exceptId) {
+  const key = _normCourseCode(code);
+  if (!key) return null;
+  const all = await Course.find(exceptId ? { _id: { $ne: exceptId } } : {}).select('name code department status').lean();
+  return all.find(c => _normCourseCode(c.code) === key) || null;
+}
+function _codeTakenReply(res, code, other) {
+  const dept = deptApi && other.department ? other.department : 'aerospace-engineering';
+  return res.status(409).json({
+    success: false, code: 'COURSE_CODE_TAKEN',
+    message: `Course code "${String(code).trim()}" is already used by "${other.name}"${other.status === 'draft' ? ' (hidden)' : ''}. Use a different code, or edit that course.`,
+    existing: { id: String(other._id), name: other.name, code: other.code, department: dept, status: other.status || 'published' }
+  });
+}
+let _courseCodeTail = Promise.resolve();
+function _serializeCourseCode(fn) {
+  const run = _courseCodeTail.then(fn, fn);
+  _courseCodeTail = run.catch(() => {});
+  return run;
+}
+
 app.post('/api/courses', requireAdminAuth, async (req, res) => {
   try {
     const deptErr = await _checkCourseDepartment(req.body);
     if (deptErr) return res.status(400).json({ success: false, message: deptErr });
-    const newCourse = new Course(req.body);
-    await newCourse.save();
+    const name = String((req.body && req.body.name) || '').trim();
+    const code = String((req.body && req.body.code) || '').trim();
+    if (!name || !_normCourseCode(code)) return res.status(400).json({ success: false, message: 'Course name and course code are required.' });
+    req.body.name = name;
+    req.body.code = code;
+    const out = await _serializeCourseCode(async () => {
+      const other = await _courseWithCode(code);
+      if (other) return { other };
+      const c = new Course(req.body);
+      await c.save();
+      return { course: c };
+    });
+    if (out.other) return _codeTakenReply(res, code, out.other);
+    const newCourse = out.course;
     cacheClear('courses:');
     res.json({ success: true, message: 'Course created successfully!', course: newCourse });
   } catch (e) {
@@ -7721,7 +7764,25 @@ app.put('/api/courses/:id', requireCourseEditor, async (req, res) => {
       if (!Object.keys(update).length) return res.status(400).json({ success: false, message: 'Nothing to update.' });
       console.log(`[prof] ✏️  ${req.authUser.username} edited course ${req.params.id} (${Object.keys(update).join(', ')})`);
     }
-    const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { returnDocument: 'after' });
+    let updated;
+    if (update.code !== undefined) {
+      /* ⭐ a new code must not belong to another course (unchanged codes are never re-checked) */
+      update.code = String(update.code || '').trim();
+      if (!_normCourseCode(update.code)) return res.status(400).json({ success: false, message: 'Course code cannot be empty.' });
+      const out = await _serializeCourseCode(async () => {
+        const cur = await Course.findById(req.params.id).select('code').lean();
+        if (!cur) return { missing: true };
+        if (_normCourseCode(cur.code) !== _normCourseCode(update.code)) {
+          const other = await _courseWithCode(update.code, cur._id);
+          if (other) return { other };
+        }
+        return { updated: await Course.findByIdAndUpdate(req.params.id, { $set: update }, { returnDocument: 'after' }) };
+      });
+      if (out.other) return _codeTakenReply(res, update.code, out.other);
+      updated = out.updated;
+    } else {
+      updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { returnDocument: 'after' });
+    }
     if (!updated) return res.status(404).json({ success: false, message: 'Course not found' });
     cacheClear('courses:');
     if (update.status !== undefined) cacheClear('uploads-owner:');     // hide / show applies to files at once
