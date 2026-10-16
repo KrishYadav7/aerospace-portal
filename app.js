@@ -13020,6 +13020,8 @@ function grRenderAttempt() {
             return `<button type="button" class="${cls}" onclick="document.getElementById('grQ${i}').scrollIntoView({behavior:'smooth',block:'start'})">${i + 1}</button>`;
           }).join('')}</div>
           <div class="gr-nav">
+            ${pending && d.quiz.some((q, i) => q.type === 'subjective' && !(evals[i] || evals[String(i)]) && (((r.subjectiveAnswers || {})[i] || (r.subjectiveAnswers || {})[String(i)] || []).length))
+              ? `<button class="btn btn-outline btn-sm" onclick="grAiCheckAll(this)" title="AI reads every ungraded written answer and suggests marks — you review and save each"><i class="fas fa-wand-magic-sparkles"></i> AI check all</button>` : ''}
             ${prevS ? `<button class="btn btn-outline btn-sm" onclick="grOpenAttempt('${d.courseId}','${d.materialId}','${prevS.userId}')" title="Previous student"><i class="fas fa-chevron-left"></i></button>` : ''}
             ${nextS ? `<button class="btn btn-outline btn-sm" onclick="grOpenAttempt('${d.courseId}','${d.materialId}','${nextS.userId}')" title="Next student"><i class="fas fa-chevron-right"></i></button>` : ''}
             ${!pending && qNext ? `<button class="btn btn-primary btn-sm" onclick="grOpenAttempt('${qNext.courseId}','${qNext.materialId}','${qNext.userId}')">Next in queue <i class="fas fa-arrow-right"></i></button>` : ''}
@@ -13060,8 +13062,69 @@ function _grSubjectiveHtml(q, i, r) {
         <textarea rows="2" maxlength="1000" class="qs-feedback" placeholder="What was good, what was missing…">${ev ? escapeHtml(ev.feedback || '') : ''}</textarea>
       </label>
       <button class="btn btn-primary btn-sm" onclick="grSaveGrade(this)"><i class="fas fa-check"></i> ${ev ? 'Update' : 'Save marks'}</button>
+      ${files.length ? `<button type="button" class="btn btn-outline btn-sm gr-ai-btn" onclick="grAiCheck(this)" title="AI reads the answer sheet and suggests marks + feedback — you review and save"><i class="fas fa-wand-magic-sparkles"></i> AI check</button>` : ''}
       ${ev ? `<span class="qs-chip ok"><i class="fas fa-check"></i> graded ${_qsFmtDate(ev.evaluatedAt)}</span>` : ''}
+      <div class="gr-ai-result" hidden></div>
     </div>`;
+}
+/* ⭐ 2026-10-16 — AI check: the AI reads the uploaded answer and SUGGESTS
+   marks + feedback into the form. Nothing is saved until the grader
+   clicks Save marks. */
+async function grAiCheck(el, quiet) {
+  const d = GR.attempt; if (!d) return false;
+  const box = el.closest('.gr-grade');
+  const btn = box.querySelector('.gr-ai-btn');
+  const out = box.querySelector('.gr-ai-result');
+  if (!btn || btn.disabled) return false;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> AI is reading the answer…';
+  try {
+    const res = await fetch(`/api/admin/quiz/${d.courseId}/${d.materialId}/ai-check`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: d.student.id, questionIndex: Number(box.dataset.qi) })
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!j.success) throw new Error(j.message || 'AI check failed.');
+    const sg = j.suggestion;
+    box.querySelector('.qs-marks').value = sg.marks;
+    box.querySelector('.qs-feedback').value = sg.feedback || '';
+    const tone = !sg.readable || sg.confidence === 'low' ? 'bad' : sg.confidence === 'medium' ? 'warn' : 'ok';
+    out.innerHTML = `
+      <div class="gr-ai-head">
+        <span class="qs-chip ${tone}"><i class="fas fa-wand-magic-sparkles"></i> AI suggests ${_grN(sg.marks)} / ${_grN(sg.max)}</span>
+        <span class="qs-muted">${escapeHtml(sg.confidence)} confidence · ${escapeHtml(j.model || 'AI')}</span>
+      </div>
+      ${!sg.readable ? `<div class="bad-t"><i class="fas fa-triangle-exclamation"></i> The AI could not read this answer properly — please check it yourself.</div>` : ''}
+      ${sg.reasoning ? `<details open><summary>How the AI marked it</summary><div class="gr-ai-reason">${escapeHtml(sg.reasoning)}</div></details>` : ''}
+      <div class="qs-muted"><i class="fas fa-circle-info"></i> Filled into the form above — review, edit if needed, then <b>Save marks</b>.</div>`;
+    out.hidden = false;
+    if (!quiet) showToast(`AI suggests ${_grN(sg.marks)} / ${_grN(sg.max)} — review and save.`, 'success');
+    return true;
+  } catch (e) {
+    out.innerHTML = `<div class="bad-t"><i class="fas fa-circle-exclamation"></i> ${escapeHtml(e.message || 'AI check failed.')}</div>`;
+    out.hidden = false;
+    if (!quiet) showToast(e.message || 'AI check failed.', 'error');
+    return false;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> AI check again';
+  }
+}
+/* Every written answer of this attempt that is not graded yet, one after another */
+async function grAiCheckAll(el) {
+  const boxes = [...document.querySelectorAll('.gr-q.is-pending .gr-ai-btn')];
+  if (!boxes.length) return showToast('No ungraded written answers to check.', 'info');
+  el.disabled = true;
+  let ok = 0;
+  for (let n = 0; n < boxes.length; n++) {
+    el.innerHTML = `<i class="fas fa-spinner fa-spin"></i> AI checking ${n + 1} / ${boxes.length}…`;
+    if (await grAiCheck(boxes[n], true)) ok++;
+  }
+  el.disabled = false;
+  el.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i> AI check all';
+  showToast(ok === boxes.length
+    ? `AI filled in ${ok} answer${ok === 1 ? '' : 's'} — review each one and click Save marks.`
+    : `AI filled in ${ok} of ${boxes.length} answers — see the messages under the others.`, ok ? 'success' : 'error');
 }
 async function grSaveGrade(el) {
   const d = GR.attempt; if (!d) return;

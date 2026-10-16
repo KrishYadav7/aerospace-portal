@@ -15508,6 +15508,167 @@ async function aiPrepareParts(files) {
   return { parts, accepted, inlineBytes };
 }
 
+/* ============================================================
+   ⭐ AI CHECK of a written answer (2026-10-16)
+   ------------------------------------------------------------
+   POST /api/admin/quiz/:courseId/:materialId/ai-check
+     { userId, questionIndex, model? }
+   Admin or the course's professor, only when they click the button.
+   The AI reads the student's uploaded answer sheet (photos / PDF)
+   and SUGGESTS marks + feedback. Nothing is saved here — the grader
+   reviews the suggestion and saves it with the normal "Save marks".
+   ============================================================ */
+const aiCheckLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 120,
+  standardHeaders: true, legacyHeaders: false,
+  message: { success: false, message: 'Too many AI checks. Please wait a few minutes.' }
+});
+
+/* An answer file (/uploads/…) as { buffer, originalname }: the disk copy,
+   else its Cloudinary backup. null when it can't be found. */
+async function _readAnswerFile(f) {
+  const url = String((f && f.url) || '');
+  if (!/^\/uploads\/[^\s?#]+$/.test(url) || url.includes('..')) return null;
+  let rel;
+  try { rel = decodeURIComponent(url.slice('/uploads/'.length)); } catch (_) { return null; }
+  const name = String(f.fileName || path.basename(rel)).slice(0, 120);
+  const abs = path.resolve(UPLOAD_DIR, rel);
+  if (abs.startsWith(UPLOAD_DIR + path.sep)) {
+    try {
+      const st = await fs.promises.stat(abs);
+      if (st.isFile() && st.size <= AI_LIMITS.fileBytes) return { buffer: await fs.promises.readFile(abs), originalname: name };
+      if (st.isFile()) throw { status: 413, message: `"${name}" is too large for the AI to read.` };
+    } catch (e) { if (e && e.status) throw e; }
+  }
+  const cloud = readCloudSidecar(rel);
+  if (cloud && /^https:\/\//i.test(cloud)) {
+    const r = await fetch(cloud);
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > AI_LIMITS.fileBytes) throw { status: 413, message: `"${name}" is too large for the AI to read.` };
+      return { buffer: buf, originalname: name };
+    }
+  }
+  return null;
+}
+
+/* The model's reply → { marks, feedback, reasoning, confidence, readable } */
+function _parseAiGrade(text, max) {
+  let s = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a === -1 || b <= a) return null;
+  let j;
+  try { j = JSON.parse(s.slice(a, b + 1)); } catch (_) { return null; }
+  let marks = Number(j.marks);
+  if (!isFinite(marks)) return null;
+  marks = Math.min(max, Math.max(0, Math.round(marks * 2) / 2));      // 0 … max, in halves
+  const conf = String(j.confidence || '').toLowerCase();
+  return {
+    marks,
+    feedback: String(j.feedback || '').trim().slice(0, 1000),
+    reasoning: String(j.reasoning || '').trim().slice(0, 2000),
+    confidence: ['high', 'medium', 'low'].includes(conf) ? conf : 'medium',
+    readable: j.readable !== false
+  };
+}
+
+app.post('/api/admin/quiz/:courseId/:materialId/ai-check', aiCheckLimiter, requireCourseEditor, async (req, res) => {
+  try {
+    const { userId, questionIndex } = req.body || {};
+    const mid = String(req.params.materialId);
+    if (!/^[a-f0-9]{24}$/i.test(mid) || !/^[a-f0-9]{24}$/i.test(String(userId || ''))) {
+      return res.status(400).json({ success: false, message: 'userId and a valid test are required.' });
+    }
+    const qi = Number(questionIndex);
+    if (!Number.isInteger(qi) || qi < 0) return res.status(400).json({ success: false, message: 'questionIndex is required.' });
+    if (!aiEngine || !aiEngine.configured()) {
+      return res.status(503).json({ success: false, message: 'AI is not configured. Please ask the admin to set GEMINI_API_KEY or GROQ_API_KEY.' });
+    }
+
+    const course = await Course.findById(req.params.courseId).select('name code materials').lean();
+    const mat = course && (course.materials || []).find(m => String(m._id) === mid);
+    const q = mat && Array.isArray(mat.quiz) ? mat.quiz[qi] : null;
+    if (!q) return res.status(404).json({ success: false, message: 'Question not found.' });
+    if ((q.type || 'single') !== 'subjective') return res.status(400).json({ success: false, message: 'Only written (uploaded) answers can be checked by AI.' });
+
+    const student = await User.findById(userId).select(`quizResults.${mid}`).lean();
+    const result = student && (student.quizResults || {})[mid];
+    if (!result) return res.status(404).json({ success: false, message: 'No submission found for this test.' });
+    const meta = (result.subjectiveQuestionMeta || {})[qi] || {};
+    const max = Number(meta.maxMarks) || Number(q.subjectiveMaxMarks) || Number(q.marks) || 10;
+    const files = (result.subjectiveAnswers || {})[qi] || [];
+    if (!files.length) return res.status(400).json({ success: false, message: 'The student did not upload an answer for this question.' });
+
+    /* the answer sheet → model input (images / PDF, HEIC converted, size-capped) */
+    const loaded = [];
+    for (const f of files.slice(0, AI_LIMITS.files)) {
+      const file = await _readAnswerFile(f);
+      if (file) loaded.push(file);
+    }
+    if (!loaded.length) return res.status(404).json({ success: false, message: 'The uploaded answer file could not be found on the server.' });
+    const prepared = await aiPrepareParts(loaded);
+
+    const instructions = String(meta.instructions || q.subjectiveInstructions || '').trim();
+    const modelAnswer = String(q.explanation || '').trim();
+    const prompt =
+      `Course: ${(course.code ? course.code + ' — ' : '') + (course.name || '')}\n` +
+      `Test: ${mat.title || 'Test'}\n\n` +
+      `QUESTION (maximum ${max} marks):\n${String(q.question || '').slice(0, 6000)}\n\n` +
+      (instructions ? `GRADING INSTRUCTIONS FROM THE TEACHER:\n${instructions.slice(0, 4000)}\n\n` : '') +
+      (modelAnswer ? `MODEL ANSWER / SOLUTION FROM THE TEACHER:\n${modelAnswer.slice(0, 8000)}\n\n` : '') +
+      `The student's handwritten or typed answer is attached (${prepared.accepted.length} file${prepared.accepted.length === 1 ? '' : 's'}).\n\n` +
+      'Grade it. Reply with ONLY this JSON, nothing else:\n' +
+      `{"marks": <number from 0 to ${max}, steps of 0.5>, "feedback": "<2-4 sentences for the student: what was right, what was missing or wrong>", ` +
+      '"reasoning": "<short notes for the teacher: how the marks were given, step by step>", "confidence": "high" | "medium" | "low", ' +
+      '"readable": <false if the answer could not be read or is not an answer to this question>}';
+    const system =
+      'You are a fair, careful examiner for an aerospace engineering course at IIT Kharagpur. ' +
+      'Read the student\'s answer exactly as written — never assume work that is not on the page. ' +
+      'Give partial marks for correct method and steps even when the final answer is wrong. ' +
+      'Follow the teacher\'s grading instructions and model answer when given. ' +
+      'If the page is blank, unreadable or answers a different question, give 0 and set "readable" to false. ' +
+      'Your marks are only a suggestion that the teacher will review.';
+
+    const needs = {
+      pdf: prepared.parts.some(p => p.inlineData && /pdf/i.test(p.inlineData.mimeType || '')),
+      images: prepared.parts.some(p => p.inlineData && /^image\//i.test(p.inlineData.mimeType || ''))
+    };
+    const catalog = await aiEngine.getCatalog();
+    const plan = aiEngine.buildChain(catalog, _aiPickedModel((req.body || {}).model), needs);
+    if (!plan.chain.length) {
+      return res.status(503).json({ success: false, message: 'No AI model that can read ' + (needs.pdf ? 'PDF' : 'image') + ' answers is available right now.' });
+    }
+    let text = '';
+    const t0 = Date.now();
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 120000);
+    let out;
+    try {
+      out = await aiEngine.run({
+        chain: plan.chain, signal: ac.signal,
+        contents: [{ role: 'user', parts: [{ text: prompt }].concat(prepared.parts) }],
+        system, temperature: 0.2, maxTokens: 4096, autoContinue: 0,
+        onDelta: (t) => { text += t; }
+      });
+    } finally { clearTimeout(timer); }
+    if (!out.used || !text.trim()) {
+      const f = ac.signal.aborted ? { message: 'The AI took too long. Please try again.' } : aiEngine.failureMessage(out, plan.chain);
+      return res.status(503).json({ success: false, message: f.message, retryAfter: f.retryAfter });
+    }
+    const suggestion = _parseAiGrade(text, max);
+    if (!suggestion) {
+      console.warn(`[ai-check] unparseable reply from ${out.used.id}: ${text.slice(0, 200)}`);
+      return res.status(502).json({ success: false, message: 'The AI reply could not be understood. Please try again.' });
+    }
+    console.log(`[ai-check] ✅ ${req.editorRole} ${req.authUser.username} · student=${userId} test=${mid} Q${qi + 1} → ${suggestion.marks}/${max} (${suggestion.confidence}) · ${out.used.id} · ${Date.now() - t0} ms`);
+    res.json({ success: true, suggestion: Object.assign({ max }, suggestion), model: out.used.label, modelId: out.used.id });
+  } catch (e) {
+    if (e && e.status && e.message) return res.status(e.status).json({ success: false, message: e.message });
+    console.error('[ai-check]', e);
+    res.status(500).json({ success: false, message: 'Server error: ' + e.message });
+  }
+});
+
 /* ---- Per-conversation file memory (bounded, in RAM only) ---- */
 const _aiConvFiles = new Map();          // `${userId}:${convId}` → { parts, names, bytes, at }
 const AI_CONV_TTL_MS = 30 * 60 * 1000;
