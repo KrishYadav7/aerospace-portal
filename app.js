@@ -4751,9 +4751,10 @@ function renderAdminAddCourse() {
       <div class="editor-grid-3">
         <div class="form-group"><label>Status</label>
           <select id="newCourseStatus">
-            <option value="published" selected>✅ Published</option>
-            <option value="draft">📝 Draft</option>
+            <option value="draft" selected>🙈 Hidden — add content first</option>
+            <option value="published">✅ Published — students can see it</option>
           </select>
+          <span class="hint">Hidden courses are saved but students can't see them until you click Publish.</span>
         </div>
         <div class="form-group"><label>Featured</label>
           <label class="toggle-box" style="margin-top:6px;"><input type="checkbox" id="newCourseFeatured"><span><i class="fas fa-star"></i> Featured</span></label>
@@ -6154,6 +6155,8 @@ function clearAdminCourseFilters() {
   const c = $('adminFilterCategory');
   const d = $('adminFilterDifficulty');
   const p = $('adminFilterPrice');
+  const v = $('adminFilterVisible');
+  if (v) v.value = '';
   const q = $('adminCourseSearch');
   if (s) s.value = '';
   if (c) c.value = '';
@@ -6201,6 +6204,7 @@ async function renderAdminCourses() {
   const fCategory   = ($('adminFilterCategory')?.value   || '').trim();
   const fDifficulty = ($('adminFilterDifficulty')?.value || '').trim();
   const fPrice      = ($('adminFilterPrice')?.value      || '').trim();
+  const fVisible    = ($('adminFilterVisible')?.value    || '').trim();
 
   function normalizeSemester(v) {
     if (v === null || v === undefined) return '';
@@ -6229,6 +6233,8 @@ async function renderAdminCourses() {
     if (fDifficulty && c.difficulty !== fDifficulty) return false;
     if (fPrice === 'free'    &&  c.isPremium) return false;
     if (fPrice === 'premium' && !c.isPremium) return false;
+    if (fVisible === 'visible' &&  c.status === 'draft') return false;
+    if (fVisible === 'hidden'  &&  c.status !== 'draft') return false;
     return true;
   });
 
@@ -6251,7 +6257,7 @@ async function renderAdminCourses() {
     const matCount = (c.materials || []).length;
     const plCount = c.playlistCount != null ? c.playlistCount : (c.playlists || []).length;
     const statusBadge = c.status === 'draft'
-      ? '<span class="status-badge draft">DRAFT — hidden from students</span>'
+      ? '<span class="status-badge draft" title="Students can\'t see this course until you publish it"><i class="fas fa-eye-slash"></i> HIDDEN FROM STUDENTS</span>'
       : c.status === 'archived'
         ? '<span class="status-badge archived">ARCHIVED</span>'
         : '';
@@ -6310,7 +6316,8 @@ async function renderAdminCourses() {
           <button class="btn btn-warning btn-sm" onclick="event.stopPropagation();openCourseEditor('${c.id}')"><i class="fas fa-edit"></i> Edit</button>
           ${c.status === 'draft'
             ? `<button class="btn btn-success btn-sm" onclick="event.stopPropagation();publishCourse('${c.id}')"><i class="fas fa-rocket"></i> Publish</button>`
-            : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>`}
+            : `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();viewCourseDetail('${c.id}')"><i class="fas fa-eye"></i> View</button>
+               <button class="btn btn-outline btn-sm" onclick="event.stopPropagation();hideCourse('${c.id}')" title="Hide from students until you publish it again"><i class="fas fa-eye-slash"></i> Hide</button>`}
           <button class="btn btn-success btn-sm" onclick="event.stopPropagation();openAddMaterialModal('${c.id}')"><i class="fas fa-plus"></i> Material</button>
         </div>
       </div>
@@ -8473,7 +8480,7 @@ function renderCourseEditor(courseId) {
   }
 
   const acc = accentStyle(course.code || course.name);
-  const statusChip = course.status === 'draft' ? '<span class="status-badge draft">DRAFT</span>'
+  const statusChip = course.status === 'draft' ? '<span class="status-badge draft"><i class="fas fa-eye-slash"></i> HIDDEN</span>'
                    : course.status === 'archived' ? '<span class="status-badge archived">ARCHIVED</span>'
                    : '<span class="status-badge published">PUBLISHED</span>';
   const featuredChip = course.featured ? '<span class="status-badge featured"><i class="fas fa-star"></i> FEATURED</span>' : '';
@@ -8596,8 +8603,8 @@ function renderEditorDetails(course) {
       <div class="editor-grid-3">
         <div class="form-group"><label>Status</label>
           <select id="edStatus">
-            <option value="published" ${course.status === 'published' ? 'selected' : ''}>✅ Published</option>
-            <option value="draft" ${course.status === 'draft' ? 'selected' : ''}>📝 Draft</option>
+            <option value="published" ${course.status === 'published' ? 'selected' : ''}>✅ Published — students can see it</option>
+            <option value="draft" ${course.status === 'draft' ? 'selected' : ''}>🙈 Hidden from students</option>
             <option value="archived" ${course.status === 'archived' ? 'selected' : ''}>📦 Archived</option>
           </select>
         </div>
@@ -10635,22 +10642,57 @@ function _deptPref(key, fallback) {
 function _deptPrefSet(key, v) { try { localStorage.setItem(key, v); } catch (_) {} }
 let studentDept = null;    // set on first render
 let adminDept = null;
+/* ⭐ Each department's icon + colour (Font Awesome 6 free icons) */
+const DEPT_LOOK = {
+  'all':                                                  { icon: 'fa-layer-group',          hue: 240 },
+  'aerospace-engineering':                                { icon: 'fa-plane-departure',      hue: 215 },
+  'agricultural-and-food-engineering':                    { icon: 'fa-wheat-awn',            hue: 95 },
+  'architecture-and-regional-planning':                   { icon: 'fa-city',                 hue: 25 },
+  'artificial-intelligence':                              { icon: 'fa-brain',                hue: 285 },
+  'bioscience-and-biotechnology':                         { icon: 'fa-dna',                  hue: 150 },
+  'chemical-engineering':                                 { icon: 'fa-flask',                hue: 175 },
+  'chemistry':                                            { icon: 'fa-vials',                hue: 195 },
+  'civil-engineering':                                    { icon: 'fa-bridge',               hue: 35 },
+  'computer-science-and-engineering':                     { icon: 'fa-laptop-code',          hue: 255 },
+  'education':                                            { icon: 'fa-chalkboard-user',      hue: 45 },
+  'electrical-engineering':                               { icon: 'fa-bolt',                 hue: 50 },
+  'electronics-and-electrical-communication-engineering': { icon: 'fa-microchip',            hue: 200 },
+  'geology-and-geophysics':                               { icon: 'fa-mountain',             hue: 20 },
+  'humanities-and-social-sciences':                       { icon: 'fa-book-open',            hue: 330 },
+  'industrial-and-systems-engineering':                   { icon: 'fa-industry',             hue: 10 },
+  'mathematics':                                          { icon: 'fa-square-root-variable', hue: 265 },
+  'mechanical-engineering':                               { icon: 'fa-gears',                hue: 0 },
+  'metallurgical-and-materials-engineering':              { icon: 'fa-cubes-stacked',        hue: 30 },
+  'mining-engineering':                                   { icon: 'fa-person-digging',       hue: 40 },
+  'ocean-engineering-and-naval-architecture':             { icon: 'fa-ship',                 hue: 205 },
+  'physics':                                              { icon: 'fa-atom',                 hue: 225 }
+};
+function deptLook(slug) { return DEPT_LOOK[slug] || { icon: 'fa-building-columns', hue: 230 }; }
+function deptIconHtml(slug, cls) {
+  const l = deptLook(slug);
+  return `<span class="dept-ic ${cls || ''}" style="--dh:${l.hue}" aria-hidden="true"><i class="fas ${l.icon}"></i></span>`;
+}
+const _deptBarState = {};    // hostId → { pick, courses } for the "All departments" grid
 /* The scrollable chip bar. `pick` is the global function to call with the slug. */
 function renderDeptBar(hostId, selected, pick, courses) {
   const host = $(hostId);
   if (!host) return;
+  _deptBarState[hostId] = { pick, courses, selected };
   const count = (slug) => courses.filter(c => courseDeptSemester(c, slug) !== null).length;
   const chips = [{ slug: 'all', name: 'All departments' }].concat(AERO_DEPTS).map(d => {
     const n = count(d.slug);
-    return `<button type="button" role="tab" class="dept-chip ${d.slug === selected ? 'on' : ''}" aria-selected="${d.slug === selected}"
-      data-dept="${escapeHtml(d.slug)}" onclick="${pick}('${escapeHtml(d.slug)}')">${escapeHtml(d.name)}<span class="dept-chip-n">${n}</span></button>`;
+    return `<button type="button" role="tab" class="dept-chip ${d.slug === selected ? 'on' : ''} ${n ? '' : 'empty'}" aria-selected="${d.slug === selected}"
+      style="--dh:${deptLook(d.slug).hue}" data-dept="${escapeHtml(d.slug)}" onclick="${pick}('${escapeHtml(d.slug)}')"
+      title="${escapeHtml(d.name)} — ${n} course${n === 1 ? '' : 's'}">${deptIconHtml(d.slug)}<span class="dept-chip-name">${escapeHtml(d.name)}</span><span class="dept-chip-n">${n}</span></button>`;
   }).join('');
   const keepScroll = host.querySelector('.dept-scroll');
   const left = keepScroll ? keepScroll.scrollLeft : null;
   host.innerHTML = `
     <button type="button" class="dept-arrow" aria-label="Scroll left" onclick="this.nextElementSibling.scrollBy({left:-320,behavior:'smooth'})"><i class="fas fa-chevron-left"></i></button>
     <div class="dept-scroll" role="tablist" aria-label="Departments">${chips}</div>
-    <button type="button" class="dept-arrow" aria-label="Scroll right" onclick="this.previousElementSibling.scrollBy({left:320,behavior:'smooth'})"><i class="fas fa-chevron-right"></i></button>`;
+    <button type="button" class="dept-arrow" aria-label="Scroll right" onclick="this.previousElementSibling.scrollBy({left:320,behavior:'smooth'})"><i class="fas fa-chevron-right"></i></button>
+    <button type="button" class="dept-browse" onclick="openDeptPicker('${hostId}')" title="See every department and jump to one">
+      <i class="fas fa-grip"></i><span>Browse all</span></button>`;
   const sc = host.querySelector('.dept-scroll');
   if (left !== null) sc.scrollTo({ left, behavior: 'instant' });
   /* the picked chip always in view (centred when it was off-screen) */
@@ -10664,6 +10706,60 @@ function renderDeptBar(hostId, selected, pick, courses) {
   };
   centre();
   requestAnimationFrame(centre);      // after layout (bar was hidden / fonts loading)
+}
+/* "All departments" — every department as a tile (icon, name, course
+   count) with a filter box: jump straight to one without scrolling. */
+function openDeptPicker(hostId) {
+  const st = _deptBarState[hostId];
+  if (!st) return;
+  closeDeptPicker();
+  const count = (slug) => st.courses.filter(c => courseDeptSemester(c, slug) !== null).length;
+  const tiles = [{ slug: 'all', name: 'All departments' }].concat(AERO_DEPTS).map(d => {
+    const n = count(d.slug);
+    return `<button type="button" class="dept-tile ${d.slug === st.selected ? 'on' : ''}" style="--dh:${deptLook(d.slug).hue}"
+      data-name="${escapeHtml(d.name.toLowerCase())}" onclick="closeDeptPicker();${st.pick}('${escapeHtml(d.slug)}')">
+      ${deptIconHtml(d.slug, 'lg')}<span class="dept-tile-name">${escapeHtml(d.name)}</span>
+      <span class="dept-tile-n">${n} course${n === 1 ? '' : 's'}</span></button>`;
+  }).join('');
+  const ov = document.createElement('div');
+  ov.id = 'deptPicker';
+  ov.className = 'dept-picker-overlay';
+  ov.innerHTML = `
+    <div class="dept-picker" role="dialog" aria-modal="true" aria-label="Choose a department">
+      <div class="dept-picker-head">
+        <h3><i class="fas fa-building-columns"></i> Choose a department</h3>
+        <button type="button" class="dept-picker-x" onclick="closeDeptPicker()" aria-label="Close"><i class="fas fa-xmark"></i></button>
+      </div>
+      <div class="search-bar dept-picker-search"><i class="fas fa-search"></i>
+        <input type="text" id="deptPickerFilter" placeholder="Type to find a department…" autocomplete="off"
+               oninput="filterDeptPicker(this.value)" onkeydown="if(event.key==='Enter'){const t=document.querySelector('#deptPicker .dept-tile:not([hidden])');if(t)t.click();}">
+      </div>
+      <div class="dept-grid">${tiles}</div>
+      <p class="dept-picker-empty" hidden>No department matches.</p>
+    </div>`;
+  ov.addEventListener('click', (e) => { if (e.target === ov) closeDeptPicker(); });
+  document.body.appendChild(ov);
+  document.addEventListener('keydown', _deptPickerKey);
+  const on = ov.querySelector('.dept-tile.on');
+  if (on) on.scrollIntoView({ block: 'center' });
+  setTimeout(() => { const f = $('deptPickerFilter'); if (f && window.matchMedia('(pointer: fine)').matches) f.focus(); }, 50);
+}
+function _deptPickerKey(e) { if (e.key === 'Escape') closeDeptPicker(); }
+function closeDeptPicker() {
+  const ov = $('deptPicker');
+  if (ov) ov.remove();
+  document.removeEventListener('keydown', _deptPickerKey);
+}
+function filterDeptPicker(q) {
+  q = String(q || '').toLowerCase().trim();
+  let shown = 0;
+  document.querySelectorAll('#deptPicker .dept-tile').forEach(t => {
+    const hit = !q || t.dataset.name.includes(q) || q.split(/\s+/).every(w => t.dataset.name.includes(w));
+    t.hidden = !hit;
+    if (hit) shown++;
+  });
+  const empty = document.querySelector('#deptPicker .dept-picker-empty');
+  if (empty) empty.hidden = shown > 0;
 }
 function pickStudentDept(slug) {
   studentDept = slug;
@@ -10740,6 +10836,8 @@ function renderStudentCourses() {
   const viewDept = searchTerm ? 'all' : studentDept;
   const titleEl = $('studentCoursesTitle');
   if (titleEl) titleEl.textContent = searchTerm ? 'Search results — all departments' : (studentDept === 'all' ? 'All Courses' : deptName(studentDept));
+  const iconEl = $('studentCoursesIcon');
+  if (iconEl) iconEl.innerHTML = searchTerm ? '<i class="fas fa-magnifying-glass"></i>' : deptIconHtml(studentDept, 'title');
   const fSemester   = ($('filterSemester')?.value   || '').trim();
   const fCategory   = ($('filterCategory')?.value   || '').trim();
   const fDifficulty = ($('filterDifficulty')?.value || '').trim();
@@ -17294,6 +17392,22 @@ async function deleteCourse(courseId) {
   } catch { showToast('Server error.', 'error'); }
 }
 
+/* ⭐ 2026-10-16 — hide a course from students (kept and editable; Publish shows it again) */
+async function hideCourse(courseId) {
+  const c = liveCourses.find(x => x.id === courseId);
+  if (!confirm(`Hide "${(c && c.name) || 'this course'}" from students?\n\nIt stays saved — you can keep adding content and click Publish to show it again.`)) return;
+  try {
+    const res = await fetch(`/api/courses/${courseId}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'draft' })
+    });
+    const data = await res.json();
+    if (!data.success) return showToast(data.message || 'Could not hide the course.', 'error');
+    if (c) c.status = 'draft';
+    showToast('🙈 Course hidden from students.', 'success');
+    fetchCoursesFromDB();
+  } catch { showToast('Server error.', 'error'); }
+}
 async function publishCourse(courseId) {
   try {
     const res = await fetch(`/api/courses/${courseId}`, {

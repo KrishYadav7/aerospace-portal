@@ -1194,7 +1194,7 @@ app.get('/api/courses/:courseId/materials/:materialId/render', attachUserFromTok
     if (!mongoose.Types.ObjectId.isValid(req.params.courseId)) {
       return res.status(400).json({ success: false, message: 'Invalid course ID.' });
     }
-    const course = await Course.findById(req.params.courseId).select('isPremium price materials').lean();
+    const course = await Course.findById(req.params.courseId).select('isPremium price status materials').lean();
     if (!course) return res.status(404).json({ success: false, message: 'Course not found.' });
     const mat = (course.materials || []).find(m => String(m._id) === String(req.params.materialId));
     if (!mat) return res.status(404).json({ success: false, message: 'Material not found.' });
@@ -1363,7 +1363,7 @@ app.get('/uploads/:filename', attachUserFromToken, async (req, res) => {
          `fileData` (megabytes) on each lookup and kept it in the cache. */
       owner = await Course.findOne({
         'materials.url': { $regex: '/uploads/' + escaped + '$' }
-      }).select('isPremium price materials._id materials.url materials.isPremium materials.previewPercent').lean();
+      }).select('isPremium price status materials._id materials.url materials.isPremium materials.previewPercent').lean();
 
       cacheSet(ownerCacheKey, owner || false, 5 * 60 * 1000);
     } catch (e) {
@@ -2949,6 +2949,12 @@ function requireSelfOrAdmin(source) {
      }
    ============================================================ */
 function evaluateMaterialAccess(user, course, material) {
+  /* ⭐ 2026-10-16 — a HIDDEN course (status 'draft') does not exist for
+     students and guests: only admins and its own approved professors may
+     open its materials. (Callers load `status` with the course.) */
+  if (course && course.status === 'draft' && !_canSeeHiddenCourse(user, course._id)) {
+    return { allowed: false, canPreview: false, previewPercent: 0, reason: 'course-hidden' };
+  }
   const isCoursePremium = course   && (course.isPremium   === true || course.isPremium   === 'true');
   const isMatPremium    = material && (material.isPremium === true || material.isPremium === 'true');
   const previewPercent  = Math.max(0, Math.min(100, Number(material && material.previewPercent) || 0));
@@ -3013,6 +3019,24 @@ function evaluateMaterialAccess(user, course, material) {
   /* ---- Free content ---- */
   return { allowed: true, canPreview: false, previewPercent: 0 };
 }
+
+/* The signed-in user behind a request (null for guests / bad tokens) */
+async function _requestUser(req) {
+  try {
+    const token = _extractToken(req, false);
+    if (!token) return null;
+    const r = await resolveSessionUser(token);
+    return (r && r.user) || null;
+  } catch (_) { return null; }
+}
+/* Admin, or an approved professor of this course — the people who may see it while hidden */
+function _canSeeHiddenCourse(user, courseId) {
+  const role = String((user && user.role) || '').trim().toLowerCase();
+  if (role === 'admin') return true;
+  return role === 'professor' && !!(user.professor && user.professor.status === 'approved' &&
+    (user.professor.courses || []).map(String).includes(String(courseId)));
+}
+function _isHiddenCourse(c) { return !!c && c.status === 'draft'; }
 
 /* Backwards-compat shim — any old call sites keep working */
 function checkMaterialAccess(user, course, material) {
@@ -6660,14 +6684,23 @@ app.get('/api/courses', async (req, res) => {
       const courses = (payload.courses || []).filter(c => profScope.has(String(c._id)));
       return res.json(Object.assign({}, payload, { courses, pagination: { page: 1, limit, total: courses.length, totalPages: 1, hasMore: false } }));
     };
+    /* ⭐ 2026-10-16 — hidden courses (status 'draft') go only to admins
+       (and, above, to their own professors); everyone else gets the list
+       without them. The admin's copy is never put in a shared cache. */
+    const viewer = profScope ? null : await _requestUser(req);
+    const seesHidden = !!(viewer && _isAdminUser(viewer));
+    const sendList = (payload) => {
+      if (seesHidden) { res.setHeader('Cache-Control', 'private, no-store'); return res.json(payload); }
+      // ⚡ Let the browser reuse this for 30s → instant repeat navigations.
+      // stale-while-revalidate keeps UX snappy while we refresh in bg.
+      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=180');
+      return res.json(Object.assign({}, payload, { courses: (payload.courses || []).filter(c => !_isHiddenCourse(c)) }));
+    };
     const cached = cacheGet(cacheKey);
     if (cached && profScope) return sendScoped(cached);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
-      // ⚡ Let the browser reuse this for 30s → instant repeat navigations.
-      // stale-while-revalidate keeps UX snappy while we refresh in bg.
-      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=180');
-      return res.json(cached);
+      return sendList(cached);
     }
 
     const [courses, total] = await Promise.all([
@@ -6699,9 +6732,7 @@ app.get('/api/courses', async (req, res) => {
     cacheSet(cacheKey, payload, 60000);
     if (profScope) return sendScoped(payload);
     res.setHeader('X-Cache', 'MISS');
-    // ⚡ Browser-side 30s cache — repeat visits need zero network round trip.
-    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=180');
-    res.json(payload);
+    return sendList(payload);
   } catch (e) {
     console.error('[GET /api/courses]', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
@@ -6726,6 +6757,7 @@ async function _loadCourseWithOneMaterial(courseId, materialId) {
       { $project: {
           isPremium: 1,
           price: 1,
+          status: 1,
           materials: {
             $filter: {
               input: { $ifNull: ['$materials', []] },
@@ -6739,7 +6771,7 @@ async function _loadCourseWithOneMaterial(courseId, materialId) {
     return rows[0] || null;
   } catch (e) {
     console.warn('[file] slim lookup failed, using full lookup:', e.message);
-    return Course.findById(courseId).select('isPremium price materials').lean();
+    return Course.findById(courseId).select('isPremium price status materials').lean();
   }
 }
 
@@ -7497,7 +7529,7 @@ app.get('/api/courses/:courseId/materials/:materialId/full-quiz',
       }
 
       const course = await Course.findById(req.params.courseId)
-        .select('isPremium price materials')
+        .select('isPremium price status materials')
         .lean();
       if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
 
@@ -7558,13 +7590,26 @@ app.get('/api/courses/:id', async (req, res) => {
       if (!profScope.has(String(req.params.id))) return res.status(404).json({ success: false, message: 'Course not found' });
     }
 
+    /* ⭐ 2026-10-16 — a hidden course is "not found" for students and
+       guests; never stored in a shared cache */
+    const sendOne = async (payload) => {
+      if (_isHiddenCourse(payload.course)) {
+        res.setHeader('Cache-Control', 'private, no-store');
+        if (!_canSeeHiddenCourse(await _requestUser(req), req.params.id)) {
+          return res.status(404).json({ success: false, message: 'Course not found' });
+        }
+        return res.json(payload);
+      }
+      res.setHeader('Cache-Control', profScope ? 'private, no-store' : 'public, max-age=30, stale-while-revalidate=300');
+      return res.json(payload);
+    };
+
     /* Server-side cache — 60 s. Auto-invalidated by cacheClear('courses:'). */
     const cacheKey = 'courses:single:' + req.params.id;
     const cached = cacheGet(cacheKey);
     if (cached) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
-      return res.json(cached);
+      return sendOne(cached);
     }
 
     const courses = await Course.aggregate([
@@ -7628,8 +7673,7 @@ app.get('/api/courses/:id', async (req, res) => {
     cacheSet(cacheKey, payload, 60000);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=300');
-    res.json(payload);
+    return sendOne(payload);
   } catch (e) {
     console.error('[GET /api/courses/:id]', e);
     res.status(500).json({ success: false, message: 'Server error: ' + e.message });
@@ -7672,6 +7716,7 @@ app.put('/api/courses/:id', requireCourseEditor, async (req, res) => {
     const updated = await Course.findByIdAndUpdate(req.params.id, { $set: update }, { returnDocument: 'after' });
     if (!updated) return res.status(404).json({ success: false, message: 'Course not found' });
     cacheClear('courses:');
+    if (update.status !== undefined) cacheClear('uploads-owner:');     // hide / show applies to files at once
     res.json({ success: true, message: 'Course updated successfully!', course: updated });
   } catch (e) { res.status(500).json({ success: false, message: 'Error updating course: ' + e.message }); }
 });

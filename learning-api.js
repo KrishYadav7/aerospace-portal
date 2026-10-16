@@ -198,7 +198,7 @@ module.exports = function mountLearningApi(app, deps) {
   let _cc = { at: 0, list: null };
   async function allCourses() {
     if (_cc.list && Date.now() - _cc.at < 30000) return _cc.list;
-    const list = await Course.find({}).select('name code title isPremium price materials').lean();
+    const list = await Course.find({}).select('name code title isPremium price status materials').lean();
     _cc = { at: Date.now(), list };
     return list;
   }

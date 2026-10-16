@@ -686,6 +686,11 @@
               <option value="free">Free</option>
               <option value="premium">Premium</option>
             </select>
+            <select id="adminFilterVisible" onchange="renderAdminCourses()">
+              <option value="">Visible + hidden</option>
+              <option value="visible">Visible to students</option>
+              <option value="hidden">Hidden from students</option>
+            </select>
             <button class="btn btn-outline btn-sm" onclick="clearAdminCourseFilters()">
               <i class="fas fa-times"></i> Clear
             </button>
@@ -893,7 +898,7 @@
       <!-- STUDENT COURSES -->
       <section id="studentCoursesView" class="view">
         <div class="dash-header">
-          <h2><i class="fas fa-graduation-cap"></i> <span id="studentCoursesTitle">All Courses</span></h2>
+          <h2 class="dept-title"><span id="studentCoursesIcon"><i class="fas fa-graduation-cap"></i></span> <span id="studentCoursesTitle">All Courses</span></h2>
         </div>
         <!-- ⭐ departments: scroll and pick one (filled by app.js) -->
         <div class="dept-bar" id="studentDeptBar"></div>
