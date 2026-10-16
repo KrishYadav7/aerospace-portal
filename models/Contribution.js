@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const contributionSchema = new mongoose.Schema({
   studentName:     { type: String, default: '' },
   studentUsername: { type: String, default: '' },
+  /* ⭐ 2026-10-16 — the owner's User _id (usernames can repeat now) */
+  studentId:       { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
   studentEmail:    { type: String, default: '' },
 
   title:           { type: String, required: true, trim: true },

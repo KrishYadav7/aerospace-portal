@@ -142,6 +142,8 @@ const replySchema = new mongoose.Schema({
 const doubtSchema = new mongoose.Schema({
   studentName: String,
   studentUsername: String,
+  /* ⭐ 2026-10-16 — the asker's User _id (usernames can repeat now) */
+  studentId: { type: mongoose.Schema.Types.ObjectId, default: null },
   studentEmail: String,
   question: String,
   answer: String,
@@ -150,7 +152,7 @@ const doubtSchema = new mongoose.Schema({
   /* ⭐ 2026-10-11 — doubt about a specific material, votes, who answered */
   materialId:    { type: String, default: '' },
   materialTitle: { type: String, default: '' },
-  upvotes:       { type: [String], default: [] },     // usernames
+  upvotes:       { type: [String], default: [] },     // User _ids (older votes: usernames)
   answeredBy:    { type: String, default: '' },
   answeredAt:    { type: Date, default: null }
 });

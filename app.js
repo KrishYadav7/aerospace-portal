@@ -3843,7 +3843,7 @@ async function handleLogin(e) {
   const username = userEl.value.trim();
   const password = passEl.value.trim();
   if (!username || !password) {
-    return showToast('Please enter both username and password.', 'error');
+    return showToast('Please enter your username (or roll number) and password.', 'error');
   }
 
   const btn = e.target.querySelector('button[type="submit"]');
@@ -4082,7 +4082,7 @@ function logout() {
 }
 
 function showRegisterModal() {
-  ['regFullName', 'regUsername', 'regEmail', 'regPassword'].forEach(id => { const el = $(id); if (el) el.value = ''; });
+  ['regFullName', 'regRollNumber', 'regUsername', 'regEmail', 'regPassword'].forEach(id => { const el = $(id); if (el) el.value = ''; });
   openModal('registerModal');
 }
 let tempRegisterData = null;
@@ -4108,7 +4108,7 @@ async function registerStudent(e) {
   try {
     const response = await fetch(`${API_BASE}/send-otp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, username, phone })
+      body: JSON.stringify({ email, username, phone, rollNumber })
     });
     const data = await response.json();
     if (data.success) {
@@ -6739,6 +6739,10 @@ function _studentMatchesSearch(s, q) {
   /* Student ID — the full id or any 6+ character piece of it (2026-10-05) */
   const idq = q.replace(/^#|^id[:\s]*/, '').trim();
   if (/^[a-f0-9]{6,24}$/.test(idq) && String(s._id || '').toLowerCase().includes(idq)) return true;
+  /* Roll number ignoring spaces / dashes / slashes → "21AE 10001" finds "21AE10001" */
+  const rollKey = String(s.rollNumber || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const qKey = q.replace(/[^a-z0-9]/g, '');
+  if (rollKey && qKey.length >= 3 && rollKey.includes(qKey)) return true;
   const hay = `${s.fullName || ''} ${s.username || ''} ${s.email || ''} ${s.phone || ''} ${s.rollNumber || ''}`.toLowerCase();
   // Every whitespace-separated token must match → "rahul sharma" also finds "Sharma Rahul"
   return q.split(/\s+/).filter(Boolean).every(tok => hay.includes(tok));
@@ -8036,6 +8040,16 @@ function showCredentialsCard(student) {
         </button>
       </div>
     </div>
+    ${student.rollNumber ? `
+    <div class="cred-row">
+      <div class="cred-label"><i class="fas fa-id-badge"></i> Roll Number</div>
+      <div class="cred-value-group">
+        <span class="cred-value cred-code">${escapeHtml(student.rollNumber)}</span>
+        <button type="button" class="cred-copy-btn" onclick="copyCredential('roll number', ${jsStr(student.rollNumber)})" title="Copy" aria-label="Copy roll number">
+          <i class="fas fa-copy"></i>
+        </button>
+      </div>
+    </div>` : ''}
     ${student.email ? `
     <div class="cred-row">
       <div class="cred-label"><i class="fas fa-envelope"></i> Email</div>
@@ -11254,6 +11268,9 @@ function renderMaterialCard(course, m, isPurchased) {
 function renderQASection(course) {
   /* ⭐ 2026-10-11 — votes, material links, sort / filter, professors answer too */
   const me = currentUser ? currentUser.username : '';
+  const myId = currentUser && currentUser._id ? String(currentUser._id) : '';
+  /* ⭐ 2026-10-16 — usernames can repeat: match by user id, older doubts by username */
+  const isMine = (d) => d.studentId ? (!!myId && String(d.studentId) === myId) : (!!me && d.studentUsername === me);
   const role = String((currentUser && currentUser.role) || '').toLowerCase();
   const sortKey = (window._qaSort && window._qaSort[course.id]) || 'top';
   const all = [...(course.doubts || [])];
@@ -11305,10 +11322,10 @@ function renderQASection(course) {
   }
 
   const open = all.filter(d => !hasAnyAnswer(d)).length;
-  const mine = all.filter(d => d.studentUsername === me).length;
+  const mine = all.filter(isMine).length;
   let doubts = all;
   if (sortKey === 'open') doubts = all.filter(d => !hasAnyAnswer(d));
-  if (sortKey === 'mine') doubts = all.filter(d => d.studentUsername === me);
+  if (sortKey === 'mine') doubts = all.filter(isMine);
   const votes = (d) => (d.upvotes || []).length;
   doubts = doubts.slice().sort((a, b) => sortKey === 'new'
     ? new Date(b.date) - new Date(a.date)
@@ -11327,10 +11344,10 @@ function renderQASection(course) {
     const statusBadge = answered ? `<span class="qa-status solved">ANSWERED</span>` : `<span class="qa-status pending">OPEN</span>`;
     const dateText = d.date ? new Date(d.date).toLocaleDateString() : 'Recent';
     const usernameText = d.studentUsername ? `@${escapeHtml(d.studentUsername)}` : '';
-    const isAsker = d.studentUsername === me;
+    const isAsker = isMine(d);
     const isAdminUser = isAdmin(currentUser);
     const canReply = !!currentUser;
-    const voted = (d.upvotes || []).includes(me);
+    const voted = (d.upvotes || []).includes(myId) || (!!me && (d.upvotes || []).includes(me));
 
     const replies = d.replies || [];
     let repliesHtml = '';
@@ -11401,8 +11418,9 @@ async function voteDoubt(courseId, doubtId) {
     const c = findCourse(courseId);
     const dt = c && (c.doubts || []).find(x => String(x._id) === String(doubtId));
     if (dt) {
-      dt.upvotes = (dt.upvotes || []).filter(u => u !== currentUser.username);
-      if (d.voted) dt.upvotes.push(currentUser.username);
+      const myId = String(currentUser._id || '');
+      dt.upvotes = (dt.upvotes || []).filter(u => u !== myId && u !== currentUser.username);
+      if (d.voted) dt.upvotes.push(myId);
       renderCourseDetail(courseId);
     }
   } catch (e) { showToast('Network error.', 'error'); }
@@ -22461,7 +22479,7 @@ window.registerStudent = function (e) {
     showToast('Sending OTP…', 'info');
     fetch(`${API_BASE}/send-otp`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, username, phone })
+      body: JSON.stringify({ email, username, phone, rollNumber })
     }).then(r => r.json()).then(data => {
       if (data.success) {
         tempRegisterData = { fullName, username, email, phone, password, referralCode: code, rollNumber };

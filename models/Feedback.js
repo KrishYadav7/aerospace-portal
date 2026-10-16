@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const feedbackSchema = new mongoose.Schema({
   studentName:     { type: String, default: '' },
   studentUsername: { type: String, default: '' },
+  /* ⭐ 2026-10-16 — the signed-in author's User _id, when known */
+  studentId:       { type: mongoose.Schema.Types.ObjectId, default: null, index: true },
   studentEmail:    { type: String, default: '' },
 
   courseId:        { type: String, default: null },

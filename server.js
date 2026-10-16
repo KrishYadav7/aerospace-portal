@@ -3369,6 +3369,112 @@ function normalizePhone(p) {
 }
 
 /* ============================================================
+   ⭐ 2026-10-16 — SHARED STUDENT USERNAMES + ROLL-NUMBER SIGN-IN
+   ------------------------------------------------------------
+   • Several STUDENTS may use the same username; their passwords
+     must differ, and the password picks the account at sign-in.
+   • Sign-in accepts the username OR the roll number.
+   • Admin / professor usernames stay unique, and a student can
+     never take one (or ADMIN_USERNAME).
+   • Roll numbers are unique for new accounts.
+   Existing accounts are untouched: a unique username still finds
+   exactly the one account it always did.
+   ============================================================ */
+const LOGIN_CANDIDATE_LIMIT = 25;
+function _escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function _cleanRoll(v) { return String(v || '').trim().slice(0, 40).toUpperCase(); }
+function _isStaffRole(role) {
+  const r = String(role || '').trim().toLowerCase();
+  return r === 'admin' || r === 'professor';
+}
+
+/* Every account a typed sign-in id could mean: its username (exact,
+   then case-insensitive for legacy rows) or its roll number. */
+async function _loginCandidates(identifier) {
+  const raw = String(identifier || '').trim();
+  if (!raw) return [];
+  const lower = raw.toLowerCase();
+  const or = [{ username: lower }, { username: raw }];
+  const roll = _cleanRoll(raw);
+  if (roll) or.push({ rollNumber: roll });
+  let list = await User.find({ $or: or }).limit(LOGIN_CANDIDATE_LIMIT);
+  if (!list.length) {
+    list = await User.find({ username: new RegExp('^' + _escRe(lower) + '$', 'i') }).limit(LOGIN_CANDIDATE_LIMIT);
+  }
+  return list;
+}
+
+/* → { found, user, ambiguous }. `user` is set only when exactly one
+   candidate's password matches; two matches → ambiguous (the student
+   is asked to use the roll number instead). */
+async function _resolveLogin(identifier, password) {
+  const list = await _loginCandidates(identifier);
+  const hits = [];
+  for (const u of list) {
+    if (!u.password) continue;
+    if (await bcrypt.compare(String(password), u.password)) hits.push(u);
+  }
+  return { found: list.length > 0, user: hits.length === 1 ? hits[0] : null, ambiguous: hits.length > 1 };
+}
+
+/* Can a NEW student take this username + roll number (+ password)?
+   → null when fine, else { code, message }. Pass password = null to
+   check only the username / roll number (e.g. before sending an OTP). */
+async function _newStudentIdentityProblem(username, rollNumber, password) {
+  const uname = String(username || '').trim().toLowerCase();
+  const roll  = _cleanRoll(rollNumber);
+  const envAdmin = String(process.env.ADMIN_USERNAME || '').trim().toLowerCase();
+  if (envAdmin && (uname === envAdmin || (roll && roll.toLowerCase() === envAdmin))) {
+    return { code: 'USERNAME_TAKEN', message: 'Username is already taken.' };
+  }
+  if (roll) {
+    const rollTaken = await User.exists({ rollNumber: roll });
+    if (rollTaken) return { code: 'ROLL_TAKEN', message: 'This roll number is already registered.' };
+  }
+  /* everyone this student's username / roll number would also match at sign-in */
+  const or = [{ username: uname }, { rollNumber: uname.toUpperCase() }];
+  if (roll) or.push({ username: roll.toLowerCase() });
+  const others = await User.find({ $or: or })
+    .select('username role password').limit(LOGIN_CANDIDATE_LIMIT).lean();
+  if (others.some(o => _isStaffRole(o.role))) {
+    return others.some(o => _isStaffRole(o.role) && o.username === uname)
+      ? { code: 'USERNAME_TAKEN', message: 'Username is already taken.' }
+      : { code: 'ROLL_TAKEN', message: 'This roll number cannot be used. Please contact the admin.' };
+  }
+  if (others.length >= LOGIN_CANDIDATE_LIMIT - 1) {
+    return { code: 'USERNAME_TAKEN', message: 'Too many students already use this username. Please choose another.' };
+  }
+  if (password != null) {
+    for (const o of others) {
+      if (o.password && await bcrypt.compare(String(password), o.password).catch(() => false)) {
+        return { code: 'PASSWORD_CLASH', message: 'This username is already in use with that password. Please choose a different password.' };
+      }
+    }
+  }
+  return null;
+}
+
+/* Is this username held by more than one account? Older records
+   (doubts, votes, contributions) only stored the username, so they
+   are matched by username only while it is still unique. */
+async function _usernameShared(username) {
+  if (!username) return false;
+  return (await User.countDocuments({ username: String(username) }).limit(2)) > 1;
+}
+/* Does this stored record (doubt / contribution / feedback) belong to `user`? */
+async function _recordOwnedBy(rec, user) {
+  if (!rec || !user) return false;
+  if (rec.studentId) return String(rec.studentId) === String(user._id);
+  return !!rec.studentUsername && rec.studentUsername === user.username && !(await _usernameShared(user.username));
+}
+/* The student who asked a doubt (null when it can't be told for sure) */
+async function _doubtAsker(doubt) {
+  if (doubt.studentId) return User.findById(doubt.studentId);
+  if (!doubt.studentUsername || await _usernameShared(doubt.studentUsername)) return null;
+  return User.findOne({ username: doubt.studentUsername });
+}
+
+/* ============================================================
    DB
    ============================================================ */
 mongoose.connect(process.env.MONGO_URI, {
@@ -3450,6 +3556,68 @@ mongoose.connection.on('disconnected', () => {
     console.log(failed ? `[mongo] ⚠️ Indexes ensured (${failed} failed)` : '[mongo] ✅ Indexes ensured');
   } catch (e) {
     console.warn('[mongo] Index creation warning (non-fatal):', e.message);
+  }
+})();
+
+/* ============================================================
+   ⭐ 2026-10-16 MIGRATION — shared student usernames
+   1. Older doubts / contributions / feedback stored only the
+      username. Stamp each with its owner's _id while that username
+      still belongs to exactly one account (adds a field, nothing else;
+      raw driver calls so no updatedAt changes).
+   2. Then drop the old UNIQUE username index (plain index instead).
+   Idempotent — safe on every boot.
+   ============================================================ */
+(async () => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      await new Promise((resolve) => mongoose.connection.once('connected', resolve));
+    }
+    const ownerCache = new Map();
+    const ownerOf = async (uname) => {
+      if (!uname) return null;
+      if (ownerCache.has(uname)) return ownerCache.get(uname);
+      const us = await User.find({ username: uname }).select('_id').limit(2).lean();
+      const id = us.length === 1 ? us[0]._id : null;
+      ownerCache.set(uname, id);
+      return id;
+    };
+    let stamped = 0;
+    for (const M of [Contribution, Feedback]) {
+      const names = await M.distinct('studentUsername', { studentId: null, studentUsername: { $nin: ['', null] } });
+      for (const n of names) {
+        const id = await ownerOf(n);
+        if (!id) continue;
+        const r = await M.collection.updateMany({ studentUsername: n, studentId: null }, { $set: { studentId: id } });
+        stamped += r.modifiedCount || 0;
+      }
+    }
+    const courses = await Course.find({ doubts: { $elemMatch: { studentId: null, studentUsername: { $nin: ['', null] } } } })
+      .select('doubts._id doubts.studentUsername doubts.studentId').lean();
+    for (const c of courses) {
+      for (const d of (c.doubts || [])) {
+        if (d.studentId || !d.studentUsername) continue;
+        const id = await ownerOf(d.studentUsername);
+        if (!id) continue;
+        const r = await Course.collection.updateOne(
+          { _id: c._id }, { $set: { 'doubts.$[d].studentId': id } }, { arrayFilters: [{ 'd._id': d._id }] });
+        stamped += r.modifiedCount || 0;
+      }
+    }
+    if (stamped) { try { cacheClear('courses:'); } catch (_) {} }
+
+    for (const ix of await User.collection.indexes()) {
+      const keys = Object.keys(ix.key || {});
+      if (ix.unique && keys.length === 1 && keys[0] === 'username') {
+        await User.collection.dropIndex(ix.name);
+        console.log(`[migration] dropped unique username index "${ix.name}"`);
+      }
+    }
+    await User.collection.createIndex({ username: 1 });
+    await User.collection.createIndex({ rollNumber: 1 });
+    console.log(`[migration] ✅ shared usernames ready (${stamped} older record${stamped === 1 ? '' : 's'} linked to owner ids)`);
+  } catch (e) {
+    console.error('[migration] shared usernames:', e.message);
   }
 })();
 /* ============================================================
@@ -4775,31 +4943,54 @@ app.post('/api/login', async (req, res) => {
 
     console.log(`[login] attempt user="${cleanUsername}" role-tab="${roleFromClient}" ip=${req.ip}`);
 
-    // ---------- Find user (case-insensitive, robust) ----------
-    let user = await User.findOne({ username: cleanUsername });
-    if (!user) user = await User.findOne({ username: usernameTrimmed });
-    if (!user) {
-      // Final fallback: case-insensitive regex (handles legacy "JohnDoe" style rows)
-      const esc = cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      user = await User.findOne({ username: new RegExp('^' + esc + '$', 'i') });
+    // ---------- Find the account: username OR roll number; the password picks it ----------
+    /* ⭐ 2026-10-16 — several students may share a username, so every
+       account the typed id matches is checked against the password. */
+    let resolved;
+    try {
+      resolved = await _resolveLogin(usernameTrimmed, passwordRaw);
+    } catch (bcryptErr) {
+      console.error('[login] bcrypt threw:', bcryptErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Password verification failed. Please contact support.'
+      });
     }
 
-    if (!user) {
+    if (!resolved.found) {
       console.log(`[login] ❌ no user for "${cleanUsername}"`);
       return res.status(400).json({
         success: false,
         message: 'Invalid username or password.'
       });
     }
+    if (resolved.ambiguous) {
+      console.log(`[login] ⚠️ more than one account matches "${cleanUsername}" + password`);
+      return res.status(400).json({
+        success: false,
+        code: 'AMBIGUOUS_LOGIN',
+        message: 'More than one account matches these details. Please sign in with your roll number instead.'
+      });
+    }
+    if (!resolved.user) {
+      console.log(`[login] ❌ wrong password for "${cleanUsername}"`);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid username or password.'
+      });
+    }
 
+    const user = resolved.user;
     console.log(`[login] user found "${user.username}" role=${user.role}`);
 
     // ─── SELF-HEALING: fix legacy admin records ──────────────────
     // If this user's username matches ADMIN_USERNAME from env and their
     // DB role somehow defaults to 'student' (legacy records created
     // before the schema default was fixed), upgrade them automatically.
+    // Only when no other account shares that username.
     const envAdminUser = String(process.env.ADMIN_USERNAME || '').trim().toLowerCase();
-    if (envAdminUser && user.username === envAdminUser && user.role !== 'admin') {
+    if (envAdminUser && user.username === envAdminUser && user.role !== 'admin' &&
+        !(await _usernameShared(user.username))) {
       console.warn(
         `[login] ⚠️ self-healing: "${user.username}" had role="${user.role}" ` +
         `— upgrading to 'admin' because it matches ADMIN_USERNAME`
@@ -4823,25 +5014,7 @@ app.post('/api/login', async (req, res) => {
       }
     }
 
-    // ---------- Password check ----------
-    let isMatch = false;
-    try {
-      isMatch = await bcrypt.compare(String(passwordRaw), user.password);
-    } catch (bcryptErr) {
-      console.error('[login] bcrypt threw:', bcryptErr);
-      return res.status(500).json({
-        success: false,
-        message: 'Password verification failed. Please contact support.'
-      });
-    }
-
-    if (!isMatch) {
-      console.log(`[login] ❌ wrong password for "${user.username}"`);
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid username or password.'
-      });
-    }
+    // (password already checked by _resolveLogin above)
         // Ensure student has a referral code (on-the-fly backfill)
     if (user.role === 'student' && !user.referralCode) {
       try { await ensureReferralCode(user); } catch (e) {}
@@ -5551,7 +5724,7 @@ app.put('/api/admin/update-credentials', requireAdminAuth, async (req, res) => {
 
 app.post('/api/send-otp', async (req, res) => {
   try {
-    const { email, username, phone } = req.body || {};
+    const { email, username, phone, rollNumber } = req.body || {};
     const cleanUsername = String(username || '').trim().toLowerCase();
     const cleanEmail    = String(email || '').trim().toLowerCase();
     const cleanPhone    = normalizePhone(phone);
@@ -5559,18 +5732,21 @@ app.post('/api/send-otp', async (req, res) => {
     if (!cleanEmail) return res.status(400).json({ success: false, message: 'Email is required.' });
     if (!cleanPhone) return res.status(400).json({ success: false, message: 'A valid contact number is required.' });
 
+    /* ⭐ 2026-10-16 — a username may be shared by students (passwords
+       must differ — checked at /api/register); email + phone stay unique. */
     const existingUser = await User.findOne({
       $or: [
-        { username: cleanUsername },
         { email: cleanEmail },
         { phone: cleanPhone }
       ]
     });
     if (existingUser) {
-      let field = 'Username';
-      if (existingUser.email === cleanEmail) field = 'Email';
-      else if (existingUser.phone === cleanPhone) field = 'Contact number';
+      const field = existingUser.email === cleanEmail ? 'Email' : 'Contact number';
       return res.status(400).json({ success: false, message: `${field} already exists!` });
+    }
+    if (cleanUsername) {
+      const problem = await _newStudentIdentityProblem(cleanUsername, rollNumber, null);
+      if (problem) return res.status(400).json({ success: false, code: problem.code, message: problem.message });
     }
 
     const otp = crypto.randomInt(100000, 1000000).toString();
@@ -5637,6 +5813,15 @@ app.post('/api/register', async (req, res) => {
     if (String(otp || '').trim() !== record.otp) {
       await otpBumpAttempts(cleanEmail);
       return res.status(400).json({ success: false, message: 'Invalid OTP. Please try again.' });
+    }
+
+    /* ⭐ 2026-10-16 — shared usernames: never a staff name, roll number
+       unused, and a password no other student with this id uses. A
+       clash counts as an OTP attempt so it can't be retried endlessly. */
+    const identityProblem = await _newStudentIdentityProblem(cleanUsername, cleanRoll, password);
+    if (identityProblem) {
+      if (identityProblem.code === 'PASSWORD_CLASH') await otpBumpAttempts(cleanEmail);
+      return res.status(400).json({ success: false, code: identityProblem.code, message: identityProblem.message });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -6038,8 +6223,9 @@ app.post('/api/admin/create-student', requireAdminAuth, async (req, res) => {
     if (cleanUsername.length < 3) return res.status(400).json({ success: false, message: 'Username must be at least 3 characters.' });
     if (password.length < 6) return res.status(400).json({ success: false, message: 'Password must be at least 6 characters.' });
 
-    const existingUsername = await User.findOne({ username: cleanUsername });
-    if (existingUsername) return res.status(400).json({ success: false, message: 'Username is already taken.' });
+    /* ⭐ 2026-10-16 — a username may be shared by students, but not with the same password */
+    const identityProblem = await _newStudentIdentityProblem(cleanUsername, cleanRoll, password);
+    if (identityProblem) return res.status(400).json({ success: false, code: identityProblem.code, message: identityProblem.message });
 
     if (email) {
       const existingEmail = await User.findOne({ email: String(email).trim() });
@@ -7354,7 +7540,7 @@ app.get('/api/courses/:id', async (req, res) => {
               input: { $ifNull: ['$doubts', []] },
               as: 'd',
               in: {
-                _id: '$$d._id', studentName: '$$d.studentName', studentUsername: '$$d.studentUsername',
+                _id: '$$d._id', studentName: '$$d.studentName', studentUsername: '$$d.studentUsername', studentId: '$$d.studentId',
                 question: '$$d.question', answer: '$$d.answer', date: '$$d.date', replies: '$$d.replies',
                 materialId: '$$d.materialId', materialTitle: '$$d.materialTitle', upvotes: '$$d.upvotes', answeredBy: '$$d.answeredBy', answeredAt: '$$d.answeredAt'
               }
@@ -7720,7 +7906,7 @@ app.post('/api/courses/:id/doubts', requireUser, async (req, res) => {
       if (c && c.materials && c.materials[0]) { materialId = wantMat; materialTitle = String(c.materials[0].title || '').slice(0, 200); }
     }
     await Course.findByIdAndUpdate(req.params.id, {
-      $push: { doubts: { studentName, studentUsername, studentEmail, question, date: new Date(), materialId, materialTitle } }
+      $push: { doubts: { studentName, studentUsername, studentId: req.authUser._id, studentEmail, question, date: new Date(), materialId, materialTitle } }
     });
     cacheClear('courses:');
     res.json({ success: true, message: 'Doubt submitted successfully!' });
@@ -7739,8 +7925,8 @@ app.put('/api/courses/:courseId/doubts/:doubtId', requireCourseEditor, async (re
     cacheClear('courses:');
     const course = await Course.findById(req.params.courseId);
     const doubt = course?.doubts?.id(req.params.doubtId);
-    if (doubt && doubt.studentUsername) {
-      const student = await User.findOne({ username: doubt.studentUsername });
+    if (doubt && (doubt.studentId || doubt.studentUsername)) {
+      const student = await _doubtAsker(doubt);
       if (student) {
         if (!student.notifications) student.notifications = [];
         student.notifications.push({
@@ -7775,9 +7961,9 @@ app.post('/api/courses/:courseId/doubts/:doubtId/replies', requireUser, async (r
     );
     const course = await Course.findById(req.params.courseId);
     const doubt = course?.doubts?.id(req.params.doubtId);
-    if (doubt && doubt.studentUsername && doubt.studentUsername !== authorUsername) {
-      const asker = await User.findOne({ username: doubt.studentUsername });
-      if (asker) {
+    if (doubt && (doubt.studentId || doubt.studentUsername)) {
+      const asker = await _doubtAsker(doubt);
+      if (asker && String(asker._id) !== String(req.authUser._id)) {
         if (!asker.notifications) asker.notifications = [];
         asker.notifications.push({
           id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -7798,13 +7984,18 @@ app.post('/api/courses/:courseId/doubts/:doubtId/replies', requireUser, async (r
 /* ⭐ 2026-10-11 — "me too" vote (toggle) so the most useful doubts rise */
 app.post('/api/courses/:courseId/doubts/:doubtId/upvote', requireUser, async (req, res) => {
   try {
-    const me = req.authUser.username;
+    /* ⭐ 2026-10-16 — votes are stored by user id; older votes hold the
+       username and count only while that username is unique */
+    const me = String(req.authUser._id);
+    const myName = req.authUser.username;
     const c = await Course.findOne({ _id: req.params.courseId, 'doubts._id': req.params.doubtId }, { 'doubts.$': 1 }).lean();
     const d = c && c.doubts && c.doubts[0];
     if (!d) return res.status(404).json({ success: false, message: 'Doubt not found' });
-    const has = (d.upvotes || []).includes(me);
+    const votes = d.upvotes || [];
+    const legacyVote = !!myName && votes.includes(myName) && !(await _usernameShared(myName));
+    const has = votes.includes(me) || legacyVote;
     await Course.updateOne({ _id: req.params.courseId, 'doubts._id': req.params.doubtId },
-      has ? { $pull: { 'doubts.$.upvotes': me } } : { $addToSet: { 'doubts.$.upvotes': me } });
+      has ? { $pull: { 'doubts.$.upvotes': { $in: legacyVote ? [me, myName] : [me] } } } : { $addToSet: { 'doubts.$.upvotes': me } });
     cacheClear('courses:');
     res.json({ success: true, voted: !has, count: (d.upvotes || []).length + (has ? -1 : 1) });
   } catch (e) { res.status(500).json({ success: false, message: 'Error: ' + e.message }); }
@@ -7812,12 +8003,11 @@ app.post('/api/courses/:courseId/doubts/:doubtId/upvote', requireUser, async (re
 
 app.put('/api/courses/:courseId/doubts/:doubtId/replies/:replyId/accept', requireUser, async (req, res) => {
   try {
-    const acceptedBy = req.authUser.username;   // ⭐ from the session, not the body
     const course = await Course.findById(req.params.courseId);
     if (!course) return res.status(404).json({ success: false, message: 'Course not found' });
     const doubt = course.doubts.id(req.params.doubtId);
     if (!doubt) return res.status(404).json({ success: false, message: 'Doubt not found' });
-    const isAsker = doubt.studentUsername === acceptedBy;
+    const isAsker = await _recordOwnedBy(doubt, req.authUser);   // ⭐ from the session, not the body
     const isAdmin = _isAdminUser(req.authUser);
     if (!isAsker && !isAdmin) return res.status(403).json({ success: false, message: 'Only asker or admin can accept' });
     doubt.replies.forEach(r => { r.isAccepted = false; });
@@ -13970,9 +14160,17 @@ app.post('/api/feedback/submit', feedbackLimiter, async (req, res) => {
     if (!b.message || !String(b.message).trim()) {
       return res.status(400).json({ success: false, message: 'Feedback message is required.' });
     }
+    /* ⭐ 2026-10-16 — remember the signed-in author's id (usernames can repeat) */
+    let studentId = null;
+    try {
+      const token = _extractToken(req, false);
+      const r = token ? await resolveSessionUser(token) : null;
+      if (r && r.user) studentId = r.user._id;
+    } catch (_) {}
     const doc = new Feedback({
       studentName:     String(b.studentName     || '').trim().slice(0, 80),
       studentUsername: String(b.studentUsername || '').trim().slice(0, 60),
+      studentId,
       studentEmail:    String(b.studentEmail    || '').trim().slice(0, 200),
       courseId:        b.courseId ? String(b.courseId) : null,
       courseName:      String(b.courseName || '').trim().slice(0, 200),
@@ -14093,6 +14291,7 @@ app.post('/api/contributions/submit', requireUser, contributionLimiter, async (r
     const doc = new Contribution({
       studentName:     String(b.studentName     || '').trim().slice(0, 80),
       studentUsername: String(b.studentUsername || '').trim().slice(0, 60),
+      studentId:       req.authUser._id,
       studentEmail:    String(b.studentEmail    || '').trim().slice(0, 200),
       title:           String(b.title).trim().slice(0, 160),
       description:     String(b.description || '').trim().slice(0, 1000),
@@ -14122,7 +14321,19 @@ app.get('/api/contributions/mine/:username', requireUser, async (req, res) => {
       return res.status(403).json({ success: false, message: 'You can only view your own contributions.' });
     }
     if (!username) return res.json({ success: true, contributions: [] });
-    const list = await Contribution.find({ studentUsername: username })
+    /* ⭐ 2026-10-16 — by owner id (usernames can repeat); older rows
+       without an id still match by username while it is unique */
+    let owner = null;
+    if (username === String(req.authUser.username || '').toLowerCase()) owner = req.authUser;
+    else {
+      const holders = await User.find({ username }).select('_id username').limit(2).lean();
+      if (holders.length === 1) owner = holders[0];
+    }
+    const or = [];
+    if (owner) or.push({ studentId: owner._id });
+    if (!(await _usernameShared(username))) or.push({ studentUsername: username, studentId: null });
+    if (!or.length) return res.json({ success: true, contributions: [] });
+    const list = await Contribution.find({ $or: or })
       .select('-cloudinaryPublicId')
       .sort({ submittedAt: -1 })
       .limit(50)
@@ -14569,11 +14780,11 @@ function parseCSV(text) {
 app.get('/api/admin/students/export-csv', requireAdminAuth, async (req, res) => {
   try {
     const students = await User.find({ role: 'student' })
-      .select('username password role fullName email phone createdAt')
+      .select('username password role fullName email phone rollNumber createdAt')
       .sort({ createdAt: 1 })
       .lean();
 
-    const header = ['username', 'passwordHash', 'role', 'fullName', 'email', 'phone', 'createdAt'];
+    const header = ['username', 'passwordHash', 'role', 'fullName', 'email', 'phone', 'createdAt', 'rollNumber', 'userId'];
     const lines  = [header.join(',')];
 
     students.forEach(s => {
@@ -14584,7 +14795,9 @@ app.get('/api/admin/students/export-csv', requireAdminAuth, async (req, res) => 
         csvEscape(s.fullName || ''),
         csvEscape(s.email || ''),
         csvEscape(s.phone || ''),
-        csvEscape(s.createdAt ? new Date(s.createdAt).toISOString() : '')
+        csvEscape(s.createdAt ? new Date(s.createdAt).toISOString() : ''),
+        csvEscape(s.rollNumber || ''),
+        csvEscape(String(s._id))
       ].join(','));
     });
 
@@ -14625,7 +14838,9 @@ app.post('/api/admin/students/import-csv',
         fullName:     header.indexOf('fullname'),
         email:        header.indexOf('email'),
         phone:        header.indexOf('phone'),
-        createdAt:    header.indexOf('createdat')
+        createdAt:    header.indexOf('createdat'),
+        rollNumber:   header.indexOf('rollnumber'),
+        userId:       header.indexOf('userid')
       };
 
       if (idx.username === -1 || idx.passwordHash === -1) {
@@ -14648,7 +14863,24 @@ app.post('/api/admin/students/import-csv',
         if (!username || !passwordHash) { skipped++; continue; }
 
         try {
-          const existing = await User.findOne({ username });
+          /* ⭐ 2026-10-16 — usernames can repeat, so find THIS row's account:
+             its id → its roll number → the same password hash → (older
+             backups without ids only) the one account with that username */
+          const rowId   = idx.userId >= 0 ? String(r[idx.userId] || '').trim() : '';
+          const rowRoll = idx.rollNumber >= 0 ? _cleanRoll(r[idx.rollNumber]) : '';
+          let existing = null;
+          if (rowId && mongoose.Types.ObjectId.isValid(rowId)) existing = await User.findById(rowId);
+          if (!existing) {
+            const holders = await User.find({ username }).limit(LOGIN_CANDIDATE_LIMIT);
+            existing = (rowRoll && holders.find(h => h.rollNumber === rowRoll))
+              || holders.find(h => h.password === passwordHash)
+              || (idx.userId === -1 && holders.length === 1 ? holders[0] : null);
+            /* a different account with the same username but no clear match: never overwrite it */
+            if (!existing && holders.length && idx.userId === -1) {
+              errors.push({ row: i + 1, username, error: 'Several accounts use this username — add a userId or rollNumber column to choose one.' });
+              continue;
+            }
+          }
           const update = {
             password: passwordHash,
             role:     (idx.role     >= 0 ? (r[idx.role] || 'student').trim().toLowerCase() : 'student') || 'student',
@@ -14656,11 +14888,14 @@ app.post('/api/admin/students/import-csv',
             email:    (idx.email    >= 0 ? (r[idx.email]    || '').trim() : ''),
             phone:    (idx.phone    >= 0 ? (r[idx.phone]    || '').trim() : '')
           };
+          /* Old backups have no rollNumber column → leave existing roll numbers untouched */
+          if (idx.rollNumber >= 0) update.rollNumber = String(r[idx.rollNumber] || '').trim().slice(0, 40).toUpperCase();
           if (existing) {
             await User.updateOne({ _id: existing._id }, { $set: update });
             updated++;
           } else {
             const doc = new User({ username, ...update });
+            if (rowId && mongoose.Types.ObjectId.isValid(rowId)) doc._id = rowId;
             if (idx.createdAt >= 0 && r[idx.createdAt]) {
               const d = new Date(r[idx.createdAt]);
               if (!isNaN(d)) doc.createdAt = d;
@@ -14875,12 +15110,10 @@ app.post('/api/account/delete', accountDeleteLimiter, async (req, res) => {
     if (!user) {
       const raw = String(b.username || '').trim();
       if (!raw) return res.status(400).json({ success: false, message: 'Enter your username.' });
-      const clean = raw.toLowerCase();
-      user = await User.findOne({ username: clean }) || await User.findOne({ username: raw });
-      if (!user) {
-        const esc = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        user = await User.findOne({ username: new RegExp('^' + esc + '$', 'i') });
-      }
+      /* ⭐ 2026-10-16 — username or roll number; the password picks the account */
+      const r = await _resolveLogin(raw, password).catch(() => ({}));
+      if (r.ambiguous) return res.status(400).json({ success: false, message: 'More than one account matches. Please use your roll number instead of the username.' });
+      user = r.user || null;
     }
     const ok = user && user.password ? await bcrypt.compare(password, user.password).catch(() => false) : false;
     if (!ok) return res.status(400).json({ success: false, message: 'Username or password is incorrect.' });
@@ -14896,9 +15129,13 @@ app.post('/api/account/delete', accountDeleteLimiter, async (req, res) => {
     await tidy('notebooks', () => require('./models/Notebook').deleteMany({ userId: uid }));
     await tidy('note pages', () => require('./models/NotePage').deleteMany({ userId: uid }));
     await tidy('help desk', () => require('./models/SupportTicket').deleteMany({ userId: uid }));
-    if (uname) {
-      await tidy('reviews', () => Feedback.deleteMany({ studentUsername: uname }));
-      await tidy('contributions', () => Contribution.deleteMany({ studentUsername: uname }));
+    /* ⭐ 2026-10-16 — by owner id; older rows by username only while
+       no other account shares it (never delete someone else's work) */
+    const unameShared = uname ? await _usernameShared(uname) : true;
+    for (const [label, M] of [['reviews', Feedback], ['contributions', Contribution]]) {
+      await tidy(label, () => M.deleteMany(unameShared
+        ? { studentId: uid }
+        : { $or: [{ studentId: uid }, { studentUsername: uname, studentId: null }] }));
     }
     await User.findByIdAndDelete(uid);
     _clearAuthUserCache();
