@@ -4,7 +4,9 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.Manifest;
 import android.content.ContentValues;
+import android.content.pm.PackageManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -89,6 +91,7 @@ import java.util.Set;
 public class MainActivity extends Activity {
 
     private static final int REQ_FILES = 4201;
+    private static final int REQ_MIC = 4202;
     private static final long UPDATE_CHECK_EVERY_MS = 6L * 60 * 60 * 1000;
 
     /** Links to these sites open in their own apps / the browser. */
@@ -107,6 +110,9 @@ public class MainActivity extends Activity {
     private TextView popupTitle;
     private View fullscreenView;
     private WebChromeClient.CustomViewCallback fullscreenCallback;
+
+    /** a live class asked for the microphone while Android was asking the student */
+    private PermissionRequest pendingMic;
 
     private ValueCallback<Uri[]> fileCallback;
     private Uri cameraUri;
@@ -472,9 +478,28 @@ public class MainActivity extends Activity {
             exitFullscreen();
         }
 
+        /** Live classes: the microphone only, for our own site, after Android asks the student.
+            Camera streams stay off (students do not send video). */
         @Override
         public void onPermissionRequest(PermissionRequest request) {
-            request.deny();                         // the site never needs camera/mic streams
+            boolean ours = request.getOrigin() != null && isOwnHost(hostOf(request.getOrigin()));
+            boolean mic = Arrays.asList(request.getResources()).contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE);
+            if (!ours || !mic) {
+                request.deny();
+                return;
+            }
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                return;
+            }
+            if (pendingMic != null) pendingMic.deny();
+            pendingMic = request;
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+        }
+
+        @Override
+        public void onPermissionRequestCanceled(PermissionRequest request) {
+            if (request == pendingMic) pendingMic = null;
         }
     }
 
@@ -658,6 +683,20 @@ public class MainActivity extends Activity {
         }
         fileCallback.onReceiveValue(result);
         fileCallback = null;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != REQ_MIC || pendingMic == null) return;
+        PermissionRequest r = pendingMic;
+        pendingMic = null;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+            r.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+        } else {
+            r.deny();
+            toast("Microphone not allowed — you can still listen. Allow it in Settings › Apps › AeroGyan to speak.");
+        }
     }
 
     // ------------------------------------------------------------------ update check
