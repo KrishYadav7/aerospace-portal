@@ -1,0 +1,144 @@
+<!doctype html>
+<!-- The HOME of an AeroGyan Office pack (desktop app, OFFICE_PACK builds only): every app of the pack as a
+     big tile. Local file — works offline. main.js loads it with ?d=<pack JSON> and opens an app's own
+     window when its tile (a link to https://aerogyan.tech/apps/<slug>/) is clicked. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>AeroGyan</title>
+<style>
+  :root {
+    --pack: #4F46E5; --pack2: #1E1B4B; --accent: #818CF8;
+    --bg: #f6f7fb; --card: #ffffff; --card-hover: #ffffff; --line: #e6e8f0; --text: #0f172a; --muted: #5b6475;
+    --ok-bg: #ecfdf3; --ok-line: #b7ebc9; --ok-text: #14532d; --shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 14px rgba(15, 23, 42, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1020; --card: #121a2e; --card-hover: #17213a; --line: #24304a; --text: #eef2ff; --muted: #9aa6bf;
+      --ok-bg: #0f2a1d; --ok-line: #1f5136; --ok-text: #b8f0cd; --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 18px rgba(0, 0, 0, .25);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 15px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+  header {
+    background: linear-gradient(135deg, var(--pack) 0%, var(--pack2) 100%);
+    color: #fff; padding: 28px 32px 30px; position: relative; overflow: hidden;
+  }
+  header::after {
+    content: ""; position: absolute; right: -80px; top: -120px; width: 340px; height: 340px; border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, .14);
+  }
+  .head { display: flex; align-items: center; gap: 18px; max-width: 1180px; margin: 0 auto; position: relative; z-index: 1; }
+  .head img { width: 68px; height: 68px; border-radius: 16px; box-shadow: 0 6px 20px rgba(0, 0, 0, .3); flex: none; }
+  h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -.01em; }
+  .sub { margin: 3px 0 0; opacity: .86; font-size: 15px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 32px 36px; }
+  .ok {
+    display: flex; gap: 12px; align-items: flex-start; background: var(--ok-bg); border: 1px solid var(--ok-line); color: var(--ok-text);
+    border-radius: 12px; padding: 12px 16px; margin: 0 0 22px; font-size: 15px;
+  }
+  .ok svg { flex: none; margin-top: 1px; }
+  .ok b { font-weight: 650; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  a.tile {
+    display: flex; gap: 14px; align-items: center; text-decoration: none; color: inherit;
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: var(--shadow);
+    transition: transform .12s ease, border-color .12s ease, background .12s ease; position: relative; min-height: 96px;
+  }
+  a.tile::before { content: ""; position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--app, var(--pack)); opacity: 0; transition: opacity .12s; }
+  a.tile:hover { transform: translateY(-2px); border-color: var(--app, var(--pack)); background: var(--card-hover); }
+  a.tile:hover::before, a.tile:focus-visible::before { opacity: 1; }
+  a.tile:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  a.tile:active { transform: translateY(0); }
+  a.tile img { width: 60px; height: 60px; border-radius: 14px; flex: none; }
+  .name { font-weight: 650; font-size: 16px; line-height: 1.25; }
+  .desc { color: var(--muted); font-size: 13px; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .open { margin-left: auto; color: var(--muted); flex: none; opacity: .0; transition: opacity .12s; }
+  a.tile:hover .open, a.tile:focus-visible .open { opacity: 1; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 0 32px 28px; color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  @media (max-width: 560px) {
+    header { padding: 22px 16px; } main { padding: 18px 16px 28px; } footer { padding: 0 16px 22px; }
+    h1 { font-size: 21px; } .head img { width: 54px; height: 54px; }
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="head">
+    <img id="packIcon" src="office-icons/_pack/office-icon.png" alt="">
+    <div>
+      <h1 id="packName">AeroGyan</h1>
+      <p class="sub" id="packLine"></p>
+    </div>
+  </div>
+</header>
+<main>
+  <div class="ok" role="status">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="currentColor" opacity=".16"/><path d="M7 12.5l3.2 3.2L17.5 8.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div id="okText">All apps are installed.</div>
+  </div>
+  <div class="grid" id="grid"></div>
+</main>
+<footer>
+  <span>Click an app to open it in its own window.</span>
+  <span>One sign-in works in every app.</span>
+  <span id="ver"></span>
+</footer>
+<script>
+(function () {
+  var d = {};
+  try { d = JSON.parse(new URLSearchParams(location.search).get('d') || '{}'); } catch (e) {}
+  var apps = Array.isArray(d.apps) ? d.apps : [];
+  var hex = function (c, f) { return /^#[0-9a-f]{6}$/i.test(c || '') ? c : f; };
+  var root = document.documentElement.style;
+  root.setProperty('--pack', hex(d.color, '#4F46E5'));
+  root.setProperty('--pack2', hex(d.color2, '#1E1B4B'));
+  root.setProperty('--accent', hex(d.accent, '#818CF8'));
+  var name = d.name || 'AeroGyan';
+  document.title = name;
+  document.getElementById('packName').textContent = name;
+  document.getElementById('packLine').textContent = d.line || '';
+  document.getElementById('ver').textContent = d.version ? 'Version ' + d.version : '';
+
+  var ok = document.getElementById('okText');
+  ok.textContent = '';
+  var b = document.createElement('b');
+  b.textContent = 'All ' + apps.length + ' apps are installed';
+  ok.appendChild(b);
+  ok.appendChild(document.createTextNode(' — find them on your desktop and in Start → ' + (d.folder || name) + '.'));
+
+  var grid = document.getElementById('grid');
+  apps.forEach(function (a) {
+    if (!/^[a-z][a-z0-9]{0,31}$/.test(a.slug || '')) return;
+    var t = document.createElement('a');
+    t.className = 'tile';
+    t.href = 'https://aerogyan.tech/apps/' + a.slug + '/';
+    t.dataset.slug = a.slug;
+    t.title = 'Open ' + a.name;
+    t.style.setProperty('--app', hex(a.color, hex(d.color, '#4F46E5')));
+    var img = document.createElement('img');
+    img.src = 'office-icons/' + a.slug + '/office-icon.png';
+    img.alt = '';
+    var box = document.createElement('div');
+    var n = document.createElement('div');
+    n.className = 'name';
+    n.textContent = String(a.name || a.slug).replace(/^AeroGyan\s+/, '');
+    var l = document.createElement('div');
+    l.className = 'desc';
+    l.textContent = a.line || '';
+    box.appendChild(n); box.appendChild(l);
+    var arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    arrow.setAttribute('class', 'open'); arrow.setAttribute('width', '18'); arrow.setAttribute('height', '18'); arrow.setAttribute('viewBox', '0 0 24 24');
+    arrow.setAttribute('aria-hidden', 'true');
+    arrow.innerHTML = '<path d="M7 17L17 7M9 7h8v8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+    t.appendChild(img); t.appendChild(box); t.appendChild(arrow);
+    grid.appendChild(t);
+  });
+})();
+</script>
+</body>
+</html>

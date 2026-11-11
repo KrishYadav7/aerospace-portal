@@ -10,9 +10,11 @@
 #  feed https://aerogyan.tech/download/office/<slug>/windows/ or
 #  …/office/pack/<id>/windows/). Then a smoke test:
 #    app  — desktop-app/ci/office-smoke.ps1 (self-test + silent install; report only)
-#    pack — desktop-app/ci/office-pack-smoke.ps1 (install, every shortcut + icon +
-#           taskbar id, two shortcuts → two windows on the right pages, uninstall
-#           clean; a failed check fails the job)
+#    pack — desktop-app/ci/office-pack-smoke.ps1 (install; home + every app's shortcut
+#           in Start and on the desktop with its icon + taskbar id; an update brings
+#           back missing desktop shortcuts without duplicates; the home page's tiles
+#           open the right /apps/<slug>/ window; uninstall clean; a failed check
+#           fails the job)
 #  plus one job that builds the main AeroGyan app unchanged (not published).
 #  Result: ONE Release office-windows-v1.0.<run> with
 #    AeroGyan-<Short>-Setup-1.0.<run>.exe per app, AeroGyan-StudentPack-Setup-1.0.<run>.exe,

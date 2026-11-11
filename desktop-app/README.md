@@ -81,13 +81,21 @@ OFFICE_PACK=professors npx electron . --office=grading     # try it without buil
 - ONE program `AeroGyan for Professors.exe` (appId `tech.aerogyan.pack.<id>`), one-click per-user
   installer `AeroGyan-ProfessorPack-Setup-<version>.exe` (StudentPack for students).
 - The installer (`office/pack-<id>/pack.nsh`, written by builder.config.js) makes a Start-menu folder
-  "AeroGyan for Professors" with one shortcut per app: `--office=<slug>`, the app's own `.ico`
-  (`resources/office-icons/<slug>.ico`), its own AppUserModelID `tech.aerogyan.pack.<id>.<slug>`;
-  desktop shortcuts only for the first 4 apps (never over a stand-alone app's shortcut); uninstall
-  removes them all.
+  "AeroGyan for Professors" with the pack's HOME shortcut ("AeroGyan for Professors", sorts first) and one
+  shortcut per app ("Courses", "Live Classes" …: `--office=<slug>`, the app's own `.ico` from
+  `resources/office-icons/<slug>.ico`, its own AppUserModelID `tech.aerogyan.pack.<id>.<slug>`), and the
+  same on the desktop (home + every app as "AeroGyan <App>"). Missing desktop shortcuts are made on every
+  install AND update (never twice, never over a stand-alone app's shortcut; the ones we made are listed in
+  `HKCU\Software\tech.aerogyan.pack.<id>`); uninstall removes them all. After installing / updating it
+  opens the home.
+- The HOME (`src/pack-home.html`, local, works offline, light/dark, the pack's colours): every app as a
+  big tile with its icon and line, "All 16 apps are installed — find them on your desktop and in Start →
+  AeroGyan for Professors". A tile opens that app's window. It opens when the program starts without
+  `--office` (home shortcut, after install).
 - main.js: `--office=<slug>` opens that app's window at `/apps/<slug>/` (own window size, own taskbar
   id via `setAppDetails`, so the taskbar keeps each app apart); a second launch goes to the running copy
-  (one single-instance lock per pack) and opens / focuses that app's window. One session → one sign-in.
+  (one single-instance lock per pack) and opens / focuses that app's window (or the home). One session →
+  one sign-in.
 - User agent `… (Desktop; Windows; Office pack <id>)`; updates from
   `https://aerogyan.tech/download/office/pack/<id>/windows/`.
 

@@ -39,12 +39,13 @@
      taskbar id (tech.aerogyan.pack.<id>.<slug>, so the taskbar keeps the
      apps apart); a second launch of an open app focuses its window. All
      windows share one session, so one sign-in covers the whole pack.
-     User-agent "(Desktop; Windows; Office pack <id>)". Try one:
-     OFFICE_PACK=professors npx electron . --office=grading
+     Without --office it opens the pack's HOME (src/pack-home.html: every
+     app as a tile). User-agent "(Desktop; Windows; Office pack <id>)". Try:
+     OFFICE_PACK=professors npx electron . [--office=grading]
    ============================================================ */
 'use strict';
 
-const { app, BrowserWindow, Menu, session, shell, dialog, Notification, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, session, shell, dialog, Notification, screen, ipcMain, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -80,8 +81,8 @@ const PACK = (() => {
         const pk = (d.packs || []).find((x) => x.id === env);
         if (!pk) continue;
         const apps = pk.apps.map((s) => (d.apps || []).find((x) => x.slug === s)).filter(Boolean)
-          .map((a) => ({ slug: a.slug, name: a.name, short: a.short, color: a.color2 || a.color }));
-        p = { id: pk.id, name: pk.name, short: pk.short, apps };
+          .map((a) => ({ slug: a.slug, name: a.name, short: a.short, line: a.line, color: a.color2 || a.color, color1: a.color }));
+        p = { id: pk.id, name: pk.name, short: pk.short, line: pk.line, folder: pk.name, apps };
         break;
       } catch (_) {}
     }
@@ -96,11 +97,12 @@ function officeArg(argv) {
 function packApp(slug) { return (PACK && slug && PACK.apps.find((a) => a.slug === slug)) || null; }
 const packAppId = (a) => `tech.aerogyan.pack.${PACK.id}.${a.slug}`;
 const packAppUrl = (a) => `https://aerogyan.tech/apps/${a.slug}/`;
-/* the app this launch asked for (no / unknown --office → the pack's first app) */
-const LAUNCH_APP = PACK ? (packApp(officeArg(process.argv)) || PACK.apps[0]) : null;
+/* the app this launch asked for; null = no / unknown --office → the pack's HOME window (a local page
+   with every app of the pack as a tile: the installer's "run after install" and the pack's own shortcut) */
+const LAUNCH_APP = PACK ? packApp(officeArg(process.argv)) : null;
 
 const APP_NAME = OFFICE ? OFFICE.name : PACK ? PACK.name : 'AeroGyan';
-const APP_URL = OFFICE ? `https://aerogyan.tech/apps/${OFFICE.slug}/` : PACK ? packAppUrl(LAUNCH_APP) : 'https://aerogyan.tech/app';
+const APP_URL = OFFICE ? `https://aerogyan.tech/apps/${OFFICE.slug}/` : PACK ? (LAUNCH_APP ? packAppUrl(LAUNCH_APP) : 'https://aerogyan.tech/apps/') : 'https://aerogyan.tech/app';
 const START_URL = (OFFICE || PACK) ? APP_URL : 'https://aerogyan.tech/app';    // first page on launch: the sign-in screen (2026-10-23; the landing page also sends the app there)
 const APP_ID = OFFICE ? `tech.aerogyan.office.${OFFICE.slug}` : PACK ? `tech.aerogyan.pack.${PACK.id}` : 'tech.aerogyan.app';
 const PROTOCOL = 'aerogyan';                       // only the main app registers aerogyan:// links
@@ -181,9 +183,9 @@ process.on('unhandledRejection', (e) => log('unhandled', e));
 const hooks = { external: [], downloads: [], children: [] };
 
 /* ---------------------------------------------------------------- start-up */
-/* Windows notifications + taskbar grouping (a pack: the launched app's own id — each of its
-   windows then sets its own, see packWindowDetails) */
-if (!IS_MAC) app.setAppUserModelId(PACK ? packAppId(LAUNCH_APP) : APP_ID);
+/* Windows notifications + taskbar grouping (a pack: the launched app's own id, or the pack's id for
+   its home — each of its windows then sets its own, see packWindowDetails) */
+if (!IS_MAC) app.setAppUserModelId(PACK && LAUNCH_APP ? packAppId(LAUNCH_APP) : APP_ID);
 
 /* the app window (a pack: the one used last) — dialogs, updates and the self-test use it */
 let mainWin = null;
@@ -191,10 +193,12 @@ let mainWin = null;
 const appWindows = new Set();
 /* a pack's open app windows: slug → BrowserWindow */
 const packWins = new Map();
+/* a pack's home window (the launcher page) */
+let homeWin = null;
 let pendingDeepLink = null;
 
 /* per app / per pack (keyed by its data folder); a pack tells the running copy which app to open */
-const gotLock = SELFTEST_DIR ? true : app.requestSingleInstanceLock(PACK ? { office: LAUNCH_APP.slug } : undefined);
+const gotLock = SELFTEST_DIR ? true : app.requestSingleInstanceLock(PACK ? { office: LAUNCH_APP ? LAUNCH_APP.slug : '' } : undefined);
 if (!gotLock) {
   app.quit();
 } else {
@@ -202,9 +206,7 @@ if (!gotLock) {
     if (PACK) {                                       // another shortcut of the pack: open / focus that app
       if (!app.isReady()) return;
       const a = packApp(officeArg(argv)) || packApp(extra && extra.office);
-      if (a) openPackApp(a);
-      else if (mainWin && !mainWin.isDestroyed()) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.show(); mainWin.focus(); }
-      else openPackApp(PACK.apps[0]);
+      if (a) openPackApp(a); else openPackHome();          // no --office: the pack's home
       ciReport('second-instance');
       return;
     }
@@ -232,12 +234,12 @@ function onReady() {
   }
   setupSession(session.defaultSession);
   Menu.setApplicationMenu(IS_MAC ? buildMacMenu() : null);
-  if (PACK) openPackApp(LAUNCH_APP); else createMainWindow();
+  if (PACK) { if (LAUNCH_APP) openPackApp(LAUNCH_APP); else openPackHome(); } else createMainWindow();
   setupAutoUpdate();
   if (SELFTEST_DIR) {
     require('./selftest').run({
       app, dir: SELFTEST_DIR, hooks, appUrl: APP_URL, appName: APP_NAME,
-      office: OFFICE || (PACK ? { slug: LAUNCH_APP.slug, name: LAUNCH_APP.name } : null),
+      office: OFFICE || (PACK && LAUNCH_APP ? { slug: LAUNCH_APP.slug, name: LAUNCH_APP.name } : null),
       uaTag: PACK ? `Office pack ${PACK.id}` : OFFICE ? `Office ${OFFICE.slug}` : null,
       getMainWindow: () => mainWin, deepLinkToUrl, log
     });
@@ -247,7 +249,7 @@ function onReady() {
 app.on('window-all-closed', () => { if (!IS_MAC) app.quit(); });
 app.on('activate', () => {
   if (mainWin || !app.isReady()) return;
-  if (PACK) openPackApp(LAUNCH_APP); else createMainWindow();
+  if (PACK) openPackHome(); else createMainWindow();
 });
 
 /* ---------------------------------------------------------------- session */
@@ -360,9 +362,14 @@ function createMainWindow() {
   mainWin = createAppWindow({ url: null, title: APP_NAME, icon: ICON, bg: BG, slug: null });
 }
 
-/* one top-level app window. url null = START_URL (or the deep link the app was opened with) */
-function createAppWindow({ url, title, icon, bg, slug, cascade }) {
+/* one top-level app window. url null = START_URL (or the deep link the app was opened with);
+   file = a local page of the app instead (the pack's home), with query */
+function createAppWindow({ url, file, query, title, icon, bg, slug, cascade, size }) {
   const st = SELFTEST_DIR ? { width: 1280, height: 800, maximized: false } : loadWindowState(slug);
+  if (size && st.x === undefined) {                   // a smaller first size (the pack's home)
+    const wa = screen.getPrimaryDisplay().workArea;
+    st.width = Math.min(size.width, wa.width); st.height = Math.min(size.height, wa.height); st.maximized = false;
+  }
   if (cascade && st.x === undefined) {                // a pack's next window: a little lower-right, not on top
     const wa = screen.getPrimaryDisplay().workArea;
     st.x = wa.x + Math.max(0, Math.round((wa.width - st.width) / 2)) + 32 * cascade;
@@ -417,6 +424,10 @@ function createAppWindow({ url, title, icon, bg, slug, cascade }) {
     if (r.response === 0) wc.reload(); else win.close();
   });
 
+  if (file) {
+    wc.loadFile(file, { query: query || {} }).catch((e) => log('load failed', file, e && e.message));
+    return win;
+  }
   let start = url;
   if (!start) {
     start = pendingDeepLink ? (deepLinkToUrl(pendingDeepLink) || START_URL) : START_URL;
@@ -450,9 +461,76 @@ function openPackApp(a) {
     if (!mainWin) mainWin = [...packWins.values()].find((w) => !w.isDestroyed()) || null;
     ciReport('closed ' + a.slug);
   });
+  win.on('closed', () => { if (!mainWin && homeWin && !homeWin.isDestroyed()) mainWin = homeWin; });
   win.webContents.on('did-finish-load', () => ciReport('loaded ' + a.slug));
   win.webContents.on('did-navigate-in-page', () => ciReport('navigated ' + a.slug));
   ciReport('opened ' + a.slug);
+  return win;
+}
+
+/* the pack's HOME: a local page (src/pack-home.html, works offline) with every app of the pack as a big
+   tile; a tile opens that app's own window (same as its shortcut). Opened by the pack's own shortcut and
+   after installing / updating, so the first thing a user sees is that ALL the apps are there. */
+const HOME_FILE = path.join(__dirname, 'pack-home.html');
+function homeIcon() {
+  const f = path.join(__dirname, 'office-icons', '_pack', 'office-icon.png');
+  return fs.existsSync(f) ? f : ICON;
+}
+function openPackHome() {
+  if (homeWin && !homeWin.isDestroyed()) {
+    if (homeWin.isMinimized()) homeWin.restore();
+    homeWin.show();
+    homeWin.focus();
+    mainWin = homeWin;
+    return homeWin;
+  }
+  const dark = nativeTheme.shouldUseDarkColors;
+  const data = {
+    id: PACK.id, name: PACK.name, line: PACK.line || '', folder: PACK.folder || PACK.name,
+    color: PACK.color || '#4F46E5', color2: PACK.color2 || '#1E1B4B', accent: PACK.accent || PACK.color || '#818CF8',
+    version: app.getVersion(),
+    apps: PACK.apps.map((a) => ({ slug: a.slug, name: a.name, line: a.line || '', color: a.color1 || a.color || '', color2: a.color || '' }))
+  };
+  const win = createAppWindow({
+    file: HOME_FILE, query: { d: JSON.stringify(data) }, title: PACK.name, icon: homeIcon(), slug: 'home',
+    bg: dark ? '#0b1020' : '#f6f7fb', size: { width: 1040, height: 760 }
+  });
+  homeWin = win;
+  mainWin = win;
+  if (process.platform === 'win32') {
+    try {
+      const ico = path.join(process.resourcesPath || '', 'office-icons', '_pack.ico');
+      const details = { appId: APP_ID, relaunchCommand: `"${process.execPath}"`, relaunchDisplayName: PACK.name };
+      if (app.isPackaged && fs.existsSync(ico)) { details.appIconPath = ico; details.appIconIndex = 0; }
+      win.setAppDetails(details);
+    } catch (e) { log('setAppDetails failed', e); }
+  }
+  const wc = win.webContents;
+  /* a tile is a link to https://aerogyan.tech/apps/<slug>/: open that app's window instead; the home page
+     itself never navigates away */
+  const route = (u) => {
+    const p = parse(u);
+    const m = p && p.protocol === 'https:' && isOwnHost(p.hostname) && /^\/apps\/([a-z][a-z0-9]{0,31})\/?$/.exec(p.pathname);
+    const a = m && packApp(m[1]);
+    if (a) { openPackApp(a); return true; }
+    if (p && /^https?:$/.test(p.protocol)) openExternal(u);
+    return false;
+  };
+  wc.on('will-navigate', (e, navUrl) => {
+    const u = navUrl || (e && e.url) || '';
+    if (/^file:/i.test(u) && u.split('?')[0] === wc.getURL().split('?')[0]) return;     // its own reload
+    e.preventDefault();
+    route(u);
+  });
+  wc.setWindowOpenHandler(({ url }) => { route(url); return { action: 'deny' }; });
+  wc.on('did-finish-load', () => { ciReport('loaded home'); ciClickLoop(); });
+  win.on('focus', () => { mainWin = win; });
+  win.on('closed', () => {
+    if (homeWin === win) homeWin = null;
+    if (!mainWin) mainWin = [...packWins.values()].find((w) => !w.isDestroyed()) || null;
+    ciReport('closed home');
+  });
+  ciReport('opened home');
   return win;
 }
 
@@ -491,8 +569,36 @@ function ciReport(why) {
       if (w.isDestroyed()) continue;
       windows.push({ slug, appId: packAppId(packApp(slug)), url: w.webContents.getURL(), title: w.getTitle(), visible: w.isVisible() });
     }
-    fs.writeFileSync(CI_REPORT, JSON.stringify({ pid: process.pid, why, launched: LAUNCH_APP.slug, ua: app.userAgentFallback, windows, at: new Date().toISOString() }, null, 1));
+    let home = null;
+    if (homeWin && !homeWin.isDestroyed()) {
+      const hwc = homeWin.webContents;
+      home = { url: hwc.getURL().split('?')[0], title: homeWin.getTitle(), visible: homeWin.isVisible(), appId: APP_ID, loaded: !hwc.isLoading() };
+    }
+    fs.writeFileSync(CI_REPORT, JSON.stringify({ pid: process.pid, why, launched: LAUNCH_APP ? LAUNCH_APP.slug : 'home', ua: app.userAgentFallback, home, homeTiles: ciTiles, windows, at: new Date().toISOString() }, null, 1));
   } catch (e) { log('ci report failed', e); }
+}
+/* CI only: <userData>\ci-click holds a slug → click that tile on the home page, like a user would */
+let ciTiles = null, ciLoop = null;
+function ciClickLoop() {
+  ciReport('home ready');
+  if (!CI_REPORT || ciLoop) return;
+  const file = path.join(app.getPath('userData'), 'ci-click');
+  const read = () => {
+    if (!homeWin || homeWin.isDestroyed()) return;
+    homeWin.webContents.executeJavaScript('Array.from(document.querySelectorAll("a.tile")).map(function (a) { return a.dataset.slug + "|" + (a.querySelector("img") && a.querySelector("img").naturalWidth > 0 ? "icon" : "no-icon") + "|" + a.querySelector(".name").textContent; })')
+      .then((t) => { ciTiles = t; ciReport('home tiles'); }).catch(() => {});
+  };
+  setTimeout(read, 800);
+  ciLoop = setInterval(() => {
+    try {
+      if (!fs.existsSync(file)) return;
+      const slug = fs.readFileSync(file, 'utf8').trim();
+      fs.unlinkSync(file);
+      if (!homeWin || homeWin.isDestroyed() || !/^[a-z][a-z0-9]{0,31}$/.test(slug)) return;
+      homeWin.webContents.executeJavaScript(`(function(){var a=document.querySelector('a.tile[data-slug="${slug}"]'); if(!a) return false; a.click(); return true;})()`)
+        .then((ok) => ciReport('clicked ' + slug + ' ' + ok)).catch(() => {});
+    } catch (e) { log('ci click failed', e); }
+  }, 500);
 }
 
 function protect(win) {
