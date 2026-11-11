@@ -158,7 +158,8 @@ jobs:
           grep -q "^package: name='tech.aerogyan.office.$SLUG' versionCode='$RUN' versionName='1.0.$RUN'" <<<"$B" \
             || { echo "::error::wrong package / version in $OUT"; exit 1; }
           grep -q "^application-icon-" <<<"$B" || { echo "::error::no launcher icon"; exit 1; }
-          "${BT}apksigner" verify --print-certs "out/$OUT" | grep -E "Signer #1 certificate (DN|SHA-256)"
+          "${BT}apksigner" verify "out/$OUT" || { echo "::error::$OUT is not signed correctly"; exit 1; }
+          "${BT}apksigner" verify --print-certs "out/$OUT" | grep -iE "certificate (DN|SHA-256)" | sort -u || true
           ls -l "out/$OUT"
           sha256sum "out/$OUT"
           echo "::notice title=$SLUG::$OUT $(stat -c %s "out/$OUT") bytes — $(grep -oE "^application-label:'[^']*'" <<<"$B")"
