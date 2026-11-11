@@ -24,6 +24,7 @@ import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintManager;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 import android.text.TextUtils;
 import android.util.TypedValue;
@@ -63,6 +64,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -87,6 +90,11 @@ import java.util.Set;
  * • Downloads made by the website (notes PDF/PNG, exports, files) are saved to
  *   Downloads/AeroGyan through a small JavaScript bridge, and generated pages
  *   (certificates) can be saved as PDF with Android's print service.
+ * • AeroGyanAndroid.deviceKey() gives the website a stable key for this phone, so all
+ *   AeroGyan apps on it (main app + Office apps, same signing key) share one device slot.
+ * • The same code builds each AeroGyan Office app (OFFICE_SLUG, see app/build.gradle):
+ *   it opens https://aerogyan.tech/apps/<slug>/, says "(Android; Office <slug>)" in its
+ *   user agent and asks /api/app-release?app=<slug> for its updates.
  */
 public class MainActivity extends Activity {
 
@@ -174,6 +182,9 @@ public class MainActivity extends Activity {
 
     /** true in the Google Play build (flavor "play"); false in the APK from the website */
     private static final boolean IS_PLAY_BUILD = "play".equals(BuildConfig.STORE);
+
+    /** an AeroGyan Office app (Sheets, Slides …) built from this code; false in the main app */
+    private static final boolean IS_OFFICE = BuildConfig.OFFICE_SLUG.length() > 0;
 
     /** Android 15+ draws the app behind the status and navigation bars: keep the website
         clear of them (and of the keyboard), with the bars in the brand colour. */
@@ -308,7 +319,8 @@ public class MainActivity extends Activity {
         /* The website reads this: it hides "Get App" inside the app, and in the Google Play
            build ("Store/Play") it also hides buying, which Play policy requires. */
         s.setUserAgentString(s.getUserAgentString() + " AeroGyanApp/" + BuildConfig.VERSION_NAME
-                + (IS_PLAY_BUILD ? " Store/Play" : ""));
+                + (IS_PLAY_BUILD ? " Store/Play" : "")
+                + (IS_OFFICE ? " (Android; Office " + BuildConfig.OFFICE_SLUG + ")" : ""));
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -695,7 +707,7 @@ public class MainActivity extends Activity {
             r.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
         } else {
             r.deny();
-            toast("Microphone not allowed — you can still listen. Allow it in Settings › Apps › AeroGyan to speak.");
+            toast("Microphone not allowed — you can still listen. Allow it in Settings › Apps › " + getString(R.string.app_name) + " to speak.");
         }
     }
 
@@ -708,7 +720,9 @@ public class MainActivity extends Activity {
         prefs.edit().putLong("updateCheckedAt", System.currentTimeMillis()).apply();
 
         final Uri base = Uri.parse(BuildConfig.APP_URL);
-        final String api = base.getScheme() + "://" + base.getAuthority() + "/api/app-release";
+        /* an Office app asks for its own release (same "android" object as the main app's) */
+        final String api = base.getScheme() + "://" + base.getAuthority() + "/api/app-release"
+                + (IS_OFFICE ? "?app=" + Uri.encode(BuildConfig.OFFICE_SLUG) : "");
         new Thread(() -> {
             HttpURLConnection c = null;
             try {
@@ -723,8 +737,9 @@ public class MainActivity extends Activity {
                 while ((n = in.read(buf)) > 0 && out.size() < 64 * 1024) out.write(buf, 0, n);
                 JSONObject android = new JSONObject(out.toString("UTF-8")).optJSONObject("android");
                 if (android == null || !android.optBoolean("available")) return;
-                final int remoteCode = android.optInt("versionCode", 0);
                 final String remoteName = android.optString("version", "");
+                final int remoteCode = android.has("versionCode")
+                        ? android.optInt("versionCode", 0) : lastNumber(remoteName);
                 final String url = android.optString("url", "");
                 if (remoteCode <= BuildConfig.VERSION_CODE || TextUtils.isEmpty(url)) return;
                 final String skipped = prefs.getString("skipVersion", "");
@@ -743,7 +758,7 @@ public class MainActivity extends Activity {
         if (isFinishing()) return;
         new AlertDialog.Builder(this)
                 .setTitle("Update available")
-                .setMessage("A new version of AeroGyan" + (TextUtils.isEmpty(version) ? "" : " (" + version + ")")
+                .setMessage("A new version of " + getString(R.string.app_name) + (TextUtils.isEmpty(version) ? "" : " (" + version + ")")
                         + " is ready. Download it now? Your account and progress stay as they are.")
                 .setPositiveButton("Update", (d, w) -> openExternal(Uri.parse(url)))
                 .setNegativeButton("Later", null)
@@ -768,6 +783,23 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String version() { return BuildConfig.VERSION_NAME; }
+
+        /** base64url (no padding) of sha256("aerogyan-device:" + ANDROID_ID). ANDROID_ID is the
+            same for every app signed with our key on this phone and user, so the main app and
+            the Office apps count as one device. "" when it is not available. */
+        @JavascriptInterface
+        public String deviceKey() {
+            if (!allowed()) return "";
+            try {
+                String id = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+                if (TextUtils.isEmpty(id)) return "";
+                byte[] h = MessageDigest.getInstance("SHA-256")
+                        .digest(("aerogyan-device:" + id).getBytes(StandardCharsets.UTF_8));
+                return Base64.encodeToString(h, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+            } catch (Exception e) {
+                return "";
+            }
+        }
 
         @JavascriptInterface
         public synchronized String begin(String name, String mime) {
@@ -941,6 +973,16 @@ public class MainActivity extends Activity {
         if (TextUtils.isEmpty(host) || TextUtils.isEmpty(appHost)) return false;
         String bare = appHost.startsWith("www.") ? appHost.substring(4) : appHost;
         return host.equals(appHost) || host.equals(bare) || host.endsWith("." + bare);
+    }
+
+    /** "1.0.27" → 27 (when the server sends no versionCode, the build number is the last part) */
+    private static int lastNumber(String version) {
+        try {
+            String v = version == null ? "" : version.trim();
+            return Integer.parseInt(v.substring(v.lastIndexOf('.') + 1));
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private static String hostOf(Uri uri) {

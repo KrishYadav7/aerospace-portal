@@ -1,0 +1,446 @@
+{
+  "version": 1,
+  "suite": "AeroGyan Office",
+  "tagline": "Twelve apps, one AeroGyan account. Install only the ones you need.",
+  "apps": [
+    {
+      "slug": "sheets",
+      "name": "AeroGyan Sheets",
+      "short": "Sheets",
+      "line": "Spreadsheets like Excel: 430+ formulas, charts with trendlines, edit together, Excel files.",
+      "features": [
+        "432 Excel functions",
+        "Charts with trendline + R²",
+        "Open and save .xlsx / .csv",
+        "Edit live with 10 people"
+      ],
+      "color": "#16A34A",
+      "color2": "#0B6B33",
+      "roles": [
+        "student",
+        "professor"
+      ],
+      "route": {
+        "student": "#/sheets",
+        "professor": "#/sheets"
+      },
+      "routes": [
+        "sheets"
+      ],
+      "categories": [
+        "productivity",
+        "education",
+        "utilities"
+      ],
+      "shortcuts": [
+        {
+          "name": "New blank sheet",
+          "do": "new"
+        },
+        {
+          "name": "Templates",
+          "do": "templates"
+        }
+      ],
+      "files": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+          ".xlsx"
+        ],
+        "application/vnd.ms-excel": [
+          ".xls"
+        ],
+        "application/vnd.oasis.opendocument.spreadsheet": [
+          ".ods"
+        ],
+        "text/csv": [
+          ".csv"
+        ]
+      }
+    },
+    {
+      "slug": "slides",
+      "name": "AeroGyan Slides",
+      "short": "Slides",
+      "line": "Presentations like Keynote: themes, animations, AI from your notes, presenter view, PowerPoint.",
+      "features": [
+        "Keynote-style themes",
+        "Magic Move animations",
+        "Open and save .pptx",
+        "Present with speaker notes"
+      ],
+      "color": "#F97316",
+      "color2": "#B93C0A",
+      "roles": [
+        "student",
+        "professor"
+      ],
+      "route": {
+        "student": "#/slides",
+        "professor": "#/slides"
+      },
+      "routes": [
+        "slides"
+      ],
+      "categories": [
+        "productivity",
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "New deck",
+          "do": "new"
+        },
+        {
+          "name": "Deck from a PDF or notes (AI)",
+          "do": "new-ai"
+        }
+      ],
+      "files": {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": [
+          ".pptx"
+        ],
+        "application/x-agslides": [
+          ".agslides"
+        ]
+      }
+    },
+    {
+      "slug": "latex",
+      "name": "AeroGyan LaTeX",
+      "short": "LaTeX",
+      "line": "Reports, theses, papers and résumés in LaTeX, with live PDF, templates and AI error help.",
+      "features": [
+        "Live PDF as you type",
+        "IIT KGP thesis & CV templates",
+        "AI explains every error",
+        "Write together live"
+      ],
+      "color": "#4F46E5",
+      "color2": "#2A2391",
+      "roles": [
+        "student",
+        "professor"
+      ],
+      "route": {
+        "student": "#/latex",
+        "professor": "#/latex"
+      },
+      "routes": [
+        "latex"
+      ],
+      "categories": [
+        "productivity",
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "New project",
+          "do": "new"
+        },
+        {
+          "name": "Templates",
+          "do": "templates"
+        }
+      ],
+      "files": {
+        "application/x-tex": [
+          ".tex"
+        ],
+        "application/zip": [
+          ".zip"
+        ]
+      }
+    },
+    {
+      "slug": "notes",
+      "name": "AeroGyan Notes",
+      "short": "Notes",
+      "line": "Handwritten notes with pen and finger, that become a neat PDF and LaTeX as you write.",
+      "features": [
+        "Pen, highlighter, eraser",
+        "Saved on your device first",
+        "Works offline",
+        "Neat PDF + LaTeX"
+      ],
+      "color": "#F59E0B",
+      "color2": "#B45309",
+      "roles": [
+        "student",
+        "professor"
+      ],
+      "route": {
+        "student": "#/notes",
+        "professor": "fn:aeroOpenProfNotes"
+      },
+      "routes": [
+        "notes"
+      ],
+      "categories": [
+        "productivity",
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "New notebook",
+          "do": "new"
+        }
+      ]
+    },
+    {
+      "slug": "solver",
+      "name": "AeroGyan AI Solver",
+      "short": "AI Solver",
+      "line": "Ask any engineering doubt: type it, or send a photo of the problem, and get worked steps.",
+      "features": [
+        "Step-by-step solutions",
+        "Photo of a question",
+        "Equations shown properly",
+        "Share text from any app"
+      ],
+      "color": "#8B5CF6",
+      "color2": "#5B21B6",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/ai"
+      },
+      "routes": [
+        "ai"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": [
+        {
+          "name": "Ask a doubt",
+          "do": "ask"
+        }
+      ],
+      "share": true
+    },
+    {
+      "slug": "practice",
+      "name": "AeroGyan Practice",
+      "short": "Practice",
+      "line": "A daily challenge, practice sets and mock tests from your courses, with your streak.",
+      "features": [
+        "Daily challenge",
+        "PYQ mock tests",
+        "Instant marks",
+        "Streak and weak topics"
+      ],
+      "color": "#EF4444",
+      "color2": "#9F1D1D",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/practice"
+      },
+      "routes": [
+        "practice"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "Today's challenge",
+          "do": "today"
+        }
+      ]
+    },
+    {
+      "slug": "english",
+      "name": "AeroGyan English",
+      "short": "English",
+      "line": "English from zero to advanced with Hindi help: speak, read along, talk with AI.",
+      "features": [
+        "Step-by-step lessons",
+        "Speak and get corrected",
+        "Voice call with AI",
+        "Hindi help"
+      ],
+      "color": "#06B6D4",
+      "color2": "#0B6A7E",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/english"
+      },
+      "routes": [
+        "english"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "Today's lesson",
+          "do": "today"
+        }
+      ]
+    },
+    {
+      "slug": "interview",
+      "name": "AeroGyan Interview",
+      "short": "Interview",
+      "line": "Face a real panel interview for your field; get marks, model answers and a 7-day plan.",
+      "features": [
+        "IIT-style panel",
+        "Speak or type",
+        "Marks for every answer",
+        "7-day plan"
+      ],
+      "color": "#1E3A8A",
+      "color2": "#0F1D4A",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "fn:aeroOpenInterview"
+      },
+      "routes": [],
+      "categories": [
+        "education",
+        "business"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "prep",
+      "name": "AeroGyan Placement Prep",
+      "short": "Prep",
+      "line": "Daily aptitude and core practice, mock interviews and a résumé review for placements.",
+      "features": [
+        "Daily aptitude sets",
+        "Core subject practice",
+        "Résumé review",
+        "Mock interviews"
+      ],
+      "color": "#2563EB",
+      "color2": "#1E3A8A",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/prep"
+      },
+      "routes": [
+        "prep"
+      ],
+      "categories": [
+        "education",
+        "business"
+      ],
+      "shortcuts": [
+        {
+          "name": "Today's set",
+          "do": "today"
+        }
+      ]
+    },
+    {
+      "slug": "lab",
+      "name": "AeroGyan Lab Reports",
+      "short": "Lab",
+      "line": "Paste your readings; get the table, graph, error analysis and discussion in LaTeX.",
+      "features": [
+        "Readings to table + graph",
+        "Error analysis",
+        "Discussion draft",
+        "Ready LaTeX report"
+      ],
+      "color": "#0D9488",
+      "color2": "#065F55",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/lab"
+      },
+      "routes": [
+        "lab"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": [
+        {
+          "name": "New lab report",
+          "do": "new"
+        }
+      ]
+    },
+    {
+      "slug": "study",
+      "name": "AeroGyan Study Rooms",
+      "short": "Study",
+      "line": "Study buddies who share your free hours; a room with a timer, chat, notes and whiteboard.",
+      "features": [
+        "Matched study buddies",
+        "Focus timer together",
+        "Shared whiteboard",
+        "Group chat"
+      ],
+      "color": "#EC4899",
+      "color2": "#9D174D",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/study"
+      },
+      "routes": [
+        "study"
+      ],
+      "categories": [
+        "education",
+        "social"
+      ],
+      "shortcuts": [
+        {
+          "name": "My study rooms",
+          "do": "rooms"
+        }
+      ]
+    },
+    {
+      "slug": "campus",
+      "name": "AeroGyan Campus Q&A",
+      "short": "Campus",
+      "line": "Ask seniors, alumni and professors anything beyond one course; the best answer stays on top.",
+      "features": [
+        "Badged answers",
+        "Votes and best answer",
+        "Electives, GATE, internships",
+        "Seniors and alumni"
+      ],
+      "color": "#B45309",
+      "color2": "#6B2E05",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/campus"
+      },
+      "routes": [
+        "campus"
+      ],
+      "categories": [
+        "education",
+        "social"
+      ],
+      "shortcuts": [
+        {
+          "name": "Ask a question",
+          "do": "ask"
+        }
+      ]
+    }
+  ]
+}

@@ -21,6 +21,8 @@ async function waitUntil(fn, timeoutMs, everyMs = 250) {
 
 exports.run = async function run(ctx) {
   const { app, dir, hooks, appUrl, getMainWindow, deepLinkToUrl, log } = ctx;
+  const office = ctx.office || null;                 // an AeroGyan Office app ({slug, name}) or null
+  const appName = ctx.appName || 'AeroGyan';
   fs.mkdirSync(dir, { recursive: true });
   const lines = [];
   const results = [];
@@ -56,7 +58,7 @@ exports.run = async function run(ctx) {
   };
 
   try {
-    info('version', `AeroGyan ${app.getVersion()} · Electron ${process.versions.electron} · Chrome ${process.versions.chrome} · ${process.platform} ${process.arch}`);
+    info('version', `${appName} ${app.getVersion()} · Electron ${process.versions.electron} · Chrome ${process.versions.chrome} · ${process.platform} ${process.arch}`);
     const t0 = Date.now();
     const win = await waitUntil(() => getMainWindow(), 15000);
     if (!win) { fail('main window opens'); return finish(); }
@@ -104,6 +106,13 @@ exports.run = async function run(ctx) {
     page.desktop ? pass('desktop bridge present') : fail('desktop bridge present');
     page.textLen > 40 ? pass('page has content', page.textLen + ' characters, ' + page.width + '×' + page.height) : fail('page has content', page.textLen + ' characters');
     info('login form shown', String(page.hasPassword));
+    const key = await wc.executeJavaScript(`(window.AeroGyanDesktop && typeof window.AeroGyanDesktop.deviceKey === 'function') ? window.AeroGyanDesktop.deviceKey() : null`, true);
+    /^[A-Za-z0-9_-]{43}$/.test(key || '') ? pass('device key (one device slot per PC)', key.slice(0, 6) + '…') : fail('device key (one device slot per PC)', JSON.stringify(key));
+    if (office) {
+      page.ua.includes(`(Desktop; Windows; Office ${office.slug})`) || page.ua.includes(`; Office ${office.slug})`)
+        ? pass(`user-agent names the Office app (${office.slug})`) : fail(`user-agent names the Office app (${office.slug})`, page.ua);
+      wc.getURL().includes(`/apps/${office.slug}/`) ? pass(`opens /apps/${office.slug}/`, wc.getURL()) : fail(`opens /apps/${office.slug}/`, wc.getURL());
+    }
     await shot(wc, '01-app.png');
 
     /* 4. a download made by the website (same way notes export works) */

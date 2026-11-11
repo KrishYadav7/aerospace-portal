@@ -1,0 +1,190 @@
+# ============================================================
+#  AeroGyan Office — the 12 Windows apps (installers) in the cloud.
+#  Runs when desktop-app/ or office/ changes on branch office-apps, or by hand:
+#  GitHub → Actions → "Office apps — Windows" → Run workflow.
+#
+#  One job per app in office/apps.json: OFFICE_SLUG=<slug> with
+#  desktop-app/office/builder.config.js (own appId, name, icon, update
+#  feed https://aerogyan.tech/download/office/<slug>/windows/), then a
+#  quick smoke test (desktop-app/ci/office-smoke.ps1: self-test of the
+#  unpacked app + silent install). Result: ONE Release
+#  office-windows-v1.0.<run> with 12 files AeroGyan-<Short>-Setup-1.0.<run>.exe.
+#  The website's Admin → Apps → Office → "Publish latest from GitHub"
+#  takes them. No secrets needed.
+# ============================================================
+name: Office apps — Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [office-apps]
+    paths:
+      - 'desktop-app/**'
+      - 'office/**'
+      - '.github/workflows/office-windows.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: office-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apps:
+    runs-on: ubuntu-latest
+    outputs:
+      slugs: ${{ steps.list.outputs.slugs }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the app list (office/apps.json)
+        id: list
+        run: |
+          SLUGS=$(jq -c '[.apps[].slug]' office/apps.json)
+          echo "slugs=$SLUGS" >> "$GITHUB_OUTPUT"
+          echo "Apps: $SLUGS"
+
+  build:
+    needs: apps
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        slug: ${{ fromJson(needs.apps.outputs.slugs) }}
+    env:
+      VERSION: 1.0.${{ github.run_number }}
+      OFFICE_SLUG: ${{ matrix.slug }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: App name
+        id: meta
+        shell: bash
+        run: |
+          node -e '
+            const a = require("./office/apps.json").apps.find((x) => x.slug === process.env.OFFICE_SLUG);
+            if (!a) { console.error("no app " + process.env.OFFICE_SLUG); process.exit(1); }
+            const short = a.name.replace(/^AeroGyan\s+/, "").replace(/[^A-Za-z0-9]/g, "") || a.slug;
+            console.log("name=" + a.name); console.log("short=" + short);
+          ' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Install tools
+        working-directory: desktop-app
+        shell: bash
+        run: npm install --no-audit --no-fund
+
+      - name: Set the version (${{ env.VERSION }})
+        working-directory: desktop-app
+        shell: bash
+        run: npm pkg set version="$VERSION"
+
+      - name: Build the installer (${{ matrix.slug }})
+        working-directory: desktop-app
+        shell: bash
+        run: npx electron-builder --config office/builder.config.js --win nsis --x64 --publish never
+
+      - name: Show what was built
+        shell: bash
+        env:
+          SHORT: ${{ steps.meta.outputs.short }}
+        run: |
+          ls -la desktop-app/dist
+          F="desktop-app/dist/AeroGyan-$SHORT-Setup-$VERSION.exe"
+          test -f "$F" || { echo "::error::$F was not built"; exit 1; }
+          sha256sum "$F"
+          cat desktop-app/dist/latest.yml || true
+          mkdir -p out && cp "$F" out/
+
+      - name: Smoke test (self-test + silent install)
+        continue-on-error: true
+        timeout-minutes: 8
+        shell: pwsh
+        env:
+          OFFICE_NAME: ${{ steps.meta.outputs.name }}
+        run: ./desktop-app/ci/office-smoke.ps1
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          R=selftest/office
+          cat $R/smoke.txt $R/report.txt 2>/dev/null | tr -d '\r' > "smoke-${OFFICE_SLUG}.txt" || true
+          FAILS=$(grep -c '^FAIL' "smoke-${OFFICE_SLUG}.txt" || true)
+          grep '^FAIL' "smoke-${OFFICE_SLUG}.txt" | head -10 | while read -r l; do echo "::warning title=$OFFICE_SLUG smoke::$l"; done
+          echo "::notice title=$OFFICE_SLUG::$(ls out 2>/dev/null) · ${FAILS:-0} failed check(s)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: office-windows-exe-${{ matrix.slug }}
+          path: out/*.exe
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: office-windows-report-${{ matrix.slug }}
+          path: |
+            smoke-*.txt
+            selftest/office/*.png
+          retention-days: 30
+          if-no-files-found: ignore
+
+  publish:
+    needs: [apps, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: office-windows-exe-*
+          path: release
+          merge-multiple: true
+
+      - name: All apps built?
+        id: files
+        env:
+          SLUGS: ${{ needs.apps.outputs.slugs }}
+        run: |
+          ls -l release
+          N=$(ls release/*.exe | wc -l)
+          WANT=$(echo "$SLUGS" | jq length)
+          echo "count=$N" >> "$GITHUB_OUTPUT"
+          [ "$N" -eq "$WANT" ] || { echo "::error::$N installers for $WANT apps"; exit 1; }
+          {
+            echo 'sums<<EOF'
+            (cd release && sha256sum *.exe)
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish as a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: office-windows-v1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: AeroGyan Office Windows 1.0.${{ github.run_number }}
+          make_latest: false
+          body: |
+            Windows apps of AeroGyan Office (${{ steps.files.outputs.count }} apps, 64-bit Windows 10/11, per-user install, no admin).
+            Publish them on the website: Admin → Apps → Office → "Publish latest from GitHub".
+            Smoke-test reports are in the workflow run's artifacts (office-windows-report-<slug>).
+
+            SHA-256:
+            ```
+            ${{ steps.files.outputs.sums }}
+            ```
+          files: release/*.exe
+
+      - name: Keep only the newest 5 Office Windows releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list -R "$GITHUB_REPOSITORY" -L 100 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("office-windows-v"))] | sort_by(.createdAt) | reverse | .[5:] | .[].tagName' \
+          | while read -r t; do echo "deleting old $t"; gh release delete "$t" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag || true; done

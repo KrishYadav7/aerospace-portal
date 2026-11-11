@@ -69,3 +69,29 @@ Android Studio → Open → `android-app/`. For a signed release set the environ
 ## Google Play later
 The same project works for Play: build an App Bundle with `gradle bundleRelease` and upload it in
 the Play Console, using the same signing key.
+
+## AeroGyan Office apps (same code, `OFFICE_SLUG`)
+Each of the 12 Office apps (Sheets, Slides, LaTeX … — `office/apps.json`) is built from this project
+with the environment variable `OFFICE_SLUG=<slug>`:
+
+| | main app | Office app |
+|---|---|---|
+| Package | `tech.aerogyan.app` | `tech.aerogyan.office.<slug>` |
+| Opens | `https://aerogyan.tech/app` | `https://aerogyan.tech/apps/<slug>/` |
+| Name | AeroGyan | full name in Settings (AeroGyan Sheets), short name under the icon (Sheets) |
+| Icons | `app/src/main/res` | `office/<slug>/res` (legacy, round, adaptive from the maskable art, themed) |
+| Builds | direct APK + Play bundle | direct APK only |
+| User agent | `AeroGyanApp/<ver>` | `AeroGyanApp/<ver> (Android; Office <slug>)` |
+| Updates | `/api/app-release` | `/api/app-release?app=<slug>` |
+
+Links to other AeroGyan pages (`/app`, other `/apps/<x>/`) stay inside the app; only
+`/apps/<slug>/…` links offer to open the app from outside. Both kinds of app give the website
+`AeroGyanAndroid.deviceKey()` = base64url(sha256("aerogyan-device:" + ANDROID_ID)); with one signing
+key ANDROID_ID is the same in every AeroGyan app on a phone, so they share one device slot.
+
+- Icons/names changed? `python3 android-app/office/make-office-res.py` (reads `office/apps.json` and
+  `office/icons/<slug>/`, needs only Python) and commit `android-app/office/`.
+- Build one: `OFFICE_SLUG=sheets gradle assembleDirectRelease`.
+- In the cloud: workflow `office-android.yml` (branch `office-apps`) builds all 12 plus the main app
+  (as a check, not published) and makes one Release `office-android-v1.0.<run>` with
+  `AeroGyan-<Short>-1.0.<run>.apk` (Short = name without "AeroGyan " and spaces: AISolver, PlacementPrep).

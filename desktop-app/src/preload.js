@@ -1,6 +1,6 @@
 /* Runs before the website's own scripts in every AeroGyan window (sandboxed). */
 'use strict';
-const { contextBridge, webFrame } = require('electron');
+const { contextBridge, webFrame, ipcRenderer } = require('electron');
 
 /* Voice typing needs Google's speech service, which only the Chrome
    browser has. Hide it so the AI Doubt Solver doesn't show a mic
@@ -20,6 +20,11 @@ try {
 try {
   contextBridge.exposeInMainWorld('AeroGyanDesktop', Object.freeze({
     platform: process.platform,
-    isDesktopApp: true
+    isDesktopApp: true,
+    /* a stable key for this PC, the same in every AeroGyan app on it (one device slot):
+       base64url(sha256("aerogyan-device:" + Windows MachineGuid)); "" when unavailable */
+    deviceKey: () => {
+      try { return String(ipcRenderer.sendSync('aerogyan:device-key') || ''); } catch (_) { return ''; }
+    }
   }));
 } catch (_) {}

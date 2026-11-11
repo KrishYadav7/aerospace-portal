@@ -21,20 +21,56 @@
      install on restart (Admin → Apps publishes them).
    • The website sees "AeroGyanApp/<version> (Desktop; Windows)"
      in the user-agent and hides its "Get App" buttons.
+   • AeroGyanDesktop.deviceKey() (preload) gives the website a stable
+     key for this PC (from the Windows MachineGuid), so the main app
+     and the Office apps on one PC share one device slot.
+   • The same code is every AeroGyan Office app (Sheets, Slides …):
+     the build (office/builder.config.js, OFFICE_SLUG=<slug>) writes
+     "aerogyanOffice" into the packaged package.json; the app then opens
+     https://aerogyan.tech/apps/<slug>/ under its own name, data folder,
+     taskbar id and update feed, and says "(Desktop; Windows; Office
+     <slug>)" in its user-agent. Try one without building:
+     OFFICE_SLUG=sheets npx electron .
    ============================================================ */
 'use strict';
 
-const { app, BrowserWindow, Menu, session, shell, dialog, Notification, screen } = require('electron');
+const { app, BrowserWindow, Menu, session, shell, dialog, Notification, screen, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
-const APP_URL = 'https://aerogyan.tech/app';
-const START_URL = 'https://aerogyan.tech/';       // first page on launch: the landing page
-const APP_ID = 'tech.aerogyan.app';
-const PROTOCOL = 'aerogyan';
+/* an AeroGyan Office app? (null = the main AeroGyan app) */
+const OFFICE = (() => {
+  let o = null;
+  try { o = require('../package.json').aerogyanOffice || null; } catch (_) {}
+  const env = String(process.env.OFFICE_SLUG || '').trim().toLowerCase();
+  if (!o && env && !app.isPackaged && /^[a-z][a-z0-9]{0,31}$/.test(env)) {   // npx electron . with OFFICE_SLUG
+    o = { slug: env, name: 'AeroGyan ' + env };
+    for (const f of ['../../office/apps.json', '../office/apps.json']) {
+      try {
+        const a = (require(f).apps || []).find((x) => x.slug === env);
+        if (a) { o = { slug: a.slug, name: a.name, color: a.color2 || a.color }; break; }
+      } catch (_) {}
+    }
+  }
+  return o && o.slug ? o : null;
+})();
+
+const APP_NAME = OFFICE ? OFFICE.name : 'AeroGyan';
+const APP_URL = OFFICE ? `https://aerogyan.tech/apps/${OFFICE.slug}/` : 'https://aerogyan.tech/app';
+const START_URL = OFFICE ? APP_URL : 'https://aerogyan.tech/app';    // first page on launch: the sign-in screen (2026-10-23; the landing page also sends the app there)
+const APP_ID = OFFICE ? `tech.aerogyan.office.${OFFICE.slug}` : 'tech.aerogyan.app';
+const PROTOCOL = 'aerogyan';                       // only the main app registers aerogyan:// links
 const IS_MAC = process.platform === 'darwin';
 const OS_NAME = IS_MAC ? 'macOS' : (process.platform === 'win32' ? 'Windows' : 'Linux');
-const BG = '#0b1226';
+const BG = (OFFICE && /^#[0-9a-f]{6}$/i.test(OFFICE.color || '')) ? OFFICE.color : '#0b1226';
+const ICON = path.join(__dirname, OFFICE && fs.existsSync(path.join(__dirname, 'office-icon.png')) ? 'office-icon.png' : 'icon.png');
+
+/* each app keeps its own data folder (sign-in, window size) — also when run with npx electron . */
+if (OFFICE) {
+  try { app.setName(APP_NAME); app.setPath('userData', path.join(app.getPath('appData'), APP_NAME)); } catch (_) {}
+}
 
 /* ⭐ 2026-10-14 — classroom smartboards. Their vendor software (floating toolbars,
    annotation layers) keeps a transparent, always-on-top window over the screen; Chromium's
@@ -101,7 +137,7 @@ if (!IS_MAC) app.setAppUserModelId(APP_ID);          // Windows notifications + 
 let mainWin = null;
 let pendingDeepLink = null;
 
-const gotLock = SELFTEST_DIR ? true : app.requestSingleInstanceLock();
+const gotLock = SELFTEST_DIR ? true : app.requestSingleInstanceLock();   // per app (keyed by its data folder)
 if (!gotLock) {
   app.quit();
 } else {
@@ -124,8 +160,8 @@ if (!gotLock) {
 }
 
 function onReady() {
-  log('start', app.getVersion(), 'electron', process.versions.electron, OS_NAME, SELFTEST_DIR ? 'SELFTEST' : '');
-  if (app.isPackaged && !SELFTEST_DIR) {
+  log('start', APP_NAME, app.getVersion(), 'electron', process.versions.electron, OS_NAME, SELFTEST_DIR ? 'SELFTEST' : '');
+  if (app.isPackaged && !SELFTEST_DIR && !OFFICE) {
     try { app.setAsDefaultProtocolClient(PROTOCOL); } catch (_) {}
   }
   setupSession(session.defaultSession);
@@ -134,7 +170,7 @@ function onReady() {
   setupAutoUpdate();
   if (SELFTEST_DIR) {
     require('./selftest').run({
-      app, dir: SELFTEST_DIR, hooks, appUrl: APP_URL,
+      app, dir: SELFTEST_DIR, hooks, appUrl: APP_URL, office: OFFICE, appName: APP_NAME,
       getMainWindow: () => mainWin, deepLinkToUrl, log
     });
   }
@@ -150,7 +186,7 @@ function setupSession(ses) {
     .replace(/\sElectron\/\S+/i, '')
     .replace(new RegExp('\\s' + app.getName().replace(/[^A-Za-z0-9]/g, '.') + '\\/\\S+', 'i'), '')
     .replace(/\saerogyan(-desktop)?\/\S+/i, '');
-  const ua = `${base} AeroGyanApp/${app.getVersion()} (Desktop; ${OS_NAME})`;
+  const ua = `${base} AeroGyanApp/${app.getVersion()} (Desktop; ${OS_NAME}${OFFICE ? '; Office ' + OFFICE.slug : ''})`;
   app.userAgentFallback = ua;
   ses.setUserAgent(ua);
 
@@ -169,6 +205,40 @@ function setupSession(ses) {
 
   ses.on('will-download', onWillDownload);
 }
+
+/* ---------------------------------------------------------------- device key */
+/* base64url(sha256("aerogyan-device:" + MachineGuid)), the same in every AeroGyan app on
+   this PC (main app + Office apps) so they count as one device. "" if it can't be read. */
+let DEVICE_KEY = null;
+function machineId() {
+  const opts = { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] };
+  if (process.platform === 'win32') {
+    const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+    const out = execFileSync(reg, ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid', '/reg:64'], opts);
+    const m = /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(out);
+    return m ? m[1].trim() : '';
+  }
+  if (IS_MAC) {                                    // not used by Windows; handy when testing on a Mac
+    const m = /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(execFileSync('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], opts));
+    return m ? m[1] : '';
+  }
+  for (const f of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
+    try { const v = fs.readFileSync(f, 'utf8').trim(); if (v) return v; } catch (_) {}
+  }
+  return '';
+}
+function deviceKey() {
+  if (DEVICE_KEY !== null) return DEVICE_KEY;
+  let id = '';
+  try { id = machineId(); } catch (e) { log('device id unavailable', e && e.message); }
+  DEVICE_KEY = id ? crypto.createHash('sha256').update('aerogyan-device:' + id, 'utf8').digest('base64url') : '';
+  return DEVICE_KEY;
+}
+ipcMain.on('aerogyan:device-key', (e) => {
+  let url = '';
+  try { url = (e.senderFrame && e.senderFrame.url) || e.sender.getURL(); } catch (_) {}
+  e.returnValue = isOwnHost(hostOf(url)) ? deviceKey() : '';       // only our own pages get it
+});
 
 /* ---------------------------------------------------------------- windows */
 const STATE_FILE = () => path.join(app.getPath('userData'), 'window-state.json');
@@ -219,9 +289,9 @@ function createMainWindow() {
     x: st.x, y: st.y, width: st.width, height: st.height,
     minWidth: 380, minHeight: 460,
     show: false,
-    title: 'AeroGyan',
+    title: APP_NAME,
     backgroundColor: BG,
-    icon: path.join(__dirname, 'icon.png'),
+    icon: ICON,
     autoHideMenuBar: true,
     webPreferences: webPrefs()
   });
@@ -257,7 +327,7 @@ function createMainWindow() {
     if (SELFTEST_DIR) return wc.reload();
     const r = await dialog.showMessageBox(mainWin, {
       type: 'warning', buttons: ['Reload', 'Close'], defaultId: 0, cancelId: 1,
-      title: 'AeroGyan', message: 'AeroGyan stopped unexpectedly.', detail: 'Reload to continue where you were.'
+      title: APP_NAME, message: `${APP_NAME} stopped unexpectedly.`, detail: 'Reload to continue where you were.'
     });
     if (r.response === 0) wc.reload(); else mainWin.close();
   });
@@ -281,9 +351,9 @@ function childWindowOptions(parent) {
     parent: IS_MAC ? undefined : parent || undefined,
     show: true,
     backgroundColor: '#ffffff',
-    icon: path.join(__dirname, 'icon.png'),
+    icon: ICON,
     autoHideMenuBar: true,
-    title: 'AeroGyan',
+    title: APP_NAME,
     webPreferences: webPrefs()
   };
 }
@@ -479,7 +549,7 @@ function toastInPage(wc, msg, type) {
 function notify(title, body, onClick) {
   try {
     if (SELFTEST_DIR || !Notification.isSupported()) return;
-    const n = new Notification({ title, body, icon: path.join(__dirname, 'icon.png'), silent: true });
+    const n = new Notification({ title, body, icon: ICON, silent: true });
     if (onClick) n.on('click', onClick);
     n.show();
   } catch (_) {}
@@ -519,8 +589,8 @@ function setupAutoUpdate() {
     const r = await dialog.showMessageBox(mainWin, {
       type: 'info', buttons: ['Restart now', 'Later'], defaultId: 0, cancelId: 1,
       title: 'Update ready',
-      message: `AeroGyan ${info.version} is ready to install`,
-      detail: 'Restart AeroGyan to finish the update. If you choose Later, it installs the next time you close the app.'
+      message: `${APP_NAME} ${info.version} is ready to install`,
+      detail: `Restart ${APP_NAME} to finish the update. If you choose Later, it installs the next time you close the app.`
     });
     if (r.response === 0) setImmediate(() => autoUpdater.quitAndInstall(true, true));
   });

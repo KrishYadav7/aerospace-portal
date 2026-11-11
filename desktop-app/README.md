@@ -54,3 +54,23 @@ npm run dist:win     # builds the installer (on Windows)
 ## macOS (next)
 The same code builds a Mac app (`npm run dist:mac` on a Mac). For students to open it without
 warnings it must be signed and notarized with an Apple Developer account (99 USD / year).
+
+## AeroGyan Office apps (same code, `OFFICE_SLUG`)
+Each of the 12 Office apps is the same program with its own id, name, icon, data folder and
+update feed, built with `desktop-app/office/builder.config.js`:
+```
+OFFICE_SLUG=sheets npx electron-builder --config office/builder.config.js --win nsis --x64 --publish never
+OFFICE_SLUG=sheets npx electron .        # try it without building (opens /apps/sheets/)
+```
+- appId `tech.aerogyan.office.<slug>`, Start-menu/desktop name and Settings › Apps = the full name
+  (AeroGyan Sheets), installer `AeroGyan-<Short>-Setup-<version>.exe` (Sheets, AISolver, PlacementPrep …).
+- Opens `https://aerogyan.tech/apps/<slug>/`; user agent `AeroGyanApp/<ver> (Desktop; Windows; Office <slug>)`.
+- Updates from `https://aerogyan.tech/download/office/<slug>/windows/` (electron-updater feed).
+- Only the main app registers `aerogyan://` links.
+- Icons: `desktop-app/office/<slug>/icon.ico` + `office-icon.png`, made by
+  `node desktop-app/office/make-office-icons.js` (pure JavaScript, from `office/icons/<slug>/`).
+- In the cloud: workflow `office-windows.yml` (branch `office-apps`) builds all 12, smoke-tests each
+  (`ci/office-smoke.ps1`) and makes one Release `office-windows-v1.0.<run>`.
+
+Every AeroGyan desktop app (main + Office) gives the website `AeroGyanDesktop.deviceKey()` =
+base64url(sha256("aerogyan-device:" + Windows MachineGuid)), so all of them on one PC share one device slot.

@@ -14,6 +14,22 @@ def appHost = new URI(appUrl).host
 /* first page on launch — the landing page (same site as APP_URL) */
 def startUrl = (System.getenv('START_URL') ?: appProps.getProperty('START_URL', '')).trim()
 if (!startUrl) startUrl = "https://${appHost}/"
+
+/* ---- AeroGyan Office: OFFICE_SLUG=<slug> builds that Office app instead of the main app ----
+   Own package tech.aerogyan.office.<slug>, name + icons from android-app/office/<slug>/res
+   (made by office/make-office-res.py), opens https://<host>/apps/<slug>/, direct APK only.
+   Without OFFICE_SLUG nothing below changes the main app. */
+def officeSlug = (System.getenv('OFFICE_SLUG') ?: '').trim().toLowerCase()
+if (officeSlug) {
+    if (!(officeSlug ==~ /[a-z][a-z0-9]{0,31}/)) {
+        throw new GradleException("OFFICE_SLUG '${officeSlug}' must be lowercase letters/digits (it becomes part of the package name)")
+    }
+    if (!rootProject.file("office/${officeSlug}/res/values/strings.xml").exists()) {
+        throw new GradleException("No Office app '${officeSlug}': android-app/office/${officeSlug}/res is missing (run android-app/office/make-office-res.py)")
+    }
+    appUrl = "https://${appHost}/apps/${officeSlug}/".toString()
+    startUrl = appUrl
+}
 if (!startUrl.startsWith('https://') || new URI(startUrl).host != appHost) {
     throw new GradleException('START_URL must be an https page on the same site as APP_URL')
 }
@@ -27,14 +43,15 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId 'tech.aerogyan.app'
+        applicationId officeSlug ? "tech.aerogyan.office.${officeSlug}" : 'tech.aerogyan.app'
         minSdk 24
         targetSdk 36
         versionCode vCode
         versionName vName
         buildConfigField 'String', 'APP_URL', "\"${appUrl}\""
         buildConfigField 'String', 'START_URL', "\"${startUrl}\""
-        manifestPlaceholders = [appHost: appHost]
+        buildConfigField 'String', 'OFFICE_SLUG', "\"${officeSlug}\""
+        manifestPlaceholders = [appHost: appHost, officeSlug: officeSlug]
     }
 
     buildFeatures {
@@ -53,6 +70,16 @@ android {
         play {
             dimension 'store'
             buildConfigField 'String', 'STORE', '"play"'
+        }
+    }
+
+    /* an Office app: its own name, icons and link rules on top of the main app */
+    if (officeSlug) {
+        sourceSets {
+            direct {
+                res.srcDirs = [rootProject.file("office/${officeSlug}/res")]
+                manifest.srcFile 'src/office/AndroidManifest.xml'
+            }
         }
     }
 
@@ -87,6 +114,13 @@ android {
     lint {
         abortOnError false
         checkReleaseBuilds false
+    }
+}
+
+/* Office apps are website APKs only — no Google Play build */
+androidComponents {
+    beforeVariants(selector().withFlavor(new kotlin.Pair('store', 'play'))) { variantBuilder ->
+        if (officeSlug) variantBuilder.enable = false
     }
 }
 
