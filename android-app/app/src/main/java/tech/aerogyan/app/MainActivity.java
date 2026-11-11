@@ -95,6 +95,11 @@ import java.util.Set;
  * • The same code builds each AeroGyan Office app (OFFICE_SLUG, see app/build.gradle):
  *   it opens https://aerogyan.tech/apps/<slug>/, says "(Android; Office <slug>)" in its
  *   user agent and asks /api/app-release?app=<slug> for its updates.
+ * • …and each AeroGyan Office pack (OFFICE_PACK=<id>): one APK, one launcher activity per app
+ *   (generated subclasses PackApps.App<Slug>, each in its own task, slug in its meta-data
+ *   "tech.aerogyan.office.slug"); every one opens https://aerogyan.tech/apps/<slug>/. They share
+ *   this process's WebView storage, so one sign-in covers the whole pack. User agent
+ *   "(Android; Office pack <id>)", updates from /api/app-release?pack=<id>.
  */
 public class MainActivity extends Activity {
 
@@ -127,6 +132,8 @@ public class MainActivity extends Activity {
     private File cameraFile;
 
     private String appHost;
+    /** the page this screen opens: START_URL, or https://<host>/apps/<slug>/ for an app of a pack */
+    private String homeUrl;
     private String lastFailedUrl;
     /** host of the page now shown in the main view — the download bridge only serves our own site */
     private volatile String mainHost = "";
@@ -145,6 +152,11 @@ public class MainActivity extends Activity {
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
 
         appHost = hostOf(Uri.parse(BuildConfig.APP_URL));
+        homeUrl = BuildConfig.START_URL;
+        if (IS_PACK) {
+            String slug = packSlug();
+            if (slug.matches("[a-z][a-z0-9]{0,31}")) homeUrl = "https://" + appHost + "/apps/" + slug + "/";
+        }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
 
         root = new FrameLayout(this);
@@ -185,6 +197,20 @@ public class MainActivity extends Activity {
 
     /** an AeroGyan Office app (Sheets, Slides …) built from this code; false in the main app */
     private static final boolean IS_OFFICE = BuildConfig.OFFICE_SLUG.length() > 0;
+
+    /** an AeroGyan Office pack (one APK, one launcher activity per app); false otherwise */
+    private static final boolean IS_PACK = BuildConfig.OFFICE_PACK.length() > 0;
+
+    /** the app of the pack this activity is (its manifest meta-data "tech.aerogyan.office.slug") */
+    private String packSlug() {
+        try {
+            Bundle md = getPackageManager().getActivityInfo(getComponentName(), PackageManager.GET_META_DATA).metaData;
+            String s = md != null ? md.getString("tech.aerogyan.office.slug") : null;
+            return s == null ? "" : s;
+        } catch (Exception e) {
+            return "";
+        }
+    }
 
     /** Android 15+ draws the app behind the status and navigation bars: keep the website
         clear of them (and of the keyboard), with the bars in the brand colour. */
@@ -295,7 +321,7 @@ public class MainActivity extends Activity {
         if (data != null && "https".equalsIgnoreCase(data.getScheme()) && isOwnHost(hostOf(data))) {
             return data.toString();
         }
-        return BuildConfig.START_URL;
+        return homeUrl;
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -320,7 +346,8 @@ public class MainActivity extends Activity {
            build ("Store/Play") it also hides buying, which Play policy requires. */
         s.setUserAgentString(s.getUserAgentString() + " AeroGyanApp/" + BuildConfig.VERSION_NAME
                 + (IS_PLAY_BUILD ? " Store/Play" : "")
-                + (IS_OFFICE ? " (Android; Office " + BuildConfig.OFFICE_SLUG + ")" : ""));
+                + (IS_PACK ? " (Android; Office pack " + BuildConfig.OFFICE_PACK + ")"
+                        : IS_OFFICE ? " (Android; Office " + BuildConfig.OFFICE_SLUG + ")" : ""));
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -393,7 +420,7 @@ public class MainActivity extends Activity {
         if (scheme.equals("file") && "/android_asset/offline.html".equals(uri.getPath())) return false;
 
         if (scheme.equals("aerogyan") && "retry".equals(uri.getHost())) {      // from the offline page
-            web.loadUrl(lastFailedUrl != null ? lastFailedUrl : BuildConfig.START_URL);
+            web.loadUrl(lastFailedUrl != null ? lastFailedUrl : homeUrl);
             return true;
         }
 
@@ -720,9 +747,10 @@ public class MainActivity extends Activity {
         prefs.edit().putLong("updateCheckedAt", System.currentTimeMillis()).apply();
 
         final Uri base = Uri.parse(BuildConfig.APP_URL);
-        /* an Office app asks for its own release (same "android" object as the main app's) */
+        /* an Office app / pack asks for its own release (same "android" object as the main app's) */
         final String api = base.getScheme() + "://" + base.getAuthority() + "/api/app-release"
-                + (IS_OFFICE ? "?app=" + Uri.encode(BuildConfig.OFFICE_SLUG) : "");
+                + (IS_PACK ? "?pack=" + Uri.encode(BuildConfig.OFFICE_PACK)
+                        : IS_OFFICE ? "?app=" + Uri.encode(BuildConfig.OFFICE_SLUG) : "");
         new Thread(() -> {
             HttpURLConnection c = null;
             try {

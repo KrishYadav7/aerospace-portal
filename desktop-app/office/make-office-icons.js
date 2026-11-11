@@ -3,7 +3,8 @@
    Windows icons of every AeroGyan Office app (no native tools):
      node desktop-app/office/make-office-icons.js [<office dir>]
    <office dir> (default ../../office from here) holds apps.json and
-   icons/<slug>/*.png. For each app it writes desktop-app/office/<slug>/:
+   icons/<slug>/*.png (+ icons/pack-<id>/ for the packs). For each app
+   it writes desktop-app/office/<slug>/ (each pack: office/pack-<id>/):
      icon.ico   16/24/32/48/64/128 px as 32-bit bitmaps + 256 px as PNG
                 (what Windows Explorer, the taskbar and NSIS expect)
      office-icon.png   256 px — the window / notification icon (packed into src/)
@@ -109,9 +110,12 @@ function ico(entries) {          // entries: [{size, data}]
 }
 
 function build(officeDir) {
-  const apps = JSON.parse(fs.readFileSync(path.join(officeDir, 'apps.json'), 'utf8')).apps;
-  for (const a of apps) {
-    const src = path.join(officeDir, 'icons', a.slug);
+  const data = JSON.parse(fs.readFileSync(path.join(officeDir, 'apps.json'), 'utf8'));
+  /* every app, and every pack (icons/pack-<id>/ → desktop-app/office/pack-<id>/: the installer's icon) */
+  const items = data.apps.map((a) => ({ slug: a.slug, dir: a.slug }))
+    .concat((data.packs || []).map((p) => ({ slug: 'pack-' + p.id, dir: 'pack-' + p.id })));
+  for (const a of items) {
+    const src = path.join(officeDir, 'icons', a.dir);
     const big = readPng(path.join(src, 'icon-512.png'));
     const exact = { 16: 'favicon-16.png', 32: 'favicon-32.png', 48: 'icon-48.png', 128: 'icon-128.png' };
     const entries = [16, 24, 32, 48, 64, 128].map((size) => {
@@ -122,11 +126,11 @@ function build(officeDir) {
     });
     const png256 = fs.readFileSync(path.join(src, 'icon-256.png'));
     entries.push({ size: 256, data: png256 });
-    const out = path.join(__dirname, a.slug);
+    const out = path.join(__dirname, a.dir);
     fs.mkdirSync(out, { recursive: true });
     fs.writeFileSync(path.join(out, 'icon.ico'), ico(entries));
     fs.writeFileSync(path.join(out, 'office-icon.png'), png256);
-    console.log(a.slug.padEnd(10), 'icon.ico', fs.statSync(path.join(out, 'icon.ico')).size, 'bytes');
+    console.log(a.slug.padEnd(16), 'icon.ico', fs.statSync(path.join(out, 'icon.ico')).size, 'bytes');
   }
 }
 

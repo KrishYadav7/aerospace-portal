@@ -109,8 +109,9 @@ exports.run = async function run(ctx) {
     const key = await wc.executeJavaScript(`(window.AeroGyanDesktop && typeof window.AeroGyanDesktop.deviceKey === 'function') ? window.AeroGyanDesktop.deviceKey() : null`, true);
     /^[A-Za-z0-9_-]{43}$/.test(key || '') ? pass('device key (one device slot per PC)', key.slice(0, 6) + '…') : fail('device key (one device slot per PC)', JSON.stringify(key));
     if (office) {
-      page.ua.includes(`(Desktop; Windows; Office ${office.slug})`) || page.ua.includes(`; Office ${office.slug})`)
-        ? pass(`user-agent names the Office app (${office.slug})`) : fail(`user-agent names the Office app (${office.slug})`, page.ua);
+      const tag = ctx.uaTag || `Office ${office.slug}`;         // "Office sheets", or "Office pack professors"
+      page.ua.includes(`(Desktop; Windows; ${tag})`) || page.ua.includes(`; ${tag})`)
+        ? pass(`user-agent names the Office app (${tag})`) : fail(`user-agent names the Office app (${tag})`, page.ua);
       wc.getURL().includes(`/apps/${office.slug}/`) ? pass(`opens /apps/${office.slug}/`, wc.getURL()) : fail(`opens /apps/${office.slug}/`, wc.getURL());
     }
     await shot(wc, '01-app.png');

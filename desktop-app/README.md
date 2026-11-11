@@ -56,7 +56,7 @@ The same code builds a Mac app (`npm run dist:mac` on a Mac). For students to op
 warnings it must be signed and notarized with an Apple Developer account (99 USD / year).
 
 ## AeroGyan Office apps (same code, `OFFICE_SLUG`)
-Each of the 12 Office apps is the same program with its own id, name, icon, data folder and
+Each of the 24 Office apps is the same program with its own id, name, icon, data folder and
 update feed, built with `desktop-app/office/builder.config.js`:
 ```
 OFFICE_SLUG=sheets npx electron-builder --config office/builder.config.js --win nsis --x64 --publish never
@@ -69,8 +69,27 @@ OFFICE_SLUG=sheets npx electron .        # try it without building (opens /apps/
 - Only the main app registers `aerogyan://` links.
 - Icons: `desktop-app/office/<slug>/icon.ico` + `office-icon.png`, made by
   `node desktop-app/office/make-office-icons.js` (pure JavaScript, from `office/icons/<slug>/`).
-- In the cloud: workflow `office-windows.yml` (branch `office-apps`) builds all 12, smoke-tests each
-  (`ci/office-smoke.ps1`) and makes one Release `office-windows-v1.0.<run>`.
+- In the cloud: workflow `office-windows.yml` (branch `office-apps`) builds every app and pack, smoke-tests
+  each (`ci/office-smoke.ps1`, packs `ci/office-pack-smoke.ps1`), builds the main app as a check and makes
+  one Release `office-windows-v1.0.<run>`.
+
+### Packs (`OFFICE_PACK`) — one installer, every app of the pack
+```
+OFFICE_PACK=professors npx electron-builder --config office/builder.config.js --win nsis --x64 --publish never
+OFFICE_PACK=professors npx electron . --office=grading     # try it without building
+```
+- ONE program `AeroGyan for Professors.exe` (appId `tech.aerogyan.pack.<id>`), one-click per-user
+  installer `AeroGyan-ProfessorPack-Setup-<version>.exe` (StudentPack for students).
+- The installer (`office/pack-<id>/pack.nsh`, written by builder.config.js) makes a Start-menu folder
+  "AeroGyan for Professors" with one shortcut per app: `--office=<slug>`, the app's own `.ico`
+  (`resources/office-icons/<slug>.ico`), its own AppUserModelID `tech.aerogyan.pack.<id>.<slug>`;
+  desktop shortcuts only for the first 4 apps (never over a stand-alone app's shortcut); uninstall
+  removes them all.
+- main.js: `--office=<slug>` opens that app's window at `/apps/<slug>/` (own window size, own taskbar
+  id via `setAppDetails`, so the taskbar keeps each app apart); a second launch goes to the running copy
+  (one single-instance lock per pack) and opens / focuses that app's window. One session → one sign-in.
+- User agent `… (Desktop; Windows; Office pack <id>)`; updates from
+  `https://aerogyan.tech/download/office/pack/<id>/windows/`.
 
 Every AeroGyan desktop app (main + Office) gives the website `AeroGyanDesktop.deviceKey()` =
 base64url(sha256("aerogyan-device:" + Windows MachineGuid)), so all of them on one PC share one device slot.

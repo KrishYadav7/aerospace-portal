@@ -30,6 +30,23 @@ if (officeSlug) {
     appUrl = "https://${appHost}/apps/${officeSlug}/".toString()
     startUrl = appUrl
 }
+/* ---- AeroGyan Office pack: OFFICE_PACK=<id> builds ONE APK with every app of that pack ----
+   Package tech.aerogyan.pack.<id>, name "AeroGyan for Professors" …; one launcher icon (own label,
+   icon and task) per app, all from android-app/office/pack-<id>/ (res, AndroidManifest.xml, java —
+   made by office/make-office-res.py). Each opens https://<host>/apps/<slug>/; one WebView storage,
+   so one sign-in covers them all. Direct APK only. */
+def officePack = (System.getenv('OFFICE_PACK') ?: '').trim().toLowerCase()
+if (officePack) {
+    if (officeSlug) throw new GradleException('Set OFFICE_SLUG or OFFICE_PACK, not both')
+    if (!(officePack ==~ /[a-z][a-z0-9]{0,31}/)) {
+        throw new GradleException("OFFICE_PACK '${officePack}' must be lowercase letters/digits (it becomes part of the package name)")
+    }
+    if (!rootProject.file("office/pack-${officePack}/AndroidManifest.xml").exists()) {
+        throw new GradleException("No Office pack '${officePack}': android-app/office/pack-${officePack} is missing (run android-app/office/make-office-res.py)")
+    }
+    appUrl = "https://${appHost}/apps/".toString()      // each app's own page comes from its activity (meta-data slug)
+    startUrl = appUrl
+}
 if (!startUrl.startsWith('https://') || new URI(startUrl).host != appHost) {
     throw new GradleException('START_URL must be an https page on the same site as APP_URL')
 }
@@ -43,7 +60,8 @@ android {
     compileSdk 36
 
     defaultConfig {
-        applicationId officeSlug ? "tech.aerogyan.office.${officeSlug}" : 'tech.aerogyan.app'
+        applicationId officePack ? "tech.aerogyan.pack.${officePack}"
+                : officeSlug ? "tech.aerogyan.office.${officeSlug}" : 'tech.aerogyan.app'
         minSdk 24
         targetSdk 36
         versionCode vCode
@@ -51,6 +69,7 @@ android {
         buildConfigField 'String', 'APP_URL', "\"${appUrl}\""
         buildConfigField 'String', 'START_URL', "\"${startUrl}\""
         buildConfigField 'String', 'OFFICE_SLUG', "\"${officeSlug}\""
+        buildConfigField 'String', 'OFFICE_PACK', "\"${officePack}\""
         manifestPlaceholders = [appHost: appHost, officeSlug: officeSlug]
     }
 
@@ -79,6 +98,16 @@ android {
             direct {
                 res.srcDirs = [rootProject.file("office/${officeSlug}/res")]
                 manifest.srcFile 'src/office/AndroidManifest.xml'
+            }
+        }
+    }
+    /* a pack: the pack's name and icons + one icon per app, its launcher activities, their classes */
+    if (officePack) {
+        sourceSets {
+            direct {
+                res.srcDirs = [rootProject.file("office/pack-${officePack}/res")]
+                manifest.srcFile rootProject.file("office/pack-${officePack}/AndroidManifest.xml")
+                java.srcDir rootProject.file("office/pack-${officePack}/java")
             }
         }
     }
@@ -117,10 +146,10 @@ android {
     }
 }
 
-/* Office apps are website APKs only — no Google Play build */
+/* Office apps and packs are website APKs only — no Google Play build */
 androidComponents {
     beforeVariants(selector().withFlavor(new kotlin.Pair('store', 'play'))) { variantBuilder ->
-        if (officeSlug) variantBuilder.enable = false
+        if (officeSlug || officePack) variantBuilder.enable = false
     }
 }
 

@@ -1,15 +1,16 @@
 # ============================================================
-#  AeroGyan Office — the 12 Android apps (signed APKs) in the cloud.
+#  AeroGyan Office — the Android apps and packs (signed APKs) in the cloud.
 #  Runs when android-app/ or office/ changes on branch office-apps, or by hand:
 #  GitHub → Actions → "Office apps — Android" → Run workflow.
 #
-#  One job per app in office/apps.json (OFFICE_SLUG=<slug>, see
-#  android-app/app/build.gradle), plus one job that builds the main
-#  AeroGyan app unchanged (not published) to prove it still builds.
-#  Result: ONE Release office-android-v1.0.<run> with 12 files
-#  AeroGyan-<Short>-1.0.<run>.apk (Short = the name without "AeroGyan "
-#  and spaces: Sheets, AISolver, PlacementPrep …). The website's
-#  Admin → Apps → Office → "Publish latest from GitHub" takes them.
+#  One job per app in office/apps.json (OFFICE_SLUG=<slug>) and one per
+#  pack in its "packs" (OFFICE_PACK=<id>: ONE APK with a launcher icon per
+#  app of the pack) — see android-app/app/build.gradle — plus one job that
+#  builds the main AeroGyan app unchanged (not published) to prove it still
+#  builds. Result: ONE Release office-android-v1.0.<run> with
+#    AeroGyan-<Short>-1.0.<run>.apk  per app  (Sheets, AISolver, PlacementPrep …)
+#    AeroGyan-StudentPack-1.0.<run>.apk, AeroGyan-ProfessorPack-1.0.<run>.apk
+#  The website's Admin → Apps → Office → "Publish latest from GitHub" takes them.
 #
 #  Signing: the same 4 secrets as android-apk.yml (same key as the main
 #  app, so ANDROID_ID — and the device slot — is shared on a phone).
@@ -36,15 +37,31 @@ jobs:
   apps:
     runs-on: ubuntu-latest
     outputs:
-      slugs: ${{ steps.list.outputs.slugs }}
+      matrix: ${{ steps.list.outputs.matrix }}
+      count: ${{ steps.list.outputs.count }}
     steps:
       - uses: actions/checkout@v4
-      - name: Read the app list (office/apps.json)
+      - name: Read the apps and packs (office/apps.json)
         id: list
         run: |
-          SLUGS=$(jq -c '[.apps[].slug]' office/apps.json)
-          echo "slugs=$SLUGS" >> "$GITHUB_OUTPUT"
-          echo "Apps: $SLUGS ($(jq '.apps | length' office/apps.json))"
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, re
+          d = json.load(open('office/apps.json'))
+          slugs = {a['slug'] for a in d['apps']}
+          m = []
+          for a in d['apps']:
+              short = re.sub(r'[^A-Za-z0-9]', '', re.sub(r'^AeroGyan\s+', '', a['name'])) or a['slug']
+              m.append({'kind': 'app', 'id': a['slug'], 'short': short, 'name': a['name']})
+          for p in d.get('packs', []):
+              missing = [s for s in p['apps'] if s not in slugs]
+              assert not missing, 'pack %s lists unknown apps %s' % (p['id'], missing)
+              short = re.sub(r'[^A-Za-z0-9]', '', p.get('short') or p['name']) or p['id']
+              m.append({'kind': 'pack', 'id': p['id'], 'short': short, 'name': p['name']})
+          assert len({x['short'] for x in m}) == len(m), 'two builds would get the same file name'
+          print('matrix=' + json.dumps(m, separators=(',', ':')))
+          print('count=%d' % len(m))
+          EOF
+          cat "$GITHUB_OUTPUT"
 
   main-app:
     name: main app still builds (not published)
@@ -59,7 +76,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Build the main app without OFFICE_SLUG (unsigned)
+      - name: Build the main app without OFFICE_SLUG / OFFICE_PACK (unsigned)
         working-directory: android-app
         env:
           VERSION_CODE: '999'
@@ -72,17 +89,23 @@ jobs:
           grep -E "^(package|application-label|launchable-activity|application-icon-480)" <<<"$B"
           grep -q "^package: name='tech.aerogyan.app'" <<<"$B" || { echo "::error::main app package changed"; exit 1; }
           grep -q "^application-label:'AeroGyan'" <<<"$B" || { echo "::error::main app label changed"; exit 1; }
+          grep -q "^launchable-activity: name='tech.aerogyan.app.MainActivity'" <<<"$B" || { echo "::error::main app launcher activity changed"; exit 1; }
+          N=$("$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" | grep -c 'android.intent.category.LAUNCHER' || true)
+          [ "$N" = "1" ] || { echo "::error::main app has $N launcher entries"; exit 1; }
           ls -l android-app/app/build/outputs/bundle/playRelease/
 
   build:
+    name: ${{ matrix.kind }} ${{ matrix.id }}
     needs: apps
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 10
       matrix:
-        slug: ${{ fromJson(needs.apps.outputs.slugs) }}
+        include: ${{ fromJson(needs.apps.outputs.matrix) }}
+    env:
+      OUT: AeroGyan-${{ matrix.short }}-1.0.${{ github.run_number }}.apk
     steps:
       - uses: actions/checkout@v4
 
@@ -98,21 +121,6 @@ jobs:
             exit 1
           fi
 
-      - name: File name for ${{ matrix.slug }}
-        id: meta
-        env:
-          SLUG: ${{ matrix.slug }}
-        run: |
-          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import json, os, re
-          slug = os.environ['SLUG']
-          a = next(x for x in json.load(open('office/apps.json'))['apps'] if x['slug'] == slug)
-          short = re.sub(r'[^A-Za-z0-9]', '', re.sub(r'^AeroGyan\s+', '', a['name'])) or slug
-          print('short=' + short)
-          print('name=' + a['name'])
-          EOF
-          cat "$GITHUB_OUTPUT"
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -127,27 +135,30 @@ jobs:
           KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: echo "$KS" | base64 --decode > "$RUNNER_TEMP/release.jks"
 
-      - name: Build signed APK (${{ matrix.slug }})
+      - name: Build signed APK (${{ matrix.kind }} ${{ matrix.id }})
         working-directory: android-app
         env:
-          OFFICE_SLUG: ${{ matrix.slug }}
+          OFFICE_SLUG: ${{ matrix.kind == 'app' && matrix.id || '' }}
+          OFFICE_PACK: ${{ matrix.kind == 'pack' && matrix.id || '' }}
           VERSION_CODE: ${{ github.run_number }}
           VERSION_NAME: 1.0.${{ github.run_number }}
           KEYSTORE_FILE: ${{ runner.temp }}/release.jks
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: gradle assembleDirectRelease --no-daemon --stacktrace
+        run: |
+          echo "OFFICE_SLUG='$OFFICE_SLUG' OFFICE_PACK='$OFFICE_PACK'"
+          gradle assembleDirectRelease --no-daemon --stacktrace
 
       - name: Remove the signing key from the runner
         if: always()
         run: rm -f "$RUNNER_TEMP/release.jks"
 
       - name: Name + check the APK
-        id: apk
         env:
-          SLUG: ${{ matrix.slug }}
-          OUT: AeroGyan-${{ steps.meta.outputs.short }}-1.0.${{ github.run_number }}.apk
+          KIND: ${{ matrix.kind }}
+          ID: ${{ matrix.id }}
+          NAME: ${{ matrix.name }}
           RUN: ${{ github.run_number }}
         run: |
           mkdir -p out
@@ -155,18 +166,80 @@ jobs:
           BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
           B=$("${BT}aapt2" dump badging "out/$OUT")
           grep -E "^(package|sdkVersion|targetSdkVersion|application-label|application-icon-|launchable-activity|uses-permission)" <<<"$B"
-          grep -q "^package: name='tech.aerogyan.office.$SLUG' versionCode='$RUN' versionName='1.0.$RUN'" <<<"$B" \
-            || { echo "::error::wrong package / version in $OUT"; exit 1; }
+          if [ "$KIND" = pack ]; then PKG="tech.aerogyan.pack.$ID"; else PKG="tech.aerogyan.office.$ID"; fi
+          grep -q "^package: name='$PKG' versionCode='$RUN' versionName='1.0.$RUN'" <<<"$B" \
+            || { echo "::error::wrong package / version in $OUT (want $PKG)"; exit 1; }
           grep -q "^application-icon-" <<<"$B" || { echo "::error::no launcher icon"; exit 1; }
+          if [ "$KIND" = pack ]; then
+            grep -qF "application-label:'$NAME'" <<<"$B" || { echo "::error::pack label is not '$NAME'"; exit 1; }
+            "${BT}aapt2" dump xmltree --file AndroidManifest.xml "out/$OUT" > manifest.txt
+            python3 - "$ID" <<'EOF'
+          import json, re, sys
+          pid = sys.argv[1]
+          d = json.load(open('office/apps.json'))
+          apps = {a['slug']: a for a in d['apps']}
+          pack = next(p for p in d['packs'] if p['id'] == pid)
+          acts, cur = [], None
+          for line in open('manifest.txt', encoding='utf-8'):
+              s = line.strip()
+              if s.startswith('E: '):
+                  tag = s[3:].split(' ')[0]
+                  depth = len(line) - len(line.lstrip())
+                  if cur is not None and depth <= cur['depth']:
+                      cur = None
+                  if tag in ('activity', 'activity-alias'):
+                      cur = {'depth': depth, 'tag': tag, 'launcher': False}
+                      acts.append(cur)
+                  continue
+              if cur is None:
+                  continue
+              m = re.match(r'A: (?:http://schemas.android.com/apk/res/android:)?(\w+)\([^)]*\)="([^"]*)"', s)
+              if m:
+                  k, v = m.groups()
+                  if k in ('name', 'label', 'taskAffinity', 'launchMode', 'icon'):
+                      cur.setdefault(k, v)
+                  if k == 'name' and v == 'android.intent.category.LAUNCHER':
+                      cur['launcher'] = True
+                  if k == 'value' and 'slug' not in cur and re.fullmatch(r'[a-z][a-z0-9]*', v):
+                      cur['slug'] = v
+              m = re.match(r'A: (?:http://schemas.android.com/apk/res/android:)?(\w+)\([^)]*\)=(@0x[0-9a-f]+)', s)
+              if m and m.group(1) == 'icon':
+                  cur.setdefault('icon', m.group(2))
+          launch = [a for a in acts if a['launcher']]
+          print('Launcher entries in the pack (%d):' % len(launch))
+          for a in launch:
+              print('  %-34s label=%-16r slug=%-12s task=%s icon=%s' % (a.get('name', '?').split('.')[-1], a.get('label'), a.get('slug'), a.get('taskAffinity'), a.get('icon')))
+          bad = []
+          want = [apps[s] for s in pack['apps']]
+          if len(launch) != len(want):
+              bad.append('%d launcher entries for %d apps' % (len(launch), len(want)))
+          for a in want:
+              label = a['name'][len('AeroGyan '):] if a['name'].startswith('AeroGyan ') else a['name']
+              hit = [x for x in launch if x.get('slug') == a['slug']]
+              if not hit:
+                  bad.append('no launcher entry for ' + a['slug']); continue
+              x = hit[0]
+              if x.get('label') != label: bad.append('%s label %r, want %r' % (a['slug'], x.get('label'), label))
+              if x.get('taskAffinity') != 'tech.aerogyan.pack.%s.%s' % (pid, a['slug']): bad.append('%s task %r' % (a['slug'], x.get('taskAffinity')))
+              if not x.get('icon'): bad.append(a['slug'] + ' has no own icon')
+          icons = [x.get('icon') for x in launch]
+          if len(set(icons)) != len(icons): bad.append('two apps share an icon')
+          if any('MainActivity' in (x.get('name') or '') for x in acts): bad.append('the main app activity is still in the pack')
+          for b in bad: print('::error::' + b)
+          sys.exit(1 if bad else 0)
+          EOF
+          else
+            grep -q "^launchable-activity: name='tech.aerogyan.app.MainActivity'" <<<"$B" || { echo "::error::no launcher activity"; exit 1; }
+          fi
           "${BT}apksigner" verify "out/$OUT" || { echo "::error::$OUT is not signed correctly"; exit 1; }
           "${BT}apksigner" verify --print-certs "out/$OUT" | grep -iE "certificate (DN|SHA-256)" | sort -u || true
           ls -l "out/$OUT"
           sha256sum "out/$OUT"
-          echo "::notice title=$SLUG::$OUT $(stat -c %s "out/$OUT") bytes — $(grep -oE "^application-label:'[^']*'" <<<"$B")"
+          echo "::notice title=$KIND $ID::$OUT $(stat -c %s "out/$OUT") bytes — $(grep -oE "^application-label:'[^']*'" <<<"$B")"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: office-android-${{ matrix.slug }}
+          name: office-android-${{ matrix.kind }}-${{ matrix.id }}
           path: out/*.apk
           retention-days: 30
 
@@ -180,16 +253,15 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: All apps built?
+      - name: All apps and packs built?
         id: files
         env:
-          SLUGS: ${{ needs.apps.outputs.slugs }}
+          WANT: ${{ needs.apps.outputs.count }}
         run: |
           ls -l release
           N=$(ls release/*.apk | wc -l)
-          WANT=$(echo "$SLUGS" | jq length)
           echo "count=$N" >> "$GITHUB_OUTPUT"
-          [ "$N" -eq "$WANT" ] || { echo "::error::$N APKs for $WANT apps"; exit 1; }
+          [ "$N" -eq "$WANT" ] || { echo "::error::$N APKs, want $WANT (apps + packs)"; exit 1; }
           {
             echo 'sums<<EOF'
             (cd release && sha256sum *.apk)
@@ -204,7 +276,9 @@ jobs:
           name: AeroGyan Office Android 1.0.${{ github.run_number }}
           make_latest: false
           body: |
-            Signed Android apps of AeroGyan Office (${{ steps.files.outputs.count }} apps), package tech.aerogyan.office.<slug>.
+            Signed Android APKs of AeroGyan Office (${{ steps.files.outputs.count }} files):
+            one per app (package tech.aerogyan.office.<slug>) and one per pack — AeroGyan-StudentPack / AeroGyan-ProfessorPack
+            (package tech.aerogyan.pack.<id>: one install, a home-screen icon for every app of the pack, one sign-in).
             Publish them on the website: Admin → Apps → Office → "Publish latest from GitHub".
 
             SHA-256:

@@ -71,7 +71,7 @@ The same project works for Play: build an App Bundle with `gradle bundleRelease`
 the Play Console, using the same signing key.
 
 ## AeroGyan Office apps (same code, `OFFICE_SLUG`)
-Each of the 12 Office apps (Sheets, Slides, LaTeX … — `office/apps.json`) is built from this project
+Each of the 24 Office apps (Sheets, Slides, LaTeX … and the 12 professor apps — `office/apps.json`) is built from this project
 with the environment variable `OFFICE_SLUG=<slug>`:
 
 | | main app | Office app |
@@ -92,6 +92,20 @@ key ANDROID_ID is the same in every AeroGyan app on a phone, so they share one d
 - Icons/names changed? `python3 android-app/office/make-office-res.py` (reads `office/apps.json` and
   `office/icons/<slug>/`, needs only Python) and commit `android-app/office/`.
 - Build one: `OFFICE_SLUG=sheets gradle assembleDirectRelease`.
-- In the cloud: workflow `office-android.yml` (branch `office-apps`) builds all 12 plus the main app
-  (as a check, not published) and makes one Release `office-android-v1.0.<run>` with
-  `AeroGyan-<Short>-1.0.<run>.apk` (Short = name without "AeroGyan " and spaces: AISolver, PlacementPrep).
+- In the cloud: workflow `office-android.yml` (branch `office-apps`) builds every app and pack of
+  `office/apps.json` plus the main app (as a check, not published) and makes one Release
+  `office-android-v1.0.<run>` with `AeroGyan-<Short>-1.0.<run>.apk` (Short = name without "AeroGyan "
+  and spaces: AISolver, PlacementPrep) and `AeroGyan-StudentPack-…` / `AeroGyan-ProfessorPack-1.0.<run>.apk`.
+
+### Packs (`OFFICE_PACK`) — one install, every app of the pack
+`OFFICE_PACK=professors gradle assembleDirectRelease` builds ONE APK `tech.aerogyan.pack.professors`
+("AeroGyan for Professors") from `office/pack-<id>/` (made by the same `make-office-res.py` from
+`office/apps.json` "packs" and `office/icons/pack-<id>/`):
+- one launcher activity per app (`PackApps.App<Slug>`, a 1-line subclass of MainActivity): its own label
+  (the stand-alone app's: Courses, Live Classes …), its own icon (adaptive from the maskable art, round,
+  themed), its own splash, its own task (`taskAffinity` …pack.<id>.<slug>, so each is its own card in
+  Recents) and its own `/apps/<slug>/` links; it opens `https://aerogyan.tech/apps/<slug>/` (slug from the
+  activity's meta-data `tech.aerogyan.office.slug`);
+- all activities share one process and one WebView storage → one sign-in for the whole pack;
+- user agent `AeroGyanApp/<ver> (Android; Office pack <id>)`, updates from `/api/app-release?pack=<id>`,
+  the same `deviceKey()`; the main app's own activity is removed from the pack's manifest.

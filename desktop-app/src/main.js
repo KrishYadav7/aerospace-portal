@@ -31,6 +31,16 @@
      taskbar id and update feed, and says "(Desktop; Windows; Office
      <slug>)" in its user-agent. Try one without building:
      OFFICE_SLUG=sheets npx electron .
+   • …and every AeroGyan Office PACK ("AeroGyan for Professors" …,
+     OFFICE_PACK=<id>, package.json "aerogyanPack"): ONE program whose
+     installer puts a shortcut per app in the Start menu, each running it
+     with --office=<slug>. Every app opens in its own window at
+     https://aerogyan.tech/apps/<slug>/ with its own icon, window size and
+     taskbar id (tech.aerogyan.pack.<id>.<slug>, so the taskbar keeps the
+     apps apart); a second launch of an open app focuses its window. All
+     windows share one session, so one sign-in covers the whole pack.
+     User-agent "(Desktop; Windows; Office pack <id>)". Try one:
+     OFFICE_PACK=professors npx electron . --office=grading
    ============================================================ */
 'use strict';
 
@@ -57,18 +67,57 @@ const OFFICE = (() => {
   return o && o.slug ? o : null;
 })();
 
-const APP_NAME = OFFICE ? OFFICE.name : 'AeroGyan';
-const APP_URL = OFFICE ? `https://aerogyan.tech/apps/${OFFICE.slug}/` : 'https://aerogyan.tech/app';
-const START_URL = OFFICE ? APP_URL : 'https://aerogyan.tech/app';    // first page on launch: the sign-in screen (2026-10-23; the landing page also sends the app there)
-const APP_ID = OFFICE ? `tech.aerogyan.office.${OFFICE.slug}` : 'tech.aerogyan.app';
+/* an AeroGyan Office pack? ({id, name, short, apps: [{slug, name, short, color}]} or null) */
+const PACK = (() => {
+  if (OFFICE) return null;
+  let p = null;
+  try { p = require('../package.json').aerogyanPack || null; } catch (_) {}
+  const env = String(process.env.OFFICE_PACK || '').trim().toLowerCase();
+  if (!p && env && !app.isPackaged && /^[a-z][a-z0-9]{0,31}$/.test(env)) {         // npx electron . with OFFICE_PACK
+    for (const f of ['../../office/apps.json', '../office/apps.json']) {
+      try {
+        const d = require(f);
+        const pk = (d.packs || []).find((x) => x.id === env);
+        if (!pk) continue;
+        const apps = pk.apps.map((s) => (d.apps || []).find((x) => x.slug === s)).filter(Boolean)
+          .map((a) => ({ slug: a.slug, name: a.name, short: a.short, color: a.color2 || a.color }));
+        p = { id: pk.id, name: pk.name, short: pk.short, apps };
+        break;
+      } catch (_) {}
+    }
+  }
+  return p && p.id && Array.isArray(p.apps) && p.apps.length ? p : null;
+})();
+/* --office=<slug> on the command line (the pack's shortcuts pass it) */
+function officeArg(argv) {
+  const a = (argv || []).find((x) => typeof x === 'string' && /^--office=/i.test(x));
+  return a ? a.slice('--office='.length).trim().toLowerCase() : '';
+}
+function packApp(slug) { return (PACK && slug && PACK.apps.find((a) => a.slug === slug)) || null; }
+const packAppId = (a) => `tech.aerogyan.pack.${PACK.id}.${a.slug}`;
+const packAppUrl = (a) => `https://aerogyan.tech/apps/${a.slug}/`;
+/* the app this launch asked for (no / unknown --office → the pack's first app) */
+const LAUNCH_APP = PACK ? (packApp(officeArg(process.argv)) || PACK.apps[0]) : null;
+
+const APP_NAME = OFFICE ? OFFICE.name : PACK ? PACK.name : 'AeroGyan';
+const APP_URL = OFFICE ? `https://aerogyan.tech/apps/${OFFICE.slug}/` : PACK ? packAppUrl(LAUNCH_APP) : 'https://aerogyan.tech/app';
+const START_URL = (OFFICE || PACK) ? APP_URL : 'https://aerogyan.tech/app';    // first page on launch: the sign-in screen (2026-10-23; the landing page also sends the app there)
+const APP_ID = OFFICE ? `tech.aerogyan.office.${OFFICE.slug}` : PACK ? `tech.aerogyan.pack.${PACK.id}` : 'tech.aerogyan.app';
 const PROTOCOL = 'aerogyan';                       // only the main app registers aerogyan:// links
 const IS_MAC = process.platform === 'darwin';
 const OS_NAME = IS_MAC ? 'macOS' : (process.platform === 'win32' ? 'Windows' : 'Linux');
-const BG = (OFFICE && /^#[0-9a-f]{6}$/i.test(OFFICE.color || '')) ? OFFICE.color : '#0b1226';
+const isColor = (c) => /^#[0-9a-f]{6}$/i.test(c || '');
+const BG = (OFFICE && isColor(OFFICE.color)) ? OFFICE.color : '#0b1226';
 const ICON = path.join(__dirname, OFFICE && fs.existsSync(path.join(__dirname, 'office-icon.png')) ? 'office-icon.png' : 'icon.png');
+/* a pack app's window icon (packed as src/office-icons/<slug>/office-icon.png) */
+function packIcon(a) {
+  const f = path.join(__dirname, 'office-icons', a.slug, 'office-icon.png');
+  return fs.existsSync(f) ? f : ICON;
+}
 
-/* each app keeps its own data folder (sign-in, window size) — also when run with npx electron . */
-if (OFFICE) {
+/* each app keeps its own data folder (sign-in, window size) — also when run with npx electron .
+   (a pack has ONE data folder for all its apps: one sign-in) */
+if (OFFICE || PACK) {
   try { app.setName(APP_NAME); app.setPath('userData', path.join(app.getPath('appData'), APP_NAME)); } catch (_) {}
 }
 
@@ -132,16 +181,33 @@ process.on('unhandledRejection', (e) => log('unhandled', e));
 const hooks = { external: [], downloads: [], children: [] };
 
 /* ---------------------------------------------------------------- start-up */
-if (!IS_MAC) app.setAppUserModelId(APP_ID);          // Windows notifications + taskbar grouping
+/* Windows notifications + taskbar grouping (a pack: the launched app's own id — each of its
+   windows then sets its own, see packWindowDetails) */
+if (!IS_MAC) app.setAppUserModelId(PACK ? packAppId(LAUNCH_APP) : APP_ID);
 
+/* the app window (a pack: the one used last) — dialogs, updates and the self-test use it */
 let mainWin = null;
+/* every top-level app window (not pop-ups): the main window, or one per open app of a pack */
+const appWindows = new Set();
+/* a pack's open app windows: slug → BrowserWindow */
+const packWins = new Map();
 let pendingDeepLink = null;
 
-const gotLock = SELFTEST_DIR ? true : app.requestSingleInstanceLock();   // per app (keyed by its data folder)
+/* per app / per pack (keyed by its data folder); a pack tells the running copy which app to open */
+const gotLock = SELFTEST_DIR ? true : app.requestSingleInstanceLock(PACK ? { office: LAUNCH_APP.slug } : undefined);
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', (_e, argv) => {
+  app.on('second-instance', (_e, argv, _cwd, extra) => {
+    if (PACK) {                                       // another shortcut of the pack: open / focus that app
+      if (!app.isReady()) return;
+      const a = packApp(officeArg(argv)) || packApp(extra && extra.office);
+      if (a) openPackApp(a);
+      else if (mainWin && !mainWin.isDestroyed()) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.show(); mainWin.focus(); }
+      else openPackApp(PACK.apps[0]);
+      ciReport('second-instance');
+      return;
+    }
     const link = (argv || []).find((a) => typeof a === 'string' && a.startsWith(PROTOCOL + '://'));
     if (mainWin) {
       if (mainWin.isMinimized()) mainWin.restore();
@@ -161,23 +227,28 @@ if (!gotLock) {
 
 function onReady() {
   log('start', APP_NAME, app.getVersion(), 'electron', process.versions.electron, OS_NAME, SELFTEST_DIR ? 'SELFTEST' : '');
-  if (app.isPackaged && !SELFTEST_DIR && !OFFICE) {
+  if (app.isPackaged && !SELFTEST_DIR && !OFFICE && !PACK) {
     try { app.setAsDefaultProtocolClient(PROTOCOL); } catch (_) {}
   }
   setupSession(session.defaultSession);
   Menu.setApplicationMenu(IS_MAC ? buildMacMenu() : null);
-  createMainWindow();
+  if (PACK) openPackApp(LAUNCH_APP); else createMainWindow();
   setupAutoUpdate();
   if (SELFTEST_DIR) {
     require('./selftest').run({
-      app, dir: SELFTEST_DIR, hooks, appUrl: APP_URL, office: OFFICE, appName: APP_NAME,
+      app, dir: SELFTEST_DIR, hooks, appUrl: APP_URL, appName: APP_NAME,
+      office: OFFICE || (PACK ? { slug: LAUNCH_APP.slug, name: LAUNCH_APP.name } : null),
+      uaTag: PACK ? `Office pack ${PACK.id}` : OFFICE ? `Office ${OFFICE.slug}` : null,
       getMainWindow: () => mainWin, deepLinkToUrl, log
     });
   }
 }
 
 app.on('window-all-closed', () => { if (!IS_MAC) app.quit(); });
-app.on('activate', () => { if (!mainWin && app.isReady()) createMainWindow(); });
+app.on('activate', () => {
+  if (mainWin || !app.isReady()) return;
+  if (PACK) openPackApp(LAUNCH_APP); else createMainWindow();
+});
 
 /* ---------------------------------------------------------------- session */
 function setupSession(ses) {
@@ -187,7 +258,7 @@ function setupSession(ses) {
     .replace(new RegExp('\\s' + app.getName().replace(/[^A-Za-z0-9]/g, '.') + '\\/\\S+', 'i'), '')
     .replace(/\saerogyan(-desktop)?\/\S+/i, '')
     .replace(/\sAeroGyan[^\s/]*\/\S+/gi, '');          // Office apps: "AeroGyanCampusQ&A/1.0.1" (name without spaces)
-  const ua = `${base} AeroGyanApp/${app.getVersion()} (Desktop; ${OS_NAME}${OFFICE ? '; Office ' + OFFICE.slug : ''})`;
+  const ua = `${base} AeroGyanApp/${app.getVersion()} (Desktop; ${OS_NAME}${PACK ? '; Office pack ' + PACK.id : OFFICE ? '; Office ' + OFFICE.slug : ''})`;
   app.userAgentFallback = ua;
   ses.setUserAgent(ua);
 
@@ -242,9 +313,10 @@ ipcMain.on('aerogyan:device-key', (e) => {
 });
 
 /* ---------------------------------------------------------------- windows */
-const STATE_FILE = () => path.join(app.getPath('userData'), 'window-state.json');
+/* the main app / an Office app: window-state.json; each app of a pack: window-state-<slug>.json */
+const STATE_FILE = (slug) => path.join(app.getPath('userData'), slug ? `window-state-${slug}.json` : 'window-state.json');
 
-function loadWindowState() {
+function loadWindowState(slug) {
   const wa = screen.getPrimaryDisplay().workArea;
   const def = {
     width: Math.min(1360, Math.round(wa.width * 0.9)),
@@ -252,7 +324,7 @@ function loadWindowState() {
     maximized: wa.width < 1400
   };
   try {
-    const s = JSON.parse(fs.readFileSync(STATE_FILE(), 'utf8'));
+    const s = JSON.parse(fs.readFileSync(STATE_FILE(slug), 'utf8'));
     const b = s && s.bounds;
     if (b && b.width >= 380 && b.height >= 460) {
       const d = screen.getDisplayMatching(b).workArea;          // still on a connected screen?
@@ -263,10 +335,10 @@ function loadWindowState() {
   } catch (_) {}
   return def;
 }
-function saveWindowState(win) {
+function saveWindowState(win, slug) {
   try {
     if (!win || win.isDestroyed()) return;
-    fs.writeFileSync(STATE_FILE(), JSON.stringify({ bounds: win.getNormalBounds(), maximized: win.isMaximized() }));
+    fs.writeFileSync(STATE_FILE(slug), JSON.stringify({ bounds: win.getNormalBounds(), maximized: win.isMaximized() }));
   } catch (_) {}
 }
 
@@ -285,62 +357,150 @@ function webPrefs() {
 }
 
 function createMainWindow() {
-  const st = SELFTEST_DIR ? { width: 1280, height: 800, maximized: false } : loadWindowState();
-  mainWin = new BrowserWindow({
+  mainWin = createAppWindow({ url: null, title: APP_NAME, icon: ICON, bg: BG, slug: null });
+}
+
+/* one top-level app window. url null = START_URL (or the deep link the app was opened with) */
+function createAppWindow({ url, title, icon, bg, slug, cascade }) {
+  const st = SELFTEST_DIR ? { width: 1280, height: 800, maximized: false } : loadWindowState(slug);
+  if (cascade && st.x === undefined) {                // a pack's next window: a little lower-right, not on top
+    const wa = screen.getPrimaryDisplay().workArea;
+    st.x = wa.x + Math.max(0, Math.round((wa.width - st.width) / 2)) + 32 * cascade;
+    st.y = wa.y + Math.max(0, Math.round((wa.height - st.height) / 2)) + 32 * cascade;
+  }
+  const win = new BrowserWindow({
     x: st.x, y: st.y, width: st.width, height: st.height,
     minWidth: 380, minHeight: 460,
     show: false,
-    title: APP_NAME,
-    backgroundColor: BG,
-    icon: ICON,
+    title,
+    backgroundColor: bg,
+    icon,
     autoHideMenuBar: true,
     webPreferences: webPrefs()
   });
-  protect(mainWin);
+  protect(win);
+  appWindows.add(win);
+  winIcons.set(win, icon);
 
   let shown = false;
   const show = () => {
-    if (shown || !mainWin || mainWin.isDestroyed()) return;
+    if (shown || win.isDestroyed()) return;
     shown = true;
-    if (st.maximized) mainWin.maximize();
-    mainWin.show();
+    if (st.maximized) win.maximize();
+    win.show();
   };
-  mainWin.once('ready-to-show', show);
+  win.once('ready-to-show', show);
   setTimeout(show, 3500);                     // never stay invisible on a slow connection
 
-  mainWin.on('close', () => saveWindowState(mainWin));
-  mainWin.on('closed', () => { mainWin = null; });
-  mainWin.on('app-command', (_e, cmd) => {      // mouse back / forward buttons
-    if (cmd === 'browser-backward') goBack(mainWin.webContents);
-    if (cmd === 'browser-forward') goForward(mainWin.webContents);
+  win.on('close', () => saveWindowState(win, slug));
+  win.on('closed', () => { appWindows.delete(win); if (mainWin === win) mainWin = null; });
+  win.on('app-command', (_e, cmd) => {          // mouse back / forward buttons
+    if (cmd === 'browser-backward') goBack(win.webContents);
+    if (cmd === 'browser-forward') goForward(win.webContents);
   });
 
-  const wc = mainWin.webContents;
-  wc.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+  const wc = win.webContents;
+  wc.on('did-fail-load', (_e, code, desc, failedUrl, isMainFrame) => {
     if (!isMainFrame || code === -3) return;                 // -3 = aborted (e.g. a download)
-    if (!/^https?:/i.test(String(url || ''))) return;
-    log('load failed', code, desc, url);
-    wc.loadFile(path.join(__dirname, 'offline.html'), { query: { u: String(url), c: String(code) } }).catch(() => {});
+    if (!/^https?:/i.test(String(failedUrl || ''))) return;
+    log('load failed', code, desc, failedUrl);
+    wc.loadFile(path.join(__dirname, 'offline.html'), { query: { u: String(failedUrl), c: String(code) } }).catch(() => {});
   });
   wc.on('render-process-gone', async (_e, details) => {
     log('renderer gone', details && details.reason);
-    if (!mainWin || mainWin.isDestroyed() || (details && details.reason === 'clean-exit')) return;
+    if (win.isDestroyed() || (details && details.reason === 'clean-exit')) return;
     if (SELFTEST_DIR) return wc.reload();
-    const r = await dialog.showMessageBox(mainWin, {
+    const r = await dialog.showMessageBox(win, {
       type: 'warning', buttons: ['Reload', 'Close'], defaultId: 0, cancelId: 1,
-      title: APP_NAME, message: `${APP_NAME} stopped unexpectedly.`, detail: 'Reload to continue where you were.'
+      title, message: `${title} stopped unexpectedly.`, detail: 'Reload to continue where you were.'
     });
-    if (r.response === 0) wc.reload(); else mainWin.close();
+    if (r.response === 0) wc.reload(); else win.close();
   });
 
-  const start = pendingDeepLink ? (deepLinkToUrl(pendingDeepLink) || START_URL) : START_URL;
-  pendingDeepLink = null;
+  let start = url;
+  if (!start) {
+    start = pendingDeepLink ? (deepLinkToUrl(pendingDeepLink) || START_URL) : START_URL;
+    pendingDeepLink = null;
+  }
   wc.loadURL(start).catch(() => {});          // failures are shown by did-fail-load
+  return win;
+}
+
+/* ---------------------------------------------------------------- pack apps */
+/* open one app of the pack in its own window, or bring its open window to the front */
+function openPackApp(a) {
+  let win = packWins.get(a.slug);
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    mainWin = win;
+    return win;
+  }
+  win = createAppWindow({
+    url: packAppUrl(a), title: a.name, icon: packIcon(a), slug: a.slug,
+    bg: isColor(a.color) ? a.color : '#0b1226', cascade: packWins.size
+  });
+  packWins.set(a.slug, win);
+  packWindowDetails(win, a);
+  mainWin = win;
+  win.on('focus', () => { mainWin = win; });
+  win.on('closed', () => {
+    packWins.delete(a.slug);
+    if (!mainWin) mainWin = [...packWins.values()].find((w) => !w.isDestroyed()) || null;
+    ciReport('closed ' + a.slug);
+  });
+  win.webContents.on('did-finish-load', () => ciReport('loaded ' + a.slug));
+  win.webContents.on('did-navigate-in-page', () => ciReport('navigated ' + a.slug));
+  ciReport('opened ' + a.slug);
+  return win;
+}
+
+/* Windows: the window's own taskbar id (= its Start-menu shortcut's), icon and relaunch command,
+   so each app of the pack has its own taskbar button and pins to the taskbar as itself */
+function packWindowDetails(win, a) {
+  if (process.platform !== 'win32') return;
+  try {
+    const ico = path.join(process.resourcesPath || '', 'office-icons', a.slug + '.ico');
+    const details = {
+      appId: packAppId(a),
+      relaunchCommand: `"${process.execPath}" --office=${a.slug}`,
+      relaunchDisplayName: a.name
+    };
+    if (app.isPackaged && fs.existsSync(ico)) { details.appIconPath = ico; details.appIconIndex = 0; }
+    win.setAppDetails(details);
+  } catch (e) { log('setAppDetails failed', e); }
+}
+
+/* CI only: the Windows smoke test (ci/office-pack-smoke.ps1) creates <userData>\ci-report.on and then
+   reads <userData>\ci-report.json to see which app windows are open and on which page. */
+let CI_REPORT;
+function ciReport(why) {
+  if (!PACK) return;
+  if (CI_REPORT === undefined) {
+    CI_REPORT = null;
+    try {
+      const dir = app.getPath('userData');
+      if (fs.existsSync(path.join(dir, 'ci-report.on'))) CI_REPORT = path.join(dir, 'ci-report.json');
+    } catch (_) {}
+  }
+  if (!CI_REPORT) return;
+  try {
+    const windows = [];
+    for (const [slug, w] of packWins) {
+      if (w.isDestroyed()) continue;
+      windows.push({ slug, appId: packAppId(packApp(slug)), url: w.webContents.getURL(), title: w.getTitle(), visible: w.isVisible() });
+    }
+    fs.writeFileSync(CI_REPORT, JSON.stringify({ pid: process.pid, why, launched: LAUNCH_APP.slug, ua: app.userAgentFallback, windows, at: new Date().toISOString() }, null, 1));
+  } catch (e) { log('ci report failed', e); }
 }
 
 function protect(win) {
   try { win.setContentProtection(true); } catch (e) { log('content protection failed', e); }
 }
+
+/* each window's icon (pop-ups use their app window's) */
+const winIcons = new WeakMap();
 
 function childWindowOptions(parent) {
   const pb = parent && !parent.isDestroyed() ? parent.getBounds() : null;
@@ -352,7 +512,7 @@ function childWindowOptions(parent) {
     parent: IS_MAC ? undefined : parent || undefined,
     show: true,
     backgroundColor: '#ffffff',
-    icon: ICON,
+    icon: (parent && winIcons.get(parent)) || ICON,
     autoHideMenuBar: true,
     title: APP_NAME,
     webPreferences: webPrefs()
@@ -384,7 +544,8 @@ app.on('web-contents-created', (_e, contents) => {
 
   contents.on('will-navigate', (e, navUrl) => {
     const url = navUrl || (e && e.url) || '';
-    const isMain = mainWin && !mainWin.isDestroyed() && contents === mainWin.webContents;
+    const own = BrowserWindow.fromWebContents(contents);
+    const isMain = !!own && appWindows.has(own) && contents === own.webContents;
     const p = parse(url);
     if (!p) { e.preventDefault(); return; }
     if (isMain) {
@@ -457,7 +618,7 @@ function onKey(wc, e, input) {
   if (mod && k === '0') return act(() => zoom(wc, 0));
   if ((input.alt && !IS_MAC && k === 'ArrowLeft') || (IS_MAC && input.meta && k === '[')) return act(() => goBack(wc));
   if ((input.alt && !IS_MAC && k === 'ArrowRight') || (IS_MAC && input.meta && k === ']')) return act(() => goForward(wc));
-  if (mod && k.toLowerCase() === 'w' && win && win !== mainWin) return act(() => win.close());
+  if (mod && k.toLowerCase() === 'w' && win && !appWindows.has(win)) return act(() => win.close());
   if (!app.isPackaged && mod && input.shift && k.toLowerCase() === 'i') return act(() => wc.toggleDevTools());
 }
 
@@ -522,13 +683,17 @@ function onWillDownload(_event, item, wc) {
   item.setSavePath(target);
   log('download', item.getURL().slice(0, 120), '→', target);
 
+  /* the progress shows on the taskbar button of the app window it came from */
+  let bar = null;
+  try { const w = wc && BrowserWindow.fromWebContents(wc); bar = w ? (w.getParentWindow() || w) : null; } catch (_) {}
+  if (!bar || !appWindows.has(bar)) bar = mainWin;
   item.on('updated', (_e, state) => {
-    if (!mainWin || mainWin.isDestroyed()) return;
+    if (!bar || bar.isDestroyed()) return;
     const total = item.getTotalBytes();
-    if (state === 'progressing' && total > 0) mainWin.setProgressBar(item.getReceivedBytes() / total);
+    if (state === 'progressing' && total > 0) bar.setProgressBar(item.getReceivedBytes() / total);
   });
   item.once('done', (_e, state) => {
-    if (mainWin && !mainWin.isDestroyed()) mainWin.setProgressBar(-1);
+    if (bar && !bar.isDestroyed()) bar.setProgressBar(-1);
     hooks.downloads.push({ path: target, state });
     const name = path.basename(target);
     if (state === 'completed') {

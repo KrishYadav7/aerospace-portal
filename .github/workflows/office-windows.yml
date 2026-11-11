@@ -1,14 +1,22 @@
 # ============================================================
-#  AeroGyan Office — the 12 Windows apps (installers) in the cloud.
+#  AeroGyan Office — the Windows apps and packs (installers) in the cloud.
 #  Runs when desktop-app/ or office/ changes on branch office-apps, or by hand:
 #  GitHub → Actions → "Office apps — Windows" → Run workflow.
 #
-#  One job per app in office/apps.json: OFFICE_SLUG=<slug> with
-#  desktop-app/office/builder.config.js (own appId, name, icon, update
-#  feed https://aerogyan.tech/download/office/<slug>/windows/), then a
-#  quick smoke test (desktop-app/ci/office-smoke.ps1: self-test of the
-#  unpacked app + silent install). Result: ONE Release
-#  office-windows-v1.0.<run> with 12 files AeroGyan-<Short>-Setup-1.0.<run>.exe.
+#  One job per app in office/apps.json (OFFICE_SLUG=<slug>) and one per
+#  pack in its "packs" (OFFICE_PACK=<id>: ONE installer that puts every app
+#  of the pack in a Start-menu folder, each with its own icon and window)
+#  with desktop-app/office/builder.config.js (own appId, name, icon, update
+#  feed https://aerogyan.tech/download/office/<slug>/windows/ or
+#  …/office/pack/<id>/windows/). Then a smoke test:
+#    app  — desktop-app/ci/office-smoke.ps1 (self-test + silent install; report only)
+#    pack — desktop-app/ci/office-pack-smoke.ps1 (install, every shortcut + icon +
+#           taskbar id, two shortcuts → two windows on the right pages, uninstall
+#           clean; a failed check fails the job)
+#  plus one job that builds the main AeroGyan app unchanged (not published).
+#  Result: ONE Release office-windows-v1.0.<run> with
+#    AeroGyan-<Short>-Setup-1.0.<run>.exe per app, AeroGyan-StudentPack-Setup-1.0.<run>.exe,
+#    AeroGyan-ProfessorPack-Setup-1.0.<run>.exe.
 #  The website's Admin → Apps → Office → "Publish latest from GitHub"
 #  takes them. No secrets needed.
 # ============================================================
@@ -34,28 +42,94 @@ jobs:
   apps:
     runs-on: ubuntu-latest
     outputs:
-      slugs: ${{ steps.list.outputs.slugs }}
+      matrix: ${{ steps.list.outputs.matrix }}
+      count: ${{ steps.list.outputs.count }}
     steps:
       - uses: actions/checkout@v4
-      - name: Read the app list (office/apps.json)
+      - name: Read the apps and packs (office/apps.json)
         id: list
         run: |
-          SLUGS=$(jq -c '[.apps[].slug]' office/apps.json)
-          echo "slugs=$SLUGS" >> "$GITHUB_OUTPUT"
-          echo "Apps: $SLUGS"
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, re
+          d = json.load(open('office/apps.json'))
+          slugs = {a['slug'] for a in d['apps']}
+          m = []
+          for a in d['apps']:
+              short = re.sub(r'[^A-Za-z0-9]', '', re.sub(r'^AeroGyan\s+', '', a['name'])) or a['slug']
+              m.append({'kind': 'app', 'id': a['slug'], 'short': short, 'name': a['name']})
+          for p in d.get('packs', []):
+              missing = [s for s in p['apps'] if s not in slugs]
+              assert not missing, 'pack %s lists unknown apps %s' % (p['id'], missing)
+              short = re.sub(r'[^A-Za-z0-9]', '', p.get('short') or p['name']) or p['id']
+              m.append({'kind': 'pack', 'id': p['id'], 'short': short, 'name': p['name']})
+          assert len({x['short'] for x in m}) == len(m), 'two builds would get the same file name'
+          print('matrix=' + json.dumps(m, separators=(',', ':')))
+          print('count=%d' % len(m))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  main-app:
+    name: main app still builds (not published)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      VERSION: 1.0.999
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install tools
+        working-directory: desktop-app
+        shell: bash
+        run: npm install --no-audit --no-fund
+      - name: Build the main app from package.json (no OFFICE_SLUG / OFFICE_PACK)
+        working-directory: desktop-app
+        shell: bash
+        run: |
+          npm pkg set version="$VERSION"
+          npx electron-builder --win nsis --x64 --publish never
+      - name: Check it is the main app
+        shell: bash
+        run: |
+          set -e
+          test -f "desktop-app/dist/AeroGyan-Setup-$VERSION.exe" || { echo "::error::AeroGyan-Setup-$VERSION.exe not built"; ls desktop-app/dist; exit 1; }
+          test -f desktop-app/dist/win-unpacked/AeroGyan.exe || { echo "::error::AeroGyan.exe missing"; exit 1; }
+          grep -q 'url: https://aerogyan.tech/download/windows/' desktop-app/dist/win-unpacked/resources/app-update.yml \
+            || { echo "::error::main app update feed changed"; cat desktop-app/dist/win-unpacked/resources/app-update.yml; exit 1; }
+          test ! -d desktop-app/dist/win-unpacked/resources/office-icons || { echo "::error::pack files in the main app"; exit 1; }
+          cat desktop-app/dist/win-unpacked/resources/app-update.yml
+      - name: Self-test of the main app
+        continue-on-error: true
+        shell: pwsh
+        run: ./desktop-app/ci/test-built.ps1
+      - name: Summary
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e +o pipefail
+          F=selftest/built/report.txt
+          tr -d '\r' < "$F" | grep -E '^(FAIL|RESULT)' | while read -r l; do echo "::notice title=main app self-test::$l"; done
+          true
 
   build:
+    name: ${{ matrix.kind }} ${{ matrix.id }}
     needs: apps
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 8
       matrix:
-        slug: ${{ fromJson(needs.apps.outputs.slugs) }}
+        include: ${{ fromJson(needs.apps.outputs.matrix) }}
     env:
       VERSION: 1.0.${{ github.run_number }}
-      OFFICE_SLUG: ${{ matrix.slug }}
+      OFFICE_SLUG: ${{ matrix.kind == 'app' && matrix.id || '' }}
+      OFFICE_PACK: ${{ matrix.kind == 'pack' && matrix.id || '' }}
+      OFFICE_NAME: ${{ matrix.name }}
+      SHORT: ${{ matrix.short }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
@@ -63,18 +137,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: App name
-        id: meta
-        shell: bash
-        run: |
-          node -e '
-            const a = require("./office/apps.json").apps.find((x) => x.slug === process.env.OFFICE_SLUG);
-            if (!a) { console.error("no app " + process.env.OFFICE_SLUG); process.exit(1); }
-            const short = a.name.replace(/^AeroGyan\s+/, "").replace(/[^A-Za-z0-9]/g, "") || a.slug;
-            console.log("name=" + a.name); console.log("short=" + short);
-          ' >> "$GITHUB_OUTPUT"
-          cat "$GITHUB_OUTPUT"
 
       - name: Install tools
         working-directory: desktop-app
@@ -86,30 +148,41 @@ jobs:
         shell: bash
         run: npm pkg set version="$VERSION"
 
-      - name: Build the installer (${{ matrix.slug }})
+      - name: Build the installer (${{ matrix.kind }} ${{ matrix.id }})
         working-directory: desktop-app
         shell: bash
-        run: npx electron-builder --config office/builder.config.js --win nsis --x64 --publish never
+        run: |
+          echo "OFFICE_SLUG='$OFFICE_SLUG' OFFICE_PACK='$OFFICE_PACK'"
+          npx electron-builder --config office/builder.config.js --win nsis --x64 --publish never
 
       - name: Show what was built
         shell: bash
-        env:
-          SHORT: ${{ steps.meta.outputs.short }}
         run: |
           ls -la desktop-app/dist
           F="desktop-app/dist/AeroGyan-$SHORT-Setup-$VERSION.exe"
           test -f "$F" || { echo "::error::$F was not built"; exit 1; }
           sha256sum "$F"
           cat desktop-app/dist/latest.yml || true
+          cat desktop-app/dist/win-unpacked/resources/app-update.yml || true
+          if [ -n "$OFFICE_PACK" ]; then
+            grep -q "url: https://aerogyan.tech/download/office/pack/$OFFICE_PACK/windows/" desktop-app/dist/win-unpacked/resources/app-update.yml \
+              || { echo "::error::pack update feed is wrong"; exit 1; }
+            ls -la desktop-app/dist/win-unpacked/resources/office-icons
+          fi
           mkdir -p out && cp "$F" out/
 
       - name: Smoke test (self-test + silent install)
+        if: matrix.kind == 'app'
         continue-on-error: true
         timeout-minutes: 8
         shell: pwsh
-        env:
-          OFFICE_NAME: ${{ steps.meta.outputs.name }}
         run: ./desktop-app/ci/office-smoke.ps1
+
+      - name: Smoke test of the pack (install, shortcuts, two windows, uninstall)
+        if: matrix.kind == 'pack'
+        timeout-minutes: 15
+        shell: pwsh
+        run: ./desktop-app/ci/office-pack-smoke.ps1
 
       - name: Summary
         if: always()
@@ -117,30 +190,34 @@ jobs:
         shell: bash
         run: |
           set +e +o pipefail
-          R=selftest/office
-          cat $R/smoke.txt $R/report.txt 2>/dev/null | tr -d '\r' > "smoke-${OFFICE_SLUG}.txt" || true
-          FAILS=$(grep -c '^FAIL' "smoke-${OFFICE_SLUG}.txt")
-          grep '^FAIL' "smoke-${OFFICE_SLUG}.txt" | head -10 | while read -r l; do echo "::warning title=$OFFICE_SLUG smoke::$l"; done
-          echo "::notice title=$OFFICE_SLUG::$(ls out 2>/dev/null) · ${FAILS:-0} failed check(s)"
+          ID="${OFFICE_SLUG:-pack-$OFFICE_PACK}"
+          if [ -n "$OFFICE_PACK" ]; then R=selftest/pack; else R=selftest/office; fi
+          cat $R/smoke.txt $R/report.txt 2>/dev/null | tr -d '\r' > "smoke-${ID}.txt" || true
+          FAILS=$(grep -c '^FAIL' "smoke-${ID}.txt")
+          grep '^FAIL' "smoke-${ID}.txt" | head -10 | while read -r l; do echo "::warning title=$ID smoke::$l"; done
+          echo "::notice title=$ID::$(ls out 2>/dev/null) · ${FAILS:-0} failed check(s)"
+          true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: office-windows-exe-${{ matrix.slug }}
+          name: office-windows-exe-${{ matrix.kind }}-${{ matrix.id }}
           path: out/*.exe
           retention-days: 30
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: office-windows-report-${{ matrix.slug }}
+          name: office-windows-report-${{ matrix.kind }}-${{ matrix.id }}
           path: |
             smoke-*.txt
             selftest/office/*.png
+            selftest/pack/*.png
+            selftest/pack/*.txt
           retention-days: 30
           if-no-files-found: ignore
 
   publish:
-    needs: [apps, build]
+    needs: [apps, build, main-app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -149,16 +226,15 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: All apps built?
+      - name: All apps and packs built?
         id: files
         env:
-          SLUGS: ${{ needs.apps.outputs.slugs }}
+          WANT: ${{ needs.apps.outputs.count }}
         run: |
           ls -l release
           N=$(ls release/*.exe | wc -l)
-          WANT=$(echo "$SLUGS" | jq length)
           echo "count=$N" >> "$GITHUB_OUTPUT"
-          [ "$N" -eq "$WANT" ] || { echo "::error::$N installers for $WANT apps"; exit 1; }
+          [ "$N" -eq "$WANT" ] || { echo "::error::$N installers, want $WANT (apps + packs)"; exit 1; }
           {
             echo 'sums<<EOF'
             (cd release && sha256sum *.exe)
@@ -173,9 +249,11 @@ jobs:
           name: AeroGyan Office Windows 1.0.${{ github.run_number }}
           make_latest: false
           body: |
-            Windows apps of AeroGyan Office (${{ steps.files.outputs.count }} apps, 64-bit Windows 10/11, per-user install, no admin).
+            Windows installers of AeroGyan Office (${{ steps.files.outputs.count }} files, 64-bit Windows 10/11, per-user install, no admin):
+            one per app (tech.aerogyan.office.<slug>) and one per pack — AeroGyan-StudentPack / AeroGyan-ProfessorPack
+            (tech.aerogyan.pack.<id>: one install puts every app of the pack in the Start menu, each in its own window, one sign-in).
             Publish them on the website: Admin → Apps → Office → "Publish latest from GitHub".
-            Smoke-test reports are in the workflow run's artifacts (office-windows-report-<slug>).
+            Smoke-test reports are in the workflow run's artifacts (office-windows-report-<kind>-<id>).
 
             SHA-256:
             ```

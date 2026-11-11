@@ -55,7 +55,8 @@
         "text/csv": [
           ".csv"
         ]
-      }
+      },
+      "audience": "both"
     },
     {
       "slug": "slides",
@@ -102,7 +103,8 @@
         "application/x-agslides": [
           ".agslides"
         ]
-      }
+      },
+      "audience": "both"
     },
     {
       "slug": "latex",
@@ -149,7 +151,8 @@
         "application/zip": [
           ".zip"
         ]
-      }
+      },
+      "audience": "both"
     },
     {
       "slug": "notes",
@@ -184,7 +187,8 @@
           "name": "New notebook",
           "do": "new"
         }
-      ]
+      ],
+      "audience": "both"
     },
     {
       "slug": "solver",
@@ -218,7 +222,8 @@
           "do": "ask"
         }
       ],
-      "share": true
+      "share": true,
+      "audience": "student"
     },
     {
       "slug": "practice",
@@ -250,7 +255,8 @@
           "name": "Today's challenge",
           "do": "today"
         }
-      ]
+      ],
+      "audience": "student"
     },
     {
       "slug": "english",
@@ -282,7 +288,8 @@
           "name": "Today's lesson",
           "do": "today"
         }
-      ]
+      ],
+      "audience": "student"
     },
     {
       "slug": "interview",
@@ -308,7 +315,8 @@
         "education",
         "business"
       ],
-      "shortcuts": []
+      "shortcuts": [],
+      "audience": "student"
     },
     {
       "slug": "prep",
@@ -341,7 +349,8 @@
           "name": "Today's set",
           "do": "today"
         }
-      ]
+      ],
+      "audience": "student"
     },
     {
       "slug": "lab",
@@ -374,7 +383,8 @@
           "name": "New lab report",
           "do": "new"
         }
-      ]
+      ],
+      "audience": "student"
     },
     {
       "slug": "study",
@@ -407,7 +417,8 @@
           "name": "My study rooms",
           "do": "rooms"
         }
-      ]
+      ],
+      "audience": "student"
     },
     {
       "slug": "campus",
@@ -440,6 +451,409 @@
           "name": "Ask a question",
           "do": "ask"
         }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "courses",
+      "name": "AeroGyan Courses",
+      "short": "Courses",
+      "line": "Your courses in one place: lectures, notes, PYQs, tests, uploads and the lecture kit.",
+      "features": [
+        "Upload lectures and notes",
+        "Lecture → quiz, notes, flashcards",
+        "Tests and PYQs",
+        "Course requests"
+      ],
+      "color": "#334155",
+      "color2": "#0B1120",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor"
+      },
+      "routes": [
+        "professor/courses",
+        "professor/catalog",
+        "professor/requests"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "live",
+      "name": "AeroGyan Live Classes",
+      "short": "Live",
+      "line": "Go live with camera, screen and board; schedule classes, recordings and who came.",
+      "features": [
+        "Camera + screen share",
+        "Live board and polls",
+        "Recordings",
+        "Attendance by itself"
+      ],
+      "color": "#DC2626",
+      "color2": "#7F1D1D",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/classes"
+      },
+      "routes": [
+        "professor/classes"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "attendance",
+      "name": "AeroGyan Attendance",
+      "short": "Attendance",
+      "line": "Take attendance with a code or QR in seconds; the class list, register and shortage warnings.",
+      "features": [
+        "15-second codes and QR",
+        "Location check",
+        "Register and %",
+        "Shortage warnings"
+      ],
+      "color": "#059669",
+      "color2": "#064E3B",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/attendance"
+      },
+      "routes": [
+        "professor/attendance"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "grading",
+      "name": "AeroGyan Grading",
+      "short": "Grading",
+      "line": "Mark written answers fast with AI help, translate answer sheets, publish results.",
+      "features": [
+        "AI-suggested marks",
+        "Read answers in any language",
+        "Late penalty",
+        "Publish results"
+      ],
+      "color": "#D97706",
+      "color2": "#78350F",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/grading"
+      },
+      "routes": [
+        "professor/grading"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "gradebook",
+      "name": "AeroGyan Gradebook",
+      "short": "Gradebook",
+      "line": "Every mark in one table: offline columns, weights, letter grades and Excel export.",
+      "features": [
+        "All marks together",
+        "Weights and grades",
+        "Offline columns",
+        "Excel export"
+      ],
+      "color": "#0891B2",
+      "color2": "#164E63",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/gradebook"
+      },
+      "routes": [
+        "professor/gradebook"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "insights",
+      "name": "AeroGyan Class Insights",
+      "short": "Insights",
+      "line": "Who is at risk and how each student is doing, with live activity across your courses.",
+      "features": [
+        "At-risk students",
+        "Each student's progress",
+        "Live activity",
+        "Reading and practice"
+      ],
+      "color": "#4338CA",
+      "color2": "#1E1B4B",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/students"
+      },
+      "routes": [
+        "professor/students",
+        "professor/insights",
+        "professor/live"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "confusion",
+      "name": "AeroGyan Confusion Map",
+      "short": "Confusion",
+      "line": "Where in each PDF the class got stuck, and what to explain again in the next class.",
+      "features": [
+        "Page-by-page heat",
+        "“Lost here” marks",
+        "Top doubts",
+        "What to re-explain"
+      ],
+      "color": "#EA580C",
+      "color2": "#7C2D12",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/confusion"
+      },
+      "routes": [
+        "professor/confusion"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "outcomes",
+      "name": "AeroGyan NBA Outcomes",
+      "short": "Outcomes",
+      "line": "CO–PO attainment for NBA / NAAC from the marks you already have, with the exit survey.",
+      "features": [
+        "CO–PO mapping",
+        "Attainment from marks",
+        "Exit survey",
+        "Reports for NBA / NAAC"
+      ],
+      "color": "#0D9488",
+      "color2": "#134E4A",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/outcomes"
+      },
+      "routes": [
+        "professor/outcomes"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "calendar",
+      "name": "AeroGyan Calendar",
+      "short": "Calendar",
+      "line": "Classes, deadlines and exams of all your courses in one calendar.",
+      "features": [
+        "Classes and exams",
+        "Assignment deadlines",
+        "Every course together",
+        "Reminders"
+      ],
+      "color": "#2563EB",
+      "color2": "#1E3A8A",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/calendar"
+      },
+      "routes": [
+        "professor/calendar"
+      ],
+      "categories": [
+        "productivity",
+        "education"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "messages",
+      "name": "AeroGyan Messages",
+      "short": "Messages",
+      "line": "Chat with the AeroGyan team and your colleagues, with files and quick replies.",
+      "features": [
+        "Chat with the admin team",
+        "Files and pictures",
+        "Unread badge",
+        "Quick replies"
+      ],
+      "color": "#16A34A",
+      "color2": "#14532D",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/messages"
+      },
+      "routes": [
+        "professor/messages",
+        "professor/discussions"
+      ],
+      "categories": [
+        "social",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "research",
+      "name": "AeroGyan Research",
+      "short": "Research",
+      "line": "Post projects, lab openings, thesis topics and internships; pick from the students who apply.",
+      "features": [
+        "Post openings",
+        "Applicant board",
+        "Shortlist and pick",
+        "Mentoring"
+      ],
+      "color": "#9333EA",
+      "color2": "#3B0764",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/projects"
+      },
+      "routes": [
+        "professor/projects",
+        "professor/mentoring"
+      ],
+      "categories": [
+        "education",
+        "business"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "notesreview",
+      "name": "AeroGyan Notes Review",
+      "short": "Notes Review",
+      "line": "Notes students sent for your courses: check them and add the good ones to Class Notes.",
+      "features": [
+        "Student notebooks",
+        "Approve to Class Notes",
+        "Comments",
+        "Per course"
+      ],
+      "color": "#CA8A04",
+      "color2": "#713F12",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/notes"
+      },
+      "routes": [
+        "professor/notes"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": []
+    }
+  ],
+  "packs": [
+    {
+      "id": "students",
+      "name": "AeroGyan for Students",
+      "short": "Student Pack",
+      "line": "All 12 student apps in one install.",
+      "roles": [
+        "student"
+      ],
+      "apps": [
+        "sheets",
+        "slides",
+        "latex",
+        "notes",
+        "solver",
+        "practice",
+        "english",
+        "interview",
+        "prep",
+        "lab",
+        "study",
+        "campus"
+      ]
+    },
+    {
+      "id": "professors",
+      "name": "AeroGyan for Professors",
+      "short": "Professor Pack",
+      "line": "All 12 professor apps plus Sheets, Slides, LaTeX and Notes in one install.",
+      "roles": [
+        "professor"
+      ],
+      "apps": [
+        "courses",
+        "live",
+        "attendance",
+        "grading",
+        "gradebook",
+        "insights",
+        "confusion",
+        "outcomes",
+        "calendar",
+        "messages",
+        "research",
+        "notesreview",
+        "sheets",
+        "slides",
+        "latex",
+        "notes"
       ]
     }
   ]
