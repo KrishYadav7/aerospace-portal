@@ -113,11 +113,13 @@ jobs:
 
       - name: Summary
         if: always()
+        continue-on-error: true
         shell: bash
         run: |
+          set +e +o pipefail
           R=selftest/office
           cat $R/smoke.txt $R/report.txt 2>/dev/null | tr -d '\r' > "smoke-${OFFICE_SLUG}.txt" || true
-          FAILS=$(grep -c '^FAIL' "smoke-${OFFICE_SLUG}.txt" || true)
+          FAILS=$(grep -c '^FAIL' "smoke-${OFFICE_SLUG}.txt")
           grep '^FAIL' "smoke-${OFFICE_SLUG}.txt" | head -10 | while read -r l; do echo "::warning title=$OFFICE_SLUG smoke::$l"; done
           echo "::notice title=$OFFICE_SLUG::$(ls out 2>/dev/null) · ${FAILS:-0} failed check(s)"
 

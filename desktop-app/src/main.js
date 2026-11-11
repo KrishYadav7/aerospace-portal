@@ -185,7 +185,8 @@ function setupSession(ses) {
   const base = ses.getUserAgent()
     .replace(/\sElectron\/\S+/i, '')
     .replace(new RegExp('\\s' + app.getName().replace(/[^A-Za-z0-9]/g, '.') + '\\/\\S+', 'i'), '')
-    .replace(/\saerogyan(-desktop)?\/\S+/i, '');
+    .replace(/\saerogyan(-desktop)?\/\S+/i, '')
+    .replace(/\sAeroGyan[^\s/]*\/\S+/gi, '');          // Office apps: "AeroGyanCampusQ&A/1.0.1" (name without spaces)
   const ua = `${base} AeroGyanApp/${app.getVersion()} (Desktop; ${OS_NAME}${OFFICE ? '; Office ' + OFFICE.slug : ''})`;
   app.userAgentFallback = ua;
   ses.setUserAgent(ua);

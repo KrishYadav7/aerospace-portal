@@ -69,9 +69,9 @@ jobs:
           AAPT2=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)aapt2
           APK=$(ls android-app/app/build/outputs/apk/direct/release/*.apk | head -1)
           B=$("$AAPT2" dump badging "$APK")
-          echo "$B" | grep -E "^(package|application-label|launchable-activity|application-icon-480)"
-          echo "$B" | grep -q "^package: name='tech.aerogyan.app'" || { echo "::error::main app package changed"; exit 1; }
-          echo "$B" | grep -q "^application-label:'AeroGyan'" || { echo "::error::main app label changed"; exit 1; }
+          grep -E "^(package|application-label|launchable-activity|application-icon-480)" <<<"$B"
+          grep -q "^package: name='tech.aerogyan.app'" <<<"$B" || { echo "::error::main app package changed"; exit 1; }
+          grep -q "^application-label:'AeroGyan'" <<<"$B" || { echo "::error::main app label changed"; exit 1; }
           ls -l android-app/app/build/outputs/bundle/playRelease/
 
   build:
@@ -154,14 +154,14 @@ jobs:
           cp android-app/app/build/outputs/apk/direct/release/app-direct-release.apk "out/$OUT"
           BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
           B=$("${BT}aapt2" dump badging "out/$OUT")
-          echo "$B" | grep -E "^(package|sdkVersion|targetSdkVersion|application-label|application-icon-|launchable-activity|uses-permission)"
-          echo "$B" | grep -q "^package: name='tech.aerogyan.office.$SLUG' versionCode='$RUN' versionName='1.0.$RUN'" \
+          grep -E "^(package|sdkVersion|targetSdkVersion|application-label|application-icon-|launchable-activity|uses-permission)" <<<"$B"
+          grep -q "^package: name='tech.aerogyan.office.$SLUG' versionCode='$RUN' versionName='1.0.$RUN'" <<<"$B" \
             || { echo "::error::wrong package / version in $OUT"; exit 1; }
-          echo "$B" | grep -q "^application-icon-" || { echo "::error::no launcher icon"; exit 1; }
+          grep -q "^application-icon-" <<<"$B" || { echo "::error::no launcher icon"; exit 1; }
           "${BT}apksigner" verify --print-certs "out/$OUT" | grep -E "Signer #1 certificate (DN|SHA-256)"
           ls -l "out/$OUT"
           sha256sum "out/$OUT"
-          echo "::notice title=$SLUG::$OUT $(stat -c %s "out/$OUT") bytes — $(echo "$B" | grep -oE "^application-label:'[^']*'")"
+          echo "::notice title=$SLUG::$OUT $(stat -c %s "out/$OUT") bytes — $(grep -oE "^application-label:'[^']*'" <<<"$B")"
 
       - uses: actions/upload-artifact@v4
         with:
