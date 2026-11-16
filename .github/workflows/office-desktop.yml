@@ -4,7 +4,7 @@
 #  GitHub → Actions → "Office packs — Mac & Linux" → Run workflow.
 #
 #  One job per pack in office/apps.json "packs" and per system:
-#    mac    macos-14  →  AeroGyan-<Short>-1.0.<run>.dmg  (one app, Intel + Apple silicon, ad-hoc signed;
+#    mac    macos-latest  →  AeroGyan-<Short>-1.0.<run>.dmg  (one app, Intel + Apple silicon, ad-hoc signed;
 #                       the pack's home window opens every app in its own window, one sign-in)
 #    linux  ubuntu-22.04  →  AeroGyan-<Short>-1.0.<run>.AppImage (updates itself) and .deb (one launcher per app
 #                       in the applications menu)
@@ -57,7 +57,7 @@ jobs:
               short = re.sub(r'[^A-Za-z0-9]', '', p.get('short') or p['name']) or p['id']
               for os_ in ('mac', 'linux'):
                   m.append({'os': os_, 'id': p['id'], 'short': short, 'name': p['name'], 'apps': len(p['apps']), 'first': p['apps'][0],
-                            'runner': 'macos-14' if os_ == 'mac' else 'ubuntu-22.04'})
+                            'runner': 'macos-latest' if os_ == 'mac' else 'ubuntu-22.04'})
           print('matrix=' + json.dumps(m, separators=(',', ':')))
           print('count=%d' % (sum(1 if x['os'] == 'mac' else 2 for x in m)))
           EOF
