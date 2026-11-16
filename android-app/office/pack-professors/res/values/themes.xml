@@ -37,6 +37,42 @@
     <style name="Theme.AeroGyan.AppNotesreview">
         <item name="android:windowBackground">@drawable/splash_app_notesreview</item>
     </style>
+    <style name="Theme.AeroGyan.AppScangrade">
+        <item name="android:windowBackground">@drawable/splash_app_scangrade</item>
+    </style>
+    <style name="Theme.AeroGyan.AppLessonplan">
+        <item name="android:windowBackground">@drawable/splash_app_lessonplan</item>
+    </style>
+    <style name="Theme.AeroGyan.AppPortfolio">
+        <item name="android:windowBackground">@drawable/splash_app_portfolio</item>
+    </style>
+    <style name="Theme.AeroGyan.AppMentoring">
+        <item name="android:windowBackground">@drawable/splash_app_mentoring</item>
+    </style>
+    <style name="Theme.AeroGyan.AppEarnings">
+        <item name="android:windowBackground">@drawable/splash_app_earnings</item>
+    </style>
+    <style name="Theme.AeroGyan.AppDepartment">
+        <item name="android:windowBackground">@drawable/splash_app_department</item>
+    </style>
+    <style name="Theme.AeroGyan.AppDirector">
+        <item name="android:windowBackground">@drawable/splash_app_director</item>
+    </style>
+    <style name="Theme.AeroGyan.AppOffice">
+        <item name="android:windowBackground">@drawable/splash_app_office</item>
+    </style>
+    <style name="Theme.AeroGyan.AppHall">
+        <item name="android:windowBackground">@drawable/splash_app_hall</item>
+    </style>
+    <style name="Theme.AeroGyan.AppAdvisees">
+        <item name="android:windowBackground">@drawable/splash_app_advisees</item>
+    </style>
+    <style name="Theme.AeroGyan.AppCare">
+        <item name="android:windowBackground">@drawable/splash_app_care</item>
+    </style>
+    <style name="Theme.AeroGyan.AppCdc">
+        <item name="android:windowBackground">@drawable/splash_app_cdc</item>
+    </style>
     <style name="Theme.AeroGyan.AppSheets">
         <item name="android:windowBackground">@drawable/splash_app_sheets</item>
     </style>
@@ -48,5 +84,8 @@
     </style>
     <style name="Theme.AeroGyan.AppNotes">
         <item name="android:windowBackground">@drawable/splash_app_notes</item>
+    </style>
+    <style name="Theme.AeroGyan.AppHelp">
+        <item name="android:windowBackground">@drawable/splash_app_help</item>
     </style>
 </resources>

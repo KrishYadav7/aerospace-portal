@@ -42,4 +42,46 @@ public final class PackApps {
 
     /** AeroGyan Campus Q&A: opens https://&lt;host&gt;/apps/campus/ in its own task */
     public static final class AppCampus extends MainActivity { }
+
+    /** AeroGyan Classroom: opens https://&lt;host&gt;/apps/classroom/ in its own task */
+    public static final class AppClassroom extends MainActivity { }
+
+    /** AeroGyan Exam Prep: opens https://&lt;host&gt;/apps/examprep/ in its own task */
+    public static final class AppExamprep extends MainActivity { }
+
+    /** AeroGyan Flashcards: opens https://&lt;host&gt;/apps/flashcards/ in its own task */
+    public static final class AppFlashcards extends MainActivity { }
+
+    /** AeroGyan CGPA & Degree: opens https://&lt;host&gt;/apps/cgpa/ in its own task */
+    public static final class AppCgpa extends MainActivity { }
+
+    /** AeroGyan Revision Planner: opens https://&lt;host&gt;/apps/planner/ in its own task */
+    public static final class AppPlanner extends MainActivity { }
+
+    /** AeroGyan Aero Calc: opens https://&lt;host&gt;/apps/aerocalc/ in its own task */
+    public static final class AppAerocalc extends MainActivity { }
+
+    /** AeroGyan My Attendance: opens https://&lt;host&gt;/apps/myattendance/ in its own task */
+    public static final class AppMyattendance extends MainActivity { }
+
+    /** AeroGyan Progress: opens https://&lt;host&gt;/apps/progress/ in its own task */
+    public static final class AppProgress extends MainActivity { }
+
+    /** AeroGyan Placements: opens https://&lt;host&gt;/apps/placements/ in its own task */
+    public static final class AppPlacements extends MainActivity { }
+
+    /** AeroGyan Projects: opens https://&lt;host&gt;/apps/projects/ in its own task */
+    public static final class AppProjects extends MainActivity { }
+
+    /** AeroGyan Mentor: opens https://&lt;host&gt;/apps/mentor/ in its own task */
+    public static final class AppMentor extends MainActivity { }
+
+    /** AeroGyan Wellness: opens https://&lt;host&gt;/apps/wellness/ in its own task */
+    public static final class AppWellness extends MainActivity { }
+
+    /** AeroGyan Catch-up: opens https://&lt;host&gt;/apps/backlog/ in its own task */
+    public static final class AppBacklog extends MainActivity { }
+
+    /** AeroGyan Help: opens https://&lt;host&gt;/apps/help/ in its own task */
+    public static final class AppHelp extends MainActivity { }
 }

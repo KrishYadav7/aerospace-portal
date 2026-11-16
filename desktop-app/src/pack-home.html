@@ -109,7 +109,11 @@
   var b = document.createElement('b');
   b.textContent = 'All ' + apps.length + ' apps are installed';
   ok.appendChild(b);
-  ok.appendChild(document.createTextNode(' — find them on your desktop and in Start → ' + (d.folder || name) + '.'));
+  var where = d.os === 'darwin' ? ' — click one below, or right-click ' + name + ' in the Dock: each opens in its own window.'
+    : d.os === 'linux' && d.appimage ? ' — click one below: each opens in its own window.'
+    : d.os === 'linux' ? ' — find them in your applications menu (search “AeroGyan”), or click one below.'
+    : ' — find them on your desktop and in Start → ' + (d.folder || name) + '.';
+  ok.appendChild(document.createTextNode(where));
 
   var grid = document.getElementById('grid');
   apps.forEach(function (a) {

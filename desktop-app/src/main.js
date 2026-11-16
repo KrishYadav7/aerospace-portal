@@ -234,6 +234,15 @@ function onReady() {
   }
   setupSession(session.defaultSession);
   Menu.setApplicationMenu(IS_MAC ? buildMacMenu() : null);
+  /* ⭐ round 5: on a Mac the pack is one app in the Dock — right-click it to open any of its apps */
+  if (PACK && IS_MAC && app.dock) {
+    try {
+      app.dock.setMenu(Menu.buildFromTemplate([
+        { label: 'All apps', click: () => openPackHome() }, { type: 'separator' },
+        ...PACK.apps.map((a) => ({ label: a.short || String(a.name || a.slug).replace(/^AeroGyan\s+/, ''), click: () => openPackApp(a) }))
+      ]));
+    } catch (e) { log('dock menu failed', e); }
+  }
   if (PACK) { if (LAUNCH_APP) openPackApp(LAUNCH_APP); else openPackHome(); } else createMainWindow();
   setupAutoUpdate();
   if (SELFTEST_DIR) {
@@ -489,6 +498,8 @@ function openPackHome() {
     id: PACK.id, name: PACK.name, line: PACK.line || '', folder: PACK.folder || PACK.name,
     color: PACK.color || '#4F46E5', color2: PACK.color2 || '#1E1B4B', accent: PACK.accent || PACK.color || '#818CF8',
     version: app.getVersion(),
+    // ⭐ round 5: where the apps are differs per system (Start menu / Dock / applications menu)
+    os: process.platform, appimage: !!process.env.APPIMAGE,
     apps: PACK.apps.map((a) => ({ slug: a.slug, name: a.name, line: a.line || '', color: a.color1 || a.color || '', color2: a.color || '' }))
   };
   const win = createAppWindow({

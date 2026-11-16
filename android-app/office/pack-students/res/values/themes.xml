@@ -37,4 +37,46 @@
     <style name="Theme.AeroGyan.AppCampus">
         <item name="android:windowBackground">@drawable/splash_app_campus</item>
     </style>
+    <style name="Theme.AeroGyan.AppClassroom">
+        <item name="android:windowBackground">@drawable/splash_app_classroom</item>
+    </style>
+    <style name="Theme.AeroGyan.AppExamprep">
+        <item name="android:windowBackground">@drawable/splash_app_examprep</item>
+    </style>
+    <style name="Theme.AeroGyan.AppFlashcards">
+        <item name="android:windowBackground">@drawable/splash_app_flashcards</item>
+    </style>
+    <style name="Theme.AeroGyan.AppCgpa">
+        <item name="android:windowBackground">@drawable/splash_app_cgpa</item>
+    </style>
+    <style name="Theme.AeroGyan.AppPlanner">
+        <item name="android:windowBackground">@drawable/splash_app_planner</item>
+    </style>
+    <style name="Theme.AeroGyan.AppAerocalc">
+        <item name="android:windowBackground">@drawable/splash_app_aerocalc</item>
+    </style>
+    <style name="Theme.AeroGyan.AppMyattendance">
+        <item name="android:windowBackground">@drawable/splash_app_myattendance</item>
+    </style>
+    <style name="Theme.AeroGyan.AppProgress">
+        <item name="android:windowBackground">@drawable/splash_app_progress</item>
+    </style>
+    <style name="Theme.AeroGyan.AppPlacements">
+        <item name="android:windowBackground">@drawable/splash_app_placements</item>
+    </style>
+    <style name="Theme.AeroGyan.AppProjects">
+        <item name="android:windowBackground">@drawable/splash_app_projects</item>
+    </style>
+    <style name="Theme.AeroGyan.AppMentor">
+        <item name="android:windowBackground">@drawable/splash_app_mentor</item>
+    </style>
+    <style name="Theme.AeroGyan.AppWellness">
+        <item name="android:windowBackground">@drawable/splash_app_wellness</item>
+    </style>
+    <style name="Theme.AeroGyan.AppBacklog">
+        <item name="android:windowBackground">@drawable/splash_app_backlog</item>
+    </style>
+    <style name="Theme.AeroGyan.AppHelp">
+        <item name="android:windowBackground">@drawable/splash_app_help</item>
+    </style>
 </resources>

@@ -1,0 +1,239 @@
+# ============================================================
+#  AeroGyan Office — the packs for macOS and Linux (⭐ 2026-11-16, round 5).
+#  Runs when desktop-app/ or office/ changes on branch office-apps, or by hand:
+#  GitHub → Actions → "Office packs — Mac & Linux" → Run workflow.
+#
+#  One job per pack in office/apps.json "packs" and per system:
+#    mac    macos-14  →  AeroGyan-<Short>-1.0.<run>.dmg  (one app, Intel + Apple silicon, ad-hoc signed;
+#                       the pack's home window opens every app in its own window, one sign-in)
+#    linux  ubuntu-22.04  →  AeroGyan-<Short>-1.0.<run>.AppImage (updates itself) and .deb (one launcher per app
+#                       in the applications menu)
+#  with desktop-app/office/builder.config.js (OFFICE_PACK=<id>). Each build is checked:
+#    mac    the disk image mounts, the app is inside with the pack's id, its signature verifies, every
+#           app icon is in its resources, it opens the pack's first app with the website (self-test, report only)
+#    linux  the .deb installs; the pack's launcher + one launcher per app with an existing icon are in
+#           /usr/share/applications; the program opens the first app under a virtual display (self-test,
+#           report only); it uninstalls clean; the AppImage unpacks with every icon inside
+#  Result: ONE Release office-desktop-v1.0.<run>; the website takes it with Admin → Apps → Office →
+#  "Publish latest from GitHub" (and on its own every 20 minutes). No secrets needed.
+# ============================================================
+name: Office packs — Mac & Linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [office-apps]
+    paths:
+      - 'desktop-app/**'
+      - 'office/**'
+      - '.github/workflows/office-desktop.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: office-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  packs:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the packs (office/apps.json)
+        id: list
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, re
+          d = json.load(open('office/apps.json'))
+          slugs = {a['slug'] for a in d['apps']}
+          m = []
+          for p in d.get('packs', []):
+              missing = [s for s in p['apps'] if s not in slugs]
+              assert not missing, 'pack %s lists unknown apps %s' % (p['id'], missing)
+              short = re.sub(r'[^A-Za-z0-9]', '', p.get('short') or p['name']) or p['id']
+              for os_ in ('mac', 'linux'):
+                  m.append({'os': os_, 'id': p['id'], 'short': short, 'name': p['name'], 'apps': len(p['apps']), 'first': p['apps'][0],
+                            'runner': 'macos-14' if os_ == 'mac' else 'ubuntu-22.04'})
+          print('matrix=' + json.dumps(m, separators=(',', ':')))
+          print('count=%d' % (sum(1 if x['os'] == 'mac' else 2 for x in m)))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.os }} ${{ matrix.id }}
+    needs: packs
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.packs.outputs.matrix) }}
+    env:
+      VERSION: 1.0.${{ github.run_number }}
+      OFFICE_PACK: ${{ matrix.id }}
+      SHORT: ${{ matrix.short }}
+      NAME: ${{ matrix.name }}
+      APPS: ${{ matrix.apps }}
+      FIRST: ${{ matrix.first }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install tools
+        working-directory: desktop-app
+        run: npm install --no-audit --no-fund
+
+      - name: Set the version (${{ env.VERSION }})
+        working-directory: desktop-app
+        run: npm pkg set version="$VERSION"
+
+      - name: Build (macOS, universal)
+        if: matrix.os == 'mac'
+        working-directory: desktop-app
+        run: npx electron-builder --config office/builder.config.js --mac dmg --universal --publish never
+
+      - name: Build (Linux, AppImage + deb)
+        if: matrix.os == 'linux'
+        working-directory: desktop-app
+        run: npx electron-builder --config office/builder.config.js --linux AppImage deb --x64 --publish never
+
+      - name: Show what was built
+        run: |
+          set -e
+          ls -la desktop-app/dist
+          mkdir -p out
+          if [ "${{ matrix.os }}" = mac ]; then
+            F="desktop-app/dist/AeroGyan-$SHORT-$VERSION.dmg"; test -f "$F" || { echo "::error::$F was not built"; exit 1; }
+            cp "$F" out/
+          else
+            for F in "desktop-app/dist/AeroGyan-$SHORT-$VERSION.AppImage" "desktop-app/dist/AeroGyan-$SHORT-$VERSION.deb"; do
+              test -f "$F" || { echo "::error::$F was not built"; exit 1; }
+              cp "$F" out/
+            done
+            cat desktop-app/dist/latest-linux.yml || true
+          fi
+          (cd out && shasum -a 256 * 2>/dev/null || sha256sum *)
+
+      - name: Check the Mac app
+        if: matrix.os == 'mac'
+        run: |
+          set -e
+          hdiutil attach "out/AeroGyan-$SHORT-$VERSION.dmg" -mountpoint /tmp/ag -nobrowse -quiet
+          APP="/tmp/ag/$NAME.app"
+          test -d "$APP" || { echo "::error::$NAME.app is not in the disk image"; ls /tmp/ag; exit 1; }
+          ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")
+          [ "$ID" = "tech.aerogyan.pack.$OFFICE_PACK" ] || { echo "::error::bundle id $ID"; exit 1; }
+          codesign --verify --deep --strict "$APP" && echo "signature: ok (ad-hoc)"
+          lipo -archs "$APP/Contents/MacOS/$NAME" | tee /tmp/archs; grep -q x86_64 /tmp/archs && grep -q arm64 /tmp/archs
+          N=$(ls "$APP/Contents/Resources/office-icons/"*.png | grep -v _pack | wc -l | tr -d ' ')
+          [ "$N" -ge "$APPS" ] || { echo "::error::$N app icons, want $APPS"; exit 1; }
+          echo "::notice title=mac $OFFICE_PACK::$NAME.app · $ID · universal · $N app icons"
+          # self-test: the pack opens its first app, which loads the website in its own window (report only)
+          ( "$APP/Contents/MacOS/$NAME" --office="$FIRST" --aero-selftest="$PWD/selftest-mac" & P=$!; sleep 90; kill $P 2>/dev/null || true ) || true
+          cat selftest-mac/report.txt 2>/dev/null || true
+          ls selftest-mac 2>/dev/null || true
+          hdiutil detach /tmp/ag -quiet || true
+
+      - name: Check the Linux packages
+        if: matrix.os == 'linux'
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "./out/AeroGyan-$SHORT-$VERSION.deb" xvfb desktop-file-utils >/dev/null
+          BIN="/usr/bin/aerogyan-pack-$OFFICE_PACK"
+          test -x "$BIN" || { echo "::error::$BIN missing"; exit 1; }
+          N=$(ls /usr/share/applications/tech.aerogyan.pack.$OFFICE_PACK.*.desktop | wc -l)
+          [ "$N" -eq "$APPS" ] || { echo "::error::$N app launchers, want $APPS"; ls /usr/share/applications; exit 1; }
+          for f in /usr/share/applications/tech.aerogyan.pack.$OFFICE_PACK.*.desktop; do
+            desktop-file-validate "$f" || { echo "::error::$f is not a valid launcher"; exit 1; }
+            ICON=$(grep '^Icon=' "$f" | cut -d= -f2-); test -f "$ICON" || { echo "::error::$f → missing icon $ICON"; exit 1; }
+          done
+          ls /usr/share/applications | grep -i "aerogyan" | head -40
+          echo "::notice title=linux $OFFICE_PACK::deb installs · $N app launchers with icons"
+          # self-test under a virtual display (report only)
+          ( xvfb-run -a timeout 90 "$BIN" --no-sandbox --office="$FIRST" --aero-selftest="$PWD/selftest-linux" || true )
+          cat selftest-linux/report.txt 2>/dev/null || true
+          ls selftest-linux 2>/dev/null || true
+          sudo apt-get remove -y -qq "aerogyan-pack-$OFFICE_PACK" >/dev/null
+          L=$(ls /usr/share/applications/tech.aerogyan.pack.$OFFICE_PACK.*.desktop 2>/dev/null | wc -l)
+          [ "$L" -eq 0 ] || { echo "::error::$L launchers left after uninstall"; exit 1; }
+          # the AppImage: unpacks, every icon inside
+          A="out/AeroGyan-$SHORT-$VERSION.AppImage"; chmod +x "$A"
+          (cd /tmp && "$OLDPWD/$A" --appimage-extract >/dev/null)
+          N2=$(ls /tmp/squashfs-root/resources/office-icons/*.png | grep -v _pack | wc -l)
+          [ "$N2" -ge "$APPS" ] || { echo "::error::AppImage: $N2 icons"; exit 1; }
+          echo "::notice title=linux $OFFICE_PACK::AppImage unpacks · $N2 app icons"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: office-desktop-${{ matrix.os }}-${{ matrix.id }}
+          path: out/*
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: office-desktop-report-${{ matrix.os }}-${{ matrix.id }}
+          path: |
+            selftest-mac/**
+            selftest-linux/**
+          retention-days: 30
+          if-no-files-found: ignore
+
+  publish:
+    needs: [packs, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: office-desktop-mac-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: office-desktop-linux-*
+          path: release
+          merge-multiple: true
+
+      - name: All files built?
+        id: files
+        env:
+          WANT: ${{ needs.packs.outputs.count }}
+        run: |
+          ls -l release
+          N=$(ls release | wc -l)
+          echo "count=$N" >> "$GITHUB_OUTPUT"
+          [ "$N" -eq "$WANT" ] || { echo "::error::$N files, want $WANT"; exit 1; }
+          {
+            echo 'sums<<EOF'
+            (cd release && sha256sum *)
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish as a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: office-desktop-v1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: AeroGyan Office for Mac & Linux 1.0.${{ github.run_number }}
+          make_latest: false
+          body: |
+            AeroGyan Office packs for macOS and Linux (${{ steps.files.outputs.count }} files):
+            AeroGyan-StudentPack / AeroGyan-ProfessorPack — .dmg (macOS 11+, Intel and Apple silicon; first open: right-click → Open),
+            .AppImage (any 64-bit Linux; updates itself) and .deb (Ubuntu / Debian; adds one launcher per app).
+            One install gives every app of the pack, each in its own window, with one sign-in.
+            Publish them on the website: Admin → Apps → Office → "Publish latest from GitHub" (also automatic every 20 minutes).
+
+            SHA-256:
+            ```
+            ${{ steps.files.outputs.sums }}
+            ```
+          files: release/*

@@ -43,6 +43,42 @@ public final class PackApps {
     /** AeroGyan Notes Review: opens https://&lt;host&gt;/apps/notesreview/ in its own task */
     public static final class AppNotesreview extends MainActivity { }
 
+    /** AeroGyan Scan & Grade: opens https://&lt;host&gt;/apps/scangrade/ in its own task */
+    public static final class AppScangrade extends MainActivity { }
+
+    /** AeroGyan Lesson Plan: opens https://&lt;host&gt;/apps/lessonplan/ in its own task */
+    public static final class AppLessonplan extends MainActivity { }
+
+    /** AeroGyan Teaching Portfolio: opens https://&lt;host&gt;/apps/portfolio/ in its own task */
+    public static final class AppPortfolio extends MainActivity { }
+
+    /** AeroGyan Mentoring: opens https://&lt;host&gt;/apps/mentoring/ in its own task */
+    public static final class AppMentoring extends MainActivity { }
+
+    /** AeroGyan Earnings: opens https://&lt;host&gt;/apps/earnings/ in its own task */
+    public static final class AppEarnings extends MainActivity { }
+
+    /** AeroGyan Department: opens https://&lt;host&gt;/apps/department/ in its own task */
+    public static final class AppDepartment extends MainActivity { }
+
+    /** AeroGyan Director: opens https://&lt;host&gt;/apps/director/ in its own task */
+    public static final class AppDirector extends MainActivity { }
+
+    /** AeroGyan Institute Office: opens https://&lt;host&gt;/apps/office/ in its own task */
+    public static final class AppOffice extends MainActivity { }
+
+    /** AeroGyan Hall Warden: opens https://&lt;host&gt;/apps/hall/ in its own task */
+    public static final class AppHall extends MainActivity { }
+
+    /** AeroGyan Advisees: opens https://&lt;host&gt;/apps/advisees/ in its own task */
+    public static final class AppAdvisees extends MainActivity { }
+
+    /** AeroGyan Care Team: opens https://&lt;host&gt;/apps/care/ in its own task */
+    public static final class AppCare extends MainActivity { }
+
+    /** AeroGyan CDC: opens https://&lt;host&gt;/apps/cdc/ in its own task */
+    public static final class AppCdc extends MainActivity { }
+
     /** AeroGyan Sheets: opens https://&lt;host&gt;/apps/sheets/ in its own task */
     public static final class AppSheets extends MainActivity { }
 
@@ -54,4 +90,7 @@ public final class PackApps {
 
     /** AeroGyan Notes: opens https://&lt;host&gt;/apps/notes/ in its own task */
     public static final class AppNotes extends MainActivity { }
+
+    /** AeroGyan Help: opens https://&lt;host&gt;/apps/help/ in its own task */
+    public static final class AppHelp extends MainActivity { }
 }

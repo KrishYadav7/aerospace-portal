@@ -14,8 +14,21 @@
     <color name="ic_app_messages_bg">#14532D</color>
     <color name="ic_app_research_bg">#3B0764</color>
     <color name="ic_app_notesreview_bg">#713F12</color>
+    <color name="ic_app_scangrade_bg">#450A0A</color>
+    <color name="ic_app_lessonplan_bg">#082F49</color>
+    <color name="ic_app_portfolio_bg">#422006</color>
+    <color name="ic_app_mentoring_bg">#500724</color>
+    <color name="ic_app_earnings_bg">#3D2C04</color>
+    <color name="ic_app_department_bg">#1C1917</color>
+    <color name="ic_app_director_bg">#4C0519</color>
+    <color name="ic_app_office_bg">#3B0764</color>
+    <color name="ic_app_hall_bg">#431407</color>
+    <color name="ic_app_advisees_bg">#172554</color>
+    <color name="ic_app_care_bg">#1A2E05</color>
+    <color name="ic_app_cdc_bg">#022C22</color>
     <color name="ic_app_sheets_bg">#0B6B33</color>
     <color name="ic_app_slides_bg">#B93C0A</color>
     <color name="ic_app_latex_bg">#2A2391</color>
     <color name="ic_app_notes_bg">#B45309</color>
+    <color name="ic_app_help_bg">#115E59</color>
 </resources>

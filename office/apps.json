@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "suite": "AeroGyan Office",
-  "tagline": "Twelve apps, one AeroGyan account. Install only the ones you need.",
+  "tagline": "Apps for students and professors, one AeroGyan account. Install only the ones you need.",
   "apps": [
     {
       "slug": "sheets",
@@ -803,6 +803,796 @@
         "education"
       ],
       "shortcuts": []
+    },
+    {
+      "slug": "classroom",
+      "name": "AeroGyan Classroom",
+      "short": "Classroom",
+      "line": "Your courses in one place: lectures, PDFs explained by AI, videos in your language, notes and tests.",
+      "features": [
+        "Every course",
+        "PDFs explained by AI",
+        "Videos in your language",
+        "Saved items"
+      ],
+      "color": "#0EA5E9",
+      "color2": "#0C4A6E",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/courses"
+      },
+      "routes": [
+        "courses",
+        "course",
+        "saved",
+        "faculty"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "Saved",
+          "do": "saved"
+        }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "examprep",
+      "name": "AeroGyan Exam Prep",
+      "short": "Exam Prep",
+      "line": "What came in past papers, a 10-minute weak-topic check, your mistakes re-tested and a one-page formula sheet.",
+      "features": [
+        "Past-paper topic heatmap",
+        "Weak-topic check",
+        "Mistakes re-tested",
+        "One-page formula sheet"
+      ],
+      "color": "#E11D48",
+      "color2": "#881337",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/tools/prep"
+      },
+      "routes": [
+        "tools/prep"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [],
+      "audience": "student"
+    },
+    {
+      "slug": "flashcards",
+      "name": "AeroGyan Flashcards",
+      "short": "Flashcards",
+      "line": "Cards from your lectures and your own, brought back on the day you are about to forget them.",
+      "features": [
+        "Cards from your lectures",
+        "Write your own",
+        "Spaced review",
+        "Keys 1–4"
+      ],
+      "color": "#A855F7",
+      "color2": "#581C87",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/tools/cards"
+      },
+      "routes": [
+        "tools/cards"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "Review now",
+          "do": "review"
+        }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "cgpa",
+      "name": "AeroGyan CGPA & Degree",
+      "short": "CGPA",
+      "line": "SGPA and CGPA, what you need for your target, and the credits left for your degree.",
+      "features": [
+        "SGPA and CGPA",
+        "What you need for a target",
+        "Credits per category",
+        "Elective slot clashes"
+      ],
+      "color": "#10B981",
+      "color2": "#065F46",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/tools/grades"
+      },
+      "routes": [
+        "tools/grades",
+        "tools/degree"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "Degree planner",
+          "do": "degree"
+        }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "planner",
+      "name": "AeroGyan Revision Planner",
+      "short": "Planner",
+      "line": "Add your exam dates and get a day-by-day revision plan from your own courses, re-planned when you miss a day.",
+      "features": [
+        "Day-by-day plan",
+        "Nearest exam first",
+        "Re-plan from today",
+        "Weak topics first"
+      ],
+      "color": "#EAB308",
+      "color2": "#713F12",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/tools/plan"
+      },
+      "routes": [
+        "tools/plan"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": [
+        {
+          "name": "Today's tasks",
+          "do": "today"
+        }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "aerocalc",
+      "name": "AeroGyan Aero Calc",
+      "short": "Aero Calc",
+      "line": "Standard atmosphere, isentropic flow, shocks, Fanno, Rayleigh, NACA airfoils and a graph plotter.",
+      "features": [
+        "Standard atmosphere",
+        "Shocks and nozzles",
+        "NACA airfoils",
+        "Graph plotter"
+      ],
+      "color": "#64748B",
+      "color2": "#1E293B",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/tools/calc"
+      },
+      "routes": [
+        "tools/calc",
+        "tools/plot"
+      ],
+      "categories": [
+        "education",
+        "utilities"
+      ],
+      "shortcuts": [
+        {
+          "name": "Graph plotter",
+          "do": "plot"
+        }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "myattendance",
+      "name": "AeroGyan My Attendance",
+      "short": "My Attendance",
+      "line": "Type the code shown in class, see your attendance in every course and how many classes you can still miss.",
+      "features": [
+        "Mark with the class code",
+        "Attendance per course",
+        "Classes you can still miss",
+        "Below-75 % warnings"
+      ],
+      "color": "#22C55E",
+      "color2": "#14532D",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/tools/attendance"
+      },
+      "routes": [
+        "tools/attendance"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "Enter the class code",
+          "do": "code"
+        }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "progress",
+      "name": "AeroGyan Progress",
+      "short": "Progress",
+      "line": "Your progress in every course, your test results and your mid-sem and end-sem marks.",
+      "features": [
+        "Progress per course",
+        "Test results",
+        "Exam marks",
+        "Study time"
+      ],
+      "color": "#6366F1",
+      "color2": "#312E81",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/analytics"
+      },
+      "routes": [
+        "analytics"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [
+        {
+          "name": "My marks",
+          "do": "marks"
+        }
+      ],
+      "audience": "student"
+    },
+    {
+      "slug": "placements",
+      "name": "AeroGyan Placements",
+      "short": "Placements",
+      "line": "Share your strengths with recruiters through the CDC, and see the companies that shortlisted you.",
+      "features": [
+        "Your strengths by field",
+        "You choose what is shared",
+        "Company shortlists",
+        "CDC updates"
+      ],
+      "color": "#0F766E",
+      "color2": "#042F2E",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/placements"
+      },
+      "routes": [
+        "placements"
+      ],
+      "categories": [
+        "education",
+        "business"
+      ],
+      "shortcuts": [],
+      "audience": "student"
+    },
+    {
+      "slug": "projects",
+      "name": "AeroGyan Projects",
+      "short": "Projects",
+      "line": "Research projects and internships posted by professors: match %, ask questions, apply with your profile.",
+      "features": [
+        "Openings from professors",
+        "Match % for you",
+        "Ask before you apply",
+        "Track your applications"
+      ],
+      "color": "#7C3AED",
+      "color2": "#3B0764",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/projects"
+      },
+      "routes": [
+        "projects"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [],
+      "audience": "student"
+    },
+    {
+      "slug": "mentor",
+      "name": "AeroGyan Mentor",
+      "short": "Mentor",
+      "line": "A senior, alumnus or professor matched to your interests, to guide you on courses, research and careers.",
+      "features": [
+        "Matched by interests",
+        "Seniors, alumni, professors",
+        "Chat and calls",
+        "Approved mentors"
+      ],
+      "color": "#C026D3",
+      "color2": "#701A75",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/mentor"
+      },
+      "routes": [
+        "mentor"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [],
+      "audience": "student"
+    },
+    {
+      "slug": "wellness",
+      "name": "AeroGyan Wellness",
+      "short": "Wellness",
+      "line": "A 30-second weekly check-in, your private trend, and someone to talk to when you need it.",
+      "features": [
+        "Weekly check-in",
+        "Your private trend",
+        "Talk to your adviser",
+        "Crisis help"
+      ],
+      "color": "#F472B6",
+      "color2": "#9D174D",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/wellness"
+      },
+      "routes": [
+        "wellness"
+      ],
+      "categories": [
+        "health",
+        "education"
+      ],
+      "shortcuts": [],
+      "audience": "student"
+    },
+    {
+      "slug": "backlog",
+      "name": "AeroGyan Catch-up",
+      "short": "Catch-up",
+      "line": "Fell behind in a course? A short catch-up plan and a weekly check-in with your adviser.",
+      "features": [
+        "A short catch-up plan",
+        "Weekly check-in",
+        "Your adviser can help",
+        "Back on track"
+      ],
+      "color": "#84CC16",
+      "color2": "#365314",
+      "roles": [
+        "student"
+      ],
+      "route": {
+        "student": "#/backlog"
+      },
+      "routes": [
+        "backlog"
+      ],
+      "categories": [
+        "education"
+      ],
+      "shortcuts": [],
+      "audience": "student"
+    },
+    {
+      "slug": "help",
+      "name": "AeroGyan Help",
+      "short": "Help",
+      "line": "How to use every part of AeroGyan, step by step — for students and professors, on every device.",
+      "features": [
+        "Every feature, step by step",
+        "Search in plain words",
+        "Get the right app",
+        "Troubleshooting"
+      ],
+      "color": "#2DD4BF",
+      "color2": "#115E59",
+      "roles": [
+        "student",
+        "professor"
+      ],
+      "route": {
+        "student": "fn:aeroHelpCenter",
+        "professor": "fn:aeroHelpCenter"
+      },
+      "routes": [],
+      "categories": [
+        "education",
+        "utilities"
+      ],
+      "shortcuts": [
+        {
+          "name": "Ask AeroGyan",
+          "do": "ask"
+        }
+      ],
+      "audience": "both"
+    },
+    {
+      "slug": "scangrade",
+      "name": "AeroGyan Scan & Grade",
+      "short": "Scan & Grade",
+      "line": "Scan a class's paper answer copies; AI reads every roll number and suggests marks; you grade question by question.",
+      "features": [
+        "Scan the whole class",
+        "AI-suggested marks",
+        "Rubric for every copy",
+        "Re-check requests"
+      ],
+      "color": "#B91C1C",
+      "color2": "#450A0A",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/scan"
+      },
+      "routes": [
+        "professor/scan"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "lessonplan",
+      "name": "AeroGyan Lesson Plan",
+      "short": "Lesson Plan",
+      "line": "Plan every lecture, see what is taught and if you are on track, and build the NBA course file in one click.",
+      "features": [
+        "Lecture-by-lecture plan",
+        "Ticks off what is taught",
+        "Students see the plan",
+        "NBA course file"
+      ],
+      "color": "#0369A1",
+      "color2": "#082F49",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/plan"
+      },
+      "routes": [
+        "professor/plan"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "portfolio",
+      "name": "AeroGyan Teaching Portfolio",
+      "short": "Portfolio",
+      "line": "Your teaching year counted for you, plus publications, projects and an AI draft of your self-appraisal.",
+      "features": [
+        "Your year, counted",
+        "Publications and projects",
+        "Self-appraisal draft",
+        "Print for appraisal"
+      ],
+      "color": "#A16207",
+      "color2": "#422006",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/portfolio"
+      },
+      "routes": [
+        "professor/portfolio"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "mentoring",
+      "name": "AeroGyan Mentoring",
+      "short": "Mentoring",
+      "line": "Mentor students interested in research and higher studies.",
+      "features": [
+        "Students matched to you",
+        "Requests to accept",
+        "Chat with mentees",
+        "Research and higher studies"
+      ],
+      "color": "#9D174D",
+      "color2": "#500724",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/mentoring"
+      },
+      "routes": [
+        "professor/mentoring"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "earnings",
+      "name": "AeroGyan Earnings",
+      "short": "Earnings",
+      "line": "What you earned from your courses, and your payouts.",
+      "features": [
+        "Earnings by course",
+        "Payouts",
+        "Statements",
+        "Up to date"
+      ],
+      "color": "#B8860B",
+      "color2": "#3D2C04",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/earnings"
+      },
+      "routes": [
+        "professor/earnings"
+      ],
+      "categories": [
+        "education",
+        "finance"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "department",
+      "name": "AeroGyan Department",
+      "short": "Department",
+      "line": "Your department: set it, apply to be its Head; Heads approve professors and see every course.",
+      "features": [
+        "Set your department",
+        "Apply to be Head",
+        "Approve professors",
+        "Every course of the department"
+      ],
+      "color": "#57534E",
+      "color2": "#1C1917",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/department"
+      },
+      "routes": [
+        "professor/department"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "director",
+      "name": "AeroGyan Director",
+      "short": "Director",
+      "line": "For the Director: every department and course, and the Heads of Department approvals.",
+      "features": [
+        "Every department",
+        "Every course",
+        "Approve Heads",
+        "Institute at a glance"
+      ],
+      "color": "#BE123C",
+      "color2": "#4C0519",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/institute"
+      },
+      "routes": [
+        "professor/institute"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "office",
+      "name": "AeroGyan Institute Office",
+      "short": "Institute",
+      "line": "For the Director, Deans and Associate Deans: the org chart, powers, students, halls, advisers and reports.",
+      "features": [
+        "Org chart and powers",
+        "Student list",
+        "Halls and advisers",
+        "Every decision logged"
+      ],
+      "color": "#7E22CE",
+      "color2": "#3B0764",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/office"
+      },
+      "routes": [
+        "professor/office"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "hall",
+      "name": "AeroGyan Hall Warden",
+      "short": "Hall",
+      "line": "Every student of your hall live — attendance, marks, last seen, who needs attention — with notes and parent reports.",
+      "features": [
+        "Your hall live",
+        "Who needs attention",
+        "Notes",
+        "Parent reports"
+      ],
+      "color": "#C2410C",
+      "color2": "#431407",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/hall"
+      },
+      "routes": [
+        "professor/hall"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "advisees",
+      "name": "AeroGyan Advisees",
+      "short": "Advisees",
+      "line": "As faculty adviser: your advisees live, students asking to talk, the wellbeing they share and parent reports.",
+      "features": [
+        "Your advisees live",
+        "Students asking to talk",
+        "Wellbeing they share",
+        "Parent reports"
+      ],
+      "color": "#1D4ED8",
+      "color2": "#172554",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/advisees"
+      },
+      "routes": [
+        "professor/advisees"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "care",
+      "name": "AeroGyan Care Team",
+      "short": "Care Team",
+      "line": "Talk about a student with their adviser, hall wardens and Head of Department — chat, call, WhatsApp or email.",
+      "features": [
+        "One thread per student",
+        "Adviser, warden, HoD",
+        "Chat or call",
+        "Kept together"
+      ],
+      "color": "#65A30D",
+      "color2": "#1A2E05",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/discussions"
+      },
+      "routes": [
+        "professor/discussions"
+      ],
+      "categories": [
+        "education",
+        "productivity"
+      ],
+      "shortcuts": []
+    },
+    {
+      "slug": "cdc",
+      "name": "AeroGyan CDC",
+      "short": "CDC",
+      "line": "For the placement cell: every student's strength by field, and shortlists sent to companies.",
+      "features": [
+        "Strength by field",
+        "Shortlists to companies",
+        "Only consenting students",
+        "What was sent"
+      ],
+      "color": "#047857",
+      "color2": "#022C22",
+      "roles": [
+        "professor"
+      ],
+      "audience": "professor",
+      "route": {
+        "professor": "#/professor/cdc"
+      },
+      "routes": [
+        "professor/cdc"
+      ],
+      "categories": [
+        "education",
+        "business"
+      ],
+      "shortcuts": []
     }
   ],
   "packs": [
@@ -810,7 +1600,7 @@
       "id": "students",
       "name": "AeroGyan for Students",
       "short": "Student Pack",
-      "line": "All 12 student apps in one install.",
+      "line": "All 26 student apps in one install.",
       "roles": [
         "student"
       ],
@@ -826,14 +1616,28 @@
         "prep",
         "lab",
         "study",
-        "campus"
+        "campus",
+        "classroom",
+        "examprep",
+        "flashcards",
+        "cgpa",
+        "planner",
+        "aerocalc",
+        "myattendance",
+        "progress",
+        "placements",
+        "projects",
+        "mentor",
+        "wellness",
+        "backlog",
+        "help"
       ]
     },
     {
       "id": "professors",
       "name": "AeroGyan for Professors",
       "short": "Professor Pack",
-      "line": "All 12 professor apps plus Sheets, Slides, LaTeX and Notes in one install.",
+      "line": "All 24 professor apps plus Sheets, Slides, LaTeX, Notes and Help in one install.",
       "roles": [
         "professor"
       ],
@@ -850,10 +1654,23 @@
         "messages",
         "research",
         "notesreview",
+        "scangrade",
+        "lessonplan",
+        "portfolio",
+        "mentoring",
+        "earnings",
+        "department",
+        "director",
+        "office",
+        "hall",
+        "advisees",
+        "care",
+        "cdc",
         "sheets",
         "slides",
         "latex",
-        "notes"
+        "notes",
+        "help"
       ]
     }
   ]

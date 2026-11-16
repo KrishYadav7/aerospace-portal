@@ -345,5 +345,397 @@
                     android:pathPrefix="/apps/campus/" />
             </intent-filter>
         </activity>
+
+        <!-- AeroGyan Classroom -->
+        <activity
+            android:name=".PackApps$AppClassroom"
+            android:label="Classroom"
+            android:icon="@mipmap/ic_app_classroom"
+            android:roundIcon="@mipmap/ic_app_classroom_round"
+            android:theme="@style/Theme.AeroGyan.AppClassroom"
+            android:taskAffinity="${applicationId}.classroom"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="classroom" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/classroom/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Exam Prep -->
+        <activity
+            android:name=".PackApps$AppExamprep"
+            android:label="Exam Prep"
+            android:icon="@mipmap/ic_app_examprep"
+            android:roundIcon="@mipmap/ic_app_examprep_round"
+            android:theme="@style/Theme.AeroGyan.AppExamprep"
+            android:taskAffinity="${applicationId}.examprep"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="examprep" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/examprep/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Flashcards -->
+        <activity
+            android:name=".PackApps$AppFlashcards"
+            android:label="Flashcards"
+            android:icon="@mipmap/ic_app_flashcards"
+            android:roundIcon="@mipmap/ic_app_flashcards_round"
+            android:theme="@style/Theme.AeroGyan.AppFlashcards"
+            android:taskAffinity="${applicationId}.flashcards"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="flashcards" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/flashcards/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan CGPA &amp; Degree -->
+        <activity
+            android:name=".PackApps$AppCgpa"
+            android:label="CGPA &amp; Degree"
+            android:icon="@mipmap/ic_app_cgpa"
+            android:roundIcon="@mipmap/ic_app_cgpa_round"
+            android:theme="@style/Theme.AeroGyan.AppCgpa"
+            android:taskAffinity="${applicationId}.cgpa"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="cgpa" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/cgpa/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Revision Planner -->
+        <activity
+            android:name=".PackApps$AppPlanner"
+            android:label="Revision Planner"
+            android:icon="@mipmap/ic_app_planner"
+            android:roundIcon="@mipmap/ic_app_planner_round"
+            android:theme="@style/Theme.AeroGyan.AppPlanner"
+            android:taskAffinity="${applicationId}.planner"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="planner" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/planner/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Aero Calc -->
+        <activity
+            android:name=".PackApps$AppAerocalc"
+            android:label="Aero Calc"
+            android:icon="@mipmap/ic_app_aerocalc"
+            android:roundIcon="@mipmap/ic_app_aerocalc_round"
+            android:theme="@style/Theme.AeroGyan.AppAerocalc"
+            android:taskAffinity="${applicationId}.aerocalc"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="aerocalc" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/aerocalc/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan My Attendance -->
+        <activity
+            android:name=".PackApps$AppMyattendance"
+            android:label="My Attendance"
+            android:icon="@mipmap/ic_app_myattendance"
+            android:roundIcon="@mipmap/ic_app_myattendance_round"
+            android:theme="@style/Theme.AeroGyan.AppMyattendance"
+            android:taskAffinity="${applicationId}.myattendance"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="myattendance" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/myattendance/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Progress -->
+        <activity
+            android:name=".PackApps$AppProgress"
+            android:label="Progress"
+            android:icon="@mipmap/ic_app_progress"
+            android:roundIcon="@mipmap/ic_app_progress_round"
+            android:theme="@style/Theme.AeroGyan.AppProgress"
+            android:taskAffinity="${applicationId}.progress"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="progress" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/progress/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Placements -->
+        <activity
+            android:name=".PackApps$AppPlacements"
+            android:label="Placements"
+            android:icon="@mipmap/ic_app_placements"
+            android:roundIcon="@mipmap/ic_app_placements_round"
+            android:theme="@style/Theme.AeroGyan.AppPlacements"
+            android:taskAffinity="${applicationId}.placements"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="placements" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/placements/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Projects -->
+        <activity
+            android:name=".PackApps$AppProjects"
+            android:label="Projects"
+            android:icon="@mipmap/ic_app_projects"
+            android:roundIcon="@mipmap/ic_app_projects_round"
+            android:theme="@style/Theme.AeroGyan.AppProjects"
+            android:taskAffinity="${applicationId}.projects"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="projects" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/projects/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Mentor -->
+        <activity
+            android:name=".PackApps$AppMentor"
+            android:label="Mentor"
+            android:icon="@mipmap/ic_app_mentor"
+            android:roundIcon="@mipmap/ic_app_mentor_round"
+            android:theme="@style/Theme.AeroGyan.AppMentor"
+            android:taskAffinity="${applicationId}.mentor"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="mentor" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/mentor/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Wellness -->
+        <activity
+            android:name=".PackApps$AppWellness"
+            android:label="Wellness"
+            android:icon="@mipmap/ic_app_wellness"
+            android:roundIcon="@mipmap/ic_app_wellness_round"
+            android:theme="@style/Theme.AeroGyan.AppWellness"
+            android:taskAffinity="${applicationId}.wellness"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="wellness" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/wellness/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Catch-up -->
+        <activity
+            android:name=".PackApps$AppBacklog"
+            android:label="Catch-up"
+            android:icon="@mipmap/ic_app_backlog"
+            android:roundIcon="@mipmap/ic_app_backlog_round"
+            android:theme="@style/Theme.AeroGyan.AppBacklog"
+            android:taskAffinity="${applicationId}.backlog"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="backlog" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/backlog/" />
+            </intent-filter>
+        </activity>
+
+        <!-- AeroGyan Help -->
+        <activity
+            android:name=".PackApps$AppHelp"
+            android:label="Help"
+            android:icon="@mipmap/ic_app_help"
+            android:roundIcon="@mipmap/ic_app_help_round"
+            android:theme="@style/Theme.AeroGyan.AppHelp"
+            android:taskAffinity="${applicationId}.help"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="tech.aerogyan.office.slug" android:value="help" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="${appHost}"
+                    android:pathPrefix="/apps/help/" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
