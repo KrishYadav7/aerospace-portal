@@ -1,0 +1,130 @@
+{
+  "name": "aerogyan-store",
+  "productName": "AeroGyan Store",
+  "version": "1.0.0",
+  "description": "AeroGyan Store — install and update every AeroGyan app in one place",
+  "author": "AeroGyan Education <apps@aerogyan.tech>",
+  "homepage": "https://aerogyan.tech",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/unit.test.js && node test/smoke.js",
+    "test:unit": "node --test test/unit.test.js",
+    "test:smoke": "node test/smoke.js",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac dmg --universal --publish never",
+    "dist:linux": "electron-builder --linux AppImage deb --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "41.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "tech.aerogyan.store",
+    "productName": "AeroGyan Store",
+    "copyright": "© AeroGyan Education",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US",
+      "en-GB",
+      "hi"
+    ],
+    "publish": null,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "AeroGyanStore-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AeroGyan Store",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "uninstallDisplayName": "AeroGyan Store",
+      "artifactName": "AeroGyanStore-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.utilities",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "minimumSystemVersion": "11.0",
+      "artifactName": "AeroGyanStore-${version}.${ext}"
+    },
+    "dmg": {
+      "title": "AeroGyan Store ${version}",
+      "artifactName": "AeroGyanStore-${version}.${ext}"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "executableName": "aerogyan-store",
+      "synopsis": "Install and update every AeroGyan app",
+      "description": "The AeroGyan Store lists only AeroGyan's own apps — AeroGyan, the Office apps, Jivan Medico, Drishya and Ganak — and installs and updates them, checking every download first.",
+      "maintainer": "AeroGyan Education <apps@aerogyan.tech>",
+      "vendor": "AeroGyan Education",
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "AeroGyan Store"
+        }
+      },
+      "artifactName": "AeroGyanStore-${version}.${ext}"
+    },
+    "appImage": {
+      "artifactName": "AeroGyanStore-${version}.AppImage"
+    },
+    "deb": {
+      "artifactName": "AeroGyanStore-${version}.deb",
+      "packageName": "aerogyan-store",
+      "recommends": [
+        "pkexec | policykit-1"
+      ]
+    }
+  }
+}
