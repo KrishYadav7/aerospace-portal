@@ -110,7 +110,7 @@ class VerifierTest {
     }
 
     @Test fun sha256OfAFile() {
-        val f = File.createTempFile("v", ".bin")
+        val f = File.createTempFile("verify", ".bin")
         f.writeText("hello")
         assertEquals("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", Verifier.sha256(f))
         f.delete()

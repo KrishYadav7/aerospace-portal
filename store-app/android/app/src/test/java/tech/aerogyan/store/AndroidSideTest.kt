@@ -47,7 +47,9 @@ class AndroidSideTest {
         assertNull(inst["tech.aerogyan.medico"])
         assertEquals(AppState.UPDATE, States.state(catalog.byId("aerogyan")!!, inst["tech.aerogyan.app"], 34))
         assertEquals(AppState.INSTALLED, States.state(catalog.byId("office-sheets")!!, inst["tech.aerogyan.office.sheets"], 34))
-        assertEquals(listOf("aerogyan"), States.updates(catalog.apps, inst, 34).map { it.id })
+        // the store itself (1.0.0 under test, 1.0.2 in the catalogue) comes first
+        assertEquals(BuildConfig.VERSION_CODE.toLong(), inst["tech.aerogyan.store"]!!.versionCode)
+        assertEquals(listOf("store", "aerogyan"), States.updates(catalog.apps, inst, 34).map { it.id })
     }
 
     @Test fun installOpensASessionForThePackage() {
