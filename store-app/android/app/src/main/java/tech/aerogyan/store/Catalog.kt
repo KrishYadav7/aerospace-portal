@@ -41,11 +41,11 @@ data class StoreApp(
     val includes: List<String>,
     val android: AndroidFile?,
 ) {
-    fun title(hindi: Boolean) = if (hindi && !nameHi.isNullOrBlank()) nameHi else name
-    fun subtitle(hindi: Boolean) = if (hindi && !lineHi.isNullOrBlank()) lineHi else line.orEmpty()
+    fun title(hindi: Boolean): String = nameHi?.takeIf { hindi && it.isNotBlank() } ?: name
+    fun subtitle(hindi: Boolean): String = lineHi?.takeIf { hindi && it.isNotBlank() } ?: line.orEmpty()
     fun about(hindi: Boolean): String {
-        val d = if (hindi && !descriptionHi.isNullOrBlank()) descriptionHi else description
-        return if (d.isNullOrBlank()) subtitle(hindi) else d
+        val d = descriptionHi?.takeIf { hindi && it.isNotBlank() } ?: description
+        return d?.takeIf { it.isNotBlank() } ?: subtitle(hindi)
     }
 
     /** Web-only on a phone: no Android build at all (Drishya) — never pretend it installs. */

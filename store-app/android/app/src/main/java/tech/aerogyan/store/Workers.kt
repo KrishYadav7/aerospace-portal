@@ -82,7 +82,6 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 if (now - lastNote > 1000) {
                     lastNote = now
                     try {
-                        @Suppress("MissingPermission")
                         NotificationManagerCompat.from(ctx).notify(Notify.progressId(id), Notify.progress(ctx, id, name, done, total))
                     } catch (_: SecurityException) {
                     }

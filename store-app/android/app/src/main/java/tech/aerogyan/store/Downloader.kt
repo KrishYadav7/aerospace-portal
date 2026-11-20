@@ -98,8 +98,10 @@ class Downloader(
             }
             if (expectedSize > 0 && total > 0 && total != expectedSize) throw HttpError(-2) // not the listed file
             meta.setProperty("url", url)
-            conn.getHeaderField("ETag")?.let { meta.setProperty("etag", it) } ?: meta.remove("etag")
-            conn.getHeaderField("Last-Modified")?.let { meta.setProperty("lastModified", it) } ?: meta.remove("lastModified")
+            val etag = conn.getHeaderField("ETag")
+            if (etag != null) meta.setProperty("etag", etag) else meta.remove("etag")
+            val lastModified = conn.getHeaderField("Last-Modified")
+            if (lastModified != null) meta.setProperty("lastModified", lastModified) else meta.remove("lastModified")
             meta.setProperty("total", total.toString())
             metaFile.outputStream().use { meta.store(it, null) }
 

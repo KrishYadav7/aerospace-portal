@@ -1,6 +1,11 @@
 package tech.aerogyan.store
 
-import com.sun.net.httpserver.HttpServer
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -9,59 +14,52 @@ import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
 import java.io.File
-import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Resumable downloads against a tiny local server: Range + If-Range, a server that ignores Range, cancel. */
+/** Resumable downloads against a local server: Range + If-Range, a server that ignores Range, cancel. */
 class DownloaderTest {
-    private lateinit var server: HttpServer
+    private lateinit var server: MockWebServer
     private var body = ByteArray(300_000) { (it % 251).toByte() }
     private var etag = "\"v1\""
     private var honourRange = true
-    private var dropAfter = -1 // close the connection after this many bytes (a broken mobile connection)
+    private var drop = false // close the connection halfway (a broken mobile connection)
     private val ranged = AtomicInteger()
     private val full = AtomicInteger()
     private lateinit var base: String
     private lateinit var dir: File
 
     @Before fun start() {
-        server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/f.apk") { ex ->
-            val range = ex.requestHeaders.getFirst("Range")
-            val ifRange = ex.requestHeaders.getFirst("If-Range")
-            ex.responseHeaders.add("ETag", etag)
-            var start = 0
-            if (honourRange && range != null && (ifRange == null || ifRange == etag)) {
-                start = range.removePrefix("bytes=").substringBefore('-').toInt()
-                ranged.incrementAndGet()
-                ex.responseHeaders.add("Content-Range", "bytes $start-${body.size - 1}/${body.size}")
-                ex.sendResponseHeaders(206, (body.size - start).toLong())
-            } else {
-                full.incrementAndGet()
-                ex.sendResponseHeaders(200, body.size.toLong())
-            }
-            try {
-                ex.responseBody.use { out ->
-                    val end = if (dropAfter >= 0) minOf(body.size, start + dropAfter) else body.size
-                    out.write(body, start, end - start)
-                    if (end < body.size) throw java.io.IOException("drop")
+        server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val range = request.getHeader("Range")
+                val ifRange = request.getHeader("If-Range")
+                val r = MockResponse().setHeader("ETag", etag)
+                var start = 0
+                if (honourRange && range != null && (ifRange == null || ifRange == etag)) {
+                    start = range.removePrefix("bytes=").substringBefore('-').toInt()
+                    ranged.incrementAndGet()
+                    r.setResponseCode(206).setHeader("Content-Range", "bytes $start-${body.size - 1}/${body.size}")
+                } else {
+                    full.incrementAndGet()
+                    r.setResponseCode(200)
                 }
-            } catch (_: Exception) {
-            } finally {
-                ex.close()
+                r.setBody(Buffer().write(body, start, body.size - start))
+                if (drop) r.setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+                return r
             }
         }
         server.start()
-        base = "http://127.0.0.1:${server.address.port}"
+        base = server.url("/").toString().trimEnd('/')
         dir = java.nio.file.Files.createTempDirectory("dl").toFile()
     }
 
     @After fun stop() {
-        server.stop(0)
+        server.shutdown()
         dir.deleteRecursively()
     }
 
-    private fun dl() = Downloader("test", hostOk = { it.host == "127.0.0.1" }, connectTimeoutMs = 5000, readTimeoutMs = 5000)
+    private fun dl() = Downloader("test", hostOk = { it.host == server.hostName }, connectTimeoutMs = 5000, readTimeoutMs = 5000)
 
     @Test fun downloadsWhole() {
         val part = File(dir, "a.apk")
@@ -74,14 +72,14 @@ class DownloaderTest {
 
     @Test fun resumesWithIfRange() {
         val part = File(dir, "a.apk")
-        dropAfter = 100_000
+        drop = true
         try {
             dl().download("$base/f.apk", part, body.size.toLong(), { false }) { _, _ -> }
             fail("the connection dropped")
         } catch (_: java.io.IOException) {
         }
-        assertTrue(part.length() in 1..100_000)
-        dropAfter = -1
+        assertTrue("half a file: ${part.length()}", part.length() in 1 until body.size)
+        drop = false
         dl().download("$base/f.apk", part, body.size.toLong(), { false }) { _, _ -> }
         assertEquals(1, ranged.get())
         assertArrayEquals(body, part.readBytes())
@@ -89,9 +87,9 @@ class DownloaderTest {
 
     @Test fun startsOverWhenTheServerIgnoresRange() {
         val part = File(dir, "a.apk")
-        dropAfter = 50_000
+        drop = true
         runCatching { dl().download("$base/f.apk", part, body.size.toLong(), { false }) { _, _ -> } }
-        dropAfter = -1
+        drop = false
         honourRange = false // the live nginx before deploy/store/nginx-ranges.sh
         dl().download("$base/f.apk", part, body.size.toLong(), { false }) { _, _ -> }
         assertEquals(0, ranged.get())
@@ -100,9 +98,9 @@ class DownloaderTest {
 
     @Test fun aChangedFileIsFetchedWhole() {
         val part = File(dir, "a.apk")
-        dropAfter = 50_000
+        drop = true
         runCatching { dl().download("$base/f.apk", part, body.size.toLong(), { false }) { _, _ -> } }
-        dropAfter = -1
+        drop = false
         etag = "\"v2\""
         body = ByteArray(body.size) { (it % 13).toByte() }
         dl().download("$base/f.apk", part, body.size.toLong(), { false }) { _, _ -> }
