@@ -110,7 +110,7 @@
    "web": "https://ganak.aerogyan.tech/",
    "signer": "ganak",
    "android": {"package": "tech.aerogyan.ganak", "minSdk": 24},
-   "desktop": {"appId": "tech.aerogyan.ganak", "productName": "Ganak", "deb": "ganak", "minMac": "11.0"}
+   "desktop": {"appId": "tech.aerogyan.ganak", "productName": "Ganak", "deb": "ganak", "minMac": "12.0"}
   }
  ],
  "office": {
