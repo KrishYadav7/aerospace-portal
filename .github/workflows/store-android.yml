@@ -12,6 +12,9 @@
 #       signing certificate's SHA-256 == the pinned store key (fails otherwise)
 #    4. artifact AeroGyanStore-X.Y.Z.apk; on a tag also the GitHub Release store-vX.Y.Z
 #       (shared with store-desktop.yml — whichever finishes first creates it)
+#  Job "emulator" (Android 14): a debug build reads a test catalogue whose files are the real live ones —
+#  installs AeroGyan through download → SHA-256 + pinned key → PackageInstaller, and refuses a tampered entry
+#  (store-app/android/ci/emulator-test.sh; report + screenshots as the artifact store-android-emulator).
 #  The website takes it with Admin → Apps → AeroGyan Store → "Publish from GitHub"
 #  (and by itself every 20 minutes).
 # ============================================================
@@ -140,10 +143,10 @@ jobs:
           cp store-app/android/app/build/outputs/apk/release/app-release.apk "out/$OUT"
           BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
           B=$("${BT}aapt2" dump badging "out/$OUT")
-          grep -E "^(package|sdkVersion|targetSdkVersion|application-label|launchable-activity|uses-permission)" <<<"$B"
+          grep -E "^(package|sdkVersion|minSdkVersion|targetSdkVersion|application-label|launchable-activity|uses-permission|locales)" <<<"$B"
           grep -q "^package: name='tech.aerogyan.store' versionCode='$CODE' versionName='$V'" <<<"$B" || { echo "::error::wrong package / version (want tech.aerogyan.store $CODE $V)"; exit 1; }
           grep -q "^application-label:'AeroGyan Store'" <<<"$B" || { echo "::error::label is not 'AeroGyan Store'"; exit 1; }
-          grep -q "^sdkVersion:'26'" <<<"$B" || { echo "::error::minSdk is not 26"; exit 1; }
+          grep -qE "^(sdkVersion|minSdkVersion):'26'" <<<"$B" || { echo "::error::minSdk is not 26"; exit 1; }
           grep -q "^launchable-activity: name='tech.aerogyan.store.MainActivity'" <<<"$B" || { echo "::error::no launcher activity"; exit 1; }
           N=$("${BT}aapt2" dump xmltree --file AndroidManifest.xml "out/$OUT" | grep -c 'tech.aerogyan.office.' || true)
           echo "Office packages in <queries>: $N"
@@ -183,3 +186,58 @@ jobs:
             sleep $((i * 10))
           done
           echo "::error::could not upload to the release $TAG"; exit 1
+
+  emulator:
+    name: emulator (Android 14, end to end)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build a debug copy that reads the test catalogue
+        working-directory: store-app/android
+        env:
+          STORE_BASE: http://10.0.2.2:8765
+        run: |
+          gradle assembleDebug --no-daemon --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk ../../store-debug.apk
+
+      - name: Enable KVM (fast emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test on an Android 14 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: bash store-app/android/ci/emulator-test.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          [ -f test-out/report.txt ] && cat test-out/report.txt || echo "no report"
+          grep -h "^FAIL\|^RESULT" test-out/report.txt 2>/dev/null | while read -r l; do echo "::notice title=emulator::$l"; done || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: store-android-emulator
+          path: test-out/
+          retention-days: 14
+          if-no-files-found: ignore

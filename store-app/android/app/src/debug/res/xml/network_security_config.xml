@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG builds only (the emulator test): the fake catalogue on the test runner (10.0.2.2) may be plain http.
+     Release builds use src/main/res/xml/network_security_config.xml — https only. Downloads stay https-only
+     in every build (Pins.isTrustedUrl). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

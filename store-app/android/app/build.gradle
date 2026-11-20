@@ -51,6 +51,7 @@ android {
         buildConfigField 'String', 'STORE_BASE', "\"${System.getenv('STORE_BASE') ?: 'https://aerogyan.tech'}\""
         buildConfigField 'int', 'OFFICE_APPS', "${office.apps.size()}"
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        resourceConfigurations += ['en', 'hi']      // only our two languages (AndroidX brings 80+)
     }
 
     buildFeatures {
