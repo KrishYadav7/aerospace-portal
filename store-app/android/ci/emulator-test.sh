@@ -39,7 +39,7 @@ $UI tap "Continue" && sleep 3
 $UI wait "Jivan Medico" 40 && pass "catalogue loads (For you, student)" || fail "the list did not load"
 $UI dump 02-list; shot 02-list
 grep -q "^AeroGyan " "$OUT/02-list.txt" && pass "AeroGyan is listed" || fail "AeroGyan missing from For you"
-grep -qi "Needs a computer\|Open in browser" "$OUT/02-list.txt" && pass "Drishya says it needs a computer" || fail "Drishya web-only line missing"
+grep -qi "Needs a computer" "$OUT/02-list.txt" && pass "Drishya says it needs a computer" || fail "Drishya web-only line missing"
 grep -q "Install" "$OUT/02-list.txt" && pass "Install buttons" || fail "no Install button"
 
 # ---- the tampered file is refused

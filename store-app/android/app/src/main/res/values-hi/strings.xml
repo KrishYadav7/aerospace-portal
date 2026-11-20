@@ -51,7 +51,7 @@
     <string name="btn_update">अपडेट करें</string>
     <string name="btn_update_all">सभी अपडेट करें</string>
     <string name="btn_open">खोलें</string>
-    <string name="btn_open_web">ब्राउज़र में खोलें</string>
+    <string name="btn_open_web">वेबसाइट</string>
     <string name="btn_soon">जल्द आ रहा है</string>
     <string name="btn_incompatible">इस फ़ोन के लिए नहीं</string>
     <string name="btn_up_to_date">अप-टू-डेट</string>

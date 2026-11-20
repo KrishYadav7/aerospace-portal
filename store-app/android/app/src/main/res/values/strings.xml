@@ -51,7 +51,7 @@
     <string name="btn_update">Update</string>
     <string name="btn_update_all">Update all</string>
     <string name="btn_open">Open</string>
-    <string name="btn_open_web">Open in browser</string>
+    <string name="btn_open_web">Website</string>
     <string name="btn_soon">Coming soon</string>
     <string name="btn_incompatible">Not for this phone</string>
     <string name="btn_up_to_date">Up to date</string>
