@@ -153,8 +153,8 @@ jobs:
           [ "$N" -ge 50 ] || { echo "::error::only $N Office packages are visible to the store (<queries>)"; exit 1; }
           "${BT}apksigner" verify --print-certs "out/$OUT" | tee certs.txt
           "${BT}apksigner" verify "out/$OUT" || { echo "::error::the APK is not signed correctly"; exit 1; }
-          GOT=$(grep -m1 -i "certificate SHA-256 digest" certs.txt | awk -F': ' '{print $2}' | tr -d ' :' | tr 'A-F' 'a-f')
-          [ "$GOT" = "$STORE_CERT_SHA256" ] || { echo "::error::signed with $GOT, not the store key $STORE_CERT_SHA256"; exit 1; }
+          GOT=$(grep -i "certificate SHA-256 digest" certs.txt | grep -oE '[0-9a-fA-F]{64}' | tr 'A-F' 'a-f' | sort -u)
+          [ "$GOT" = "$STORE_CERT_SHA256" ] || { echo "::error::signed with '$GOT', not (only) the store key $STORE_CERT_SHA256"; exit 1; }
           SUM=$(sha256sum "out/$OUT" | cut -d' ' -f1)
           SIZE=$(stat -c %s "out/$OUT")
           echo "file=$OUT" >> "$GITHUB_OUTPUT"
