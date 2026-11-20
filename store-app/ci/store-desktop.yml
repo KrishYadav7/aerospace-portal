@@ -1,0 +1,195 @@
+# ============================================================
+#  AeroGyan Store — the desktop store (tech.aerogyan.store) for Windows, macOS and Linux.
+#  Copy of legacy-node/store-app/ci/store-desktop.yml → .github/workflows/store-desktop.yml on branch
+#  store-apps of the public CI repo (the repo top = legacy-node/: store-app/desktop, store/icons).
+#
+#  Runs on a push to store-apps / store-apps-desktop (store-app/**, store/**), on a tag store-vX.Y.Z,
+#  or by hand. Each system:
+#    1. unit tests (node --test) and the smoke test (the real window + a fake catalogue:
+#       lists the apps, Hindi, search, download + SHA-256 — good accepted, tampered rejected and deleted,
+#       no hash refused, another server refused) — xvfb on Linux
+#    2. builds with electron-builder (store-app/VERSION; on a tag it must equal the tag)
+#         windows  AeroGyanStore-Setup-X.Y.Z.exe   (one-click, per user)
+#         mac      AeroGyanStore-X.Y.Z.dmg         (Intel + Apple silicon, ad-hoc signed)
+#         linux    AeroGyanStore-X.Y.Z.AppImage + AeroGyanStore-X.Y.Z.deb
+#    3. checks the build, then installs it WITH THE STORE'S OWN CODE (test/ci-install-check.js), finds it
+#       again the way the store finds every app (Windows: the Uninstall key named by electron-builder's
+#       GUID of the app id; Mac: Info.plist; Linux: AppImage launcher / dpkg) and uninstalls it.
+#  On a tag the files go into the GitHub Release store-vX.Y.Z (the Android workflow adds the APK to the
+#  same release); the website takes them with Admin → Apps → AeroGyan Store → "Publish from GitHub".
+#  No secrets needed.
+# ============================================================
+name: AeroGyan Store — desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [store-apps, store-apps-desktop]
+    tags: ['store-v*']
+    paths:
+      - 'store-app/**'
+      - 'store/**'
+      - '.github/workflows/store-desktop.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: store-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          V=$(tr -d ' \r\n' < store-app/VERSION)
+          [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::store-app/VERSION '$V' is not X.Y.Z"; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/store-v* ]]; then
+            T="${GITHUB_REF#refs/tags/store-v}"
+            [ "$T" = "$V" ] || { echo "::error::tag store-v$T but store-app/VERSION says $V"; exit 1; }
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "version $V"
+
+  build:
+    name: ${{ matrix.os }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, runner: windows-latest }
+          - { os: mac, runner: macos-15-intel }
+          - { os: linux, runner: ubuntu-22.04 }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    defaults:
+      run:
+        shell: bash
+        working-directory: store-app/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install tools
+        run: npm install --no-audit --no-fund
+      - name: Linux libraries for the test window
+        if: matrix.os == 'linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libnss3 libgbm1 libasound2 desktop-file-utils >/dev/null
+      - name: Unit tests
+        run: node --test test/unit.test.js
+      - name: Smoke test (the store window + download checks)
+        env:
+          SMOKE_OUT: ${{ github.workspace }}/smoke-${{ matrix.os }}
+        run: |
+          if [ "${{ matrix.os }}" = linux ]; then xvfb-run -a node test/smoke.js; else node test/smoke.js; fi
+      - name: Set the version (${{ env.VERSION }})
+        run: npm pkg set version="$VERSION"
+      - name: Build (Windows)
+        if: matrix.os == 'windows'
+        run: npx electron-builder --win nsis --x64 --publish never
+      - name: Build (macOS, universal)
+        if: matrix.os == 'mac'
+        run: npx electron-builder --mac dmg --universal --publish never
+      - name: Build (Linux)
+        if: matrix.os == 'linux'
+        run: npx electron-builder --linux AppImage deb --x64 --publish never
+      - name: Collect the files
+        run: |
+          set -e
+          ls -la dist
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          case "${{ matrix.os }}" in
+            windows) FILES="AeroGyanStore-Setup-$VERSION.exe" ;;
+            mac)     FILES="AeroGyanStore-$VERSION.dmg" ;;
+            linux)   FILES="AeroGyanStore-$VERSION.AppImage AeroGyanStore-$VERSION.deb" ;;
+          esac
+          for f in $FILES; do test -f "dist/$f" || { echo "::error::$f was not built"; exit 1; }; cp "dist/$f" "$GITHUB_WORKSPACE/out/"; done
+          cd "$GITHUB_WORKSPACE/out" && (sha256sum * 2>/dev/null || shasum -a 256 *) && ls -l
+      - name: Check the Mac app
+        if: matrix.os == 'mac'
+        run: |
+          set -e
+          hdiutil attach "$GITHUB_WORKSPACE/out/AeroGyanStore-$VERSION.dmg" -mountpoint /tmp/ags -nobrowse -readonly -quiet
+          APP="/tmp/ags/AeroGyan Store.app"
+          test -d "$APP" || { echo "::error::AeroGyan Store.app is not in the disk image"; ls /tmp/ags; exit 1; }
+          ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")
+          V=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+          [ "$ID" = tech.aerogyan.store ] || { echo "::error::bundle id $ID"; exit 1; }
+          [ "$V" = "$VERSION" ] || { echo "::error::version $V"; exit 1; }
+          codesign --verify --deep --strict "$APP" && echo "signature: ok (ad-hoc)"
+          lipo -archs "$APP/Contents/MacOS/AeroGyan Store" | tee /tmp/archs; grep -q x86_64 /tmp/archs && grep -q arm64 /tmp/archs
+          hdiutil detach /tmp/ags -quiet
+          echo "::notice title=mac::AeroGyan Store.app · $ID $V · universal ($(cat /tmp/archs))"
+      - name: Check the Linux packages
+        if: matrix.os == 'linux'
+        run: |
+          set -e
+          dpkg-deb -f "$GITHUB_WORKSPACE/out/AeroGyanStore-$VERSION.deb" Package Version Depends
+          dpkg-deb -c "$GITHUB_WORKSPACE/out/AeroGyanStore-$VERSION.deb" | grep -E 'usr/share/applications/.*\.desktop|opt/AeroGyan Store/aerogyan-store$'
+          A="$GITHUB_WORKSPACE/out/AeroGyanStore-$VERSION.AppImage"; chmod +x "$A"
+          (cd /tmp && "$A" --appimage-extract >/dev/null) && test -x "/tmp/squashfs-root/aerogyan-store"
+          echo "::notice title=linux::deb + AppImage unpack"
+      - name: Install, find and uninstall with the store's own code
+        run: |
+          set -e
+          case "${{ matrix.os }}" in
+            windows) node test/ci-install-check.js windows "$GITHUB_WORKSPACE/out/AeroGyanStore-Setup-$VERSION.exe" "$VERSION" ;;
+            mac)     node test/ci-install-check.js mac "$GITHUB_WORKSPACE/out/AeroGyanStore-$VERSION.dmg" "$VERSION" ;;
+            linux)   node test/ci-install-check.js deb "$GITHUB_WORKSPACE/out/AeroGyanStore-$VERSION.deb" "$VERSION"
+                     L=$(ls /usr/share/applications | grep -ci aerogyan || true); echo "launchers left after removal: $L"; [ "$L" = 0 ]
+                     node test/ci-install-check.js linux "$GITHUB_WORKSPACE/out/AeroGyanStore-$VERSION.AppImage" "$VERSION" ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-desktop-${{ matrix.os }}
+          path: out/*
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: store-smoke-${{ matrix.os }}
+          path: smoke-${{ matrix.os }}/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/store-v')
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: store-v${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: store-desktop-*
+          path: release
+          merge-multiple: true
+      - name: Files
+        run: |
+          rm -f release/*.png release/*.txt release/*.json; rm -rf release/userdata
+          ls -l release
+          N=$(ls release | wc -l); [ "$N" -eq 4 ] || { echo "::error::$N files, want 4"; exit 1; }
+          (cd release && sha256sum *)
+      - name: Add to the release ${{ env.TAG }} (the Android workflow adds the APK to the same one)
+        run: |
+          set -e
+          R="$GITHUB_REPOSITORY"
+          for i in 1 2 3 4 5; do
+            gh release view "$TAG" -R "$R" >/dev/null 2>&1 && break
+            gh release create "$TAG" -R "$R" --verify-tag --latest=false --title "AeroGyan Store ${TAG#store-v}" \
+              --notes "AeroGyan Store ${TAG#store-v} — Android APK, Windows, macOS (Intel + Apple silicon) and Linux (AppImage, .deb). Publish on the website: Admin → Apps → AeroGyan Store → Publish from GitHub." && break || true
+            sleep $((i * 5))
+          done
+          for i in 1 2 3; do gh release upload "$TAG" release/* -R "$R" --clobber && break || sleep 10; done
+          gh release view "$TAG" -R "$R" --json assets --jq '.assets[] | "\(.name) \(.size) \(.digest // "")"'

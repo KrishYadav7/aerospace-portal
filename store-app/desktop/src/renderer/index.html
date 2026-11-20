@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https://aerogyan.tech https://medico.aerogyan.tech https://drishya.aerogyan.tech https://ganak.aerogyan.tech data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AeroGyan Store</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#grid" id="skipLink">Skip to apps</a>
+  <header class="top">
+    <div class="brand">
+      <img src="../icon.png" alt="" width="36" height="36">
+      <div>
+        <h1 id="brandName">AeroGyan Store</h1>
+        <p id="brandLine" class="muted">Our apps, installed and updated in one place</p>
+      </div>
+    </div>
+    <div class="search">
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.2 4.2-1.4 1.4-4.2-4.2A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z" fill="currentColor"/></svg>
+      <input id="q" type="search" autocomplete="off" spellcheck="false" aria-label="Search apps" placeholder="Search apps">
+    </div>
+    <div class="tools">
+      <div class="seg" role="group" id="langGroup" aria-label="Language">
+        <button type="button" data-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-lang="hi" aria-pressed="false" lang="hi">हिं</button>
+      </div>
+      <button type="button" class="icon-btn" id="refresh" aria-label="Check for updates" title="Check for updates">
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M12 4a8 8 0 0 1 7.4 5H17v2h6V5h-2v2.4A10 10 0 1 0 22 12h-2a8 8 0 1 1-8-8z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Sections">
+    <div role="tablist" id="tabs">
+      <button role="tab" id="tab-foryou" data-tab="foryou" aria-selected="true" aria-controls="grid"></button>
+      <button role="tab" id="tab-all" data-tab="all" aria-selected="false" aria-controls="grid" tabindex="-1"></button>
+      <button role="tab" id="tab-updates" data-tab="updates" aria-selected="false" aria-controls="grid" tabindex="-1"><span class="lbl"></span> <span class="badge" id="upCount" hidden>0</span></button>
+    </div>
+    <button type="button" class="btn primary" id="updateAll" hidden></button>
+  </nav>
+
+  <div id="notice" class="notice" role="status" hidden></div>
+  <main id="grid" class="grid" tabindex="-1" aria-busy="true"></main>
+  <p id="empty" class="empty" hidden></p>
+
+  <footer class="foot">
+    <label class="switch"><input type="checkbox" id="autoUp"><span id="autoUpLbl"></span></label>
+    <button type="button" class="link" id="roleBtn"></button>
+    <span class="muted" id="ver"></span>
+  </footer>
+
+  <div class="scrim" id="scrim" hidden></div>
+  <aside class="detail" id="detail" role="dialog" aria-modal="true" aria-labelledby="dName" hidden>
+    <button type="button" class="icon-btn close" id="dClose" aria-label="Close">
+      <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z" fill="currentColor"/></svg>
+    </button>
+    <div class="d-head">
+      <div class="d-icon" id="dIcon"></div>
+      <div>
+        <h2 id="dName"></h2>
+        <p id="dLine" class="muted"></p>
+        <div class="d-actions" id="dActions"></div>
+      </div>
+    </div>
+    <div class="d-body" id="dBody"></div>
+  </aside>
+
+  <div class="welcome" id="welcome" role="dialog" aria-modal="true" aria-labelledby="wTitle" hidden>
+    <div class="w-card">
+      <img src="../icon.png" alt="" width="64" height="64">
+      <h2 id="wTitle"></h2>
+      <p id="wLine" class="muted"></p>
+      <div class="w-roles" id="wRoles"></div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
