@@ -21,8 +21,9 @@ try {
   contextBridge.exposeInMainWorld('AeroGyanDesktop', Object.freeze({
     platform: process.platform,
     isDesktopApp: true,
-    /* a stable key for this PC, the same in every AeroGyan app on it (one device slot):
-       base64url(sha256("aerogyan-device:" + Windows MachineGuid)); "" when unavailable */
+    /* a stable key for this computer, the same in every AeroGyan app on it (one device slot):
+       base64url(sha256("aerogyan-device:" + Windows MachineGuid / macOS IOPlatformUUID /
+       Linux /etc/machine-id)); "" when unavailable */
     deviceKey: () => {
       try { return String(ipcRenderer.sendSync('aerogyan:device-key') || ''); } catch (_) { return ''; }
     }

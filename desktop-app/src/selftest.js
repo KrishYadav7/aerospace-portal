@@ -1,6 +1,7 @@
 /* ============================================================
    Self-test — run only by the GitHub build:
      AeroGyan.exe --aero-selftest=<folder>
+     (Mac: AeroGyan.app/Contents/MacOS/AeroGyan …, Linux: aerogyan --no-sandbox …)
    Opens the real website in the real app window, checks the
    things students rely on, writes report.txt / report.json and
    screenshots into <folder>, then quits (exit code 0 = all OK).
@@ -76,8 +77,11 @@ exports.run = async function run(ctx) {
     win.isVisible() ? pass('window is visible') : fail('window is visible');
     await sleep(4000);                                        // let the page settle
 
-    /* 2. screenshots blocked */
-    if (typeof win.isContentProtected === 'function') {
+    /* 2. screenshots blocked (Windows + macOS; Linux has no way to block them) */
+    const canProtect = process.platform === 'win32' || process.platform === 'darwin';
+    if (!canProtect) {
+      info('content protection', 'not available on Linux — screenshots cannot be blocked there');
+    } else if (typeof win.isContentProtected === 'function') {
       win.isContentProtected() ? pass('screenshots / screen recording blocked (content protection)') : fail('screenshots / screen recording blocked (content protection)');
     } else info('content protection', 'set (this Electron cannot report it)');
 
@@ -149,8 +153,9 @@ exports.run = async function run(ctx) {
     const child = await waitUntil(() => hooks.children[kids], 8000);
     if (opened === 'ok' && child) {
       await sleep(800);
-      const prot = typeof child.isContentProtected === 'function' ? child.isContentProtected() : true;
-      prot ? pass('pop-up opens inside the app (protected)') : fail('pop-up opens inside the app (protected)', 'not protected');
+      const prot = !canProtect || (typeof child.isContentProtected === 'function' ? child.isContentProtected() : true);
+      const what = canProtect ? 'pop-up opens inside the app (protected)' : 'pop-up opens inside the app';
+      prot ? pass(what) : fail(what, 'not protected');
       await shot(child.webContents, '02-popup.png');
       child.close();
     } else fail('pop-up opens inside the app', 'result ' + opened);

@@ -1,0 +1,289 @@
+# ============================================================
+#  The main AeroGyan app for macOS and Linux (⭐ 2026-11-20).
+#  Runs on a tag desktop-v1.0.N (git tag desktop-v1.0.8 && git push origin desktop-v1.0.8),
+#  or by hand: GitHub → Actions → "AeroGyan app — Mac & Linux" → Run workflow (enter the version).
+#
+#    mac    macos-15-intel → AeroGyan-<v>.dmg       one app for Intel + Apple silicon, ad-hoc signed
+#                                                   (first open: System Settings → Privacy & Security → Open Anyway)
+#    linux  ubuntu-22.04   → AeroGyan-<v>.AppImage  any 64-bit Linux; updates itself from aerogyan.tech/download/linux/
+#                            AeroGyan-<v>.deb       Ubuntu / Debian; the app offers new versions
+#  Each build is checked (bundle id, signature, both CPU types, aerogyan:// link, update feed, launcher, install /
+#  uninstall) and runs its self-test against the live site; the .deb and the AppImage are also tried on Ubuntu 24.04
+#  (AppArmor). Report only: a failed self-test does not stop the release, it is listed in the report.
+#  Result: ONE Release desktop-v<v> with the three files + desktop-test-report-<v>.txt. The website takes it with
+#  Admin → Apps → Mac & Linux → "Publish latest from GitHub" (and on its own every 20 minutes). No secrets needed.
+# ============================================================
+name: AeroGyan app — Mac & Linux
+
+on:
+  push:
+    tags: ['desktop-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, e.g. 1.0.8 (the release is desktop-v<version>)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        env:
+          REF: ${{ github.ref }}
+          INPUT: ${{ github.event.inputs.version }}
+        run: |
+          V="$INPUT"
+          case "$REF" in refs/tags/desktop-v*) V="${REF#refs/tags/desktop-v}";; esac
+          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::version '$V' is not X.Y.Z"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "::notice title=version::$V"
+
+  build:
+    name: ${{ matrix.os }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: mac
+            runner: macos-15-intel
+          - os: linux
+            runner: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install tools
+        working-directory: desktop-app
+        run: npm install --no-audit --no-fund
+
+      - name: Set the version (${{ env.VERSION }})
+        working-directory: desktop-app
+        run: npm pkg set version="$VERSION"
+
+      - name: Build (macOS, universal)
+        if: matrix.os == 'mac'
+        working-directory: desktop-app
+        run: npx electron-builder --mac dmg --universal --publish never
+
+      - name: Build (Linux, AppImage + deb)
+        if: matrix.os == 'linux'
+        working-directory: desktop-app
+        run: npx electron-builder --linux AppImage deb --x64 --publish never
+
+      - name: Collect the files
+        run: |
+          set -e
+          ls -la desktop-app/dist
+          mkdir -p out report
+          if [ "${{ matrix.os }}" = mac ]; then FILES="AeroGyan-$VERSION.dmg"; else FILES="AeroGyan-$VERSION.AppImage AeroGyan-$VERSION.deb"; fi
+          for f in $FILES; do
+            test -f "desktop-app/dist/$f" || { echo "::error::$f was not built"; exit 1; }
+            cp "desktop-app/dist/$f" out/
+          done
+          (cd out && (shasum -a 256 * 2>/dev/null || sha256sum *))
+          cat desktop-app/dist/latest-linux.yml 2>/dev/null || true
+
+      # ---- macOS: the disk image, the app inside it, then the app's own self-test (report only) ----
+      - name: Check the Mac app
+        if: matrix.os == 'mac'
+        run: |
+          R=report/mac.txt; : > $R
+          ck() { if eval "$2"; then echo "PASS  $1" >> $R; else echo "FAIL  $1" >> $R; echo "::warning title=mac::$1"; fi; }
+          echo "AeroGyan $VERSION for macOS — $(sw_vers -productName) $(sw_vers -productVersion) $(uname -m) (${{ matrix.runner }})" >> $R
+          hdiutil attach "out/AeroGyan-$VERSION.dmg" -mountpoint /tmp/ag -nobrowse -quiet
+          APP=/tmp/ag/AeroGyan.app
+          ck "the disk image holds AeroGyan.app and an Applications link" '[ -d "$APP" ] && [ -L /tmp/ag/Applications ]'
+          ck "bundle id tech.aerogyan.app" '[ "$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist")" = tech.aerogyan.app ]'
+          ck "version $VERSION" '[ "$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")" = "$VERSION" ]'
+          ck "aerogyan:// links belong to the app (CFBundleURLSchemes)" '/usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:0:CFBundleURLSchemes:0" "$APP/Contents/Info.plist" | grep -qx aerogyan'
+          ck "signature verifies (ad-hoc, deep, strict)" 'codesign --verify --deep --strict "$APP"'
+          ck "one app for Intel and Apple silicon (x86_64 + arm64)" 'lipo -archs "$APP/Contents/MacOS/AeroGyan" | grep -q x86_64 && lipo -archs "$APP/Contents/MacOS/AeroGyan" | grep -q arm64'
+          ck "app icon inside (icon.icns)" '[ -s "$APP/Contents/Resources/icon.icns" ]'
+          codesign -dv "$APP" 2>&1 | grep -E 'Signature|Identifier' || true
+          # the self-test: opens the live site in the app window, checks it, writes report.txt, quits (≤ 180 s)
+          "$APP/Contents/MacOS/AeroGyan" --aero-selftest="$PWD/selftest-mac" > selftest-mac.log 2>&1 &
+          P=$!; for i in $(seq 1 200); do kill -0 $P 2>/dev/null || break; sleep 1; done; kill $P 2>/dev/null || true
+          if [ -f selftest-mac/report.txt ]; then cat selftest-mac/report.txt >> $R; else echo "FAIL  the self-test wrote a report" >> $R; tail -40 selftest-mac.log || true; fi
+          hdiutil detach /tmp/ag -quiet || true
+          cat $R
+          echo "::notice title=mac::$(grep -c '^PASS' $R) passed · $(grep -c '^FAIL' $R) failed"
+
+      # ---- Linux: install the .deb, check its launcher / link / AppArmor file, self-test, uninstall; the AppImage ----
+      - name: Check the Linux packages
+        if: matrix.os == 'linux'
+        run: |
+          R=report/linux.txt; : > $R
+          ck() { if eval "$2"; then echo "PASS  $1" >> $R; else echo "FAIL  $1" >> $R; echo "::warning title=linux::$1"; fi; }
+          echo "AeroGyan $VERSION for Linux — $(. /etc/os-release; echo $PRETTY_NAME) (${{ matrix.runner }})" >> $R
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb desktop-file-utils xdg-utils >/dev/null
+          ck ".deb installs (apt)" 'sudo apt-get install -y -qq "./out/AeroGyan-$VERSION.deb" >/dev/null'
+          ck "package aerogyan $VERSION" '[ "$(dpkg-query -W -f="\${Version}" aerogyan)" = "$VERSION" ]'
+          ck "/usr/bin/aerogyan runs the app" '[ -x /usr/bin/aerogyan ]'
+          D=/usr/share/applications/aerogyan.desktop
+          ck "applications-menu launcher is valid" 'desktop-file-validate "$D"'
+          ck "launcher opens aerogyan:// links (MimeType)" 'grep -q "x-scheme-handler/aerogyan" "$D"'
+          ck "aerogyan:// is registered (mimeinfo.cache)" 'grep -q "x-scheme-handler/aerogyan=.*aerogyan.desktop" /usr/share/applications/mimeinfo.cache'
+          ck "launcher icon installed" 'ls /usr/share/icons/hicolor/*/apps/aerogyan.png >/dev/null 2>&1'
+          ck "AppArmor profile shipped (Ubuntu 24.04+)" '[ -f /opt/AeroGyan/resources/apparmor-profile ]'
+          ck "the .deb offers updates (package-type deb)" '[ "$(cat /opt/AeroGyan/resources/package-type)" = deb ]'
+          cat "$D"
+          # the self-test under a virtual display, with Chromium's sandbox (as students run it)
+          xvfb-run -a timeout 200 aerogyan --aero-selftest="$PWD/selftest-linux" > selftest-linux.log 2>&1 || true
+          if [ -f selftest-linux/report.txt ]; then cat selftest-linux/report.txt >> $R; else echo "FAIL  the self-test wrote a report (with the sandbox)" >> $R; tail -40 selftest-linux.log || true; fi
+          ck ".deb uninstalls clean" 'sudo apt-get remove -y -qq aerogyan >/dev/null && [ ! -e /usr/bin/aerogyan ] && [ ! -e "$D" ]'
+          # the AppImage: the update feed it reads, then a first start writes its own launcher + aerogyan:// handler
+          A="$PWD/out/AeroGyan-$VERSION.AppImage"; chmod +x "$A"
+          (cd /tmp && "$A" --appimage-extract >/dev/null)
+          ck "AppImage updates from aerogyan.tech/download/linux/" 'grep -q "url: https://aerogyan.tech/download/linux/" /tmp/squashfs-root/resources/app-update.yml'
+          ck "AppImage has no package-type (it updates itself)" '[ ! -e /tmp/squashfs-root/resources/package-type ]'
+          export HOME_T=$(mktemp -d)
+          ( HOME=$HOME_T XDG_DATA_HOME=$HOME_T/.local/share XDG_CONFIG_HOME=$HOME_T/.config APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a timeout 25 "$A" > appimage.log 2>&1 ) || true
+          L=$HOME_T/.local/share/applications/tech.aerogyan.app.desktop
+          ck "AppImage adds itself to the applications menu" '[ -f "$L" ] && desktop-file-validate "$L"'
+          ck "…pointing at the AppImage, opening aerogyan:// links" 'grep -qF "Exec=\"$A\" %U" "$L" && grep -q "x-scheme-handler/aerogyan" "$L"'
+          ck "…with its icon" '[ -s $HOME_T/.local/share/icons/hicolor/256x256/apps/tech.aerogyan.app.png ]'
+          ck "…and is the aerogyan:// handler (xdg-mime)" '[ "$(HOME=$HOME_T XDG_CONFIG_HOME=$HOME_T/.config XDG_DATA_HOME=$HOME_T/.local/share xdg-mime query default x-scheme-handler/aerogyan)" = tech.aerogyan.app.desktop ]'
+          cat "$L" 2>/dev/null || tail -30 appimage.log
+          cat $R
+          echo "::notice title=linux::$(grep -c '^PASS' $R) passed · $(grep -c '^FAIL' $R) failed"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: out/*
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-report-${{ matrix.os }}
+          path: |
+            report/*
+            selftest-mac/**
+            selftest-linux/**
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ---- the same .deb and AppImage on Ubuntu 24.04 (AppArmor limits user namespaces there) ----
+  ubuntu-2404:
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux
+          path: out
+      - name: Install and run on Ubuntu 24.04
+        run: |
+          R=report-2404.txt; : > $R
+          ck() { if eval "$2"; then echo "PASS  $1" >> $R; else echo "FAIL  $1" >> $R; echo "::warning title=ubuntu 24.04::$1"; fi; }
+          echo "AeroGyan $VERSION on $(. /etc/os-release; echo $PRETTY_NAME) — apparmor_restrict_unprivileged_userns=$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo n/a)" >> $R
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libfuse2t64 >/dev/null || sudo apt-get install -y -qq xvfb >/dev/null
+          ck ".deb installs on 24.04" 'sudo apt-get install -y -qq "./out/AeroGyan-$VERSION.deb" >/dev/null'
+          ck "AppArmor profile loaded for /opt/AeroGyan/aerogyan" '[ -f /etc/apparmor.d/aerogyan ] || ! sudo aa-enabled -q 2>/dev/null'
+          xvfb-run -a timeout 200 aerogyan --aero-selftest="$PWD/st-deb" > st-deb.log 2>&1 || true
+          if [ -f st-deb/report.txt ]; then sed 's/^\(PASS\|FAIL\)  /\1  [deb 24.04] /' st-deb/report.txt | grep -E '^(PASS|FAIL|RESULT)' >> $R; else echo "FAIL  [deb 24.04] the self-test wrote a report (with the sandbox)" >> $R; tail -30 st-deb.log; fi
+          sudo apt-get remove -y -qq aerogyan >/dev/null || true
+          A="$PWD/out/AeroGyan-$VERSION.AppImage"; chmod +x "$A"
+          xvfb-run -a timeout 200 "$A" --aero-selftest="$PWD/st-img" > st-img.log 2>&1 || true
+          if [ -f st-img/report.txt ]; then sed 's/^\(PASS\|FAIL\)  /\1  [AppImage 24.04] /' st-img/report.txt | grep -E '^(PASS|FAIL|RESULT)' >> $R; else echo "FAIL  [AppImage 24.04] the self-test wrote a report" >> $R; tail -30 st-img.log; fi
+          cat $R
+          echo "::notice title=ubuntu 24.04::$(grep -c '^PASS' $R) passed · $(grep -c '^FAIL' $R) failed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-report-ubuntu-2404
+          path: report-2404.txt
+          retention-days: 30
+
+  publish:
+    needs: [version, build, ubuntu-2404]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: dl
+      - name: Files + report
+        id: files
+        run: |
+          set -e
+          mkdir -p release
+          for f in "AeroGyan-$VERSION.dmg" "AeroGyan-$VERSION.AppImage" "AeroGyan-$VERSION.deb"; do
+            P=$(find dl -name "$f" | head -1)
+            test -n "$P" || { echo "::error::$f missing"; exit 1; }
+            cp "$P" release/
+          done
+          # sane sizes: a real Electron app, under the website's limits (dmg 600 MB, Linux 400 MB)
+          sz() { stat -c %s "release/$1"; }
+          [ "$(sz AeroGyan-$VERSION.dmg)" -gt 80000000 ] && [ "$(sz AeroGyan-$VERSION.dmg)" -lt 600000000 ] || { echo "::error::dmg size $(sz AeroGyan-$VERSION.dmg)"; exit 1; }
+          [ "$(sz AeroGyan-$VERSION.AppImage)" -gt 60000000 ] && [ "$(sz AeroGyan-$VERSION.AppImage)" -lt 400000000 ] || { echo "::error::AppImage size"; exit 1; }
+          [ "$(sz AeroGyan-$VERSION.deb)" -gt 40000000 ] && [ "$(sz AeroGyan-$VERSION.deb)" -lt 400000000 ] || { echo "::error::deb size"; exit 1; }
+          R="release/desktop-test-report-$VERSION.txt"
+          {
+            echo "AeroGyan $VERSION for Mac & Linux — test report"
+            echo "Built: $(date -u '+%Y-%m-%d %H:%M UTC') · commit ${GITHUB_SHA:0:7}"
+            for n in mac linux report-2404; do
+              f=$(find dl -name "$n.txt" | head -1)
+              echo; echo "=== ${n#report-} ==="
+              if [ -n "$f" ]; then cat "$f"; else echo "FAIL  no report ($n.txt)"; fi
+            done
+          } | tr -d '\r' > "$R"
+          cat "$R"
+          ls -l release
+          echo "fails=$(grep -c '^FAIL' "$R" || true)" >> "$GITHUB_OUTPUT"
+          echo "passes=$(grep -c '^PASS' "$R" || true)" >> "$GITHUB_OUTPUT"
+          {
+            echo 'sums<<EOF'
+            (cd release && sha256sum AeroGyan-*)
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish as a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          name: AeroGyan for Mac & Linux ${{ env.VERSION }}
+          make_latest: false
+          body: |
+            The AeroGyan app for macOS and Linux:
+            • AeroGyan-${{ env.VERSION }}.dmg — macOS 11+, Intel and Apple silicon. Not notarized yet: the first open needs
+              System Settings → Privacy & Security → Open Anyway (macOS 14 or older: right-click → Open).
+            • AeroGyan-${{ env.VERSION }}.AppImage — any 64-bit Linux, updates itself (Ubuntu 22.04+: may need libfuse2).
+            • AeroGyan-${{ env.VERSION }}.deb — Ubuntu / Debian; the app offers new versions.
+            Publish them on the website: Admin → Apps → Mac & Linux → "Publish latest from GitHub" (also automatic every 20 minutes).
+            Self-test: ${{ steps.files.outputs.passes }} passed, ${{ steps.files.outputs.fails }} failed (desktop-test-report-${{ env.VERSION }}.txt).
+
+            SHA-256:
+            ```
+            ${{ steps.files.outputs.sums }}
+            ```
+          files: release/*

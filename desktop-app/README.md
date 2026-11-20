@@ -1,4 +1,4 @@
-# AeroGyan desktop app (Windows · macOS later)
+# AeroGyan desktop app (Windows · macOS · Linux)
 
 A real installed app — not a browser shortcut. It opens `https://aerogyan.tech/app` in its own
 window with its own icon, Start-menu and desktop entry, and appears in **Settings › Apps**.
@@ -51,9 +51,39 @@ npm start            # opens the app
 npm run dist:win     # builds the installer (on Windows)
 ```
 
-## macOS (next)
-The same code builds a Mac app (`npm run dist:mac` on a Mac). For students to open it without
-warnings it must be signed and notarized with an Apple Developer account (99 USD / year).
+## macOS and Linux (2026-11-20)
+The same code builds the Mac and Linux apps (`npm run dist:mac` on a Mac, `npm run dist:linux` on Linux).
+In the cloud: workflow `.github/workflows/desktop-app.yml` (branch `desktop-maclinux`) runs on a tag
+`desktop-v1.0.N` (or by hand with the version) and makes ONE Release `desktop-v1.0.N` with
+- `AeroGyan-1.0.N.dmg` — macOS 11+, one app for Intel and Apple silicon (built on `macos-15-intel`). Ad-hoc signed,
+  not notarized: the first open needs **System Settings → Privacy & Security → Open Anyway** (macOS 14 or older:
+  right-click → Open). Notarizing needs an Apple Developer account (99 USD / year); then set `identity`,
+  `hardenedRuntime` and `notarize` in `package.json` → `build.mac`.
+- `AeroGyan-1.0.N.AppImage` — any 64-bit Linux; updates itself from `https://aerogyan.tech/download/linux/`
+  (`latest-linux.yml`). On its first start it adds `~/.local/share/applications/tech.aerogyan.app.desktop` (the
+  applications menu + `aerogyan://` links) and rewrites it when it moves (an update renames the file). Ubuntu 22.04+
+  may need `libfuse2` (24.04: `libfuse2t64`).
+- `AeroGyan-1.0.N.deb` — Ubuntu / Debian: `/opt/AeroGyan`, `/usr/bin/aerogyan`, launcher `aerogyan.desktop` with
+  `aerogyan://`, electron-builder's AppArmor profile for Ubuntu 24.04.
+- `desktop-test-report-1.0.N.txt` — the checks and the self-test of each build (also on Ubuntu 24.04).
+
+Then **Admin → Apps → Mac & Linux → Publish latest from GitHub** (the server also takes new builds by itself every
+20 minutes). Downloads: `/download/mac`, `/download/linux` (AppImage), `/download/linux-deb`.
+
+Differences from Windows:
+- **Updates** — Windows and the AppImage update themselves. An unsigned Mac app cannot replace itself and a .deb
+  needs the admin password, so those ask `/api/app-release` every 6 hours and offer **Download** when a newer
+  version is out (once per version every 3 days).
+- **Screenshots** — blocked on Windows and macOS (content protection). Linux has no way for an app to keep its
+  window out of a capture, so it is not attempted there (the self-test lists it as info).
+- **Device key** — macOS IOPlatformUUID, Linux `/etc/machine-id` (Windows MachineGuid): one device slot per
+  computer for the main app and the Office packs.
+- User agent `AeroGyanApp/<v> (Desktop; macOS)` / `(Desktop; Linux)`.
+
+Try the self-test on a Mac (from VS Code's terminal Electron needs `env -u ELECTRON_RUN_AS_NODE`):
+```
+env -u ELECTRON_RUN_AS_NODE npx electron . --aero-selftest=/tmp/st && cat /tmp/st/report.txt
+```
 
 ## AeroGyan Office apps (same code, `OFFICE_SLUG`)
 Each of the 24 Office apps is the same program with its own id, name, icon, data folder and

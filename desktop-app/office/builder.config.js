@@ -46,6 +46,11 @@ const APPS = data.apps || [];
 const base = JSON.parse(JSON.stringify(pkg.build));
 delete base.protocols;                       // aerogyan:// links stay with the main app
 delete base.mac;                             // Windows only for now
+/* ⭐ 2026-11-20 — the main app's own Mac / Linux names and update feeds (packConfig sets the packs' own) */
+delete base.dmg;
+delete base.linux;
+delete base.appImage;
+delete base.deb;
 
 /* "AeroGyan Placement Prep" → "PlacementPrep" (file names; the website maps it back to the slug) */
 const fileShort = (s, fallback) => String(s || '').replace(/^AeroGyan\s+/, '').replace(/[^A-Za-z0-9]/g, '') || fallback;

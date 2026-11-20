@@ -1,6 +1,18 @@
 /* ============================================================
-   AeroGyan — desktop app (Windows now, macOS later)
+   AeroGyan — desktop app (Windows, macOS, Linux)
    ------------------------------------------------------------
+   ⭐ 2026-11-20 — macOS (universal .dmg) and Linux (.AppImage + .deb):
+   • aerogyan:// links: Windows registry / macOS Info.plist / the .deb's
+     launcher; the AppImage writes its own launcher on start
+     (integrateAppImage) so links and the applications menu find it.
+   • device key: Windows MachineGuid, macOS IOPlatformUUID, Linux
+     /etc/machine-id (one device slot per computer).
+   • content protection is Windows + macOS only — Linux has no way to
+     keep a window out of screenshots, so it is skipped there.
+   • updates: Windows + AppImage update themselves (electron-updater,
+     …/download/windows/ and …/download/linux/); the Mac app (not
+     notarized) and the .deb (needs the admin password) instead ask
+     /api/app-release and offer to download the new version.
    A real installed app (not a browser shortcut). It opens the
    AeroGyan landing page (https://aerogyan.tech/) in its own window
    with its own icon, Start-menu / desktop entry and taskbar button;
@@ -45,11 +57,11 @@
    ============================================================ */
 'use strict';
 
-const { app, BrowserWindow, Menu, session, shell, dialog, Notification, screen, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, session, shell, dialog, Notification, screen, ipcMain, nativeTheme, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 
 /* an AeroGyan Office app? (null = the main AeroGyan app) */
 const OFFICE = (() => {
@@ -107,6 +119,7 @@ const START_URL = (OFFICE || PACK) ? APP_URL : 'https://aerogyan.tech/app';    /
 const APP_ID = OFFICE ? `tech.aerogyan.office.${OFFICE.slug}` : PACK ? `tech.aerogyan.pack.${PACK.id}` : 'tech.aerogyan.app';
 const PROTOCOL = 'aerogyan';                       // only the main app registers aerogyan:// links
 const IS_MAC = process.platform === 'darwin';
+const IS_LINUX = process.platform === 'linux';
 const OS_NAME = IS_MAC ? 'macOS' : (process.platform === 'win32' ? 'Windows' : 'Linux');
 const isColor = (c) => /^#[0-9a-f]{6}$/i.test(c || '');
 const BG = (OFFICE && isColor(OFFICE.color)) ? OFFICE.color : '#0b1226';
@@ -185,7 +198,7 @@ const hooks = { external: [], downloads: [], children: [] };
 /* ---------------------------------------------------------------- start-up */
 /* Windows notifications + taskbar grouping (a pack: the launched app's own id, or the pack's id for
    its home — each of its windows then sets its own, see packWindowDetails) */
-if (!IS_MAC) app.setAppUserModelId(PACK && LAUNCH_APP ? packAppId(LAUNCH_APP) : APP_ID);
+if (process.platform === 'win32') app.setAppUserModelId(PACK && LAUNCH_APP ? packAppId(LAUNCH_APP) : APP_ID);
 
 /* the app window (a pack: the one used last) — dialogs, updates and the self-test use it */
 let mainWin = null;
@@ -220,7 +233,10 @@ if (!gotLock) {
   });
   app.on('open-url', (e, url) => {                   // macOS deep links
     e.preventDefault();
-    if (mainWin) openDeepLink(url); else pendingDeepLink = url;
+    if (mainWin) { openDeepLink(url); mainWin.show(); mainWin.focus(); return; }
+    pendingDeepLink = url;
+    /* the app still runs in the Dock with every window closed: open one for the link */
+    if (app.isReady() && !PACK && !OFFICE) createMainWindow();
   });
   pendingDeepLink = process.argv.find((a) => typeof a === 'string' && a.startsWith(PROTOCOL + '://')) || null;
 
@@ -230,7 +246,10 @@ if (!gotLock) {
 function onReady() {
   log('start', APP_NAME, app.getVersion(), 'electron', process.versions.electron, OS_NAME, SELFTEST_DIR ? 'SELFTEST' : '');
   if (app.isPackaged && !SELFTEST_DIR && !OFFICE && !PACK) {
-    try { app.setAsDefaultProtocolClient(PROTOCOL); } catch (_) {}
+    /* Linux: the .deb's launcher declares aerogyan:// (MimeType) and the AppImage writes its own —
+       Electron's xdg-settings call would name a launcher that may not exist */
+    if (IS_LINUX) integrateAppImage();
+    else try { app.setAsDefaultProtocolClient(PROTOCOL); } catch (_) {}
   }
   setupSession(session.defaultSession);
   Menu.setApplicationMenu(IS_MAC ? buildMacMenu() : null);
@@ -290,8 +309,9 @@ function setupSession(ses) {
 }
 
 /* ---------------------------------------------------------------- device key */
-/* base64url(sha256("aerogyan-device:" + MachineGuid)), the same in every AeroGyan app on
-   this PC (main app + Office apps) so they count as one device. "" if it can't be read. */
+/* base64url(sha256("aerogyan-device:" + machine id)), the same in every AeroGyan app on
+   this computer (main app + Office apps) so they count as one device. "" if it can't be read.
+   machine id = Windows MachineGuid · macOS IOPlatformUUID · Linux /etc/machine-id */
 let DEVICE_KEY = null;
 function machineId() {
   const opts = { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] };
@@ -301,11 +321,12 @@ function machineId() {
     const m = /MachineGuid\s+REG_SZ\s+(\S+)/i.exec(out);
     return m ? m[1].trim() : '';
   }
-  if (IS_MAC) {                                    // not used by Windows; handy when testing on a Mac
-    const m = /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(execFileSync('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], opts));
+  if (IS_MAC) {                                    // the Mac's hardware UUID (System Information → Hardware UUID)
+    const ioreg = fs.existsSync('/usr/sbin/ioreg') ? '/usr/sbin/ioreg' : 'ioreg';     // a Finder launch has a short PATH
+    const m = /"IOPlatformUUID"\s*=\s*"([^"]+)"/.exec(execFileSync(ioreg, ['-rd1', '-c', 'IOPlatformExpertDevice'], opts));
     return m ? m[1] : '';
   }
-  for (const f of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
+  for (const f of ['/etc/machine-id', '/var/lib/dbus/machine-id']) {     // Linux (systemd / D-Bus)
     try { const v = fs.readFileSync(f, 'utf8').trim(); if (v) return v; } catch (_) {}
   }
   return '';
@@ -612,7 +633,11 @@ function ciClickLoop() {
   }, 500);
 }
 
+/* screenshots / recording / screen sharing see a black window — Windows and macOS only: Linux (X11 and
+   Wayland) has no way for an app to keep its window out of a capture, so there is nothing to switch on */
+const CAN_PROTECT = process.platform === 'win32' || IS_MAC;
 function protect(win) {
+  if (!CAN_PROTECT) return;
   try { win.setContentProtection(true); } catch (e) { log('content protection failed', e); }
 }
 
@@ -856,8 +881,23 @@ function openDeepLink(link) {
 }
 
 /* ---------------------------------------------------------------- updates */
+/* how this copy updates: 'self' = electron-updater (Windows installer, Linux AppImage), 'mac' / 'deb' = it asks
+   aerogyan.tech for a newer version and offers the download, '' = never (not packaged, the self-test, a bare
+   Linux folder) */
+function updateKind() {
+  if (!app.isPackaged || SELFTEST_DIR) return '';
+  if (process.platform === 'win32') return 'self';
+  if (IS_MAC) return OFFICE ? '' : 'mac';                    // an unsigned Mac app cannot replace itself
+  if (process.env.APPIMAGE) return 'self';                   // the AppImage swaps its own file
+  let type = '';
+  try { type = fs.readFileSync(path.join(process.resourcesPath, 'package-type'), 'utf8').trim(); } catch (_) {}
+  return type === 'deb' && !OFFICE ? 'deb' : '';             // a .deb update needs the admin password: offer it
+}
+
 function setupAutoUpdate() {
-  if (!app.isPackaged || SELFTEST_DIR || IS_MAC) return;      // macOS updates need a signed app
+  const kind = updateKind();
+  if (kind === 'mac' || kind === 'deb') return setupUpdateNotice(kind);
+  if (kind !== 'self') return;
   let autoUpdater;
   try { ({ autoUpdater } = require('electron-updater')); } catch (e) { log('updater missing', e); return; }
   autoUpdater.autoDownload = true;
@@ -881,4 +921,99 @@ function setupAutoUpdate() {
   const check = () => { autoUpdater.checkForUpdates().catch((e) => log('[update] check failed', e && e.message)); };
   setTimeout(check, 20 * 1000);
   setInterval(check, 6 * 60 * 60 * 1000);
+}
+
+/* "1.0.10" > "1.0.9" */
+function cmpVersion(a, b) {
+  const pa = String(a || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
+/* macOS and the Linux .deb: every 6 hours ask /api/app-release (a pack: ?pack=<id>) for this system's newest
+   version; when it is newer, offer to download it (once per version every 3 days). The download opens in the
+   browser; sign-in and settings stay, they live in the user's data folder. */
+function setupUpdateNotice(plat) {
+  const api = 'https://aerogyan.tech/api/app-release' + (PACK ? '?pack=' + encodeURIComponent(PACK.id) : '');
+  const noteFile = path.join(app.getPath('userData'), 'update-notice.json');
+  let busy = false;
+  const check = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const res = await net.fetch(api, { headers: { Accept: 'application/json' } });
+      if (!res.ok) { log('[update] notice: HTTP', res.status); return; }
+      const rel = ((await res.json()) || {})[plat];
+      if (!rel || !rel.available || cmpVersion(rel.version, app.getVersion()) <= 0) return;
+      const version = String(rel.version).replace(/[^0-9A-Za-z.-]/g, '').slice(0, 20);
+      let seen = {};
+      try { seen = JSON.parse(fs.readFileSync(noteFile, 'utf8')) || {}; } catch (_) {}
+      if (seen.version === version && Date.now() - Number(seen.at || 0) < 3 * 24 * 3600 * 1000) return;
+      const url = parse(new URL(String(rel.url || ''), 'https://aerogyan.tech/').toString());
+      if (!url || url.protocol !== 'https:' || !isOwnHost(url.hostname)) return;
+      const win = mainWin && !mainWin.isDestroyed() ? mainWin : null;
+      if (!win) return;                                   // no window (Mac, all closed): ask on the next check
+      try { fs.writeFileSync(noteFile, JSON.stringify({ version, at: Date.now() })); } catch (_) {}
+      log('[update] offering', version, url.toString());
+      const how = plat === 'mac'
+        ? `Download it, quit ${APP_NAME} (⌘Q), open the downloaded file and drag ${APP_NAME} to Applications — choose Replace.`
+        : 'Download it and open the .deb file to install it over this version (or run: sudo apt install ./<file>.deb).';
+      const r = await dialog.showMessageBox(win, {
+        type: 'info', buttons: ['Download', 'Later'], defaultId: 0, cancelId: 1,
+        title: 'Update available',
+        message: `${APP_NAME} ${version} is available (you have ${app.getVersion()})`,
+        detail: how + ' You stay signed in.'
+      });
+      if (r.response === 0) openExternal(url.toString());
+    } catch (e) {
+      log('[update] notice failed', e && e.message);
+    } finally {
+      busy = false;
+    }
+  };
+  setTimeout(check, 30 * 1000);
+  setInterval(check, 6 * 60 * 60 * 1000);
+}
+
+/* Linux AppImage: one file nobody "installs", so on start the app puts its own launcher in the applications menu
+   (~/.local/share/applications/tech.aerogyan.app.desktop) and makes it the handler of aerogyan:// links. The
+   launcher points at wherever the AppImage is now — it moves when it updates itself (AeroGyan-1.0.9.AppImage),
+   so it is rewritten whenever that changes. The .deb has its own launcher (from the package). */
+function integrateAppImage() {
+  const img = process.env.APPIMAGE || '';
+  /* (a path with " ` $ \ would need two layers of desktop-entry escaping — such a folder is left alone) */
+  if (!IS_LINUX || !img || !path.isAbsolute(img) || /["`$\\\n\r]/.test(img)) return;
+  try {
+    const dataHome = process.env.XDG_DATA_HOME && path.isAbsolute(process.env.XDG_DATA_HOME)
+      ? process.env.XDG_DATA_HOME : path.join(app.getPath('home'), '.local', 'share');
+    const appsDir = path.join(dataHome, 'applications');
+    const iconDir = path.join(dataHome, 'icons', 'hicolor', '256x256', 'apps');
+    fs.mkdirSync(appsDir, { recursive: true });
+    fs.mkdirSync(iconDir, { recursive: true });
+    const icon = path.join(iconDir, 'tech.aerogyan.app.png');
+    const iconData = fs.readFileSync(ICON);
+    let oldIcon = null;
+    try { oldIcon = fs.readFileSync(icon); } catch (_) {}
+    if (!oldIcon || !oldIcon.equals(iconData)) fs.writeFileSync(icon, iconData);
+    /* Exec: the path in double quotes, % doubled (desktop entry spec) */
+    const exec = '"' + img.replace(/%/g, '%%') + '" %U';
+    const entry = ['[Desktop Entry]', 'Type=Application', 'Name=AeroGyan', 'GenericName=Learning app',
+      'Comment=AeroGyan Education — courses, notes, tests and live classes', `Exec=${exec}`, 'Icon=tech.aerogyan.app',
+      'Terminal=false', 'Categories=Education;', `MimeType=x-scheme-handler/${PROTOCOL};`, 'StartupWMClass=AeroGyan',
+      'X-AppImage-Version=' + app.getVersion()].join('\n') + '\n';
+    const file = path.join(appsDir, 'tech.aerogyan.app.desktop');
+    let old = '';
+    try { old = fs.readFileSync(file, 'utf8'); } catch (_) {}
+    if (old === entry) return;
+    fs.writeFileSync(file, entry, { mode: 0o644 });
+    log('appimage launcher written', file, '→', img);
+    const quiet = () => {};
+    execFile('xdg-mime', ['default', 'tech.aerogyan.app.desktop', `x-scheme-handler/${PROTOCOL}`], { timeout: 10000 }, quiet);
+    execFile('update-desktop-database', [appsDir], { timeout: 10000 }, quiet);
+    execFile('gtk-update-icon-cache', ['-q', '-t', '-f', path.join(dataHome, 'icons', 'hicolor')], { timeout: 10000 }, quiet);
+  } catch (e) { log('appimage launcher failed', e); }
 }

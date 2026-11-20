@@ -12,7 +12,8 @@
     "start": "electron .",
     "selftest": "electron . --aero-selftest=./selftest-out",
     "dist:win": "electron-builder --win nsis --x64 --publish never",
-    "dist:mac": "electron-builder --mac dmg --universal --publish never"
+    "dist:mac": "electron-builder --mac dmg --universal --publish never",
+    "dist:linux": "electron-builder --linux AppImage deb --x64 --publish never"
   },
   "dependencies": {
     "electron-updater": "^6.3.9"
@@ -63,8 +64,35 @@
     "mac": {
       "category": "public.app-category.education",
       "icon": "build/icon.png",
-      "target": ["dmg"],
-      "artifactName": "AeroGyan-${version}-mac.${ext}"
-    }
+      "target": [{ "target": "dmg", "arch": ["universal"] }],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "AeroGyan-${version}.${ext}",
+      "publish": [
+        { "provider": "generic", "url": "https://aerogyan.tech/download/mac/" }
+      ]
+    },
+    "dmg": {
+      "title": "AeroGyan ${version}",
+      "artifactName": "AeroGyan-${version}.${ext}"
+    },
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }, { "target": "deb", "arch": ["x64"] }],
+      "icon": "build/icon.png",
+      "category": "Education",
+      "executableName": "aerogyan",
+      "synopsis": "AeroGyan Education — courses, notes, tests and live classes",
+      "description": "The AeroGyan Education app: your courses, notes, tests, live classes and AI help in their own window, with one sign-in.",
+      "maintainer": "AeroGyan Education <apps@aerogyan.tech>",
+      "vendor": "AeroGyan Education",
+      "desktop": { "entry": { "StartupWMClass": "AeroGyan" } },
+      "artifactName": "AeroGyan-${version}.${ext}",
+      "publish": [
+        { "provider": "generic", "url": "https://aerogyan.tech/download/linux/" }
+      ]
+    },
+    "appImage": { "artifactName": "AeroGyan-${version}.AppImage" },
+    "deb": { "artifactName": "AeroGyan-${version}.deb", "packageName": "aerogyan" }
   }
 }
