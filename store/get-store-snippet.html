@@ -1,0 +1,134 @@
+<!-- ============================================================
+     ⭐ 2026-11-20 — "Get AeroGyan Store" block (एरोज्ञान स्टोर)
+     Paste this whole block where it should appear — the landing page (its anchor is #store: /download/store/<plat>
+     sends visitors to /#store while nothing is published, and aeroStoreOpen() opens /#store) or the /software page.
+     Self-contained: its own styles (prefix .ags-), no outside libraries, works without JavaScript (plain links).
+     With JavaScript it picks the visitor's device, shows the store's version and size from GET /api/store, and
+     follows the page language (<html lang="hi"> → Hindi) or the EN / हिं buttons in the block.
+     Placed somewhere else than the landing page? Change the 302 target in backend/internal/media/storerelease.go
+     ("/#store") and aeroStoreOpen in legacy-node/store.js.
+     ============================================================ -->
+<section id="store" class="ags" aria-labelledby="agsTitle">
+  <style>
+    .ags{--ags-bg:#f5f6ff;--ags-card:#fff;--ags-ink:#141a33;--ags-muted:#5a6280;--ags-line:#dfe2f5;--ags-brand:#4f46e5;--ags-brand2:#3730a3;--ags-ok:#0f8a5f;
+      background:var(--ags-bg);color:var(--ags-ink);padding:56px 16px;font:inherit}
+    @media (prefers-color-scheme:dark){.ags{--ags-bg:#0f1226;--ags-card:#171b36;--ags-ink:#eef0ff;--ags-muted:#a6acd0;--ags-line:#2a3060;--ags-brand:#8b86ff;--ags-brand2:#c7c4ff;--ags-ok:#4ad295}}
+    [data-theme="dark"] .ags,.dark .ags{--ags-bg:#0f1226;--ags-card:#171b36;--ags-ink:#eef0ff;--ags-muted:#a6acd0;--ags-line:#2a3060;--ags-brand:#8b86ff;--ags-brand2:#c7c4ff;--ags-ok:#4ad295}
+    .ags *{box-sizing:border-box}
+    .ags-in{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:auto minmax(0,1fr);gap:28px;align-items:center}
+    .ags-in>div{min-width:0}
+    .ags-icon{width:120px;height:120px;border-radius:28px;box-shadow:0 12px 32px rgba(55,48,163,.28)}
+    .ags-kick{display:inline-flex;gap:8px;align-items:center;font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--ags-brand);text-transform:uppercase}
+    .ags h2{margin:6px 0 8px;font-size:clamp(26px,3.2vw,36px);line-height:1.15}
+    .ags p{margin:0 0 14px;color:var(--ags-muted);font-size:16px;line-height:1.55;max-width:62ch}
+    .ags-pts{display:flex;flex-wrap:wrap;gap:8px 18px;margin:0 0 18px;padding:0;list-style:none;font-size:14px}
+    .ags-pts li::before{content:"✓";color:var(--ags-ok);font-weight:700;margin-right:6px}
+    .ags-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    .ags-btn{display:inline-flex;align-items:center;gap:10px;min-height:48px;padding:12px 20px;border-radius:14px;background:#4f46e5;color:#fff;
+      font-weight:700;font-size:16px;text-decoration:none;border:0;cursor:pointer}
+    .ags-btn:hover{filter:brightness(1.08)}
+    .ags-btn:focus-visible,.ags-alt a:focus-visible,.ags-lang button:focus-visible{outline:3px solid var(--ags-brand2);outline-offset:3px}
+    .ags-btn small{font-weight:500;opacity:.85;font-size:13px}
+    .ags-alt{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px;margin-top:12px}
+    .ags-alt a{color:var(--ags-brand);text-decoration:none;font-weight:600}
+    .ags-alt a:hover{text-decoration:underline}
+    .ags-note{font-size:13px;color:var(--ags-muted);margin-top:10px}
+    .ags-lang{display:inline-flex;border:1px solid var(--ags-line);border-radius:999px;overflow:hidden;margin-left:auto}
+    .ags-lang button{background:transparent;color:var(--ags-muted);border:0;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
+    .ags-lang button[aria-pressed="true"]{background:#4f46e5;color:#fff}
+    .ags-head{display:flex;gap:12px;align-items:center}
+    @media (max-width:640px){.ags{padding:40px 16px}.ags-in{grid-template-columns:minmax(0,1fr);gap:16px}.ags h2{overflow-wrap:anywhere}.ags-icon{width:84px;height:84px;border-radius:20px}.ags-btn{width:100%;justify-content:center}}
+  </style>
+  <div class="ags-in">
+    <img class="ags-icon" src="/store/icons/icon-256.png" width="120" height="120" alt="" loading="lazy">
+    <div>
+      <div class="ags-head">
+        <span class="ags-kick" data-ags="kick">AeroGyan Store · एरोज्ञान स्टोर</span>
+        <span class="ags-lang" role="group" aria-label="Language / भाषा">
+          <button type="button" data-ags-lang="en" aria-pressed="true">EN</button><button type="button" data-ags-lang="hi" aria-pressed="false" lang="hi">हिं</button>
+        </span>
+      </div>
+      <h2 id="agsTitle" data-ags="title">All our apps. One tap to install and update.</h2>
+      <p data-ags="line">AeroGyan, the Office apps for students and professors, Jivan Medico, Drishya and Ganak — in one app that installs them and keeps every one up to date.</p>
+      <ul class="ags-pts">
+        <li data-ags="p1">Only our own apps</li>
+        <li data-ags="p2">Every file checked before it installs</li>
+        <li data-ags="p3">Update all in one tap</li>
+        <li data-ags="p4">English and हिन्दी</li>
+      </ul>
+      <div class="ags-row">
+        <a class="ags-btn" id="agsMain" href="/download/store/android" rel="nofollow">
+          <span data-ags="get">Get AeroGyan Store</span> <small id="agsMeta"></small>
+        </a>
+      </div>
+      <div class="ags-alt" id="agsAlt">
+        <a href="/download/store/android" data-ags-plat="android">Android</a>
+        <a href="/download/store/windows" data-ags-plat="windows">Windows</a>
+        <a href="/download/store/mac" data-ags-plat="mac">Mac</a>
+        <a href="/download/store/linux" data-ags-plat="linux">Linux (AppImage)</a>
+        <a href="/download/store/deb" data-ags-plat="deb">Linux (.deb)</a>
+      </div>
+      <div class="ags-note" id="agsNote" data-ags="note">Android: allow “Install unknown apps” for the store once when asked. Mac: first open with right-click → Open.</div>
+    </div>
+  </div>
+  <script>
+  (function () {
+    'use strict';
+    var root = document.getElementById('store');
+    if (!root) return;
+    var T = {
+      en: { kick: 'AeroGyan Store', title: 'All our apps. One tap to install and update.',
+        line: 'AeroGyan, the Office apps for students and professors, Jivan Medico, Drishya and Ganak — in one app that installs them and keeps every one up to date.',
+        p1: 'Only our own apps', p2: 'Every file checked before it installs', p3: 'Update all in one tap', p4: 'English and हिन्दी',
+        get: 'Get AeroGyan Store', getFor: 'Get AeroGyan Store for ', soon: 'Coming soon',
+        note: 'Android: allow “Install unknown apps” for the store once when asked. Mac: first open with right-click → Open.',
+        ios: 'Not on iPhone or iPad yet — open aerogyan.tech/apps to add our apps to your Home Screen.',
+        names: { android: 'Android', windows: 'Windows', mac: 'Mac', linux: 'Linux (AppImage)', deb: 'Linux (.deb)' } },
+      hi: { kick: 'एरोज्ञान स्टोर', title: 'हमारे सभी ऐप। एक टैप में इंस्टॉल और अपडेट।',
+        line: 'एरोज्ञान, छात्रों और प्रोफ़ेसरों के ऑफ़िस ऐप, जीवन मेडिको, दृश्य और गणक — एक ऐप में, जो इन्हें इंस्टॉल करता है और हर ऐप को अपडेट रखता है।',
+        p1: 'सिर्फ़ हमारे अपने ऐप', p2: 'इंस्टॉल से पहले हर फ़ाइल की जाँच', p3: 'एक टैप में सब अपडेट', p4: 'हिन्दी और English',
+        get: 'एरोज्ञान स्टोर पाएँ', getFor: 'एरोज्ञान स्टोर पाएँ — ', soon: 'जल्द आ रहा है',
+        note: 'Android: पूछे जाने पर स्टोर के लिए एक बार “Install unknown apps” की अनुमति दें। Mac: पहली बार राइट-क्लिक → Open से खोलें।',
+        ios: 'iPhone/iPad पर अभी नहीं — aerogyan.tech/apps खोलकर हमारे ऐप होम स्क्रीन पर जोड़ें।',
+        names: { android: 'Android', windows: 'Windows', mac: 'Mac', linux: 'Linux (AppImage)', deb: 'Linux (.deb)' } }
+    };
+    var ua = navigator.userAgent || '', plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    var ios = /iPhone|iPad|iPod/.test(ua) || (/Mac/.test(plat) && navigator.maxTouchPoints > 1);
+    var os = /Android/i.test(ua) ? 'android' : ios ? 'ios' : /Win/i.test(plat) ? 'windows' : /Mac/i.test(plat) ? 'mac' : /CrOS/.test(ua) ? 'android' : /Linux/i.test(plat) ? 'linux' : 'windows';
+    if (os === 'linux' && /Ubuntu|Debian/i.test(ua)) os = 'deb';
+    var files = null, lang = 'en';
+    try { lang = localStorage.getItem('agsLang') || ((document.documentElement.lang || '').slice(0, 2) === 'hi' ? 'hi' : 'en'); } catch (_) { /* storage blocked */ }
+    function size(n) { n = Number(n || 0); return n >= 1048576 ? (n / 1048576).toFixed(n >= 104857600 ? 0 : 1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+    function render() {
+      var t = T[lang];
+      root.querySelectorAll('[data-ags]').forEach(function (el) { var k = el.getAttribute('data-ags'); if (t[k]) el.textContent = t[k]; });
+      root.querySelectorAll('[data-ags-lang]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-ags-lang') === lang)); });
+      root.setAttribute('lang', lang);
+      var main = document.getElementById('agsMain'), meta = document.getElementById('agsMeta'), note = document.getElementById('agsNote');
+      var p = os === 'ios' ? null : os;
+      if (!p) {
+        main.setAttribute('href', '/apps/'); main.querySelector('[data-ags="get"]').textContent = 'aerogyan.tech/apps'; meta.textContent = '';
+        note.textContent = t.ios;
+      } else {
+        var f = files && files[p];
+        main.setAttribute('href', '/download/store/' + p);
+        main.querySelector('[data-ags="get"]').textContent = t.getFor + t.names[p];
+        meta.textContent = files ? (f && f.available ? 'v' + f.version + ' · ' + size(f.size) : t.soon) : '';
+      }
+      root.querySelectorAll('[data-ags-plat]').forEach(function (a) {
+        var k = a.getAttribute('data-ags-plat'), f = files && files[k];
+        a.textContent = t.names[k] + (files && !(f && f.available) ? ' · ' + t.soon : '');
+        a.hidden = k === p;
+      });
+    }
+    root.querySelectorAll('[data-ags-lang]').forEach(function (b) {
+      b.addEventListener('click', function () { lang = b.getAttribute('data-ags-lang'); try { localStorage.setItem('agsLang', lang); } catch (_) { /* fine */ } render(); });
+    });
+    render();
+    fetch('/api/store', { cache: 'no-store', credentials: 'omit' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (c) {
+      var s = c && c.apps && c.apps.filter(function (x) { return x.id === 'store'; })[0];
+      if (s) { files = s.platforms || {}; render(); }
+    }).catch(function () { /* the plain links still work */ });
+  })();
+  </script>
+</section>

@@ -1,5 +1,5 @@
 {
- "_about": "AeroGyan Store catalogue (2026-11-20). What the store shows besides the live release info: names and lines in English and Hindi, audience, package names, desktop install ids. The server (backend/internal/media/store.go) merges this with release.json (AeroGyan, Office, the store itself) and the other products' /api/app-release (storefetch.go) into GET /api/store. Office apps and packs come from office/apps.json; here only their Hindi names. Signing-certificate fingerprints are informational here: the store apps PIN their own copy and never trust this file for that.",
+ "_about": "AeroGyan Store catalogue (2026-11-20). What the store shows besides the live release info: names and lines in English and Hindi, audience, package names, desktop install ids. The server (backend/internal/media/store.go) merges this with release.json (AeroGyan, Office, the store itself) and the other products' /api/app-release (via the software hub, storeremote.go) into GET /api/store. Office apps and packs come from office/apps.json; here only their Hindi names. Signing-certificate fingerprints are informational here: the store apps PIN their own copy and never trust this file for that.",
  "schema": 1,
  "signers": {
   "aerogyan": "74a1df87c347394e78ca4b67c6730f07d683cfd3f9198d3e0e0a45a178ac4480",
@@ -54,7 +54,7 @@
    "id": "medico",
    "kind": "app",
    "source": "remote",
-   "base": "https://medico.aerogyan.tech",
+   "hub": "jivan",
    "name": "Jivan Medico",
    "nameHi": "जीवन मेडिको",
    "short": "Jivan",
@@ -75,7 +75,7 @@
    "id": "drishya",
    "kind": "app",
    "source": "remote",
-   "base": "https://drishya.aerogyan.tech",
+   "hub": "drishya",
    "name": "Drishya",
    "nameHi": "दृश्य",
    "short": "Drishya",
@@ -95,7 +95,7 @@
    "id": "ganak",
    "kind": "app",
    "source": "remote",
-   "base": "https://ganak.aerogyan.tech",
+   "hub": "ganak",
    "name": "Ganak",
    "nameHi": "गणक",
    "short": "Ganak",
