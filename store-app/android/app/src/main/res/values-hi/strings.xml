@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">एरोज्ञान स्टोर</string>
+
+    <!-- first run -->
+    <string name="welcome_title">एरोज्ञान स्टोर में आपका स्वागत है</string>
+    <string name="welcome_text">एरोज्ञान के सभी ऐप एक जगह — एक टैप में इंस्टॉल और अपडेट करें। सिर्फ़ हमारे अपने ऐप, और हर फ़ाइल इंस्टॉल से पहले जाँची जाती है।</string>
+    <string name="who_are_you">आप कौन हैं?</string>
+    <string name="role_student">छात्र</string>
+    <string name="role_student_desc">कोर्स, प्रैक्टिस, नोट्स और पढ़ाई के टूल</string>
+    <string name="role_professor">प्रोफ़ेसर</string>
+    <string name="role_professor_desc">पढ़ाना, हाज़िरी, ग्रेडिंग और विभाग के टूल</string>
+    <string name="role_everyone">बाकी सभी</string>
+    <string name="role_everyone_desc">सबके लिए स्वास्थ्य, वीडियो और कंप्यूटिंग ऐप</string>
+    <string name="btn_continue">आगे बढ़ें</string>
+    <string name="allow_title">एरोज्ञान स्टोर से इंस्टॉल की अनुमति दें</string>
+    <string name="allow_steps">1. “सेटिंग खोलें” पर टैप करें।\n2. “इस स्रोत से अनुमति दें” चालू करें।\n3. वापस आएँ — स्टोर अपने आप आगे बढ़ेगा।\nAndroid यह एक ही बार पूछता है। स्टोर सिर्फ़ एरोज्ञान के अपने ऐप इंस्टॉल करता है।</string>
+    <string name="allow_dialog">%1$s इंस्टॉल करने के लिए Android को एक बार आपकी अनुमति चाहिए।</string>
+    <string name="btn_open_settings">सेटिंग खोलें</string>
+    <string name="btn_later">बाद में</string>
+
+    <!-- main -->
+    <string name="search_hint">ऐप खोजें</string>
+    <string name="cd_search">खोजें</string>
+    <string name="cd_close_search">खोज बंद करें</string>
+    <string name="settings">सेटिंग</string>
+    <string name="tab_for_you">आपके लिए</string>
+    <string name="tab_all">सभी</string>
+    <string name="tab_updates">अपडेट</string>
+    <plurals name="cd_updates_tab">
+        <item quantity="one">अपडेट, %1$d अपडेट उपलब्ध</item>
+        <item quantity="other">अपडेट, %1$d अपडेट उपलब्ध</item>
+    </plurals>
+    <plurals name="n_updates">
+        <item quantity="one">%1$d अपडेट उपलब्ध है</item>
+        <item quantity="other">%1$d अपडेट उपलब्ध हैं</item>
+    </plurals>
+    <string name="group_apps">एरोज्ञान ऐप</string>
+    <string name="group_office">ऑफ़िस ऐप</string>
+    <string name="offline_banner">आप ऑफ़लाइन हैं — सहेजी हुई सूची दिख रही है।</string>
+    <string name="self_update_banner">एरोज्ञान स्टोर का नया वर्ज़न तैयार है।</string>
+    <string name="load_failed">ऐप लोड नहीं हो सके। इंटरनेट जाँचें और फिर कोशिश करें।</string>
+    <string name="all_up_to_date">आपके सभी ऐप अप-टू-डेट हैं।</string>
+    <string name="no_results">“%1$s” से कोई ऐप नहीं मिला।</string>
+    <string name="cd_open_details">%1$s की जानकारी</string>
+    <string name="cd_busy">%1$s इंस्टॉल हो रहा है</string>
+    <string name="cd_cancel">%1$s रद्द करें</string>
+
+    <!-- buttons -->
+    <string name="btn_install">इंस्टॉल करें</string>
+    <string name="btn_update">अपडेट करें</string>
+    <string name="btn_update_all">सभी अपडेट करें</string>
+    <string name="btn_open">खोलें</string>
+    <string name="btn_open_web">ब्राउज़र में खोलें</string>
+    <string name="btn_soon">जल्द आ रहा है</string>
+    <string name="btn_incompatible">इस फ़ोन के लिए नहीं</string>
+    <string name="btn_up_to_date">अप-टू-डेट</string>
+    <string name="btn_retry">फिर कोशिश करें</string>
+    <string name="btn_uninstall">अनइंस्टॉल करें</string>
+    <string name="btn_website">वेबसाइट खोलें</string>
+
+    <!-- state lines -->
+    <string name="state_starting">शुरू हो रहा है…</string>
+    <string name="state_downloading">%2$s में से %1$s डाउनलोड हुआ</string>
+    <string name="state_queued">इंटरनेट का इंतज़ार…</string>
+    <string name="state_wifi">Wi-Fi का इंतज़ार (बड़ी फ़ाइल)</string>
+    <string name="state_verifying">फ़ाइल जाँची जा रही है…</string>
+    <string name="state_installing">इंस्टॉल हो रहा है…</string>
+    <string name="state_confirm">पूरा करने के लिए Android स्क्रीन पर “इंस्टॉल करें” दबाएँ</string>
+    <string name="needs_computer">कंप्यूटर चाहिए — फ़ोन पर ब्राउज़र में खुलता है</string>
+    <string name="web_only">आपके ब्राउज़र में खुलता है</string>
+    <string name="coming_soon">Android ऐप जल्द आ रहा है</string>
+    <string name="needs_android">Android %1$s या नया चाहिए</string>
+    <string name="meta_size">%1$s · %2$s</string>
+    <string name="meta_installed">इंस्टॉल है · %1$s</string>
+    <string name="meta_update">%1$s → %2$s · %3$s</string>
+
+    <!-- detail -->
+    <string name="cd_back">वापस</string>
+    <string name="by_aerogyan">एरोज्ञान एजुकेशन</string>
+    <string name="about">परिचय</string>
+    <string name="features">खूबियाँ</string>
+    <plurals name="includes">
+        <item quantity="one">%1$d ऐप शामिल</item>
+        <item quantity="other">%1$d ऐप शामिल</item>
+    </plurals>
+    <string name="whats_new">नया क्या है</string>
+    <string name="no_notes">सुधार और ठीक की गई गड़बड़ियाँ।</string>
+    <string name="info">जानकारी</string>
+    <string name="info_version">वर्ज़न</string>
+    <string name="info_installed">इंस्टॉल है</string>
+    <string name="info_size">साइज़</string>
+    <string name="info_updated">अपडेट हुआ</string>
+    <string name="info_android">ज़रूरी</string>
+    <string name="info_android_value">Android %1$s या नया</string>
+    <string name="info_package">पैकेज</string>
+    <string name="trust_verified">इंस्टॉल से पहले जाँचा जाता है: फ़ाइल का SHA-256 मेल खाना चाहिए, और वह %1$s की अपनी की (key) से साइन होनी चाहिए, जो इस स्टोर में पहले से बनी है।</string>
+    <string name="trust_no_hash">यह फ़ाइल अभी जाँची नहीं जा सकती, इसलिए स्टोर इसे इंस्टॉल नहीं करेगा। कुछ मिनट बाद कोशिश करें, या वेबसाइट इस्तेमाल करें।</string>
+    <string name="trust_unknown">स्टोर इस ऐप को जाँच नहीं सकता, इसलिए यह इंस्टॉल नहीं होगा।</string>
+    <string name="trust_computer">कंप्यूटर के लिए बना है। फ़ोन पर यह ब्राउज़र में खुलता है — कंप्यूटर ऐप Windows, Mac या Linux पर एरोज्ञान स्टोर से लें।</string>
+    <string name="trust_web">यह ऐप आपके ब्राउज़र में खुलता है।</string>
+
+    <!-- settings -->
+    <string name="set_role">किसके ऐप दिखाएँ</string>
+    <string name="set_language">भाषा</string>
+    <string name="lang_system">फ़ोन की भाषा</string>
+    <string name="set_downloads">डाउनलोड और अपडेट</string>
+    <string name="set_wifi_big">बड़ी फ़ाइलें सिर्फ़ Wi-Fi पर</string>
+    <string name="set_wifi_big_desc">50 MB से बड़ी फ़ाइलें मोबाइल डेटा बचाने के लिए Wi-Fi का इंतज़ार करती हैं।</string>
+    <string name="set_auto">Wi-Fi पर ऐप अपने आप अपडेट करें</string>
+    <string name="set_auto_desc">इस स्टोर से इंस्टॉल हुए ऐप अपने आप अपडेट होते हैं। बाकी आपसे पूछते हैं।</string>
+    <string name="set_notify">अपडेट की सूचना दें</string>
+    <string name="set_notify_desc">स्टोर दिन में एक बार नए वर्ज़न देखता है।</string>
+    <string name="set_permission">इंस्टॉल की अनुमति</string>
+    <string name="perm_allowed">एरोज्ञान स्टोर ऐप इंस्टॉल कर सकता है।</string>
+    <string name="perm_not_allowed">अभी अनुमति नहीं — पहला ऐप इंस्टॉल करते समय Android पूछेगा।</string>
+    <string name="set_about">परिचय</string>
+    <string name="about_store">एरोज्ञान स्टोर %1$s। सिर्फ़ एरोज्ञान के अपने ऐप। हर डाउनलोड इंस्टॉल से पहले जाँचा जाता है: उसका SHA-256 कैटलॉग से मेल खाना चाहिए और उसकी साइनिंग की इस स्टोर में बनी कीज़ में से एक होनी चाहिए, इसलिए कोई नकली ऐप कभी इंस्टॉल नहीं हो सकता। डाउनलोड वहीं से फिर शुरू होते हैं जहाँ रुके थे।</string>
+
+    <!-- reasons a file is refused -->
+    <string name="rej_bad_url">मना किया: फ़ाइल एरोज्ञान की वेबसाइट पर नहीं है।</string>
+    <string name="rej_no_hash">यह ऐप अभी जाँचा नहीं जा सकता। कुछ मिनट बाद कोशिश करें, या वेबसाइट खोलें।</string>
+    <string name="rej_hash">मना किया: डाउनलोड हुई फ़ाइल वह नहीं है जो एरोज्ञान ने प्रकाशित की (चेक-सम अलग है)। कुछ भी इंस्टॉल नहीं हुआ।</string>
+    <string name="rej_not_apk">मना किया: डाउनलोड Android ऐप नहीं है।</string>
+    <string name="rej_not_ours">मना किया: यह एरोज्ञान का अपना ऐप नहीं है।</string>
+    <string name="rej_package">मना किया: फ़ाइल उस ऐप से अलग ऐप है जो आपने चुना था।</string>
+    <string name="rej_signer">मना किया: ऐप एरोज्ञान की की (key) से साइन नहीं है। यह नकली हो सकता है — कुछ भी इंस्टॉल नहीं हुआ।</string>
+    <string name="rej_older_than_listed">मना किया: सर्वर ने सूची में लिखे वर्ज़न से पुराना वर्ज़न भेजा।</string>
+    <string name="rej_not_newer">मना किया: यह वर्ज़न आपके फ़ोन वाले से नया नहीं है।</string>
+    <string name="rej_android">इस वर्ज़न को आपके फ़ोन से नया Android चाहिए।</string>
+
+    <!-- errors -->
+    <string name="err_network">डाउनलोड कई बार रुका। इंटरनेट जाँचें और “फिर कोशिश करें” दबाएँ।</string>
+    <string name="err_download_changed">डाउनलोड के दौरान सर्वर पर फ़ाइल बदल गई। नीचे खींचकर रीफ़्रेश करें और फिर कोशिश करें।</string>
+    <string name="err_not_in_catalogue">यह ऐप अब स्टोर में नहीं है।</string>
+    <string name="err_install_generic">Android ऐप इंस्टॉल नहीं कर सका। फिर कोशिश करें।</string>
+    <string name="err_install_cancelled">इंस्टॉल रद्द हुआ।</string>
+    <string name="err_install_storage">फ़ोन में जगह कम है। कुछ जगह खाली करें और फिर कोशिश करें।</string>
+    <string name="err_install_incompatible">यह ऐप आपके फ़ोन पर नहीं चलता।</string>
+    <string name="err_install_conflict">इस ऐप की एक और कॉपी अलग की से इंस्टॉल है। पहले उसे अनइंस्टॉल करें, फिर स्टोर से इंस्टॉल करें।</string>
+    <string name="err_install_blocked">आपके फ़ोन ने इंस्टॉल रोक दिया (डिवाइस नीति)।</string>
+    <string name="err_cannot_open">यह ऐप यहाँ से नहीं खुल सकता।</string>
+    <string name="err_no_browser">कोई ब्राउज़र नहीं मिला।</string>
+
+    <!-- notifications -->
+    <string name="ch_updates">अपडेट</string>
+    <string name="ch_updates_desc">आपके एरोज्ञान ऐप के नए वर्ज़न</string>
+    <string name="ch_downloads">डाउनलोड</string>
+    <string name="ch_downloads_desc">ऐप डाउनलोड की प्रगति</string>
+    <string name="ch_install">इंस्टॉल पूरा करें</string>
+    <string name="ch_install_desc">जब Android को ऐप इंस्टॉल करने के लिए आपकी मंज़ूरी चाहिए</string>
+    <string name="n_downloading">%1$s डाउनलोड हो रहा है</string>
+    <string name="n_confirm_title">%1$s का इंस्टॉल पूरा करें</string>
+    <string name="n_confirm_text">Android स्क्रीन पर पुष्टि करने के लिए टैप करें।</string>
+    <string name="n_installed">%1$s इंस्टॉल हो गया</string>
+    <string name="n_failed">%1$s इंस्टॉल नहीं हुआ</string>
+</resources>

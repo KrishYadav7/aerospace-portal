@@ -1,0 +1,185 @@
+# ============================================================
+#  AeroGyan Store — the Android app (tech.aerogyan.store), signed, in the cloud.
+#  Lives at .github/workflows/store-android.yml of branch store-apps (copy of
+#  legacy-node/store-app/ci/store-android.yml in the website repo).
+#
+#  Runs on a push to store-apps / store-apps-android (store-app/**, store/**,
+#  office/apps.json, this file), on a tag store-vX.Y.Z, or by hand.
+#    1. unit tests (verification rules, catalogue, downloads) + Robolectric
+#    2. assembleRelease signed with the store's OWN key (secrets STORE_KEYSTORE_BASE64,
+#       STORE_KEYSTORE_PASSWORD, STORE_KEY_ALIAS, STORE_KEY_PASSWORD; backup ~/.aerogyan-store-keys/)
+#    3. checks: package tech.aerogyan.store, versionCode X*10000+Y*100+Z, label, and the
+#       signing certificate's SHA-256 == the pinned store key (fails otherwise)
+#    4. artifact AeroGyanStore-X.Y.Z.apk; on a tag also the GitHub Release store-vX.Y.Z
+#       (shared with store-desktop.yml — whichever finishes first creates it)
+#  The website takes it with Admin → Apps → AeroGyan Store → "Publish from GitHub"
+#  (and by itself every 20 minutes).
+# ============================================================
+name: AeroGyan Store — Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [store-apps, store-apps-android]
+    tags: ['store-v*']
+    paths:
+      - 'store-app/**'
+      - 'store/**'
+      - 'office/apps.json'
+      - '.github/workflows/store-android.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: store-android-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  STORE_CERT_SHA256: 0968c5016f2f7732d6f12dd14adf018de261e031214a006cf98927877ed2a8f3
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version (store-app/VERSION; a tag must match it)
+        id: v
+        run: |
+          V=$(tr -d ' \r\n' < store-app/VERSION)
+          [[ "$V" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "::error::store-app/VERSION '$V' is not X.Y.Z"; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/store-v* ]]; then
+            T="${GITHUB_REF#refs/tags/store-v}"
+            [ "$T" = "$V" ] || { echo "::error::tag store-v$T but store-app/VERSION says $V"; exit 1; }
+          fi
+          CODE=$(( ${BASH_REMATCH[1]} * 10000 + ${BASH_REMATCH[2]} * 100 + ${BASH_REMATCH[3]} ))
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "Version $V (versionCode $CODE)"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Unit + Robolectric tests
+        working-directory: store-app/android
+        env:
+          VERSION_NAME: ${{ steps.v.outputs.version }}
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Test report
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          t = f = e = s = 0
+          for p in glob.glob('store-app/android/app/build/test-results/testDebugUnitTest/*.xml'):
+              r = ET.parse(p).getroot()
+              t += int(r.get('tests', 0)); f += int(r.get('failures', 0)); e += int(r.get('errors', 0)); s += int(r.get('skipped', 0))
+              for c in r.iter('testcase'):
+                  for bad in list(c.findall('failure')) + list(c.findall('error')):
+                      print('::error title=%s.%s::%s' % (c.get('classname'), c.get('name'), (bad.get('message') or '')[:300]))
+          print('::notice title=Android tests::%d tests, %d failures, %d errors, %d skipped' % (t, f, e, s))
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: store-android-test-results
+          path: store-app/android/app/build/reports/tests/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Check signing secrets
+        env:
+          KS: ${{ secrets.STORE_KEYSTORE_BASE64 }}
+          KSP: ${{ secrets.STORE_KEYSTORE_PASSWORD }}
+          KA: ${{ secrets.STORE_KEY_ALIAS }}
+          KP: ${{ secrets.STORE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$KSP" ] || [ -z "$KA" ] || [ -z "$KP" ]; then
+            echo "::error::The store's signing secrets are missing (STORE_KEYSTORE_BASE64 / _PASSWORD / STORE_KEY_ALIAS / STORE_KEY_PASSWORD)."
+            exit 1
+          fi
+
+      - name: Restore the store's signing key
+        env:
+          KS: ${{ secrets.STORE_KEYSTORE_BASE64 }}
+        run: echo "$KS" | base64 --decode > "$RUNNER_TEMP/store.jks"
+
+      - name: Build the signed APK
+        working-directory: store-app/android
+        env:
+          VERSION_NAME: ${{ steps.v.outputs.version }}
+          KEYSTORE_FILE: ${{ runner.temp }}/store.jks
+          KEYSTORE_PASSWORD: ${{ secrets.STORE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.STORE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.STORE_KEY_PASSWORD }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Remove the signing key from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/store.jks"
+
+      - name: Name + check the APK
+        id: apk
+        env:
+          V: ${{ steps.v.outputs.version }}
+          CODE: ${{ steps.v.outputs.code }}
+        run: |
+          set -e
+          OUT="AeroGyanStore-$V.apk"
+          mkdir -p out
+          cp store-app/android/app/build/outputs/apk/release/app-release.apk "out/$OUT"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          B=$("${BT}aapt2" dump badging "out/$OUT")
+          grep -E "^(package|sdkVersion|targetSdkVersion|application-label|launchable-activity|uses-permission)" <<<"$B"
+          grep -q "^package: name='tech.aerogyan.store' versionCode='$CODE' versionName='$V'" <<<"$B" || { echo "::error::wrong package / version (want tech.aerogyan.store $CODE $V)"; exit 1; }
+          grep -q "^application-label:'AeroGyan Store'" <<<"$B" || { echo "::error::label is not 'AeroGyan Store'"; exit 1; }
+          grep -q "^sdkVersion:'26'" <<<"$B" || { echo "::error::minSdk is not 26"; exit 1; }
+          grep -q "^launchable-activity: name='tech.aerogyan.store.MainActivity'" <<<"$B" || { echo "::error::no launcher activity"; exit 1; }
+          N=$("${BT}aapt2" dump xmltree --file AndroidManifest.xml "out/$OUT" | grep -c 'tech.aerogyan.office.' || true)
+          echo "Office packages in <queries>: $N"
+          [ "$N" -ge 50 ] || { echo "::error::only $N Office packages are visible to the store (<queries>)"; exit 1; }
+          "${BT}apksigner" verify --print-certs "out/$OUT" | tee certs.txt
+          "${BT}apksigner" verify "out/$OUT" || { echo "::error::the APK is not signed correctly"; exit 1; }
+          GOT=$(grep -m1 -i "certificate SHA-256 digest" certs.txt | awk -F': ' '{print $2}' | tr -d ' :' | tr 'A-F' 'a-f')
+          [ "$GOT" = "$STORE_CERT_SHA256" ] || { echo "::error::signed with $GOT, not the store key $STORE_CERT_SHA256"; exit 1; }
+          SUM=$(sha256sum "out/$OUT" | cut -d' ' -f1)
+          SIZE=$(stat -c %s "out/$OUT")
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+          echo "::notice title=AeroGyan Store $V::$OUT · $SIZE bytes · sha256 $SUM · cert $GOT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-android
+          path: out/*.apk
+          retention-days: 30
+
+      - name: Publish to the GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/store-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -e
+          TAG="store-v$V"
+          for i in 1 2 3 4 5 6; do
+            gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+              || gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+                   --title "AeroGyan Store $V" \
+                   --notes "AeroGyan Store $V — the store for our own apps. Android (tech.aerogyan.store, signed with the store key, cert SHA-256 $STORE_CERT_SHA256) and Windows / Mac / Linux. Publish on the website: Admin → Apps → AeroGyan Store → Publish from GitHub." \
+              || true
+            if gh release upload "$TAG" "out/AeroGyanStore-$V.apk" --clobber -R "$GITHUB_REPOSITORY"; then
+              echo "uploaded"; exit 0
+            fi
+            sleep $((i * 10))
+          done
+          echo "::error::could not upload to the release $TAG"; exit 1

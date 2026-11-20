@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AeroGyan Store</string>
+
+    <!-- first run -->
+    <string name="welcome_title">Welcome to AeroGyan Store</string>
+    <string name="welcome_text">All AeroGyan apps in one place — install and update them in one tap. Only our own apps, and every file is checked before it is installed.</string>
+    <string name="who_are_you">Who are you?</string>
+    <string name="role_student">Student</string>
+    <string name="role_student_desc">Courses, practice, notes and study tools</string>
+    <string name="role_professor">Professor</string>
+    <string name="role_professor_desc">Teaching, attendance, grading and department tools</string>
+    <string name="role_everyone">Everyone else</string>
+    <string name="role_everyone_desc">Health, video and computing apps for anyone</string>
+    <string name="btn_continue">Continue</string>
+    <string name="allow_title">Allow installs from AeroGyan Store</string>
+    <string name="allow_steps">1. Tap “Open settings”.\n2. Turn on “Allow from this source”.\n3. Come back — the store carries on by itself.\nAndroid asks this once. The store installs only AeroGyan’s own apps.</string>
+    <string name="allow_dialog">To install %1$s, Android needs your permission once.</string>
+    <string name="btn_open_settings">Open settings</string>
+    <string name="btn_later">Later</string>
+
+    <!-- main -->
+    <string name="search_hint">Search apps</string>
+    <string name="cd_search">Search</string>
+    <string name="cd_close_search">Close search</string>
+    <string name="settings">Settings</string>
+    <string name="tab_for_you">For you</string>
+    <string name="tab_all">All</string>
+    <string name="tab_updates">Updates</string>
+    <plurals name="cd_updates_tab">
+        <item quantity="one">Updates, %1$d update available</item>
+        <item quantity="other">Updates, %1$d updates available</item>
+    </plurals>
+    <plurals name="n_updates">
+        <item quantity="one">%1$d update available</item>
+        <item quantity="other">%1$d updates available</item>
+    </plurals>
+    <string name="group_apps">AeroGyan apps</string>
+    <string name="group_office">Office apps</string>
+    <string name="offline_banner">You are offline — showing the saved list.</string>
+    <string name="self_update_banner">A new version of AeroGyan Store is ready.</string>
+    <string name="load_failed">Could not load the apps. Check your internet and try again.</string>
+    <string name="all_up_to_date">All your apps are up to date.</string>
+    <string name="no_results">No app matches “%1$s”.</string>
+    <string name="cd_open_details">Details of %1$s</string>
+    <string name="cd_busy">%1$s is being installed</string>
+    <string name="cd_cancel">Cancel %1$s</string>
+
+    <!-- buttons -->
+    <string name="btn_install">Install</string>
+    <string name="btn_update">Update</string>
+    <string name="btn_update_all">Update all</string>
+    <string name="btn_open">Open</string>
+    <string name="btn_open_web">Open in browser</string>
+    <string name="btn_soon">Coming soon</string>
+    <string name="btn_incompatible">Not for this phone</string>
+    <string name="btn_up_to_date">Up to date</string>
+    <string name="btn_retry">Try again</string>
+    <string name="btn_uninstall">Uninstall</string>
+    <string name="btn_website">Open the website</string>
+
+    <!-- state lines -->
+    <string name="state_starting">Starting…</string>
+    <string name="state_downloading">Downloading %1$s of %2$s</string>
+    <string name="state_queued">Waiting for the internet…</string>
+    <string name="state_wifi">Waiting for Wi-Fi (large file)</string>
+    <string name="state_verifying">Checking the file…</string>
+    <string name="state_installing">Installing…</string>
+    <string name="state_confirm">Tap Install on the Android screen to finish</string>
+    <string name="needs_computer">Needs a computer — opens in your browser on a phone</string>
+    <string name="web_only">Opens in your browser</string>
+    <string name="coming_soon">The Android app is coming soon</string>
+    <string name="needs_android">Needs Android %1$s or newer</string>
+    <string name="meta_size">%1$s · %2$s</string>
+    <string name="meta_installed">Installed · %1$s</string>
+    <string name="meta_update">%1$s → %2$s · %3$s</string>
+
+    <!-- detail -->
+    <string name="cd_back">Back</string>
+    <string name="by_aerogyan">AeroGyan Education</string>
+    <string name="about">About</string>
+    <string name="features">Features</string>
+    <plurals name="includes">
+        <item quantity="one">Includes %1$d app</item>
+        <item quantity="other">Includes %1$d apps</item>
+    </plurals>
+    <string name="whats_new">What’s new</string>
+    <string name="no_notes">Improvements and fixes.</string>
+    <string name="info">Information</string>
+    <string name="info_version">Version</string>
+    <string name="info_installed">Installed</string>
+    <string name="info_size">Size</string>
+    <string name="info_updated">Updated</string>
+    <string name="info_android">Needs</string>
+    <string name="info_android_value">Android %1$s or newer</string>
+    <string name="info_package">Package</string>
+    <string name="trust_verified">Verified before it is installed: the file’s SHA-256 must match, and it must be signed with %1$s’s own key, which is built into this store.</string>
+    <string name="trust_no_hash">This file cannot be verified yet, so the store will not install it. Try again in a few minutes, or use the website.</string>
+    <string name="trust_unknown">This app is not one the store can verify, so it will not be installed.</string>
+    <string name="trust_computer">Made for computers. On a phone it opens in your browser — get the computer app from AeroGyan Store on Windows, Mac or Linux.</string>
+    <string name="trust_web">This app opens in your browser.</string>
+
+    <!-- settings -->
+    <string name="set_role">Show apps for</string>
+    <string name="set_language">Language</string>
+    <string name="lang_system">Phone’s language</string>
+    <string name="set_downloads">Downloads and updates</string>
+    <string name="set_wifi_big">Large files on Wi-Fi only</string>
+    <string name="set_wifi_big_desc">Files over 50 MB wait for Wi-Fi, to save mobile data.</string>
+    <string name="set_auto">Update apps automatically on Wi-Fi</string>
+    <string name="set_auto_desc">Apps installed by this store update by themselves. Others still ask you.</string>
+    <string name="set_notify">Tell me about updates</string>
+    <string name="set_notify_desc">Once a day the store checks for new versions.</string>
+    <string name="set_permission">Install permission</string>
+    <string name="perm_allowed">AeroGyan Store may install apps.</string>
+    <string name="perm_not_allowed">Not allowed yet — Android will ask when you install the first app.</string>
+    <string name="set_about">About</string>
+    <string name="about_store">AeroGyan Store %1$s. Only AeroGyan’s own apps. Every download is checked before it is installed: its SHA-256 must match the catalogue, and its signing key must be one of the keys built into this store, so a fake app can never be installed. Downloads resume where they stopped.</string>
+
+    <!-- reasons a file is refused -->
+    <string name="rej_bad_url">Refused: the file is not on an AeroGyan website.</string>
+    <string name="rej_no_hash">This app cannot be verified yet. Try again in a few minutes, or open the website.</string>
+    <string name="rej_hash">Refused: the downloaded file is not the one AeroGyan published (the check-sum differs). Nothing was installed.</string>
+    <string name="rej_not_apk">Refused: the download is not an Android app.</string>
+    <string name="rej_not_ours">Refused: this app is not one of AeroGyan’s own.</string>
+    <string name="rej_package">Refused: the file is a different app than the one you chose.</string>
+    <string name="rej_signer">Refused: the app is not signed with AeroGyan’s key. It may be a fake — nothing was installed.</string>
+    <string name="rej_older_than_listed">Refused: the server sent an older version than the one it lists.</string>
+    <string name="rej_not_newer">Refused: this version is not newer than the one on your phone.</string>
+    <string name="rej_android">This version needs a newer Android than your phone has.</string>
+
+    <!-- errors -->
+    <string name="err_network">The download failed several times. Check your internet and tap Try again.</string>
+    <string name="err_download_changed">The file changed on the server while downloading. Pull down to refresh and try again.</string>
+    <string name="err_not_in_catalogue">This app is not in the store any more.</string>
+    <string name="err_install_generic">Android could not install the app. Try again.</string>
+    <string name="err_install_cancelled">Install cancelled.</string>
+    <string name="err_install_storage">Not enough space on your phone. Free some space and try again.</string>
+    <string name="err_install_incompatible">This app does not work on your phone.</string>
+    <string name="err_install_conflict">Another copy of this app is installed with a different key. Uninstall it first, then install from the store.</string>
+    <string name="err_install_blocked">Your phone blocked the install (device policy).</string>
+    <string name="err_cannot_open">This app cannot be opened from here.</string>
+    <string name="err_no_browser">No browser found.</string>
+
+    <!-- notifications -->
+    <string name="ch_updates">Updates</string>
+    <string name="ch_updates_desc">New versions of your AeroGyan apps</string>
+    <string name="ch_downloads">Downloads</string>
+    <string name="ch_downloads_desc">Progress of app downloads</string>
+    <string name="ch_install">Finish installing</string>
+    <string name="ch_install_desc">When Android needs your OK to install an app</string>
+    <string name="n_downloading">Downloading %1$s</string>
+    <string name="n_confirm_title">Finish installing %1$s</string>
+    <string name="n_confirm_text">Tap to confirm on the Android screen.</string>
+    <string name="n_installed">%1$s is installed</string>
+    <string name="n_failed">%1$s was not installed</string>
+</resources>

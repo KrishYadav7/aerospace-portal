@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Store" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/store_bg</item>
+        <item name="colorPrimary">@color/store_primary</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
