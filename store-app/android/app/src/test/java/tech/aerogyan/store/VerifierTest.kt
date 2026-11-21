@@ -56,15 +56,17 @@ class VerifierTest {
         assertEquals(Verdict.Ok, Verifier.verify(office, sha, ApkFacts("tech.aerogyan.office.sheets", 5, "1.0.5", 24, listOf(Pins.AEROGYAN)), null, 34))
     }
 
-    // ⭐ 1.0.1 — Sankalak, Shilp and IndPay: each installs only with its own key; any other key (ours included) is refused
+    // ⭐ 1.0.1 — Sankalak, Shilp, IndPay and Ganit: each installs only with its own key; any other key (ours included) is refused
     @Test fun newProductsArePinnedToTheirOwnKeys() {
         val products = listOf(
             Triple("tech.aerogyan.sankalak", "https://sankalak.aerogyan.tech/download/android", "80f61bbc361870938647650cc009bb50811a341f1a8d93474539b46740e65791"),
             Triple("tech.aerogyan.shilp", "https://shilp.aerogyan.tech/download/android", "8463839a290414edea99120272bc6d3d8c367b63ab6d28eedad3d69611900035"),
             Triple("tech.aerogyan.indpay", "https://indpay.aerogyan.tech/download/android", "540c133a60eec3de967456d640f5ef8fdd93c880abedbcb670feb1107fbc0582"),
+            // Ganit's files are at /dl/<file>
+            Triple("tech.aerogyan.ganit", "https://ganit.aerogyan.tech/dl/Ganit-1.0.0.apk", "310290068a24bea0781c838214068a3bff1c24b7eaf05aa5050bfe9c7c014778"),
         )
-        val everyKey = listOf(Pins.AEROGYAN, Pins.MEDICO, Pins.GANAK, Pins.STORE, Pins.SANKALAK, Pins.SHILP, Pins.INDPAY)
-        assertEquals("seven different keys", everyKey.size, everyKey.toSet().size)
+        val everyKey = listOf(Pins.AEROGYAN, Pins.MEDICO, Pins.GANAK, Pins.STORE, Pins.SANKALAK, Pins.SHILP, Pins.INDPAY, Pins.GANIT)
+        assertEquals("eight different keys", everyKey.size, everyKey.toSet().size)
         for ((pkg, url, fp) in products) {
             assertEquals(pkg, setOf(fp), Pins.signersFor(pkg))
             assertTrue(url, Pins.isTrustedUrl(url))
@@ -88,6 +90,9 @@ class VerifierTest {
         assertEquals("Sankalak", Pins.signerName("tech.aerogyan.sankalak"))
         assertEquals("Shilp", Pins.signerName("tech.aerogyan.shilp"))
         assertEquals("IndPay", Pins.signerName("tech.aerogyan.indpay"))
+        assertEquals("Ganit", Pins.signerName("tech.aerogyan.ganit"))
+        // Ganit and Ganak are different apps with different keys
+        assertTrue(Pins.GANIT != Pins.GANAK && Pins.signersFor("tech.aerogyan.ganit") != Pins.signersFor("tech.aerogyan.ganak"))
         // look-alikes of the new names are not ours
         for (p in listOf("tech.aerogyan.indpay2", "tech.aerogyan.shilp.debug", "tech.aerogyan.Sankalak", "tech.aerogyan.indpa")) {
             assertTrue(p, Pins.signersFor(p).isEmpty())

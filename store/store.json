@@ -1,5 +1,5 @@
 {
- "_about": "AeroGyan Store catalogue (2026-11-20; Sankalak, Shilp and IndPay added 2026-11-21). What the store shows besides the live release info: names and lines in English and Hindi, audience, package names, desktop install ids. The server (backend/internal/media/store.go) merges this with release.json (AeroGyan, Office, the store itself) and the other products' /api/app-release (via the software hub, storeremote.go) into GET /api/store. Office apps and packs come from office/apps.json; here only their Hindi names. Signing-certificate fingerprints are informational here: the store apps PIN their own copy and never trust this file for that.",
+ "_about": "AeroGyan Store catalogue (2026-11-20; Sankalak, Shilp, IndPay and Ganit added 2026-11-21). What the store shows besides the live release info: names and lines in English and Hindi, audience, package names, desktop install ids. The server (backend/internal/media/store.go) merges this with release.json (AeroGyan, Office, the store itself) and the other products' /api/app-release (via the software hub, storeremote.go) into GET /api/store. Office apps and packs come from office/apps.json; here only their Hindi names. Signing-certificate fingerprints are informational here: the store apps PIN their own copy and never trust this file for that.",
  "schema": 1,
  "signers": {
   "aerogyan": "74a1df87c347394e78ca4b67c6730f07d683cfd3f9198d3e0e0a45a178ac4480",
@@ -8,9 +8,10 @@
   "sankalak": "80f61bbc361870938647650cc009bb50811a341f1a8d93474539b46740e65791",
   "shilp": "8463839a290414edea99120272bc6d3d8c367b63ab6d28eedad3d69611900035",
   "indpay": "540c133a60eec3de967456d640f5ef8fdd93c880abedbcb670feb1107fbc0582",
+  "ganit": "310290068a24bea0781c838214068a3bff1c24b7eaf05aa5050bfe9c7c014778",
   "store": "0968c5016f2f7732d6f12dd14adf018de261e031214a006cf98927877ed2a8f3"
  },
- "hosts": ["aerogyan.tech", "medico.aerogyan.tech", "drishya.aerogyan.tech", "ganak.aerogyan.tech", "sankalak.aerogyan.tech", "shilp.aerogyan.tech", "indpay.aerogyan.tech"],
+ "hosts": ["aerogyan.tech", "medico.aerogyan.tech", "drishya.aerogyan.tech", "ganak.aerogyan.tech", "sankalak.aerogyan.tech", "shilp.aerogyan.tech", "indpay.aerogyan.tech", "ganit.aerogyan.tech"],
  "products": [
   {
    "id": "store",
@@ -21,8 +22,8 @@
    "short": "Store",
    "line": "All AeroGyan apps in one place: install and update them in one tap.",
    "lineHi": "एरोज्ञान के सभी ऐप एक जगह: एक टैप में इंस्टॉल और अपडेट करें।",
-   "description": "The AeroGyan Store lists only our own apps — AeroGyan, the Office apps, Jivan Medico, Drishya, Ganak, Sankalak, Shilp and IndPay. Every download is checked (SHA-256 and the app's signing key) before it is installed.",
-   "descriptionHi": "एरोज्ञान स्टोर में सिर्फ़ हमारे अपने ऐप हैं — एरोज्ञान, ऑफ़िस ऐप, जीवन मेडिको, दृश्य, गणक, संकलक, शिल्प और इंडपे। हर डाउनलोड इंस्टॉल से पहले जाँचा जाता है (SHA-256 और ऐप की साइनिंग की)।",
+   "description": "The AeroGyan Store lists only our own apps — AeroGyan, the Office apps, Jivan Medico, Drishya, Ganak, Sankalak, Shilp, IndPay and Ganit. Every download is checked (SHA-256 and the app's signing key) before it is installed.",
+   "descriptionHi": "एरोज्ञान स्टोर में सिर्फ़ हमारे अपने ऐप हैं — एरोज्ञान, ऑफ़िस ऐप, जीवन मेडिको, दृश्य, गणक, संकलक, शिल्प, इंडपे और गणित। हर डाउनलोड इंस्टॉल से पहले जाँचा जाता है (SHA-256 और ऐप की साइनिंग की)।",
    "audience": ["student", "professor", "everyone"],
    "category": "tools",
    "color": "#4F46E5",
@@ -176,6 +177,27 @@
    "web": "https://indpay.aerogyan.tech/",
    "signer": "indpay",
    "android": {"package": "tech.aerogyan.indpay", "minSdk": 26}
+  },
+  {
+   "id": "ganit",
+   "kind": "app",
+   "source": "remote",
+   "hub": "ganit",
+   "name": "Ganit",
+   "nameHi": "गणित",
+   "short": "Ganit",
+   "line": "An exact scientific calculator for Indian students — fractions, surds, matrices, GATE practice, GST/EMI.",
+   "lineHi": "भारतीय छात्रों के लिए सटीक साइंटिफ़िक कैलकुलेटर — भिन्न, करणी, मैट्रिक्स, GATE अभ्यास, GST/EMI।",
+   "description": "Fractions, surds and π stay exact. Complex numbers, matrices, statistics, equations and number bases; a GATE-style calculator to practise on; GST, EMI and money tools. Hindi and English, and it works offline.",
+   "descriptionHi": "भिन्न, करणी और π सटीक रहते हैं। सम्मिश्र संख्याएँ, मैट्रिक्स, सांख्यिकी, समीकरण और संख्या-आधार; अभ्यास के लिए GATE जैसा कैलकुलेटर; GST, EMI और पैसों के टूल। हिंदी और अंग्रेज़ी में, और ऑफ़लाइन भी चलता है।",
+   "audience": ["student", "professor", "everyone"],
+   "category": "science",
+   "color": "#1C2A5C",
+   "icon": "https://aerogyan.tech/store/icons/ganit-192.png",
+   "web": "https://ganit.aerogyan.tech/",
+   "signer": "ganit",
+   "android": {"package": "tech.aerogyan.ganit", "minSdk": 24},
+   "desktop": {"appId": "tech.aerogyan.ganit", "productName": "Ganit", "deb": "ganit", "minMac": "12.0"}
   }
  ],
  "office": {

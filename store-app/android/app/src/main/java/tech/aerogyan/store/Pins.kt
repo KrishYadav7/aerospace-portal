@@ -18,11 +18,12 @@ object Pins {
     const val SANKALAK = "80f61bbc361870938647650cc009bb50811a341f1a8d93474539b46740e65791"
     const val SHILP = "8463839a290414edea99120272bc6d3d8c367b63ab6d28eedad3d69611900035"
     const val INDPAY = "540c133a60eec3de967456d640f5ef8fdd93c880abedbcb670feb1107fbc0582"
+    const val GANIT = "310290068a24bea0781c838214068a3bff1c24b7eaf05aa5050bfe9c7c014778"
     const val STORE = "0968c5016f2f7732d6f12dd14adf018de261e031214a006cf98927877ed2a8f3"
 
     /** Hosts the store downloads from (https only). */
     val HOSTS: Set<String> = setOf("aerogyan.tech", "medico.aerogyan.tech", "drishya.aerogyan.tech", "ganak.aerogyan.tech",
-        "sankalak.aerogyan.tech", "shilp.aerogyan.tech", "indpay.aerogyan.tech")
+        "sankalak.aerogyan.tech", "shilp.aerogyan.tech", "indpay.aerogyan.tech", "ganit.aerogyan.tech")
 
     private val exact: Map<String, Set<String>> = mapOf(
         "tech.aerogyan.app" to setOf(AEROGYAN),
@@ -31,6 +32,7 @@ object Pins {
         "tech.aerogyan.sankalak" to setOf(SANKALAK),
         "tech.aerogyan.shilp" to setOf(SHILP),
         "tech.aerogyan.indpay" to setOf(INDPAY),
+        "tech.aerogyan.ganit" to setOf(GANIT),
         "tech.aerogyan.store" to setOf(STORE),
     )
     private val SLUG = Regex("[a-z][a-z0-9]{0,31}")
@@ -52,6 +54,7 @@ object Pins {
         SANKALAK -> "Sankalak"
         SHILP -> "Shilp"
         INDPAY -> "IndPay"
+        GANIT -> "Ganit"
         STORE -> "AeroGyan Store"
         else -> null
     }

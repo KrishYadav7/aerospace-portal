@@ -106,7 +106,7 @@
       "category": "Utility",
       "executableName": "aerogyan-store",
       "synopsis": "Install and update every AeroGyan app",
-      "description": "The AeroGyan Store lists only AeroGyan's own apps — AeroGyan, the Office apps, Jivan Medico, Drishya, Ganak, Sankalak, Shilp and IndPay — and installs and updates them, checking every download first.",
+      "description": "The AeroGyan Store lists only AeroGyan's own apps — AeroGyan, the Office apps, Jivan Medico, Drishya, Ganak, Sankalak, Shilp, IndPay and Ganit — and installs and updates them, checking every download first.",
       "maintainer": "AeroGyan Education <apps@aerogyan.tech>",
       "vendor": "AeroGyan Education",
       "desktop": {
