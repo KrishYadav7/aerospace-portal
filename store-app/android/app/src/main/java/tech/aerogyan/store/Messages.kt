@@ -16,6 +16,7 @@ object Messages {
             Reason.OLDER_THAN_LISTED -> R.string.rej_older_than_listed
             Reason.NOT_NEWER -> R.string.rej_not_newer
             Reason.NEEDS_NEWER_ANDROID -> R.string.rej_android
+            Reason.BELOW_MINIMUM -> R.string.rej_below_minimum
         }
     )
 }

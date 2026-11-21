@@ -88,7 +88,7 @@ test('which file fits this computer', () => {
 
 test('the host pin', () => {
   const hosts = ['aerogyan.tech', 'medico.aerogyan.tech', 'drishya.aerogyan.tech', 'ganak.aerogyan.tech',
-    'sankalak.aerogyan.tech', 'shilp.aerogyan.tech', 'indpay.aerogyan.tech', 'ganit.aerogyan.tech'];   // 1.0.1: Sankalak, Shilp, IndPay, Ganit
+    'sankalak.aerogyan.tech', 'shilp.aerogyan.tech', 'indpay.aerogyan.tech', 'ganit.aerogyan.tech'];   // 1.0.1: Sankalak, Shilp, IndPay, Ganit (built in; newer ones come from the signed manifest)
   for (const h of hosts) assert.equal(core.checkUrl(`https://${h}/download/x`, { catalogHosts: hosts }), '');
   assert.match(core.checkUrl('https://sankalak.aerogyan.tech.evil.com/x'), /not an AeroGyan server/);
   assert.match(core.checkUrl('https://shilp.aerogyan.tech/x', { catalogHosts: ['aerogyan.tech'] }), /not in the catalogue/);
@@ -107,6 +107,102 @@ test('catalogue cleaning', () => {
   const c = core.cleanCatalog({ success: true, hosts: ['aerogyan.tech'], apps: [{ id: 'ok', name: 'A' }, { id: '../x', name: 'B' }, { id: 'n' }] });
   assert.deepEqual(c.apps.map((a) => a.id), ['ok']);
   assert.deepEqual(c.apps[0].platforms, {});
+});
+
+/* ---------------------------------------------------------------- ⭐ 1.0.2 — the signed trust manifest */
+const trust = require('../src/lib/trust');
+const REPO_TRUST = path.join(__dirname, '..', '..', '..', 'store', 'trust.json');
+function testKey() {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const der = publicKey.export({ type: 'spki', format: 'der' });
+  const raw = der.subarray(der.length - 32);
+  return { privateKey, b64: raw.toString('base64'), id: trust.keyIdOf(raw) };
+}
+function signed(k, over = {}, signWith) {
+  const payload = Object.assign({ type: 'aerogyan-store-trust', schema: 1, version: 100, keyId: k.id, issuedAt: '2026-11-22T00:00:00Z',
+    expiresAt: '2099-01-01T00:00:00Z', hosts: ['aerogyan.tech', 'shodh.aerogyan.tech', 'Bad Host!'], products: ['shodh'],
+    android: { packages: {} }, desktop: { apps: { 'tech.aerogyan.shodh': { product: 'shodh', productName: 'Shodh', deb: 'shodh', minVersion: '1.2.0' }, 'com.apple.Safari': { productName: 'Safari' } } } }, over);
+  const bytes = Buffer.from(JSON.stringify(payload));
+  const sig = crypto.sign(null, Buffer.concat([Buffer.from('AeroGyan-Store-Trust/1\n'), bytes]), (signWith || k).privateKey);
+  return JSON.stringify({ format: 'aerogyan-store-trust/1', keyId: payload.keyId, payload: bytes.toString('base64'), signature: sig.toString('base64') });
+}
+
+test('trust: the repository manifest verifies with the pinned key and covers today\'s products', () => {
+  const m = trust.verify(fs.readFileSync(REPO_TRUST, 'utf8'));
+  assert.ok(m.version > 1700000000);
+  for (const h of core.PINNED_HOSTS) assert.ok(m.hosts.includes(h), h);
+  for (const id of Object.keys(core.BUILTIN_APPS)) assert.equal(m.apps[id].productName, core.BUILTIN_APPS[id].productName, id);
+  assert.equal(m.apps['tech.aerogyan.office.sheets'].product, 'office-sheets');
+  assert.equal(m.apps['tech.aerogyan.pack.students'].deb, 'aerogyan-pack-students');
+  assert.ok(!m.apps['tech.aerogyan.indpay'], 'IndPay has no desktop app');
+});
+
+test('trust: signature, key, expiry and rollback rules', () => {
+  const k = testKey(), other = testKey();
+  const keys = [k.b64];
+  const m = trust.verify(signed(k), { keys });
+  assert.deepEqual(m.hosts, ['aerogyan.tech', 'shodh.aerogyan.tech'], 'a malformed host is dropped');
+  assert.ok(m.apps['tech.aerogyan.shodh'] && !m.apps['com.apple.Safari'], 'only tech.aerogyan.* app ids');
+  // one changed byte in the payload
+  const env = JSON.parse(signed(k));
+  const pl = Buffer.from(env.payload, 'base64'); pl[pl.indexOf('shodh')] = 0x53;
+  assert.throws(() => trust.verify(Object.assign({}, env, { payload: pl.toString('base64') }), { keys }), /signature/);
+  assert.throws(() => trust.verify(signed(k, {}, other), { keys }), /signature/, 'signed by another key under our key id');
+  assert.throws(() => trust.verify(signed(other), { keys }), /not pinned/);
+  assert.throws(() => trust.verify(signed(k, { keyId: other.id }), { keys }), /not pinned|inside/);
+  assert.throws(() => trust.verify(signed(k, { expiresAt: '2020-01-01T00:00:00Z' }), { keys }), /expired/);
+  assert.throws(() => trust.verify(signed(k, { type: 'x' }), { keys }), /type/);
+  assert.throws(() => trust.verify(signed(k, { version: 1.5 }), { keys }), /version/);
+  assert.throws(() => trust.verify(signed(k, { version: 99 }), { keys, minVersion: 100 }), /rollback/);
+  assert.equal(trust.verify(signed(k), { keys, minVersion: 100 }).version, 100, 'the same version again is fine');
+  assert.throws(() => trust.verify('{"format":"x"}', { keys }), /not an AeroGyan/);
+  // pick: the newest valid one, never below lastSeen
+  const best = trust.pick([signed(k, { version: 120 }), signed(k, { version: 150, expiresAt: '2020-01-01T00:00:00Z' }), signed(other, { version: 999 }), 'junk', null], { keys, lastSeen: 110 });
+  assert.equal(best.m.version, 120);
+  assert.equal(trust.pick([signed(k, { version: 105 })], { keys, lastSeen: 110 }), null, 'an older manifest (a replay) is refused');
+  assert.equal(trust.live(m, Date.parse('2100-01-01')), false, 'expired while the store runs → not used');
+});
+
+test('trust: the hosts and install ids it adds; built-in ones always hold', () => {
+  const k = testKey();
+  const m = trust.verify(signed(k), { keys: [k.b64] });
+  assert.match(core.checkUrl('https://shodh.aerogyan.tech/download/mac'), /not an AeroGyan server/, 'unknown host without the manifest');
+  assert.equal(core.checkUrl('https://shodh.aerogyan.tech/download/mac', { trustHosts: m.hosts }), '');
+  assert.match(core.checkUrl('https://evil.example.com/x', { trustHosts: m.hosts }), /not an AeroGyan server/);
+  const plat = (appId, productName, extra) => Object.assign({ available: true, appId, productName, version: '1.3.0', url: 'https://shodh.aerogyan.tech/download/mac', sha256: 'a'.repeat(64) }, extra || {});
+  const shodh = { id: 'shodh', name: 'Shodh', web: 'https://shodh.aerogyan.tech/', platforms: { mac: plat('tech.aerogyan.shodh', 'Shodh', { appName: 'Shodh.app' }), deb: plat('tech.aerogyan.shodh', 'Shodh', { debPackage: 'shodh' }) } };
+  const cat = { apps: [shodh,
+    { id: 'aerogyan', name: 'AeroGyan', platforms: { windows: plat('tech.aerogyan.app', 'AeroGyan'), mac: plat('com.google.Chrome', 'Google Chrome') } },
+    { id: 'ganit', name: 'Ganit', platforms: { windows: plat('tech.aerogyan.app', 'AeroGyan') } },
+    { id: 'office-sheets', name: 'AeroGyan Sheets', platforms: { windows: plat('tech.aerogyan.office.sheets', 'AeroGyan Sheets') } },
+    { id: 'office-notes', name: 'AeroGyan Notes', platforms: { windows: plat('tech.aerogyan.office.sheets', 'AeroGyan Sheets') } },
+    { id: 'pack-students', name: 'AeroGyan for Students', platforms: { deb: plat('tech.aerogyan.pack.students', 'AeroGyan for Students', { debPackage: 'gnome-shell' }) } },
+    { id: 'medico', name: 'Jivan Medico', platforms: { windows: plat('tech.aerogyan.medico', 'Google Chrome') } }] };
+  const ids = (c) => Object.fromEntries(c.apps.map((a) => [a.id, Object.keys(a.platforms).sort().join(',')]));
+  assert.deepEqual(ids(core.applyTrust(cat, null)), { shodh: '', aerogyan: 'windows', ganit: '', 'office-sheets': 'windows', 'office-notes': '', 'pack-students': '', medico: '' },
+    'without the manifest: only built-in ids; another program, another product\'s id, a wrong name or .deb are removed');
+  const withM = core.applyTrust(cat, m);
+  assert.equal(ids(withM).shodh, 'deb,mac', 'the manifest adds Shodh');
+  assert.equal(core.status(withM.apps[0], 'mac'), 'ready');
+  assert.equal(core.status(core.applyTrust(cat, null).apps[0], 'mac'), 'web', 'untrusted → "Open in browser", still listed');
+  const old = core.applyTrust({ apps: [Object.assign({}, shodh, { platforms: { mac: plat('tech.aerogyan.shodh', 'Shodh', { version: '1.1.9' }) } })] }, m);
+  assert.equal(old.apps[0].platforms.mac.available, false, 'below the manifest\'s minVersion: never offered');
+  assert.equal(old.apps[0].platforms.mac.belowMinimum, true);
+  // web-only apps (IndPay; Office apps on a Mac without a pack) stay listed with the browser
+  assert.equal(core.status({ id: 'indpay', web: 'https://indpay.aerogyan.tech/', platforms: { android: { available: true } } }, 'windows'), 'web');
+});
+
+test('Mac: started from the disk image or App Translocation (⭐ 1.0.2)', () => {
+  const exe = (app) => app + '/Contents/MacOS/AeroGyan Store';
+  const tr = '/private/var/folders/x1/abc/T/AppTranslocation/6F1C2D3E-1234-4ABC-9DEF-000000000000/d/AeroGyan Store.app';
+  assert.deepEqual(core.macLaunchProblem(exe(tr)), { problem: 'translocated', app: tr });
+  assert.deepEqual(core.macLaunchProblem(exe('/Volumes/AeroGyan Store 1.0.0/AeroGyan Store.app')), { problem: 'dmg', app: '/Volumes/AeroGyan Store 1.0.0/AeroGyan Store.app' });
+  assert.equal(core.macLaunchProblem(exe('/Applications/AeroGyan Store.app')).problem, '');
+  assert.equal(core.macLaunchProblem(exe('/Users/me/Applications/AeroGyan Store.app')).problem, '');
+  assert.equal(core.macLaunchProblem(exe('/Volumes/Macintosh HD/Applications/AeroGyan Store.app')).problem, 'dmg', 'any /Volumes/… path is a mounted disk');
+  assert.equal(core.macLaunchProblem('/usr/local/bin/electron').problem, '', 'not an app bundle (a dev run)');
+  assert.equal(core.applicationsDir('/Users/me', true), '/Applications');
+  assert.equal(core.applicationsDir('/Users/me/', false), '/Users/me/Applications');
 });
 
 /* ---------------------------------------------------------------- the downloader against a local server */

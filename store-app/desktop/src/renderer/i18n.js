@@ -24,7 +24,13 @@ window.T = {
     upAvail: '{n} update(s) available', pack: 'Pack', packOf: '{n} apps', computerOnly: 'For computers', web: 'Web app',
     notOnThis: 'No installer of {n} for this computer yet — it opens in your browser.', inPack: '{n} is part of {p}. Install the pack to get it on this computer.',
     seePack: 'See the pack', verified: 'Every download is checked against AeroGyan’s SHA-256 fingerprint before it is installed.',
-    os_windows: 'Windows', os_mac: 'macOS', os_linux: 'Linux'
+    os_windows: 'Windows', os_mac: 'macOS', os_linux: 'Linux',
+    suTitle: 'A new AeroGyan Store ({v}) is ready', suLine: 'You have {c}. The new one knows our newest apps.', suBtn: 'Update now',
+    suLineMac: 'You have {c}. One click, then three short steps — the store shows them.',
+    mvTitle: 'Move AeroGyan Store into Applications', mvLine: 'The store is running from the download (the disk image or Downloads). From there it cannot update itself or your apps.',
+    mvTrans: 'macOS runs it from a temporary, read-only copy.', mvStep1: 'Drag AeroGyan Store into Applications, then open it from there —',
+    mvStep2: 'or press the button: the store copies itself into Applications and opens again from there.', mvBtn: 'Move to Applications', mvBusy: 'Moving…',
+    belowMin: 'This version is too old to install safely — the store waits for a newer one.'
   },
   hi: {
     store: 'एरोज्ञान स्टोर', tagline: 'हमारे सभी ऐप, एक ही जगह से इंस्टॉल और अपडेट', search: 'ऐप खोजें', skip: 'ऐप पर जाएँ',
@@ -49,6 +55,12 @@ window.T = {
     upAvail: '{n} अपडेट उपलब्ध', pack: 'पैक', packOf: '{n} ऐप', computerOnly: 'कंप्यूटर के लिए', web: 'वेब ऐप',
     notOnThis: 'इस कंप्यूटर के लिए {n} का इंस्टॉलर अभी नहीं है — यह ब्राउज़र में खुलता है।', inPack: '{n}, {p} का हिस्सा है। इस कंप्यूटर पर पाने के लिए पैक इंस्टॉल करें।',
     seePack: 'पैक देखें', verified: 'हर डाउनलोड इंस्टॉल से पहले एरोज्ञान के SHA-256 फ़िंगरप्रिंट से जाँचा जाता है।',
-    os_windows: 'Windows', os_mac: 'macOS', os_linux: 'Linux'
+    os_windows: 'Windows', os_mac: 'macOS', os_linux: 'Linux',
+    suTitle: 'नया एरोज्ञान स्टोर ({v}) तैयार है', suLine: 'आपके पास {c} है। नए में हमारे सबसे नए ऐप हैं।', suBtn: 'अभी अपडेट करें',
+    suLineMac: 'आपके पास {c} है। एक क्लिक, फिर तीन छोटे कदम — स्टोर दिखाएगा।',
+    mvTitle: 'एरोज्ञान स्टोर को Applications में रखें', mvLine: 'स्टोर डाउनलोड (डिस्क इमेज या Downloads) से चल रहा है। वहाँ से यह ख़ुद को और आपके ऐप को अपडेट नहीं कर सकता।',
+    mvTrans: 'macOS इसे एक अस्थायी, सिर्फ़-पढ़ने वाली कॉपी से चला रहा है।', mvStep1: 'AeroGyan Store को Applications में खींचें, फिर वहीं से खोलें —',
+    mvStep2: 'या बटन दबाएँ: स्टोर ख़ुद को Applications में कॉपी करके वहीं से फिर खुलेगा।', mvBtn: 'Applications में ले जाएँ', mvBusy: 'ले जा रहे हैं…',
+    belowMin: 'यह वर्ज़न सुरक्षित इंस्टॉल के लिए बहुत पुराना है — स्टोर नए का इंतज़ार करेगा।'
   }
 };

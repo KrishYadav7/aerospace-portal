@@ -128,6 +128,7 @@
     <string name="rej_older_than_listed">Refused: the server sent an older version than the one it lists.</string>
     <string name="rej_not_newer">Refused: this version is not newer than the one on your phone.</string>
     <string name="rej_android">This version needs a newer Android than your phone has.</string>
+    <string name="rej_below_minimum">Refused: AeroGyan has withdrawn this version. Update to a newer one.</string>
 
     <!-- errors -->
     <string name="err_network">The download failed several times. Check your internet and tap Try again.</string>

@@ -117,6 +117,18 @@ exports.run = async function run(ctx) {
     await js('document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape"}))');
     const closed = await js('document.getElementById("detail").hidden && getComputedStyle(document.getElementById("detail")).display === "none"');
     (open && closed) ? pass('detail pane: focus moves in, Escape closes') : fail('detail pane keyboard', `${open} ${closed}`);
+    // ⭐ 1.0.2 — the store's own update: a banner at the top with a big button
+    await js('(() => { const q = document.getElementById("q"); q.value = ""; q.dispatchEvent(new Event("input")); })()');
+    await sleep(150);
+    const su = await js('(() => { const b = document.getElementById("selfUp"); return !b.hidden && getComputedStyle(b).display !== "none" ? document.getElementById("suTitle").textContent + " | " + document.getElementById("suBtn").textContent : ""; })()');
+    /9\.9\.9/.test(su) && /Update now/.test(su) ? pass('a newer store: the update banner shows', su) : fail('store update banner', su);
+    await shot(wc, '04-selfupdate.png');
+    // ⭐ 1.0.2 — no installer for this computer: listed with a working "Open in browser" button, never hidden
+    const web = await js('(() => { const c = document.querySelector(\'.card[data-id="webonly"]\'); const b = c && c.querySelector("button.web-open"); return b ? b.textContent : ""; })()');
+    web === 'Open in browser' ? pass('a web-only app: listed with Open in browser') : fail('web-only app button', web);
+    // ⭐ 1.0.2 — an install id that is not ours (not built in, not in the signed manifest): shown, never installable
+    const st = appById('stranger');
+    (st && !targetOf(st)) ? pass('an untrusted install id is removed (web only)') : fail('untrusted install id removed', JSON.stringify(st && st.platforms));
   } catch (e) {
     fail('self-test ran', e.stack || e.message);
   }

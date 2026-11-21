@@ -20,7 +20,8 @@ const crypto = require('crypto');
 const PINNED_HOSTS = Object.freeze(['aerogyan.tech', 'medico.aerogyan.tech', 'drishya.aerogyan.tech', 'ganak.aerogyan.tech',
   'sankalak.aerogyan.tech', 'shilp.aerogyan.tech', 'indpay.aerogyan.tech', 'ganit.aerogyan.tech']);   // ⭐ 1.0.1: Sankalak, Shilp, Ganit (IndPay: host only — no desktop installers)
 
-/* checkUrl(url, {catalogHosts, testHosts}) → '' when allowed, else the reason.
+/* checkUrl(url, {catalogHosts, trustHosts, testHosts}) → '' when allowed, else the reason.
+   trustHosts: the hosts of a verified, unexpired signed trust manifest (lib/trust.js, ⭐ 1.0.2) — added to PINNED_HOSTS.
    testHosts (e.g. ['127.0.0.1']) is honoured only by an unpacked build run for a test (main.js). */
 function checkUrl(raw, opts = {}) {
   let u;
@@ -29,7 +30,7 @@ function checkUrl(raw, opts = {}) {
   const test = (opts.testHosts || []).includes(host);
   if (u.protocol !== 'https:' && !(test && u.protocol === 'http:')) return 'not https';
   if (u.username || u.password) return 'credentials in the address';
-  if (!test && !PINNED_HOSTS.includes(host)) return `${host} is not an AeroGyan server`;
+  if (!test && !PINNED_HOSTS.includes(host) && !(Array.isArray(opts.trustHosts) && opts.trustHosts.includes(host))) return `${host} is not an AeroGyan server`;
   if (!test && Array.isArray(opts.catalogHosts) && opts.catalogHosts.length && !opts.catalogHosts.includes(host)) return `${host} is not in the catalogue`;
   return '';
 }
@@ -177,5 +178,81 @@ function cleanCatalog(c) {
 
 function isSha256(s) { return typeof s === 'string' && /^[0-9a-f]{64}$/.test(s); }
 
-module.exports = { PINNED_HOSTS, checkUrl, cmpVer, parseVer, nsisGuid, parseReg, findUninstall, splitCommand, parsePlist, parseDpkg,
+/* ---------------------------------------------------------------- which install ids the store may touch (⭐ 1.0.2)
+   The catalogue names each desktop app's install id (app id, product name, .deb name). The store installs, finds and
+   uninstalls ONLY ids it trusts: the built-in ones below (every product of 1.0.2), the Office apps' and packs' pattern,
+   or an id listed in the verified signed trust manifest (with the same product name). Anything else is removed from
+   the entry, which then shows "Open in browser" — so a changed catalogue can never aim Uninstall at another program. */
+const BUILTIN_APPS = Object.freeze({
+  'tech.aerogyan.store': { product: 'store', productName: 'AeroGyan Store', deb: 'aerogyan-store' },
+  'tech.aerogyan.app': { product: 'aerogyan', productName: 'AeroGyan', deb: 'aerogyan' },
+  'tech.aerogyan.medico': { product: 'medico', productName: 'Jivan Medico', deb: 'jivan-medico' },
+  'tech.aerogyan.drishya': { product: 'drishya', productName: 'Drishya', deb: 'drishya' },
+  'tech.aerogyan.ganak': { product: 'ganak', productName: 'Ganak', deb: 'ganak' },
+  'tech.aerogyan.sankalak': { product: 'sankalak', productName: 'Sankalak', deb: 'sankalak' },
+  'tech.aerogyan.shilp': { product: 'shilp', productName: 'Shilp', deb: 'shilp' },
+  'tech.aerogyan.ganit': { product: 'ganit', productName: 'Ganit', deb: 'ganit' }
+});
+const SLUG = /^[a-z][a-z0-9]{0,31}$/;
+/* trustedId(app, plat, entry, manifest) → '' when the store may use this install id, else the reason */
+function trustedId(app, plat, e, manifest, opts = {}) {
+  const id = String((e && e.appId) || '');
+  if (!/^tech\.aerogyan\.[a-z0-9.-]{1,60}$/.test(id)) return 'not one of our app ids';
+  if (opts.testIds && id === 'tech.aerogyan.test.' + app.id) return '';            // the smoke test's fake apps (unpacked test runs only)
+  const name = String(e.productName || '');
+  const m = manifest && manifest.apps && manifest.apps[id];
+  const b = BUILTIN_APPS[id];
+  const want = m || b;
+  const office = /^tech\.aerogyan\.office\.(.+)$/.exec(id), pack = /^tech\.aerogyan\.pack\.(.+)$/.exec(id);
+  if (want) {
+    if (want.product && want.product !== app.id) return `${id} belongs to ${want.product}`;
+    if (want.productName !== name) return `${id} is called ${want.productName}`;
+  } else {
+    const ok = (office && SLUG.test(office[1]) && app.id === 'office-' + office[1]) || (pack && SLUG.test(pack[1]) && app.id === 'pack-' + pack[1]);
+    if (!ok) return `${id} is not trusted (not built in, not in the signed manifest)`;
+    if (!/^AeroGyan( |$)/.test(name)) return 'an Office app is named AeroGyan …';
+  }
+  if (plat === 'mac' && e.appName && e.appName !== name + '.app') return 'the Mac app name differs';
+  if (plat === 'deb' && e.debPackage) {
+    const wantDeb = want ? want.deb || '' : pack ? 'aerogyan-pack-' + pack[1] : '';
+    if (e.debPackage !== wantDeb) return 'the .deb name differs';
+  }
+  return '';
+}
+/* applyTrust(catalog, manifest) → a copy whose desktop entries hold only trusted install ids; an installer below the
+   manifest's minVersion becomes "not available" (never offered). */
+function applyTrust(catalog, manifest, opts = {}) {
+  const apps = catalog.apps.map((a) => {
+    const P = Object.assign({}, a.platforms || {});
+    for (const plat of DESKTOP) {
+      if (!P[plat]) continue;
+      if (trustedId(a, plat, P[plat], manifest, opts)) { delete P[plat]; continue; }
+      const m = manifest && manifest.apps && manifest.apps[P[plat].appId];
+      if (m && m.minVersion && P[plat].version && cmpVer(P[plat].version, m.minVersion) < 0) {
+        P[plat] = Object.assign({}, P[plat], { available: false, url: '', sha256: '', belowMinimum: true });
+      }
+    }
+    return Object.assign({}, a, { platforms: P });
+  });
+  return Object.assign({}, catalog, { apps });
+}
+
+/* ---------------------------------------------------------------- Mac: where the store runs from (⭐ 1.0.2)
+   Opened straight from the disk image or from Downloads, macOS runs a quarantined app from a random read-only copy
+   ("App Translocation", /private/var/folders/…/AppTranslocation/…). From there it can never update itself, so the
+   store asks to be moved into Applications first. macLaunchProblem(execPath) → {problem: 'translocated' | 'dmg' | '',
+   app: '/…/AeroGyan Store.app'}. */
+function macLaunchProblem(execPath) {
+  const p = String(execPath || '');
+  const i = p.lastIndexOf('.app/Contents/MacOS/');
+  const app = i >= 0 ? p.slice(0, i + 4) : '';
+  if (!app) return { problem: '', app: '' };
+  if (/\/AppTranslocation\//.test(app)) return { problem: 'translocated', app };
+  if (/^\/Volumes\/[^/]+\//.test(app)) return { problem: 'dmg', app };
+  return { problem: '', app };
+}
+/* the Applications folder to move into: /Applications when writable, else ~/Applications */
+function applicationsDir(home, systemWritable) { return systemWritable ? '/Applications' : String(home || '').replace(/\/+$/, '') + '/Applications'; }
+
+module.exports = { PINNED_HOSTS, BUILTIN_APPS, trustedId, applyTrust, macLaunchProblem, applicationsDir, checkUrl, cmpVer, parseVer, nsisGuid, parseReg, findUninstall, splitCommand, parsePlist, parseDpkg,
   osKey, target, status, forRole, cleanCatalog, isSha256, DESKTOP };

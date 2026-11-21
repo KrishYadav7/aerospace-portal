@@ -33,6 +33,7 @@ enum class Reason {
     OLDER_THAN_LISTED,  // the server sent an older build than it lists (a rollback)
     NOT_NEWER,          // same or older than what is installed (a downgrade)
     NEEDS_NEWER_ANDROID,
+    BELOW_MINIMUM,      // older than the lowest version the signed trust manifest allows (a known-bad build)
 }
 
 sealed class Verdict {
@@ -50,6 +51,10 @@ object Verifier {
     fun checkBeforeDownload(expected: Expected): Verdict {
         if (!Pins.isTrustedUrl(expected.url)) return Verdict.Rejected(Reason.BAD_URL, expected.url.orEmpty())
         if (Pins.signersFor(expected.packageName).isEmpty()) return Verdict.Rejected(Reason.NOT_OURS, expected.packageName)
+        val min = Pins.minVersionCode(expected.packageName)
+        if (min != null && expected.versionCode != null && expected.versionCode < min) {
+            return Verdict.Rejected(Reason.BELOW_MINIMUM, "${expected.versionCode} < $min")
+        }
         if (expected.sha256.isNullOrBlank()) return Verdict.Rejected(Reason.NO_HASH, expected.packageName)
         return Verdict.Ok
     }
@@ -77,6 +82,10 @@ object Verifier {
         val listed = expected.versionCode
         if (listed != null && facts.versionCode < listed) {
             return Verdict.Rejected(Reason.OLDER_THAN_LISTED, "${facts.versionCode} < $listed")
+        }
+        val min = Pins.minVersionCode(facts.packageName)
+        if (min != null && facts.versionCode < min) {
+            return Verdict.Rejected(Reason.BELOW_MINIMUM, "${facts.versionCode} < $min")
         }
         if (installedVersionCode != null && facts.versionCode <= installedVersionCode) {
             return Verdict.Rejected(Reason.NOT_NEWER, "${facts.versionCode} ≤ $installedVersionCode")

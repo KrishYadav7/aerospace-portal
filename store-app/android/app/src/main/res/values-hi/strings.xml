@@ -128,6 +128,7 @@
     <string name="rej_older_than_listed">मना किया: सर्वर ने सूची में लिखे वर्ज़न से पुराना वर्ज़न भेजा।</string>
     <string name="rej_not_newer">मना किया: यह वर्ज़न आपके फ़ोन वाले से नया नहीं है।</string>
     <string name="rej_android">इस वर्ज़न को आपके फ़ोन से नया Android चाहिए।</string>
+    <string name="rej_below_minimum">मना किया: एरोज्ञान ने यह वर्ज़न वापस ले लिया है। नया वर्ज़न लें।</string>
 
     <!-- errors -->
     <string name="err_network">डाउनलोड कई बार रुका। इंटरनेट जाँचें और “फिर कोशिश करें” दबाएँ।</string>

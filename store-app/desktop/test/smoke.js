@@ -20,11 +20,12 @@ const TAMPERED = Buffer.concat([GOOD.subarray(0, 1000), Buffer.from('evil'), GOO
 const hits = [];
 
 function entry(id, name, url, sum, extra) {
+  const appId = id === 'store' ? 'tech.aerogyan.store' : id === 'stranger' ? 'com.example.stranger' : 'tech.aerogyan.test.' + id;
   const f = { available: true, version: '1.2.3', size: GOOD.length, url, fileName: `${id}-1.2.3`, updatedAt: '2026-11-20T00:00:00Z' };
   if (sum) f.sha256 = sum;
   const P = {};
   for (const [plat, ext] of [['windows', '.exe'], ['mac', '.dmg'], ['linux', '.AppImage'], ['deb', '.deb']]) {
-    P[plat] = Object.assign({}, f, { fileName: f.fileName + ext, appId: 'tech.aerogyan.test.' + id, productName: name, installer: plat === 'windows' ? 'nsis' : plat });
+    P[plat] = Object.assign({}, f, { fileName: f.fileName + ext, appId, productName: name, version: id === 'store' ? '9.9.9' : f.version, installer: plat === 'windows' ? 'nsis' : plat });
   }
   return Object.assign({ id, kind: 'app', product: id, name, nameHi: name + ' (हिं)', line: `${name} for the smoke test`, audience: ['everyone'], color: '#4F46E5', web: 'https://aerogyan.tech/', platforms: P }, extra || {});
 }
@@ -39,7 +40,11 @@ const server = http.createServer((req, res) => {
       entry('tampered', 'Tampered App', base + '/files/tampered.bin', sha(GOOD)),         // the server sends other bytes
       entry('nosha', 'No Hash App', base + '/files/good.bin', ''),
       entry('badhost', 'Other Host App', 'https://evil.example.com/files/good.bin', sha(GOOD)),
-      entry('webonly', 'Web Only App', '', '', { platforms: {} })
+      entry('webonly', 'Web Only App', '', '', { platforms: {} }),
+      // ⭐ 1.0.2 — a newer store (the banner nobody can miss); its files are never downloaded by the smoke test
+      Object.assign(entry('store', 'AeroGyan Store', base + '/files/good.bin', sha(GOOD)), { kind: 'store', web: 'https://aerogyan.tech/#store' }),
+      // ⭐ 1.0.2 — an id that is neither built in nor in the signed manifest: listed, never installable
+      Object.assign(entry('stranger', 'Stranger App', base + '/files/good.bin', sha(GOOD)), {})
     ] }));
   }
   if (req.url === '/hits') return res.end(hits.join('\n'));

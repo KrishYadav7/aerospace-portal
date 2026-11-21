@@ -78,7 +78,8 @@
     if (i.status === 'ready') return B('primary', t('install'), () => doInstall(a), { 'aria-label': t('install') + ' ' + nm(a) });
     if (i.status === 'pack') return B('ghost', t('getPack'), () => showDetail(a.inPacks[0] && byId(a.inPacks[0]) ? a.inPacks[0] : a.id));
     if (i.status === 'soon') return h('span', { class: 'pill', text: t('soon') });
-    return big ? B('tonal', t('openBrowser'), () => act(() => S.web(a.id))) : h('span', { class: 'pill', text: t('web') });
+    // ⭐ 1.0.2 — no installer for this computer (IndPay, Office apps on Mac / Linux): always a working button
+    return B('tonal web-open' + (big ? '' : ' small'), t('openBrowser'), () => act(() => S.web(a.id)), { 'aria-label': t('openBrowser') + ' — ' + nm(a) });
   }
 
   /* ---------------------------------------------------------------- the grid */
@@ -122,8 +123,23 @@
     return c;
   }
 
+  /* the store's own update: the banner (every system; the loudest on a Mac, which has no silent self-update) */
+  function renderSelfUpdate() {
+    const s = byId('store');
+    const i = s ? info(s) : null;
+    const show = !!(i && i.update && i.file && i.file.version);
+    $('selfUp').hidden = !show;
+    if (!show) return;
+    $('suTitle').textContent = t('suTitle', { v: i.file.version });
+    $('suLine').textContent = t(st.os === 'mac' ? 'suLineMac' : 'suLine', { c: st.version || '' });
+    const b = $('suBtn');
+    b.textContent = i.job ? t(i.job.phase === 'download' ? 'downloading' : 'verifying', { p: i.job.total ? Math.round(i.job.received / i.job.total * 100) : 0 }) : t('suBtn');
+    b.disabled = !!i.job;
+  }
+
   function render() {
     if (!data) return;
+    renderSelfUpdate();
     const grid = $('grid');
     const keep = document.activeElement && document.activeElement.closest('.card') ? document.activeElement.closest('.card').dataset.id : '';
     grid.textContent = '';
@@ -186,6 +202,7 @@
       body.append(h('div', { class: 'callout' }, t('inPack', { n: nm(a), p: p ? nm(p) : a.inPacks[0] }), ' ',
         p ? h('button', { type: 'button', class: 'link', onclick: () => showDetail(p.id) }, t('seePack')) : null));
     } else if (i.status === 'web') body.append(h('div', { class: 'callout' }, t('notOnThis', { n: nm(a) })));
+    if (i.file && i.file.belowMinimum) body.append(h('div', { class: 'callout' }, t('belowMin')));
     if (desc(a)) body.append(h('h3', { text: t('about') }), h('p', { text: desc(a) }));
     if (a.features && a.features.length) body.append(h('h3', { text: t('features') }), h('ul', { class: 'feat' }, a.features.map((f) => h('li', { text: f }))));
     if (i.file && i.file.notes) body.append(h('h3', { text: t('whatsNew') }), h('p', { class: 'notes', text: i.file.notes }));
@@ -290,6 +307,7 @@
     const roles = $('wRoles'); roles.textContent = '';
     for (const r of ['student', 'professor', 'everyone']) roles.append(h('button', { type: 'button', class: 'btn tonal big', onclick: () => pickRole(r) }, t(r)));
     render();
+    if (!$('moveApp').hidden) showMove();
   }
   async function pickRole(r) {
     await S.pref('role', r); st.role = r;
@@ -316,6 +334,23 @@
   });
   $('q').addEventListener('input', (e) => { q = e.target.value.trim(); render(); });
   $('updateAll').addEventListener('click', updateAll);
+  $('suBtn').addEventListener('click', () => { const s = byId('store'); if (s && !busy.has('store')) doInstall(s); });
+  S.onSelfUpdate(() => { busy.set('store', { phase: 'download', received: 0, total: 0 }); render(); });
+  /* ⭐ 1.0.2 — Mac: started from the disk image or Downloads → a full-window "Move to Applications" */
+  function showMove() {
+    $('mvTitle').textContent = t('mvTitle');
+    $('mvLine').textContent = t('mvLine') + (st.macProblem === 'translocated' ? ' ' + t('mvTrans') : '');
+    const ol = $('mvSteps'); ol.textContent = '';
+    ol.append(h('li', { text: t('mvStep1') }), h('li', { text: t('mvStep2') }));
+    $('mvBtn').textContent = t('mvBtn');
+    $('moveApp').hidden = false;
+    $('mvBtn').focus();
+  }
+  $('mvBtn').addEventListener('click', async () => {
+    $('mvBtn').disabled = true; $('mvBtn').textContent = t('mvBusy'); $('mvErr').textContent = '';
+    const r = await S.move();
+    if (!r.ok) { $('mvBtn').disabled = false; $('mvBtn').textContent = t('mvBtn'); $('mvErr').textContent = r.message; }
+  });
   $('refresh').addEventListener('click', async () => {
     $('refresh').classList.add('spin');
     await S.check(); await load(false);
@@ -358,6 +393,7 @@
     $('autoUp').checked = !!st.autoUpdate;
     applyWords();
     if (!st.role) { $('welcome').hidden = false; setTimeout(() => $('wRoles').querySelector('button').focus(), 50); }
+    if (st.os === 'mac' && st.macProblem) showMove();
     await load(false);
   })();
 })();

@@ -9,6 +9,10 @@ import java.util.Locale
  *
  * Fingerprints are the SHA-256 of the signing certificate (lowercase hex, no colons). A package may list more than one
  * so a future key rotation can add the new key in a store update before the apps move to it.
+ *
+ * ⭐ 1.0.2 — the built-in pins are the minimum. On top of them the store trusts what a signed trust manifest lists
+ * ([manifest], verified by [Trust] against [TRUST_KEYS]; loaded by [TrustStore]): more hosts, more packages and
+ * signers, minimum versions. An expired manifest adds nothing (checked on every read).
  */
 object Pins {
     const val AEROGYAN = "74a1df87c347394e78ca4b67c6730f07d683cfd3f9198d3e0e0a45a178ac4480"
@@ -25,6 +29,15 @@ object Pins {
     val HOSTS: Set<String> = setOf("aerogyan.tech", "medico.aerogyan.tech", "drishya.aerogyan.tech", "ganak.aerogyan.tech",
         "sankalak.aerogyan.tech", "shilp.aerogyan.tech", "indpay.aerogyan.tech", "ganit.aerogyan.tech")
 
+    /** The catalogue's Ed25519 public key(s), base64 of the raw 32 bytes (legacy-node/store/trust-key.txt). A rotation adds key #2. */
+    val TRUST_KEYS: List<String> = listOf("jfHxceRb/EeLxGp5rv+cbP+b+vgsnFtyQGtB5EJc9pA=")
+
+    /** The verified trust manifest in use (null: built-in pins only). Set by [TrustStore] (and tests). */
+    @Volatile var manifest: TrustManifest? = null
+
+    /** [manifest] while it has not expired */
+    fun activeManifest(nowMillis: Long = System.currentTimeMillis()): TrustManifest? = manifest?.takeIf { it.validAt(nowMillis) }
+
     private val exact: Map<String, Set<String>> = mapOf(
         "tech.aerogyan.app" to setOf(AEROGYAN),
         "tech.aerogyan.medico" to setOf(MEDICO),
@@ -37,8 +50,14 @@ object Pins {
     )
     private val SLUG = Regex("[a-z][a-z0-9]{0,31}")
 
-    /** The pinned certificate fingerprints for a package, or empty when the store must never install it. */
+    /** The pinned certificate fingerprints for a package (built-in ∪ the manifest's), or empty when the store must never install it. */
     fun signersFor(pkg: String): Set<String> {
+        val builtIn = builtInSigners(pkg)
+        val extra = activeManifest()?.packages?.get(pkg)?.signers.orEmpty()
+        return if (extra.isEmpty()) builtIn else builtIn + extra
+    }
+
+    private fun builtInSigners(pkg: String): Set<String> {
         exact[pkg]?.let { return it }
         for (prefix in listOf("tech.aerogyan.office.", "tech.aerogyan.pack.")) {
             if (pkg.startsWith(prefix) && SLUG.matches(pkg.removePrefix(prefix))) return setOf(AEROGYAN)
@@ -46,8 +65,11 @@ object Pins {
         return emptySet()
     }
 
+    /** The lowest versionCode the store may install for [pkg] (from the manifest), or null. */
+    fun minVersionCode(pkg: String): Long? = activeManifest()?.packages?.get(pkg)?.minVersionCode
+
     /** Who signs the package, for "Verified: signed by …". */
-    fun signerName(pkg: String): String? = when (signersFor(pkg).firstOrNull()) {
+    fun signerName(pkg: String): String? = when (builtInSigners(pkg).firstOrNull()) {
         AEROGYAN -> "AeroGyan"
         MEDICO -> "Jivan Medico"
         GANAK -> "Ganak"
@@ -56,16 +78,17 @@ object Pins {
         INDPAY -> "IndPay"
         GANIT -> "Ganit"
         STORE -> "AeroGyan Store"
-        else -> null
+        else -> activeManifest()?.packages?.get(pkg)?.takeIf { it.signers.isNotEmpty() }?.name
     }
 
-    /** https on one of HOSTS, no user info, default port. */
+    /** https on one of HOSTS (or the manifest's hosts), no user info, default port. */
     fun isTrustedUrl(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
         return try {
             val u = URI(url)
+            val host = u.host?.lowercase(Locale.ROOT)
             u.scheme?.lowercase(Locale.ROOT) == "https" &&
-                u.host?.lowercase(Locale.ROOT) in HOSTS &&
+                host != null && (host in HOSTS || activeManifest()?.hosts?.contains(host) == true) &&
                 u.rawUserInfo == null &&
                 (u.port == -1 || u.port == 443)
         } catch (_: Exception) {

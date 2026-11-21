@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('store', Object.freeze({
   uninstall: (id) => call('uninstall', String(id)),
   web: (id, which) => call('web', String(id), which === 'download' ? 'download' : 'web'),
   check: () => call('check'),
+  move: () => call('move'),                       // ⭐ 1.0.2 — Mac: copy into Applications, open the copy
+  onSelfUpdate: (fn) => on('selfupdate', fn),
   onProgress: (fn) => on('progress', fn),
   onCatalog: (fn) => on('catalog', fn),
   onTheme: (fn) => on('theme', fn),

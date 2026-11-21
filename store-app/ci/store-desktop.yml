@@ -82,6 +82,11 @@ jobs:
           node-version: '22'
       - name: Install tools
         run: npm install --no-audit --no-fund
+      - name: Bundle the signed trust manifest (store/trust.json → src/trust.json; docs/store-trust.md)
+        run: |
+          test -s ../../store/trust.json || { echo "::error::store/trust.json is missing"; exit 1; }
+          cp ../../store/trust.json src/trust.json
+          node -e "const t=require('./src/lib/trust');const m=t.verify(require('fs').readFileSync('src/trust.json','utf8'));console.log('trust manifest',m.version,m.hosts.length,'hosts',Object.keys(m.apps).length,'app ids')"
       - name: Linux libraries for the test window
         if: matrix.os == 'linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libnss3 libgbm1 libasound2 desktop-file-utils >/dev/null

@@ -1,0 +1,3 @@
+# AeroGyan Store catalogue public key(s), Ed25519, base64 of the raw 32 bytes — one per line.
+# Compiled into the store apps (Android Pins.kt TRUST_KEYS, desktop src/lib/trust.js). docs/store-trust.md
+jfHxceRb/EeLxGp5rv+cbP+b+vgsnFtyQGtB5EJc9pA=

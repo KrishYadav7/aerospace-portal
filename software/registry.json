@@ -1,0 +1,920 @@
+{
+ "_about": [
+  "THE product registry (⭐ 2026-11-22): every product we make, read at runtime by the Go server (backend/internal/registry).",
+  "It feeds /api/software (where each product's release info is fetched), /api/store (the AeroGyan Store catalogue), the /software page,",
+  "the landing page's #software cards and product names (server-rendered), Help, Ask AeroGyan and the How-to guide.",
+  "Add a product: one entry in \"products\" (order = order everywhere) + software/icons/<id>.svg + store/icons/<id>-192.png, then",
+  "`node tools/sign-catalog.mjs` (signs store/trust.json with the offline key so the store apps trust its host and signing key), then deploy.",
+  "Fields: software = the /software + landing card; store = the store's words; android.signers = SHA-256 of the APK signing certificate",
+  "(read from the real release APK, never typed from memory); desktop = install ids. storeId: the id in /api/store when it differs (Jivan = medico)."
+ ],
+ "schema": 1,
+ "updated": "2026-11-22",
+ "storeApp": {
+  "id": "store",
+  "name": "AeroGyan Store",
+  "nameHi": "एरोज्ञान स्टोर",
+  "short": "Store",
+  "line": "All AeroGyan apps in one place: install and update them in one tap.",
+  "lineHi": "एरोज्ञान के सभी ऐप एक जगह: एक टैप में इंस्टॉल और अपडेट करें।",
+  "description": "The AeroGyan Store lists only our own apps — {namesOffice}. Every download is checked (SHA-256 and the app's signing key) before it is installed.",
+  "descriptionHi": "एरोज्ञान स्टोर में सिर्फ़ हमारे अपने ऐप हैं — {namesOfficeHi}। हर डाउनलोड इंस्टॉल से पहले जाँचा जाता है (SHA-256 और ऐप की साइनिंग की)।",
+  "audience": [
+   "student",
+   "professor",
+   "everyone"
+  ],
+  "category": "tools",
+  "color": "#4F46E5",
+  "icon": "https://aerogyan.tech/store/icons/icon-192.png",
+  "web": "https://aerogyan.tech/#store",
+  "android": {
+   "package": "tech.aerogyan.store",
+   "minSdk": 26,
+   "signers": [
+    "0968c5016f2f7732d6f12dd14adf018de261e031214a006cf98927877ed2a8f3"
+   ]
+  },
+  "desktop": {
+   "appId": "tech.aerogyan.store",
+   "productName": "AeroGyan Store",
+   "deb": "aerogyan-store",
+   "minMac": "11.0"
+  }
+ },
+ "products": [
+  {
+   "id": "aerogyan",
+   "name": "AeroGyan",
+   "nameHi": "एरोज्ञान",
+   "short": "AeroGyan",
+   "site": "",
+   "web": "/app",
+   "page": "/#apps",
+   "release": {
+    "shape": "aerogyan",
+    "url": "/api/app-release",
+    "office": "/api/app-release?office=1"
+   },
+   "software": {
+    "color": "#6366f1",
+    "color2": "#312e81",
+    "kind": {
+     "en": "Engineering learning",
+     "hi": "इंजीनियरिंग की पढ़ाई"
+    },
+    "tag": {
+     "en": "Your engineering courses in one place — lectures, notes, PYQs, live classes, an AI doubt solver and your marks.",
+     "hi": "आपके इंजीनियरिंग कोर्स एक जगह — लेक्चर, नोट्स, PYQ, लाइव क्लास, AI डाउट सॉल्वर और आपके मार्क्स।"
+    },
+    "features": [
+     {
+      "icon": "fa-video",
+      "en": "Live classes with a real board",
+      "hi": "असली बोर्ड वाली लाइव क्लास"
+     },
+     {
+      "icon": "fa-wand-magic-sparkles",
+      "en": "AI doubt solver — photo, PDF or text",
+      "hi": "AI डाउट सॉल्वर — फ़ोटो, PDF या टेक्स्ट"
+     },
+     {
+      "icon": "fa-layer-group",
+      "en": "Every PYQ becomes a mock test",
+      "hi": "हर PYQ एक मॉक टेस्ट"
+     },
+     {
+      "icon": "fa-language",
+      "en": "Read and listen in your own language",
+      "hi": "अपनी भाषा में पढ़ें और सुनें"
+     }
+    ],
+    "open": {
+     "en": "Open AeroGyan",
+     "hi": "AeroGyan खोलें"
+    },
+    "ios": "pwa",
+    "note": {
+     "en": "There is no App Store app yet — on iPhone and iPad, add it to your Home Screen from Safari.",
+     "hi": "App Store में ऐप अभी नहीं है — iPhone और iPad पर Safari से होम स्क्रीन पर जोड़ें।"
+    },
+    "office": {
+     "en": "AeroGyan Office — every tool as its own app",
+     "hi": "AeroGyan Office — हर टूल अपना अलग ऐप",
+     "line": {
+      "en": "Sheets, Slides, LaTeX, Notes, AI Solver, Flashcards and more. One AeroGyan account signs you in to all of them.",
+      "hi": "Sheets, Slides, LaTeX, Notes, AI Solver, Flashcards और भी बहुत कुछ। एक AeroGyan अकाउंट से सब में साइन इन।"
+     }
+    }
+   },
+   "store": {
+    "line": "Courses, notes, tests, live classes and AI help — the whole AeroGyan in one app.",
+    "lineHi": "कोर्स, नोट्स, टेस्ट, लाइव क्लास और AI मदद — पूरा एरोज्ञान एक ऐप में।",
+    "description": "The main AeroGyan app for students and professors: every course, lecture PDF, video, test and live class, with the AI Doubt Solver and your notes. One account for everything.",
+    "descriptionHi": "छात्रों और प्रोफ़ेसरों के लिए एरोज्ञान का मुख्य ऐप: हर कोर्स, लेक्चर PDF, वीडियो, टेस्ट और लाइव क्लास, AI डाउट सॉल्वर और आपके नोट्स के साथ। सब कुछ एक ही अकाउंट से।",
+    "audience": [
+     "student",
+     "professor"
+    ],
+    "category": "education",
+    "color": "#1D4ED8",
+    "icon": "https://aerogyan.tech/icon-192.png",
+    "featured": true
+   },
+   "android": {
+    "package": "tech.aerogyan.app",
+    "minSdk": 24,
+    "signers": [
+     "74a1df87c347394e78ca4b67c6730f07d683cfd3f9198d3e0e0a45a178ac4480"
+    ]
+   },
+   "desktop": {
+    "appId": "tech.aerogyan.app",
+    "productName": "AeroGyan",
+    "deb": "aerogyan",
+    "minMac": "11.0"
+   }
+  },
+  {
+   "id": "jivan",
+   "storeId": "medico",
+   "name": "Jivan Medico",
+   "nameHi": "जीवन मेडिको",
+   "short": "Jivan",
+   "site": "https://medico.aerogyan.tech",
+   "web": "/app",
+   "page": "/download",
+   "release": {
+    "shape": "files",
+    "url": "https://medico.aerogyan.tech/api/app-release"
+   },
+   "software": {
+    "color": "#14b8a6",
+    "color2": "#0b7a68",
+    "kind": {
+     "en": "Family health",
+     "hi": "परिवार की सेहत"
+    },
+    "tag": {
+     "en": "Feel unwell? Say how you feel in Hindi or English — danger signs first, safe common medicines, and your family's health in one place.",
+     "hi": "तबीयत ठीक नहीं? हिन्दी या अंग्रेज़ी में बताइए — पहले ख़तरे के लक्षण, सुरक्षित आम दवाएँ, और पूरे परिवार की सेहत एक जगह।"
+    },
+    "features": [
+     {
+      "icon": "fa-stethoscope",
+      "en": "Symptom check by two AIs, by voice too",
+      "hi": "दो AI से लक्षण जाँच, बोलकर भी"
+     },
+     {
+      "icon": "fa-clock",
+      "en": "Medicine reminders, refills and a medicine scanner",
+      "hi": "दवा के रिमाइंडर, रीफ़िल और दवा स्कैनर"
+     },
+     {
+      "icon": "fa-chart-line",
+      "en": "Health records, lab trends and a Sehat plan",
+      "hi": "हेल्थ रिकॉर्ड, लैब रिपोर्ट के ट्रेंड और सेहत प्लान"
+     },
+     {
+      "icon": "fa-heart-pulse",
+      "en": "Video doctor, SOS and first aid",
+      "hi": "वीडियो डॉक्टर, SOS और फ़र्स्ट एड"
+     }
+    ],
+    "open": {
+     "en": "Open Jivan Medico",
+     "hi": "जीवन मेडिको खोलें"
+    },
+    "ios": "pwa",
+    "note": {
+     "en": "It helps you decide what to do — it does not replace a doctor. In an emergency, call 108 or 112.",
+     "hi": "यह आपको तय करने में मदद करता है — डॉक्टर की जगह नहीं लेता। इमरजेंसी में 108 या 112 पर कॉल करें।"
+    }
+   },
+   "store": {
+    "line": "Feel unwell? Know what to do — symptom check, medicine reminders, SOS and first aid.",
+    "lineHi": "तबीयत ठीक नहीं? क्या करना है जानें — लक्षण जाँच, दवा रिमाइंडर, SOS और प्राथमिक उपचार।",
+    "description": "Symptom check in Hindi and English, medicine reminders, your family's health history, SOS and first aid, a Medical ID and a medicine scanner. Speak in any language and hear the answer.",
+    "descriptionHi": "हिंदी और अंग्रेज़ी में लक्षण जाँच, दवा रिमाइंडर, परिवार का स्वास्थ्य रिकॉर्ड, SOS और प्राथमिक उपचार, मेडिकल ID और दवा स्कैनर। किसी भी भाषा में बोलें और जवाब सुनें।",
+    "audience": [
+     "everyone"
+    ],
+    "category": "health",
+    "color": "#0B7A68",
+    "icon": "https://medico.aerogyan.tech/icons/icon-192.png"
+   },
+   "android": {
+    "package": "tech.aerogyan.medico",
+    "minSdk": 24,
+    "signers": [
+     "6214a862d32cc3716f655400a4a2ab725f6f31840b8f8a65c97349c826f5b55b"
+    ]
+   },
+   "desktop": {
+    "appId": "tech.aerogyan.medico",
+    "productName": "Jivan Medico",
+    "deb": "jivan-medico",
+    "minMac": "11.0"
+   }
+  },
+  {
+   "id": "drishya",
+   "name": "Drishya",
+   "nameHi": "दृश्य",
+   "short": "Drishya",
+   "site": "https://drishya.aerogyan.tech",
+   "web": "/",
+   "page": "/download",
+   "release": {
+    "shape": "platforms",
+    "url": "https://drishya.aerogyan.tech/api/app-release"
+   },
+   "software": {
+    "color": "#f5a524",
+    "color2": "#b45309",
+    "kind": {
+     "en": "Video editor",
+     "hi": "वीडियो एडिटर"
+    },
+    "tag": {
+     "en": "A professional video editor in your browser. Your videos stay on your computer.",
+     "hi": "आपके ब्राउज़र में प्रोफ़ेशनल वीडियो एडिटर। आपके वीडियो आपके ही कंप्यूटर पर रहते हैं।"
+    },
+    "features": [
+     {
+      "icon": "fa-film",
+      "en": "Magnetic timeline, transitions, titles",
+      "hi": "मैग्नेटिक टाइमलाइन, ट्रांज़िशन, टाइटल"
+     },
+     {
+      "icon": "fa-sliders",
+      "en": "Colour grading with scopes and looks",
+      "hi": "स्कोप और लुक्स के साथ कलर ग्रेडिंग"
+     },
+     {
+      "icon": "fa-closed-captioning",
+      "en": "AI captions in any language",
+      "hi": "किसी भी भाषा में AI कैप्शन"
+     },
+     {
+      "icon": "fa-wave-square",
+      "en": "Audio mixing and voice-over",
+      "hi": "ऑडियो मिक्सिंग और वॉइस-ओवर"
+     }
+    ],
+    "open": {
+     "en": "Open Drishya",
+     "hi": "दृश्य खोलें"
+    },
+    "ios": "computer",
+    "needsComputer": true,
+    "note": {
+     "en": "Drishya needs a computer — Windows, Mac or Linux, or Chrome or Edge on a laptop. It does not work on phones.",
+     "hi": "दृश्य के लिए कंप्यूटर चाहिए — Windows, Mac या Linux, या लैपटॉप पर Chrome या Edge। यह फ़ोन पर नहीं चलता।"
+    }
+   },
+   "store": {
+    "line": "A professional video editor on your own computer — your videos never leave it.",
+    "lineHi": "आपके अपने कंप्यूटर पर प्रोफ़ेशनल वीडियो एडिटर — आपके वीडियो कहीं नहीं जाते।",
+    "description": "Magnetic timeline, colour grading, titles, transitions, audio mixing, AI captions and fast export with your own graphics card. Made for computers; on a phone it opens in the browser.",
+    "descriptionHi": "मैग्नेटिक टाइमलाइन, कलर ग्रेडिंग, टाइटल, ट्रांज़िशन, ऑडियो मिक्सिंग, AI कैप्शन और आपके ग्राफ़िक्स कार्ड से तेज़ एक्सपोर्ट। कंप्यूटर के लिए बना है; फ़ोन पर ब्राउज़र में खुलता है।",
+    "audience": [
+     "everyone"
+    ],
+    "category": "creative",
+    "color": "#7C3AED",
+    "icon": "https://drishya.aerogyan.tech/icons/icon-192.png",
+    "needsComputer": true
+   },
+   "desktop": {
+    "appId": "tech.aerogyan.drishya",
+    "productName": "Drishya",
+    "deb": "drishya",
+    "minMac": "12.0"
+   }
+  },
+  {
+   "id": "ganak",
+   "name": "Ganak",
+   "nameHi": "गणक",
+   "short": "Ganak",
+   "site": "https://ganak.aerogyan.tech",
+   "web": "/",
+   "page": "/download",
+   "release": {
+    "shape": "platforms",
+    "url": "https://ganak.aerogyan.tech/api/app-release"
+   },
+   "software": {
+    "color": "#38bdf8",
+    "color2": "#0e7490",
+    "kind": {
+     "en": "MATLAB-style computing",
+     "hi": "MATLAB जैसी गणना"
+    },
+    "tag": {
+     "en": "MATLAB-compatible computing — matrices, plots, ODEs and control systems, with an AI helper. Runs on your own computer.",
+     "hi": "MATLAB जैसी गणना — मैट्रिक्स, ग्राफ़, ODE और कंट्रोल सिस्टम, AI हेल्पर के साथ। आपके अपने कंप्यूटर पर चलता है।"
+    },
+    "features": [
+     {
+      "icon": "fa-square-root-variable",
+      "en": "MATLAB-style language: A\\b, .m files, scripts",
+      "hi": "MATLAB जैसी भाषा: A\\b, .m फ़ाइलें, स्क्रिप्ट"
+     },
+     {
+      "icon": "fa-chart-line",
+      "en": "2-D and 3-D plots",
+      "hi": "2-D और 3-D ग्राफ़"
+     },
+     {
+      "icon": "fa-infinity",
+      "en": "ODEs, signals and control (tf, bode, margin)",
+      "hi": "ODE, सिग्नल और कंट्रोल (tf, bode, margin)"
+     },
+     {
+      "icon": "fa-wand-magic-sparkles",
+      "en": "AI helper explains and fixes your code",
+      "hi": "AI हेल्पर आपका कोड समझाता और ठीक करता है"
+     }
+    ],
+    "open": {
+     "en": "Open Ganak",
+     "hi": "गणक खोलें"
+    },
+    "ios": "web",
+    "note": {
+     "en": "Made for a computer with Chrome or Edge. It also opens in a phone's browser, but the screen is laid out for a big display.",
+     "hi": "Chrome या Edge वाले कंप्यूटर के लिए बना है। फ़ोन के ब्राउज़र में भी खुलता है, पर इसकी स्क्रीन बड़े डिस्प्ले के लिए बनी है।"
+    }
+   },
+   "store": {
+    "line": "MATLAB-style computing for engineers: matrices, plots and scripts, with an AI helper.",
+    "lineHi": "इंजीनियरों के लिए MATLAB जैसी कंप्यूटिंग: मैट्रिक्स, ग्राफ़ और स्क्रिप्ट, AI मददगार के साथ।",
+    "description": "Write MATLAB-compatible code, run it at once, plot graphs and solve equations — with an AI helper that explains, fixes and writes code for you.",
+    "descriptionHi": "MATLAB जैसा कोड लिखें, तुरंत चलाएँ, ग्राफ़ बनाएँ और समीकरण हल करें — AI मददगार कोड समझाता है, ठीक करता है और लिखता है।",
+    "audience": [
+     "student",
+     "professor"
+    ],
+    "category": "science",
+    "color": "#0EA5E9",
+    "icon": "https://ganak.aerogyan.tech/icons/icon-192.png"
+   },
+   "android": {
+    "package": "tech.aerogyan.ganak",
+    "minSdk": 24,
+    "signers": [
+     "4c7195adb92278c062e04f908ea970d3344f87878233471b8fcaa1afacfd0b59"
+    ]
+   },
+   "desktop": {
+    "appId": "tech.aerogyan.ganak",
+    "productName": "Ganak",
+    "deb": "ganak",
+    "minMac": "12.0"
+   }
+  },
+  {
+   "id": "sankalak",
+   "name": "Sankalak",
+   "nameHi": "संकलक",
+   "short": "Sankalak",
+   "site": "https://sankalak.aerogyan.tech",
+   "web": "/",
+   "page": "/download",
+   "release": {
+    "shape": "platforms",
+    "url": "https://sankalak.aerogyan.tech/api/app-release"
+   },
+   "software": {
+    "color": "#f97316",
+    "color2": "#be185d",
+    "kind": {
+     "en": "Run code in any language",
+     "hi": "किसी भी भाषा में कोड चलाएँ"
+    },
+    "tag": {
+     "en": "Pick a language, write code, press Run — Python, C, C++, Java, JavaScript, SQL and more. Many run right on your device, even offline.",
+     "hi": "भाषा चुनें, कोड लिखें, Run दबाएँ — Python, C, C++, Java, JavaScript, SQL और भी। कई भाषाएँ आपके डिवाइस पर ही चलती हैं, ऑफ़लाइन भी।"
+    },
+    "features": [
+     {
+      "icon": "fa-code",
+      "en": "Python, C, C++, Java, JavaScript, SQL and more",
+      "hi": "Python, C, C++, Java, JavaScript, SQL और भी"
+     },
+     {
+      "icon": "fa-wifi",
+      "en": "Many languages run on your device, offline too",
+      "hi": "कई भाषाएँ आपके डिवाइस पर, ऑफ़लाइन भी"
+     },
+     {
+      "icon": "fa-play",
+      "en": "Program input and ready-to-run examples",
+      "hi": "प्रोग्राम इनपुट और चलाने को तैयार उदाहरण"
+     },
+     {
+      "icon": "fa-share-nodes",
+      "en": "Share your code with a short link",
+      "hi": "छोटे लिंक से अपना कोड शेयर करें"
+     }
+    ],
+    "open": {
+     "en": "Open Sankalak",
+     "hi": "संकलक खोलें"
+    },
+    "ios": "pwa",
+    "note": {
+     "en": "Works on every device: phones, tablets and computers. On iPhone and iPad, add it to your Home Screen from Safari.",
+     "hi": "हर डिवाइस पर चलता है: फ़ोन, टैबलेट और कंप्यूटर। iPhone और iPad पर Safari से होम स्क्रीन पर जोड़ें।"
+    }
+   },
+   "store": {
+    "line": "Run code in any language — Python, C, C++, Java, JavaScript, SQL and more, many of them offline.",
+    "lineHi": "किसी भी भाषा में कोड चलाएँ — Python, C, C++, Java, JavaScript, SQL और भी, कई भाषाएँ ऑफ़लाइन भी।",
+    "description": "Pick a language, write code, press Run. Many languages run right on your device, even offline; the others run on the Sankalak server. Program input, ready examples, and sharing your code with a short link.",
+    "descriptionHi": "भाषा चुनें, कोड लिखें, Run दबाएँ। कई भाषाएँ आपके डिवाइस पर ही चलती हैं, ऑफ़लाइन भी; बाकी संकलक सर्वर पर चलती हैं। प्रोग्राम इनपुट, तैयार उदाहरण, और छोटे लिंक से अपना कोड शेयर करना।",
+    "audience": [
+     "student",
+     "professor"
+    ],
+    "category": "science",
+    "color": "#F97316",
+    "icon": "https://aerogyan.tech/store/icons/sankalak-192.png"
+   },
+   "android": {
+    "package": "tech.aerogyan.sankalak",
+    "minSdk": 24,
+    "signers": [
+     "80f61bbc361870938647650cc009bb50811a341f1a8d93474539b46740e65791"
+    ]
+   },
+   "desktop": {
+    "appId": "tech.aerogyan.sankalak",
+    "productName": "Sankalak",
+    "deb": "sankalak",
+    "minMac": "12.0"
+   }
+  },
+  {
+   "id": "shilp",
+   "name": "Shilp",
+   "nameHi": "शिल्प",
+   "short": "Shilp",
+   "site": "https://shilp.aerogyan.tech",
+   "web": "/",
+   "page": "/download",
+   "release": {
+    "shape": "platforms",
+    "url": "https://shilp.aerogyan.tech/api/app-release"
+   },
+   "software": {
+    "color": "#fbbf24",
+    "color2": "#57534e",
+    "kind": {
+     "en": "3-D CAD",
+     "hi": "3-D CAD"
+    },
+    "tag": {
+     "en": "Parametric 3-D CAD on your own computer — sketch, extrude, fillet, assemblies and drawings; STEP, IGES and STL. A touch viewer on phones.",
+     "hi": "आपके अपने कंप्यूटर पर पैरामीट्रिक 3-D CAD — स्केच, एक्सट्रूड, फ़िलेट, असेंबली और ड्रॉइंग; STEP, IGES और STL। फ़ोन पर टच व्यूअर।"
+    },
+    "features": [
+     {
+      "icon": "fa-pen-ruler",
+      "en": "Sketches with constraints, extrude, revolve, fillet",
+      "hi": "कंस्ट्रेंट वाले स्केच, एक्सट्रूड, रिवॉल्व, फ़िलेट"
+     },
+     {
+      "icon": "fa-cube",
+      "en": "Assemblies, sheet metal and weldments",
+      "hi": "असेंबली, शीट मेटल और वेल्डमेंट"
+     },
+     {
+      "icon": "fa-compass-drafting",
+      "en": "2-D drawings with dimensions",
+      "hi": "नाप वाली 2-D ड्रॉइंग"
+     },
+     {
+      "icon": "fa-file-code",
+      "en": "Open and save STEP, IGES and STL",
+      "hi": "STEP, IGES और STL खोलें और सेव करें"
+     }
+    ],
+    "open": {
+     "en": "Open Shilp",
+     "hi": "शिल्प खोलें"
+    },
+    "ios": "pwa",
+    "note": {
+     "en": "Full CAD is made for a computer. On Android and iPhone, Shilp is a touch viewer: open models, rotate, measure, section and share.",
+     "hi": "पूरा CAD कंप्यूटर के लिए बना है। Android और iPhone पर शिल्प टच व्यूअर है: मॉडल खोलें, घुमाएँ, नापें, सेक्शन देखें और शेयर करें।"
+    }
+   },
+   "store": {
+    "line": "Parametric 3-D CAD on your computer — sketch, extrude, assemblies and drawings; a touch viewer on phones.",
+    "lineHi": "आपके कंप्यूटर पर पैरामीट्रिक 3-D CAD — स्केच, एक्सट्रूड, असेंबली और ड्रॉइंग; फ़ोन पर टच व्यूअर।",
+    "description": "Sketch with constraints, extrude, revolve, fillet and pattern; build assemblies, sheet metal and weldments; make 2-D drawings; open and save STEP, IGES and STL. Full CAD is made for a computer — on a phone, Shilp is a viewer: open models, rotate, measure, section and share.",
+    "descriptionHi": "कंस्ट्रेंट के साथ स्केच, एक्सट्रूड, रिवॉल्व, फ़िलेट और पैटर्न; असेंबली, शीट मेटल और वेल्डमेंट; 2-D ड्रॉइंग; STEP, IGES और STL खोलें और सेव करें। पूरा CAD कंप्यूटर के लिए बना है — फ़ोन पर शिल्प व्यूअर है: मॉडल खोलें, घुमाएँ, नापें, सेक्शन देखें और शेयर करें।",
+    "audience": [
+     "student",
+     "professor"
+    ],
+    "category": "science",
+    "color": "#F59E0B",
+    "icon": "https://aerogyan.tech/store/icons/shilp-192.png"
+   },
+   "android": {
+    "package": "tech.aerogyan.shilp",
+    "minSdk": 24,
+    "signers": [
+     "8463839a290414edea99120272bc6d3d8c367b63ab6d28eedad3d69611900035"
+    ]
+   },
+   "desktop": {
+    "appId": "tech.aerogyan.shilp",
+    "productName": "Shilp",
+    "deb": "shilp",
+    "minMac": "12.0"
+   }
+  },
+  {
+   "id": "indpay",
+   "name": "IndPay",
+   "nameHi": "इंडपे",
+   "short": "IndPay",
+   "site": "https://indpay.aerogyan.tech",
+   "web": "/",
+   "page": "/download",
+   "release": {
+    "shape": "platforms",
+    "url": "https://indpay.aerogyan.tech/api/app-release"
+   },
+   "software": {
+    "color": "#e8a33d",
+    "color2": "#0f5e55",
+    "kind": {
+     "en": "Payments companion",
+     "hi": "भुगतान साथी"
+    },
+    "tag": {
+     "en": "Scan & pay through your own UPI app, receive money, see where it goes, split bills and check for scams. It never moves money itself.",
+     "hi": "अपने UPI ऐप से स्कैन करके भुगतान, पैसे लेना, ख़र्च का हिसाब, बिल बाँटना और धोखाधड़ी की जाँच। यह ख़ुद कभी पैसे नहीं भेजता।"
+    },
+    "features": [
+     {
+      "icon": "fa-qrcode",
+      "en": "Scan any UPI QR, pay in your own UPI app",
+      "hi": "कोई भी UPI QR स्कैन करें, अपने UPI ऐप से भुगतान"
+     },
+     {
+      "icon": "fa-shield-halved",
+      "en": "Scam checks before every payment",
+      "hi": "हर भुगतान से पहले धोखाधड़ी की जाँच"
+     },
+     {
+      "icon": "fa-users",
+      "en": "Split bills with friends and trips",
+      "hi": "दोस्तों और यात्राओं के बिल बाँटें"
+     },
+     {
+      "icon": "fa-chart-pie",
+      "en": "Where your money goes, budgets and reminders",
+      "hi": "पैसा कहाँ गया, बजट और रिमाइंडर"
+     }
+    ],
+    "open": {
+     "en": "Open IndPay",
+     "hi": "IndPay खोलें"
+    },
+    "ios": "pwa",
+    "desktop": "web",
+    "note": {
+     "en": "An app for Android; on iPhone add it to your Home Screen, and on a computer it runs in the browser — no installer needed. IndPay never asks for your UPI PIN.",
+     "hi": "Android के लिए ऐप; iPhone पर होम स्क्रीन पर जोड़ें, और कंप्यूटर पर यह ब्राउज़र में चलता है — इंस्टॉलर की ज़रूरत नहीं। IndPay कभी आपका UPI PIN नहीं माँगता।"
+    }
+   },
+   "store": {
+    "line": "Scan & pay through your own UPI app, split bills, see where your money goes — with scam checks.",
+    "lineHi": "अपने UPI ऐप से स्कैन करके भुगतान, बिल बाँटना, पैसा कहाँ गया — धोखाधड़ी की जाँच के साथ।",
+    "description": "Scan any UPI QR and pay in a UPI app you already have, receive money with your QR, split bills with friends, set bill reminders and budgets, and get a scam check before every payment. IndPay never moves money, holds no balance and never asks for your UPI PIN. On a computer it runs in the browser — no installer.",
+    "descriptionHi": "कोई भी UPI QR स्कैन करें और अपने मौजूदा UPI ऐप से भुगतान करें, अपने QR से पैसे लें, दोस्तों के साथ बिल बाँटें, बिल रिमाइंडर और बजट रखें, और हर भुगतान से पहले धोखाधड़ी की जाँच पाएँ। IndPay कभी पैसे नहीं भेजता, कोई बैलेंस नहीं रखता और कभी आपका UPI PIN नहीं माँगता। कंप्यूटर पर यह ब्राउज़र में चलता है — इंस्टॉलर नहीं।",
+    "audience": [
+     "everyone"
+    ],
+    "category": "finance",
+    "color": "#0F5E55",
+    "icon": "https://aerogyan.tech/store/icons/indpay-192.png"
+   },
+   "android": {
+    "package": "tech.aerogyan.indpay",
+    "minSdk": 26,
+    "signers": [
+     "540c133a60eec3de967456d640f5ef8fdd93c880abedbcb670feb1107fbc0582"
+    ]
+   }
+  },
+  {
+   "id": "ganit",
+   "name": "Ganit",
+   "nameHi": "गणित",
+   "short": "Ganit",
+   "site": "https://ganit.aerogyan.tech",
+   "web": "/",
+   "page": "/download",
+   "release": {
+    "shape": "platforms",
+    "url": "https://ganit.aerogyan.tech/api/app-release",
+    "files": "/dl/"
+   },
+   "software": {
+    "color": "#ff9933",
+    "color2": "#1c2a5c",
+    "kind": {
+     "en": "Scientific calculator",
+     "hi": "साइंटिफ़िक कैलकुलेटर"
+    },
+    "tag": {
+     "en": "An exact scientific calculator for Indian students — fractions, surds and π stay exact; matrices, statistics, equations and GST/EMI tools. Works offline.",
+     "hi": "भारतीय छात्रों के लिए सटीक साइंटिफ़िक कैलकुलेटर — भिन्न, करणी और π सटीक रहते हैं; मैट्रिक्स, सांख्यिकी, समीकरण और GST/EMI टूल। ऑफ़लाइन भी चलता है।"
+    },
+    "features": [
+     {
+      "icon": "fa-square-root-variable",
+      "en": "Exact answers: fractions, surds and π",
+      "hi": "सटीक उत्तर: भिन्न, करणी और π"
+     },
+     {
+      "icon": "fa-table",
+      "en": "Matrices, statistics, equations, complex numbers",
+      "hi": "मैट्रिक्स, सांख्यिकी, समीकरण, सम्मिश्र संख्याएँ"
+     },
+     {
+      "icon": "fa-graduation-cap",
+      "en": "GATE-style calculator to practise on",
+      "hi": "अभ्यास के लिए GATE जैसा कैलकुलेटर"
+     },
+     {
+      "icon": "fa-indian-rupee-sign",
+      "en": "GST, EMI and money tools",
+      "hi": "GST, EMI और पैसों के टूल"
+     }
+    ],
+    "open": {
+     "en": "Open Ganit",
+     "hi": "गणित खोलें"
+    },
+    "ios": "pwa",
+    "note": {
+     "en": "Works on phones, tablets and computers, also offline. On iPhone and iPad, add it to your Home Screen from Safari.",
+     "hi": "फ़ोन, टैबलेट और कंप्यूटर पर चलता है, ऑफ़लाइन भी। iPhone और iPad पर Safari से होम स्क्रीन पर जोड़ें।"
+    }
+   },
+   "store": {
+    "line": "An exact scientific calculator for Indian students — fractions, surds, matrices, GATE practice, GST/EMI.",
+    "lineHi": "भारतीय छात्रों के लिए सटीक साइंटिफ़िक कैलकुलेटर — भिन्न, करणी, मैट्रिक्स, GATE अभ्यास, GST/EMI।",
+    "description": "Fractions, surds and π stay exact. Complex numbers, matrices, statistics, equations and number bases; a GATE-style calculator to practise on; GST, EMI and money tools. Hindi and English, and it works offline.",
+    "descriptionHi": "भिन्न, करणी और π सटीक रहते हैं। सम्मिश्र संख्याएँ, मैट्रिक्स, सांख्यिकी, समीकरण और संख्या-आधार; अभ्यास के लिए GATE जैसा कैलकुलेटर; GST, EMI और पैसों के टूल। हिंदी और अंग्रेज़ी में, और ऑफ़लाइन भी चलता है।",
+    "audience": [
+     "student",
+     "professor",
+     "everyone"
+    ],
+    "category": "science",
+    "color": "#1C2A5C",
+    "icon": "https://aerogyan.tech/store/icons/ganit-192.png"
+   },
+   "android": {
+    "package": "tech.aerogyan.ganit",
+    "minSdk": 24,
+    "signers": [
+     "310290068a24bea0781c838214068a3bff1c24b7eaf05aa5050bfe9c7c014778"
+    ]
+   },
+   "desktop": {
+    "appId": "tech.aerogyan.ganit",
+    "productName": "Ganit",
+    "deb": "ganit",
+    "minMac": "12.0"
+   }
+  }
+ ],
+ "office": {
+  "suiteHi": "एरोज्ञान ऑफ़िस",
+  "phrase": "the Office apps for students and professors",
+  "phraseHi": "छात्रों और प्रोफ़ेसरों के ऑफ़िस ऐप",
+  "packs": {
+   "students": {
+    "nameHi": "छात्रों के लिए एरोज्ञान",
+    "lineHi": "छात्रों के सभी 26 ऐप एक ही इंस्टॉल में।"
+   },
+   "professors": {
+    "nameHi": "प्रोफ़ेसरों के लिए एरोज्ञान",
+    "lineHi": "प्रोफ़ेसरों के सभी 24 ऐप, साथ में शीट्स, स्लाइड्स, LaTeX, नोट्स और हेल्प — एक इंस्टॉल में।"
+   }
+  },
+  "apps": {
+   "sheets": {
+    "nameHi": "एरोज्ञान शीट्स",
+    "lineHi": "Excel जैसी स्प्रेडशीट: 430+ फ़ॉर्मूले, चार्ट, साथ में एडिटिंग, Excel फ़ाइलें।"
+   },
+   "slides": {
+    "nameHi": "एरोज्ञान स्लाइड्स",
+    "lineHi": "Keynote जैसे प्रेज़ेंटेशन: थीम, ऐनिमेशन, नोट्स से AI, प्रेज़ेंटर व्यू, PowerPoint।"
+   },
+   "latex": {
+    "nameHi": "एरोज्ञान LaTeX",
+    "lineHi": "रिपोर्ट, थीसिस, पेपर और रिज़्यूमे LaTeX में — लाइव PDF, टेम्पलेट और AI से गलती सुधार।"
+   },
+   "notes": {
+    "nameHi": "एरोज्ञान नोट्स",
+    "lineHi": "पेन या उँगली से हाथ के लिखे नोट्स, जो लिखते-लिखते साफ़ PDF और LaTeX बनते हैं।"
+   },
+   "solver": {
+    "nameHi": "एरोज्ञान AI सॉल्वर",
+    "lineHi": "इंजीनियरिंग का कोई भी डाउट पूछें — लिखकर या फ़ोटो भेजकर — और हल के स्टेप पाएँ।"
+   },
+   "practice": {
+    "nameHi": "एरोज्ञान प्रैक्टिस",
+    "lineHi": "रोज़ का चैलेंज, प्रैक्टिस सेट और मॉक टेस्ट आपके कोर्स से, आपकी स्ट्रीक के साथ।"
+   },
+   "english": {
+    "nameHi": "एरोज्ञान इंग्लिश",
+    "lineHi": "हिंदी की मदद से शून्य से एडवांस्ड तक इंग्लिश: बोलें, साथ पढ़ें, AI से बात करें।"
+   },
+   "interview": {
+    "nameHi": "एरोज्ञान इंटरव्यू",
+    "lineHi": "अपने क्षेत्र का असली पैनल इंटरव्यू दें; अंक, मॉडल जवाब और 7 दिन का प्लान पाएँ।"
+   },
+   "prep": {
+    "nameHi": "एरोज्ञान प्लेसमेंट प्रेप",
+    "lineHi": "प्लेसमेंट के लिए रोज़ एप्टीट्यूड और कोर प्रैक्टिस, मॉक इंटरव्यू और रिज़्यूमे रिव्यू।"
+   },
+   "lab": {
+    "nameHi": "एरोज्ञान लैब रिपोर्ट",
+    "lineHi": "अपनी रीडिंग डालें; टेबल, ग्राफ़, एरर एनालिसिस और डिस्कशन LaTeX में पाएँ।"
+   },
+   "study": {
+    "nameHi": "एरोज्ञान स्टडी रूम",
+    "lineHi": "आपके खाली समय वाले स्टडी साथी; टाइमर, चैट, नोट्स और व्हाइटबोर्ड वाला कमरा।"
+   },
+   "campus": {
+    "nameHi": "एरोज्ञान कैंपस Q&A",
+    "lineHi": "सीनियर, एलुमनाई और प्रोफ़ेसरों से कुछ भी पूछें; सबसे अच्छा जवाब ऊपर रहता है।"
+   },
+   "courses": {
+    "nameHi": "एरोज्ञान कोर्स",
+    "lineHi": "आपके सभी कोर्स एक जगह: लेक्चर, नोट्स, PYQ, टेस्ट, अपलोड और लेक्चर किट।"
+   },
+   "live": {
+    "nameHi": "एरोज्ञान लाइव क्लास",
+    "lineHi": "कैमरा, स्क्रीन और बोर्ड के साथ लाइव पढ़ाएँ; क्लास शेड्यूल, रिकॉर्डिंग और हाज़िरी।"
+   },
+   "attendance": {
+    "nameHi": "एरोज्ञान अटेंडेंस",
+    "lineHi": "कोड या QR से सेकंडों में हाज़िरी; क्लास लिस्ट, रजिस्टर और कमी की चेतावनी।"
+   },
+   "grading": {
+    "nameHi": "एरोज्ञान ग्रेडिंग",
+    "lineHi": "AI की मदद से लिखित जवाब जल्दी जाँचें, कॉपियाँ अनुवाद करें, रिज़ल्ट प्रकाशित करें।"
+   },
+   "gradebook": {
+    "nameHi": "एरोज्ञान ग्रेडबुक",
+    "lineHi": "हर अंक एक टेबल में: ऑफ़लाइन कॉलम, वेटेज, लेटर ग्रेड और Excel एक्सपोर्ट।"
+   },
+   "insights": {
+    "nameHi": "एरोज्ञान क्लास इनसाइट्स",
+    "lineHi": "कौन पिछड़ रहा है और हर छात्र कैसा कर रहा है, सभी कोर्स की लाइव गतिविधि के साथ।"
+   },
+   "confusion": {
+    "nameHi": "एरोज्ञान कन्फ़्यूज़न मैप",
+    "lineHi": "हर PDF में क्लास कहाँ अटकी, और अगली क्लास में क्या दोबारा समझाना है।"
+   },
+   "outcomes": {
+    "nameHi": "एरोज्ञान NBA आउटकम",
+    "lineHi": "आपके अंकों से NBA / NAAC के लिए CO–PO अटेनमेंट, एग्ज़िट सर्वे के साथ।"
+   },
+   "calendar": {
+    "nameHi": "एरोज्ञान कैलेंडर",
+    "lineHi": "आपके सभी कोर्स की क्लास, डेडलाइन और परीक्षाएँ एक कैलेंडर में।"
+   },
+   "messages": {
+    "nameHi": "एरोज्ञान मैसेज",
+    "lineHi": "एरोज्ञान टीम और सहकर्मियों से चैट, फ़ाइलों और झटपट जवाबों के साथ।"
+   },
+   "research": {
+    "nameHi": "एरोज्ञान रिसर्च",
+    "lineHi": "प्रोजेक्ट, लैब ओपनिंग, थीसिस टॉपिक और इंटर्नशिप पोस्ट करें; आवेदन करने वालों में से चुनें।"
+   },
+   "notesreview": {
+    "nameHi": "एरोज्ञान नोट्स रिव्यू",
+    "lineHi": "छात्रों के भेजे नोट्स जाँचें और अच्छे नोट्स क्लास नोट्स में जोड़ें।"
+   },
+   "classroom": {
+    "nameHi": "एरोज्ञान क्लासरूम",
+    "lineHi": "आपके सभी कोर्स एक जगह: लेक्चर, AI से समझाए PDF, आपकी भाषा में वीडियो, नोट्स और टेस्ट।"
+   },
+   "examprep": {
+    "nameHi": "एरोज्ञान एग्ज़ाम प्रेप",
+    "lineHi": "पिछले पेपरों में क्या आया, 10 मिनट की कमज़ोर-टॉपिक जाँच, गलतियों का दोबारा टेस्ट और एक पेज की फ़ॉर्मूला शीट।"
+   },
+   "flashcards": {
+    "nameHi": "एरोज्ञान फ़्लैशकार्ड",
+    "lineHi": "लेक्चर से और आपके अपने कार्ड, ठीक उस दिन वापस जब आप भूलने वाले हों।"
+   },
+   "cgpa": {
+    "nameHi": "एरोज्ञान CGPA और डिग्री",
+    "lineHi": "SGPA और CGPA, लक्ष्य के लिए क्या चाहिए, और डिग्री के बचे क्रेडिट।"
+   },
+   "planner": {
+    "nameHi": "एरोज्ञान रिवीज़न प्लानर",
+    "lineHi": "परीक्षा की तारीखें डालें और अपने कोर्स से दिन-ब-दिन रिवीज़न प्लान पाएँ।"
+   },
+   "aerocalc": {
+    "nameHi": "एरोज्ञान एयरो कैल्क",
+    "lineHi": "स्टैंडर्ड एटमॉस्फ़ियर, आइसेंट्रॉपिक फ़्लो, शॉक, फ़ैनो, रेले, NACA एयरफ़ॉइल और ग्राफ़ प्लॉटर।"
+   },
+   "myattendance": {
+    "nameHi": "एरोज्ञान मेरी हाज़िरी",
+    "lineHi": "क्लास में दिखा कोड डालें, हर कोर्स में अपनी हाज़िरी और कितनी क्लास छोड़ सकते हैं, देखें।"
+   },
+   "progress": {
+    "nameHi": "एरोज्ञान प्रोग्रेस",
+    "lineHi": "हर कोर्स में आपकी प्रगति, टेस्ट रिज़ल्ट और मिड-सेम व एंड-सेम अंक।"
+   },
+   "placements": {
+    "nameHi": "एरोज्ञान प्लेसमेंट",
+    "lineHi": "CDC के ज़रिए रिक्रूटर्स को अपनी ताकत दिखाएँ और देखें किन कंपनियों ने शॉर्टलिस्ट किया।"
+   },
+   "projects": {
+    "nameHi": "एरोज्ञान प्रोजेक्ट",
+    "lineHi": "प्रोफ़ेसरों के रिसर्च प्रोजेक्ट और इंटर्नशिप: मैच %, सवाल पूछें, अपनी प्रोफ़ाइल से आवेदन करें।"
+   },
+   "mentor": {
+    "nameHi": "एरोज्ञान मेंटर",
+    "lineHi": "आपकी रुचि से मिलाया गया सीनियर, एलुमनस या प्रोफ़ेसर — कोर्स, रिसर्च और करियर पर मार्गदर्शन।"
+   },
+   "wellness": {
+    "nameHi": "एरोज्ञान वेलनेस",
+    "lineHi": "हर हफ़्ते 30 सेकंड की जाँच, आपका निजी ट्रेंड, और ज़रूरत पड़ने पर बात करने वाला कोई।"
+   },
+   "backlog": {
+    "nameHi": "एरोज्ञान कैच-अप",
+    "lineHi": "किसी कोर्स में पीछे रह गए? छोटा कैच-अप प्लान और एडवाइज़र के साथ साप्ताहिक जाँच।"
+   },
+   "help": {
+    "nameHi": "एरोज्ञान हेल्प",
+    "lineHi": "एरोज्ञान के हर हिस्से को कैसे इस्तेमाल करें, कदम-दर-कदम — छात्रों और प्रोफ़ेसरों के लिए।"
+   },
+   "scangrade": {
+    "nameHi": "एरोज्ञान स्कैन और ग्रेड",
+    "lineHi": "क्लास की कॉपियाँ स्कैन करें; AI रोल नंबर पढ़ता है और अंक सुझाता है; आप सवाल-दर-सवाल जाँचें।"
+   },
+   "lessonplan": {
+    "nameHi": "एरोज्ञान लेसन प्लान",
+    "lineHi": "हर लेक्चर की योजना, क्या पढ़ाया गया, आप ट्रैक पर हैं या नहीं, और एक क्लिक में NBA कोर्स फ़ाइल।"
+   },
+   "portfolio": {
+    "nameHi": "एरोज्ञान टीचिंग पोर्टफ़ोलियो",
+    "lineHi": "आपका पढ़ाने का साल गिना हुआ, साथ में पब्लिकेशन, प्रोजेक्ट और सेल्फ़-अप्रेज़ल का AI ड्राफ़्ट।"
+   },
+   "mentoring": {
+    "nameHi": "एरोज्ञान मेंटरिंग",
+    "lineHi": "रिसर्च और उच्च शिक्षा में रुचि वाले छात्रों को मार्गदर्शन दें।"
+   },
+   "earnings": {
+    "nameHi": "एरोज्ञान कमाई",
+    "lineHi": "आपके कोर्स से कितनी कमाई हुई, और आपके भुगतान।"
+   },
+   "department": {
+    "nameHi": "एरोज्ञान विभाग",
+    "lineHi": "आपका विभाग: चुनें, विभागाध्यक्ष के लिए आवेदन करें; HoD प्रोफ़ेसरों को मंज़ूरी देते हैं।"
+   },
+   "director": {
+    "nameHi": "एरोज्ञान डायरेक्टर",
+    "lineHi": "डायरेक्टर के लिए: हर विभाग और कोर्स, और विभागाध्यक्षों की मंज़ूरियाँ।"
+   },
+   "office": {
+    "nameHi": "एरोज्ञान इंस्टिट्यूट ऑफ़िस",
+    "lineHi": "डायरेक्टर, डीन और एसोसिएट डीन के लिए: संगठन चार्ट, अधिकार, छात्र, हॉल, एडवाइज़र और रिपोर्ट।"
+   },
+   "hall": {
+    "nameHi": "एरोज्ञान हॉल वार्डन",
+    "lineHi": "आपके हॉल के हर छात्र की लाइव जानकारी — हाज़िरी, अंक, किसे ध्यान चाहिए — नोट्स और अभिभावक रिपोर्ट के साथ।"
+   },
+   "advisees": {
+    "nameHi": "एरोज्ञान एडवाइज़ी",
+    "lineHi": "फ़ैकल्टी एडवाइज़र के रूप में: आपके एडवाइज़ी लाइव, बात करना चाहने वाले छात्र और अभिभावक रिपोर्ट।"
+   },
+   "care": {
+    "nameHi": "एरोज्ञान केयर टीम",
+    "lineHi": "किसी छात्र के बारे में एडवाइज़र, वार्डन और HoD से बात करें — चैट, कॉल, WhatsApp या ईमेल।"
+   },
+   "cdc": {
+    "nameHi": "एरोज्ञान CDC",
+    "lineHi": "प्लेसमेंट सेल के लिए: हर छात्र की क्षेत्रवार ताकत, और कंपनियों को भेजी शॉर्टलिस्ट।"
+   }
+  }
+ }
+}

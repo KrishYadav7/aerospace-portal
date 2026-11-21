@@ -162,3 +162,18 @@ html[lang=hi] .d-body h3 { text-transform: none; letter-spacing: 0; font-size: 1
   .cards { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ⭐ 1.0.2 — the store's own update: a banner nobody can miss (sticky, the brand colour, a big button) */
+.selfup { position: sticky; top: 0; z-index: 15; display: flex; align-items: center; gap: 14px; margin: 0; padding: 14px 24px;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed); color: #fff; box-shadow: 0 6px 18px rgb(0 0 0 / .18); }
+.selfup .su-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.selfup strong { font-size: 16px; }
+.selfup .su-btn { background: #fff; color: #3730a3; }
+.selfup .su-btn:hover { filter: brightness(.95); }
+body.os-mac .selfup { padding: 18px 24px; }
+body.os-mac .selfup strong { font-size: 18px; }
+/* ⭐ 1.0.2 — Mac: started from the disk image / Downloads → move into Applications first (full window) */
+.moveapp { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: var(--bg); }
+.moveapp .w-card { max-width: 520px; text-align: center; }
+.mv-steps { text-align: left; margin: 14px auto 18px; padding-left: 22px; line-height: 1.6; }
+.btn.web-open { white-space: nowrap; }
