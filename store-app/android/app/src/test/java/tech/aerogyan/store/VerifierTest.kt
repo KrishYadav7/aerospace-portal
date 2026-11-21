@@ -56,6 +56,51 @@ class VerifierTest {
         assertEquals(Verdict.Ok, Verifier.verify(office, sha, ApkFacts("tech.aerogyan.office.sheets", 5, "1.0.5", 24, listOf(Pins.AEROGYAN)), null, 34))
     }
 
+    // ⭐ 1.0.1 — Sankalak, Shilp and IndPay: each installs only with its own key; any other key (ours included) is refused
+    @Test fun newProductsArePinnedToTheirOwnKeys() {
+        val products = listOf(
+            Triple("tech.aerogyan.sankalak", "https://sankalak.aerogyan.tech/download/android", "80f61bbc361870938647650cc009bb50811a341f1a8d93474539b46740e65791"),
+            Triple("tech.aerogyan.shilp", "https://shilp.aerogyan.tech/download/android", "8463839a290414edea99120272bc6d3d8c367b63ab6d28eedad3d69611900035"),
+            Triple("tech.aerogyan.indpay", "https://indpay.aerogyan.tech/download/android", "540c133a60eec3de967456d640f5ef8fdd93c880abedbcb670feb1107fbc0582"),
+        )
+        val everyKey = listOf(Pins.AEROGYAN, Pins.MEDICO, Pins.GANAK, Pins.STORE, Pins.SANKALAK, Pins.SHILP, Pins.INDPAY)
+        assertEquals("seven different keys", everyKey.size, everyKey.toSet().size)
+        for ((pkg, url, fp) in products) {
+            assertEquals(pkg, setOf(fp), Pins.signersFor(pkg))
+            assertTrue(url, Pins.isTrustedUrl(url))
+            val e = Expected(pkg, url, sha, 100)
+            assertEquals(pkg, Verdict.Ok, Verifier.checkBeforeDownload(e))
+            val f = ApkFacts(pkg, 100, "0.1.0", 24, listOf(fp))
+            assertEquals(pkg, Verdict.Ok, Verifier.verify(e, sha, f, null, 34))
+            // the colon / upper-case form of the right key (as apksigner prints it) is the same key
+            assertEquals(pkg, Verdict.Ok, Verifier.verify(e, sha, f.copy(signers = listOf(fp.uppercase().chunked(2).joinToString(":"))), null, 34))
+            // every other key we know, an attacker's key, a second foreign signer, no signer: refused
+            for (other in everyKey.filter { it != fp } + listOf("ab".repeat(32), fp.dropLast(2) + "00")) {
+                assertEquals("$pkg signed by $other", Reason.WRONG_SIGNER, reason(Verifier.verify(e, sha, f.copy(signers = listOf(other)), null, 34)))
+            }
+            assertEquals(pkg, Reason.WRONG_SIGNER, reason(Verifier.verify(e, sha, f.copy(signers = listOf(fp, "cd".repeat(32))), null, 34)))
+            assertEquals(pkg, Reason.WRONG_SIGNER, reason(Verifier.verify(e, sha, f.copy(signers = emptyList()), null, 34)))
+            // a correctly signed file of ANOTHER of our apps under this product's name
+            assertEquals(pkg, Reason.PACKAGE_MISMATCH, reason(Verifier.verify(e, sha, ApkFacts("tech.aerogyan.ganak", 100, "1.0.0", 24, listOf(Pins.GANAK)), null, 34)))
+            // the right key, but older than what the catalogue lists
+            assertEquals(pkg, Reason.OLDER_THAN_LISTED, reason(Verifier.verify(e, sha, f.copy(versionCode = 99), null, 34)))
+        }
+        assertEquals("Sankalak", Pins.signerName("tech.aerogyan.sankalak"))
+        assertEquals("Shilp", Pins.signerName("tech.aerogyan.shilp"))
+        assertEquals("IndPay", Pins.signerName("tech.aerogyan.indpay"))
+        // look-alikes of the new names are not ours
+        for (p in listOf("tech.aerogyan.indpay2", "tech.aerogyan.shilp.debug", "tech.aerogyan.Sankalak", "tech.aerogyan.indpa")) {
+            assertTrue(p, Pins.signersFor(p).isEmpty())
+        }
+        // IndPay needs Android 8 (minSdk 26)
+        val ip = Expected("tech.aerogyan.indpay", "https://indpay.aerogyan.tech/download/android", sha, 100)
+        assertEquals(Reason.NEEDS_NEWER_ANDROID, reason(Verifier.verify(ip, sha, ApkFacts("tech.aerogyan.indpay", 100, "0.1.0", 26, listOf(Pins.INDPAY)), null, 25)))
+        // new hosts only on https, default port, no look-alikes
+        for (u in listOf("http://shilp.aerogyan.tech/x.apk", "https://indpay.aerogyan.tech.evil.example/x.apk", "https://sankalak.aerogyan.tech:8443/x.apk")) {
+            assertEquals(u, Reason.BAD_URL, reason(Verifier.checkBeforeDownload(ip.copy(url = u))))
+        }
+    }
+
     @Test fun unknownPackageIsRejected() {
         val e = Expected("com.evil.app", "https://aerogyan.tech/download/android", sha, null)
         assertEquals(Reason.NOT_OURS, reason(Verifier.checkBeforeDownload(e)))

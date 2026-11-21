@@ -17,7 +17,8 @@ const crypto = require('crypto');
    can therefore not send the store to another server; it would also need a matching sha256 (and, on
    Android, our signing key). The desktop installers carry no code-signing certificate of ours (none is
    bought yet), so on computers the checks are: pinned https host + sha256 from the catalogue. */
-const PINNED_HOSTS = Object.freeze(['aerogyan.tech', 'medico.aerogyan.tech', 'drishya.aerogyan.tech', 'ganak.aerogyan.tech']);
+const PINNED_HOSTS = Object.freeze(['aerogyan.tech', 'medico.aerogyan.tech', 'drishya.aerogyan.tech', 'ganak.aerogyan.tech',
+  'sankalak.aerogyan.tech', 'shilp.aerogyan.tech', 'indpay.aerogyan.tech']);   // ⭐ 1.0.1: Sankalak, Shilp (IndPay: hosts only — no desktop installers)
 
 /* checkUrl(url, {catalogHosts, testHosts}) → '' when allowed, else the reason.
    testHosts (e.g. ['127.0.0.1']) is honoured only by an unpacked build run for a test (main.js). */

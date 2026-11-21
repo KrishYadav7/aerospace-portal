@@ -87,6 +87,29 @@ class CatalogTest {
         assertEquals(listOf("store", "aerogyan"), States.updates(catalog.apps, inst, 34).map { it.id })
     }
 
+    // ⭐ 1.0.1 — Sankalak, Shilp and IndPay as /api/store sends them (store_test.go TestStoreNewProducts): icons from
+    // aerogyan.tech load, IndPay before its first APK is "coming soon", Sankalak with its file is installable
+    @Test fun newProducts() {
+        val c = CatalogParser.parse("""{"success":true,"apps":[
+ {"id":"sankalak","kind":"app","product":"sankalak","name":"Sankalak","nameHi":"संकलक","audience":["student","professor"],"icon":"https://aerogyan.tech/store/icons/sankalak-192.png","web":"https://sankalak.aerogyan.tech/",
+  "platforms":{"android":{"available":true,"package":"tech.aerogyan.sankalak","minSdk":24,"signers":["80f61bbc361870938647650cc009bb50811a341f1a8d93474539b46740e65791"],"version":"1.0.0","size":705228,"sha256":"4740c20c6092cfc1ccff7388c5275d776f488f62f2655af3d5dba1be44cf10c9","url":"https://sankalak.aerogyan.tech/download/android","fileName":"Sankalak-1.0.0.apk"}}},
+ {"id":"shilp","kind":"app","product":"shilp","name":"Shilp","nameHi":"शिल्प","audience":["student","professor"],"icon":"https://aerogyan.tech/store/icons/shilp-192.png","web":"https://shilp.aerogyan.tech/",
+  "platforms":{"android":{"available":true,"package":"tech.aerogyan.shilp","minSdk":24,"version":"1.0.0","size":613576,"sha256":"bf3f49cd05d1161afa409d5a2b3248da1454958e234a56a5ab1ad7c5ba25b003","url":"https://shilp.aerogyan.tech/download/android"}}},
+ {"id":"indpay","kind":"app","product":"indpay","name":"IndPay","nameHi":"इंडपे","audience":["everyone"],"icon":"https://aerogyan.tech/store/icons/indpay-192.png","web":"https://indpay.aerogyan.tech/",
+  "platforms":{"android":{"available":false,"package":"tech.aerogyan.indpay","minSdk":26,"signers":["540c133a60eec3de967456d640f5ef8fdd93c880abedbcb670feb1107fbc0582"]}}}
+]}""")
+        assertEquals(listOf("sankalak", "shilp", "indpay"), c.apps.map { it.id })
+        for (a in c.apps) assertEquals(a.id, "https://aerogyan.tech/store/icons/${a.id}-192.png", a.icon)
+        fun st(id: String, inst: Installed?, sdk: Int = 34) = States.state(c.byId(id)!!, inst, sdk)
+        assertEquals(AppState.NOT_INSTALLED, st("sankalak", null))
+        assertEquals(AppState.INSTALLED, st("sankalak", Installed(10000, "1.0.0", false)))
+        assertEquals(AppState.UPDATE, st("shilp", Installed(1, "0.9.0", false)))
+        assertEquals(AppState.COMING_SOON, st("indpay", null))
+        assertEquals("tech.aerogyan.indpay", c.byId("indpay")!!.android!!.packageName)
+        assertTrue("indpay" in States.forYou(c.apps, "everyone").map { it.id })
+        assertTrue("sankalak" in States.forYou(c.apps, "student").map { it.id })
+    }
+
     @Test fun search() {
         assertTrue(catalog.byId("office-sheets")!!.matches("excel"))
         assertTrue(catalog.byId("office-sheets")!!.matches("शीट"))

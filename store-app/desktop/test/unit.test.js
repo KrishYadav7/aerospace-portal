@@ -87,8 +87,11 @@ test('which file fits this computer', () => {
 });
 
 test('the host pin', () => {
-  const hosts = ['aerogyan.tech', 'medico.aerogyan.tech', 'drishya.aerogyan.tech', 'ganak.aerogyan.tech'];
+  const hosts = ['aerogyan.tech', 'medico.aerogyan.tech', 'drishya.aerogyan.tech', 'ganak.aerogyan.tech',
+    'sankalak.aerogyan.tech', 'shilp.aerogyan.tech', 'indpay.aerogyan.tech'];   // 1.0.1: Sankalak, Shilp, IndPay
   for (const h of hosts) assert.equal(core.checkUrl(`https://${h}/download/x`, { catalogHosts: hosts }), '');
+  assert.match(core.checkUrl('https://sankalak.aerogyan.tech.evil.com/x'), /not an AeroGyan server/);
+  assert.match(core.checkUrl('https://shilp.aerogyan.tech/x', { catalogHosts: ['aerogyan.tech'] }), /not in the catalogue/);
   assert.match(core.checkUrl('http://aerogyan.tech/x'), /https/);
   assert.match(core.checkUrl('https://evil.example.com/x'), /not an AeroGyan server/);
   assert.match(core.checkUrl('https://aerogyan.tech.evil.com/x'), /not an AeroGyan server/);

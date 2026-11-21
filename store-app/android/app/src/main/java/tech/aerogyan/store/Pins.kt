@@ -14,15 +14,23 @@ object Pins {
     const val AEROGYAN = "74a1df87c347394e78ca4b67c6730f07d683cfd3f9198d3e0e0a45a178ac4480"
     const val MEDICO = "6214a862d32cc3716f655400a4a2ab725f6f31840b8f8a65c97349c826f5b55b"
     const val GANAK = "4c7195adb92278c062e04f908ea970d3344f87878233471b8fcaa1afacfd0b59"
+    // ⭐ 1.0.1 (2026-11-21) — each read from the live APK's v2 signing block (and the site's assetlinks.json) before pinning
+    const val SANKALAK = "80f61bbc361870938647650cc009bb50811a341f1a8d93474539b46740e65791"
+    const val SHILP = "8463839a290414edea99120272bc6d3d8c367b63ab6d28eedad3d69611900035"
+    const val INDPAY = "540c133a60eec3de967456d640f5ef8fdd93c880abedbcb670feb1107fbc0582"
     const val STORE = "0968c5016f2f7732d6f12dd14adf018de261e031214a006cf98927877ed2a8f3"
 
     /** Hosts the store downloads from (https only). */
-    val HOSTS: Set<String> = setOf("aerogyan.tech", "medico.aerogyan.tech", "drishya.aerogyan.tech", "ganak.aerogyan.tech")
+    val HOSTS: Set<String> = setOf("aerogyan.tech", "medico.aerogyan.tech", "drishya.aerogyan.tech", "ganak.aerogyan.tech",
+        "sankalak.aerogyan.tech", "shilp.aerogyan.tech", "indpay.aerogyan.tech")
 
     private val exact: Map<String, Set<String>> = mapOf(
         "tech.aerogyan.app" to setOf(AEROGYAN),
         "tech.aerogyan.medico" to setOf(MEDICO),
         "tech.aerogyan.ganak" to setOf(GANAK),
+        "tech.aerogyan.sankalak" to setOf(SANKALAK),
+        "tech.aerogyan.shilp" to setOf(SHILP),
+        "tech.aerogyan.indpay" to setOf(INDPAY),
         "tech.aerogyan.store" to setOf(STORE),
     )
     private val SLUG = Regex("[a-z][a-z0-9]{0,31}")
@@ -41,6 +49,9 @@ object Pins {
         AEROGYAN -> "AeroGyan"
         MEDICO -> "Jivan Medico"
         GANAK -> "Ganak"
+        SANKALAK -> "Sankalak"
+        SHILP -> "Shilp"
+        INDPAY -> "IndPay"
         STORE -> "AeroGyan Store"
         else -> null
     }

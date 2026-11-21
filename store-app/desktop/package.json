@@ -1,7 +1,7 @@
 {
   "name": "aerogyan-store",
   "productName": "AeroGyan Store",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AeroGyan Store — install and update every AeroGyan app in one place",
   "author": "AeroGyan Education <apps@aerogyan.tech>",
   "homepage": "https://aerogyan.tech",
@@ -106,7 +106,7 @@
       "category": "Utility",
       "executableName": "aerogyan-store",
       "synopsis": "Install and update every AeroGyan app",
-      "description": "The AeroGyan Store lists only AeroGyan's own apps — AeroGyan, the Office apps, Jivan Medico, Drishya and Ganak — and installs and updates them, checking every download first.",
+      "description": "The AeroGyan Store lists only AeroGyan's own apps — AeroGyan, the Office apps, Jivan Medico, Drishya, Ganak, Sankalak, Shilp and IndPay — and installs and updates them, checking every download first.",
       "maintainer": "AeroGyan Education <apps@aerogyan.tech>",
       "vendor": "AeroGyan Education",
       "desktop": {

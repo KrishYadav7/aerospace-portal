@@ -20,6 +20,9 @@
         <package android:name="tech.aerogyan.medico" />
         <package android:name="tech.aerogyan.ganak" />
         <package android:name="tech.aerogyan.drishya" />
+        <package android:name="tech.aerogyan.sankalak" />
+        <package android:name="tech.aerogyan.shilp" />
+        <package android:name="tech.aerogyan.indpay" />
         <package android:name="tech.aerogyan.pack.students" />
         <package android:name="tech.aerogyan.pack.professors" />
         <intent>
